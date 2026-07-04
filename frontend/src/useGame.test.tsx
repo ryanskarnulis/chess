@@ -57,7 +57,12 @@ beforeEach(() => {
     state: state({ fen: AFTER_E4_FEN, turn: 'black' }),
   }
   fetchMock = vi.fn((url: string) => {
-    if (String(url).includes('/api/game/move')) return jsonResponse(moveResponse)
+    const path = String(url)
+    if (path.includes('/api/game/move')) return jsonResponse(moveResponse)
+    if (path.includes('/api/game/difficulty'))
+      return jsonResponse({ skill_level: 15, elo: null })
+    // Lifecycle mutations (new / undo / resign) answer with { state }.
+    if (path.includes('/api/game/')) return jsonResponse({ state: state() })
     return jsonResponse(state())
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -164,6 +169,77 @@ describe('useGame', () => {
     )
     expect(result.current.pendingPromotion).toBeNull()
     expect(result.current.state?.fen).toBe(AFTER_PROMO_FEN)
+  })
+
+  it('starts a new game and clears any move feedback', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    // Return a fresh start position from the new-game endpoint.
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/game/new'))
+        return jsonResponse({ state: state({ history: [] }) })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.newGame()
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/new',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(result.current.moveError).toBeNull()
+    expect(result.current.state?.history).toEqual([])
+  })
+
+  it('undoes and applies the returned state', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    await act(async () => {
+      await result.current.undo()
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/undo',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ plies: 1 }) }),
+    )
+  })
+
+  it('leaves state untouched when the backend refuses a lifecycle action', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    // 409: nothing to undo — no state comes back, so nothing should apply.
+    fetchMock.mockImplementation(() => Promise.resolve({ ok: false, json: () => Promise.resolve({}) }))
+    await act(async () => {
+      await result.current.undo()
+    })
+    expect(result.current.revision).toBe(revisionBefore)
+  })
+
+  it('resigns and applies the returned state', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    await act(async () => {
+      await result.current.resign()
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/resign',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('sets difficulty by skill level without touching board state', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    await act(async () => {
+      await result.current.setDifficulty(15)
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/difficulty',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ skill_level: 15 }) }),
+    )
+    // Difficulty is not a board mutation — no re-render churn.
+    expect(result.current.revision).toBe(revisionBefore)
   })
 
   it('cancels a promotion, snapping the pawn back without submitting', async () => {

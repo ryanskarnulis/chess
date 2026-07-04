@@ -1,13 +1,25 @@
 import { Board } from './Board'
 import { CapturedPieces } from './CapturedPieces'
+import { GameControls } from './GameControls'
 import { MoveHistory } from './MoveHistory'
 import { PromotionPicker } from './PromotionPicker'
 import { useGame } from './useGame'
 import './App.css'
 
 function App() {
-  const { state, moveError, revision, play, pendingPromotion, completePromotion, cancelPromotion } =
-    useGame()
+  const {
+    state,
+    moveError,
+    revision,
+    play,
+    pendingPromotion,
+    completePromotion,
+    cancelPromotion,
+    newGame,
+    undo,
+    resign,
+    setDifficulty,
+  } = useGame()
 
   return (
     <main className="app">
@@ -50,6 +62,14 @@ function App() {
         </div>
         {state && (
           <aside className="panels">
+            <GameControls
+              canUndo={state.history.length > 0}
+              gameOver={state.game_over}
+              onNewGame={newGame}
+              onUndo={undo}
+              onResign={resign}
+              onSetDifficulty={setDifficulty}
+            />
             <CapturedPieces captured={state.captured} />
             <MoveHistory history={state.history} />
           </aside>

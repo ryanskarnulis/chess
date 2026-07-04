@@ -43,6 +43,55 @@
   margin: 0 0 0.4rem;
 }
 
+/* Game controls: lifecycle buttons + difficulty selector. */
+.game-controls {
+  margin-bottom: 1.5rem;
+}
+
+.control-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.control-buttons button {
+  flex: 1 1 auto;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  background: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.control-buttons button:hover:not(:disabled) {
+  background: #d8e6ff;
+  border-color: #7aa7ff;
+}
+
+.control-buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.difficulty {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+}
+
+.difficulty select {
+  flex: 1 1 auto;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
 .captured {
   margin-bottom: 1.5rem;
 }

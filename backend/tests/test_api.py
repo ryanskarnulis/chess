@@ -154,6 +154,44 @@ def test_export_pgn(client):
     assert "1-0" in body["pgn"]
 
 
+# --- difficulty ------------------------------------------------------------
+
+
+def test_set_difficulty_by_skill_level(client):
+    body = client.post("/api/game/difficulty", json={"skill_level": 5}).json()
+    assert body["skill_level"] == 5
+    assert body["elo"] is None
+
+
+def test_set_difficulty_by_elo(client):
+    body = client.post("/api/game/difficulty", json={"elo": 1500}).json()
+    assert body["elo"] == 1500
+    assert body["skill_level"] is None
+
+
+def test_set_difficulty_updates_settings(ctx):
+    client = TestClient(create_app(ctx))
+    client.post("/api/game/difficulty", json={"skill_level": 7})
+    assert ctx.settings.skill_level == 7
+    assert ctx.settings.elo is None
+    # The last one set wins; the other is cleared.
+    client.post("/api/game/difficulty", json={"elo": 1600})
+    assert ctx.settings.elo == 1600
+    assert ctx.settings.skill_level is None
+
+
+def test_set_difficulty_requires_exactly_one(client):
+    assert client.post("/api/game/difficulty", json={}).status_code == 422
+    both = client.post("/api/game/difficulty", json={"skill_level": 5, "elo": 1500})
+    assert both.status_code == 422
+
+
+def test_set_difficulty_out_of_range_is_409(client):
+    high = client.post("/api/game/difficulty", json={"skill_level": 99})
+    assert high.status_code == 409
+    assert client.post("/api/game/difficulty", json={"elo": 100}).status_code == 409
+
+
 # --- engine reply (LLM-off vs-Stockfish mode) ------------------------------
 
 
