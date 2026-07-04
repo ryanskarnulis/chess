@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node (frontend, later)
+node_modules/
+
+# Local models / engines (large binaries stay out of git)
+*.gguf
+stockfish*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
