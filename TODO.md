@@ -4,13 +4,8 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ## Phase 1 — MVP (web board + text agent)
 
-### Epic: API layer
-
-- [ ] Text command endpoint: user string in → agent pipeline → tool calls → new state + commentary out
-
 ### Epic: Agent brain (swappable module)
 
-- [ ] Brain interface: `get_agent_response(board_state, command) → {text, tool_calls}` — nothing outside knows the backend
 - [ ] llama-server client via OpenAI SDK (`tools` param), pointed at localhost
 - [ ] Verify llama.cpp parses Gemma 4 tool calls into a structured array; if not, GBNF grammar-constrained decoding fallback
 - [ ] Defensive tool-call parser + retry loop, validated against tool schemas

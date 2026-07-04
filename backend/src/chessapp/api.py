@@ -21,12 +21,17 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from chessapp.brain import Brain
 from chessapp.game import GameSession, MoveResult
-from chessapp.tools import UNDO_PLIES_MAX, ToolContext
+from chessapp.tools import UNDO_PLIES_MAX, ToolContext, build_registry
 
 
 class MoveRequest(BaseModel):
     move: str
+
+
+class CommandRequest(BaseModel):
+    text: str
 
 
 class UndoRequest(BaseModel):
@@ -91,9 +96,10 @@ class StateBroadcaster:
                 self.disconnect(client)
 
 
-def create_app(ctx: ToolContext) -> FastAPI:
+def create_app(ctx: ToolContext, brain: Brain | None = None) -> FastAPI:
     app = FastAPI(title="chessapp")
     broadcaster = StateBroadcaster()
+    registry = build_registry(ctx)
 
     async def _broadcast_state() -> None:
         await broadcaster.broadcast(_state_dict(ctx.session))
@@ -158,6 +164,31 @@ def create_app(ctx: ToolContext) -> FastAPI:
                 "result": outcome.result,
             },
             "state": _state_dict(ctx.session),
+        }
+
+    @app.post("/api/command")
+    async def command(request: CommandRequest) -> dict[str, Any]:
+        """The single pipeline: user string → brain → tool calls → new state.
+
+        Tool calls run through the validated registry, so brain mistakes
+        (unknown tools, bad args, domain errors) come back as error results
+        in `tool_results`, never as HTTP failures or corrupted state.
+        """
+        if brain is None:
+            raise HTTPException(status_code=503, detail="agent unavailable: no brain")
+        before = _state_dict(ctx.session)
+        response = brain.get_agent_response(before, request.text)
+        tool_results = [
+            {"name": call.name, "result": registry.dispatch(call.name, call.args)}
+            for call in response.tool_calls
+        ]
+        state = _state_dict(ctx.session)
+        if state != before:
+            await broadcaster.broadcast(state)
+        return {
+            "commentary": response.text,
+            "tool_results": tool_results,
+            "state": state,
         }
 
     @app.get("/api/game/pgn")
