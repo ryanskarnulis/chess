@@ -51,6 +51,7 @@ class GameSession:
 
     def __init__(self, fen: str | None = None):
         self._board = chess.Board(fen) if fen is not None else chess.Board()
+        self._resigned: chess.Color | None = None
 
     @property
     def turn(self) -> str:
@@ -61,9 +62,28 @@ class GameSession:
 
     def new_game(self) -> None:
         self._board.reset()
+        self._resigned = None
+
+    def resign(self, color: str | None = None) -> Outcome:
+        """Record a resignation. Defaults to the side to move.
+
+        Boards don't model resignation, so it's session-level state folded
+        into `outcome()` / `is_game_over()`.
+        """
+        if self.is_game_over():
+            raise ValueError("cannot resign: game is already over")
+        if color is None:
+            resigner = self._board.turn
+        else:
+            by_name = {name: c for c, name in _COLOR_NAMES.items()}
+            if color not in by_name:
+                raise ValueError(f"invalid color: {color!r}")
+            resigner = by_name[color]
+        self._resigned = resigner
+        return self.outcome()
 
     def submit_move(self, move_str: str) -> MoveResult:
-        if self._board.is_game_over():
+        if self.is_game_over():
             return MoveResult(legal=False, game_over=True, reason="game is over")
 
         move = self._parse(move_str)
@@ -85,6 +105,8 @@ class GameSession:
         The core pops exactly what it's asked to; pairing policy for
         vs-engine takebacks (plies=2) belongs to the caller.
         """
+        if self._resigned is not None:
+            return UndoResult(ok=False, reason="cannot undo: game ended by resignation")
         available = len(self._board.move_stack)
         if plies < 1:
             return UndoResult(ok=False, reason="plies must be at least 1")
@@ -134,9 +156,16 @@ class GameSession:
             return None
 
     def is_game_over(self) -> bool:
-        return self._board.is_game_over()
+        return self._resigned is not None or self._board.is_game_over()
 
     def outcome(self) -> Outcome | None:
+        if self._resigned is not None:
+            winner = not self._resigned
+            return Outcome(
+                termination="resignation",
+                winner=_COLOR_NAMES[winner],
+                result="1-0" if winner == chess.WHITE else "0-1",
+            )
         raw = self._board.outcome()
         if raw is None:
             return None
