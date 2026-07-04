@@ -1,9 +1,11 @@
 import { Board } from './Board'
+import { PromotionPicker } from './PromotionPicker'
 import { useGame } from './useGame'
 import './App.css'
 
 function App() {
-  const { state, moveError, revision, play } = useGame()
+  const { state, moveError, revision, play, pendingPromotion, completePromotion, cancelPromotion } =
+    useGame()
 
   return (
     <main className="app">
@@ -20,6 +22,13 @@ function App() {
           />
         ) : (
           <p className="status">Connecting…</p>
+        )}
+        {pendingPromotion && state && (
+          <PromotionPicker
+            color={state.turn}
+            onSelect={completePromotion}
+            onCancel={cancelPromotion}
+          />
         )}
       </div>
       {moveError && (

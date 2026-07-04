@@ -5,6 +5,9 @@ import type { GameState, MoveResponse } from './api'
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 const AFTER_E4_FEN = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1'
+// A white pawn on e7, ready to promote.
+const PROMO_FEN = '4k3/4P3/8/8/8/8/8/4K3 w - - 0 1'
+const AFTER_PROMO_FEN = '4Q1k1/8/8/8/8/8/8/4K3 b - - 0 1'
 
 function state(overrides: Partial<GameState> = {}): GameState {
   return {
@@ -117,6 +120,68 @@ describe('useGame', () => {
     expect(result.current.state?.fen).toBe(START_FEN)
     // Revision must advance even though the fen is unchanged, so the board
     // re-syncs and the illegally-moved piece snaps back.
+    expect(result.current.revision).toBeGreaterThan(revisionBefore)
+  })
+
+  it('defers a promotion move to a piece choice instead of submitting bare', async () => {
+    const { result } = renderHook(() => useGame())
+    // Start from a position where e7->e8 is a promotion.
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: state({ fen: PROMO_FEN }) })
+    })
+    await act(async () => {
+      await result.current.play('e7', 'e8')
+    })
+    // No move submitted yet — the picker gates it.
+    expect(result.current.pendingPromotion).toEqual({ from: 'e7', to: 'e8' })
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/game/move', expect.anything())
+  })
+
+  it('submits the promotion with the chosen piece and clears the pending choice', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: state({ fen: PROMO_FEN }) })
+    })
+    await act(async () => {
+      await result.current.play('e7', 'e8')
+    })
+    moveResponse = {
+      legal: true,
+      san: 'e8=Q',
+      uci: 'e7e8q',
+      reason: null,
+      engine_move: null,
+      state: state({ fen: AFTER_PROMO_FEN, turn: 'black' }),
+    }
+    await act(async () => {
+      await result.current.completePromotion('q')
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/move',
+      expect.objectContaining({ body: JSON.stringify({ move: 'e7e8q' }) }),
+    )
+    expect(result.current.pendingPromotion).toBeNull()
+    expect(result.current.state?.fen).toBe(AFTER_PROMO_FEN)
+  })
+
+  it('cancels a promotion, snapping the pawn back without submitting', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: state({ fen: PROMO_FEN }) })
+    })
+    await act(async () => {
+      await result.current.play('e7', 'e8')
+    })
+    const revisionBefore = result.current.revision
+    act(() => {
+      result.current.cancelPromotion()
+    })
+    expect(result.current.pendingPromotion).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/game/move', expect.anything())
+    // Revision advances so the board re-syncs and the pawn snaps back.
     expect(result.current.revision).toBeGreaterThan(revisionBefore)
   })
 })

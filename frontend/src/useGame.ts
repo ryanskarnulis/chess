@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchState, stateSocketUrl, submitMove, type GameState } from './api'
+import { isPromotion, type PromotionPiece } from './promotion'
 
 export interface UseGame {
   /** Latest authoritative game state, or null until the first load. */
@@ -14,6 +15,16 @@ export interface UseGame {
   revision: number
   /** Submit a user move (origin/dest squares) to the backend. */
   play: (from: string, to: string) => Promise<void>
+  /**
+   * Set when the last move was a pawn reaching the last rank: the move is
+   * held until the user picks a piece. The board has already moved the pawn
+   * visually, so a cancel must re-sync it back.
+   */
+  pendingPromotion: { from: string; to: string } | null
+  /** Finish the held promotion with the chosen piece. */
+  completePromotion: (piece: PromotionPiece) => Promise<void>
+  /** Abandon the held promotion and snap the pawn back. */
+  cancelPromotion: () => void
 }
 
 /**
@@ -25,8 +36,15 @@ export function useGame(): UseGame {
   const [state, setState] = useState<GameState | null>(null)
   const [moveError, setMoveError] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
+  const [pendingPromotion, setPendingPromotion] = useState<{ from: string; to: string } | null>(
+    null,
+  )
+  // Latest state without making the move callbacks depend on it — the board
+  // holds `play` in a ref, but promotion detection still needs the live fen.
+  const stateRef = useRef<GameState | null>(null)
 
   const apply = useCallback((next: GameState) => {
+    stateRef.current = next
     setState(next)
     setRevision((r) => r + 1)
   }, [])
@@ -47,9 +65,9 @@ export function useGame(): UseGame {
     }
   }, [apply])
 
-  const play = useCallback(
-    async (from: string, to: string) => {
-      const result = await submitMove(from + to)
+  const submit = useCallback(
+    async (uci: string) => {
+      const result = await submitMove(uci)
       setMoveError(result.legal ? null : (result.reason ?? 'Illegal move'))
       // Authoritative in both cases: the new position on success, or the
       // unchanged one on rejection (which snaps the illegal move back).
@@ -58,5 +76,42 @@ export function useGame(): UseGame {
     [apply],
   )
 
-  return { state, moveError, revision, play }
+  const play = useCallback(
+    async (from: string, to: string) => {
+      // A promotion can't be expressed as bare from+to; hold it for a piece
+      // choice rather than submitting a move the backend would reject.
+      if (stateRef.current && isPromotion(stateRef.current.fen, from, to)) {
+        setPendingPromotion({ from, to })
+        return
+      }
+      await submit(from + to)
+    },
+    [submit],
+  )
+
+  const completePromotion = useCallback(
+    async (piece: PromotionPiece) => {
+      if (!pendingPromotion) return
+      const { from, to } = pendingPromotion
+      setPendingPromotion(null)
+      await submit(from + to + piece)
+    },
+    [pendingPromotion, submit],
+  )
+
+  const cancelPromotion = useCallback(() => {
+    setPendingPromotion(null)
+    // The board already moved the pawn to the last rank; re-sync it back.
+    setRevision((r) => r + 1)
+  }, [])
+
+  return {
+    state,
+    moveError,
+    revision,
+    play,
+    pendingPromotion,
+    completePromotion,
+    cancelPromotion,
+  }
 }
