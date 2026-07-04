@@ -6,7 +6,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Deterministic core (python-chess owns truth)
 
-- [ ] Stockfish analysis tools: `evaluate_position`, `get_best_moves` (MultiPV)
 - [ ] Full offline game vs Stockfish with no LLM in the loop (acceptance test for the brief's core requirement)
 
 ### Epic: Tool layer (agent-facing capability surface)
