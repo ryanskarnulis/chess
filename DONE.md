@@ -4,6 +4,7 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] Resign / result recording (session-level termination folded into outcome/is_game_over) (#6)
 - [x] Undo (ply takeback; plies=2 gives vs-engine pair semantics, pairing policy stays in the caller) (#5)
 - [x] Move history + captured-pieces derivation from board state (#4)
 - [x] `GameSession` class wrapping `python-chess`: new game, submit move (SAN/UCI → accept/reject), turn tracking, game-over detection (mate/stalemate/draw rules) (#2)
