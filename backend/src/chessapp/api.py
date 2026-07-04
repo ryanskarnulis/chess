@@ -18,7 +18,7 @@ object on the context.
 
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from chessapp.game import GameSession, MoveResult
@@ -65,19 +65,62 @@ def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
 
 
+class StateBroadcaster:
+    """Fans the state document out to every connected board UI.
+
+    Send failures mean the client went away; the socket is dropped, never
+    allowed to fail the mutation that triggered the broadcast.
+    """
+
+    def __init__(self) -> None:
+        self._clients: set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self._clients.add(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        self._clients.discard(websocket)
+
+    async def broadcast(self, state: dict[str, Any]) -> None:
+        message = {"type": "state", "state": state}
+        for client in list(self._clients):
+            try:
+                await client.send_json(message)
+            except Exception:
+                self.disconnect(client)
+
+
 def create_app(ctx: ToolContext) -> FastAPI:
     app = FastAPI(title="chessapp")
+    broadcaster = StateBroadcaster()
+
+    async def _broadcast_state() -> None:
+        await broadcaster.broadcast(_state_dict(ctx.session))
 
     @app.get("/api/state")
     def get_state() -> dict[str, Any]:
         return _state_dict(ctx.session)
 
+    @app.websocket("/ws")
+    async def state_channel(websocket: WebSocket) -> None:
+        await broadcaster.connect(websocket)
+        await websocket.send_json({"type": "state", "state": _state_dict(ctx.session)})
+        try:
+            # The channel is one-way; we only read to notice the disconnect.
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            broadcaster.disconnect(websocket)
+
     @app.post("/api/game/move")
-    def submit_move(request: MoveRequest) -> dict[str, Any]:
+    async def submit_move(request: MoveRequest) -> dict[str, Any]:
         result = ctx.session.submit_move(request.move)
         engine_move: dict[str, Any] | None = None
         if result.legal and ctx.engine is not None and not ctx.session.is_game_over():
             engine_move = _move_dict(ctx.engine.play_move(ctx.session))
+        if result.legal:
+            await _broadcast_state()
         return {
             "legal": result.legal,
             "san": result.san,
@@ -88,23 +131,26 @@ def create_app(ctx: ToolContext) -> FastAPI:
         }
 
     @app.post("/api/game/new")
-    def new_game() -> dict[str, Any]:
+    async def new_game() -> dict[str, Any]:
         ctx.session.new_game()
+        await _broadcast_state()
         return {"state": _state_dict(ctx.session)}
 
     @app.post("/api/game/undo")
-    def undo(request: UndoRequest) -> dict[str, Any]:
+    async def undo(request: UndoRequest) -> dict[str, Any]:
         result = ctx.session.undo(request.plies)
         if not result.ok:
             raise HTTPException(status_code=409, detail=result.reason)
+        await _broadcast_state()
         return {"undone": list(result.undone), "state": _state_dict(ctx.session)}
 
     @app.post("/api/game/resign")
-    def resign(request: ResignRequest) -> dict[str, Any]:
+    async def resign(request: ResignRequest) -> dict[str, Any]:
         try:
             outcome = ctx.session.resign(request.color)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await _broadcast_state()
         return {
             "outcome": {
                 "termination": outcome.termination,
