@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchState, stateSocketUrl, submitMove, type GameState } from './api'
+import {
+  fetchState,
+  newGame as apiNewGame,
+  resign as apiResign,
+  setDifficulty as apiSetDifficulty,
+  stateSocketUrl,
+  submitMove,
+  undo as apiUndo,
+  type GameState,
+} from './api'
 import { isPromotion, type PromotionPiece } from './promotion'
 
 export interface UseGame {
@@ -25,6 +34,14 @@ export interface UseGame {
   completePromotion: (piece: PromotionPiece) => Promise<void>
   /** Abandon the held promotion and snap the pawn back. */
   cancelPromotion: () => void
+  /** Start a fresh game from the initial position. */
+  newGame: () => Promise<void>
+  /** Take back the last ply. No-op if there is nothing to undo. */
+  undo: () => Promise<void>
+  /** Resign the game (the side to move, unless the backend decides otherwise). */
+  resign: () => Promise<void>
+  /** Set engine strength by Stockfish skill level (0–20). */
+  setDifficulty: (skillLevel: number) => Promise<void>
 }
 
 /**
@@ -105,6 +122,33 @@ export function useGame(): UseGame {
     setRevision((r) => r + 1)
   }, [])
 
+  const newGame = useCallback(async () => {
+    const next = await apiNewGame()
+    if (next) {
+      setMoveError(null)
+      apply(next)
+    }
+  }, [apply])
+
+  const undo = useCallback(async () => {
+    const next = await apiUndo()
+    // Null means the backend refused (nothing to undo) — leave state as is.
+    if (next) {
+      setMoveError(null)
+      apply(next)
+    }
+  }, [apply])
+
+  const resign = useCallback(async () => {
+    const next = await apiResign()
+    if (next) apply(next)
+  }, [apply])
+
+  const setDifficulty = useCallback(async (skillLevel: number) => {
+    // Difficulty is a settings change, not a board mutation — nothing to apply.
+    await apiSetDifficulty(skillLevel)
+  }, [])
+
   return {
     state,
     moveError,
@@ -113,5 +157,9 @@ export function useGame(): UseGame {
     pendingPromotion,
     completePromotion,
     cancelPromotion,
+    newGame,
+    undo,
+    resign,
+    setDifficulty,
   }
 }

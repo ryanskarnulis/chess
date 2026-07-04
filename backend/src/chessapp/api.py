@@ -19,9 +19,10 @@ object on the context.
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from chessapp.brain import Brain
+from chessapp.engine import validate_elo, validate_skill_level
 from chessapp.game import GameSession, MoveResult
 from chessapp.tools import UNDO_PLIES_MAX, ToolContext, build_registry
 
@@ -40,6 +41,20 @@ class UndoRequest(BaseModel):
 
 class ResignRequest(BaseModel):
     color: str | None = Field(default=None, pattern="^(white|black)$")
+
+
+class DifficultyRequest(BaseModel):
+    """Exactly one of skill_level / elo — the same contract as the
+    `set_difficulty` tool. Range is validated by the engine when applied."""
+
+    skill_level: int | None = None
+    elo: int | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "DifficultyRequest":
+        if (self.skill_level is None) == (self.elo is None):
+            raise ValueError("pass exactly one of skill_level or elo")
+        return self
 
 
 def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
@@ -166,6 +181,32 @@ def create_app(ctx: ToolContext, brain: Brain | None = None) -> FastAPI:
             },
             "state": _state_dict(ctx.session),
         }
+
+    @app.post("/api/game/difficulty")
+    def set_difficulty(request: DifficultyRequest) -> dict[str, Any]:
+        """Set engine strength directly (trusted UI path, not the LLM tool).
+
+        Range is validated here regardless of whether an engine is attached,
+        so the setting is always sane; it is applied to the live engine when
+        present and re-applied when one attaches later. This does not touch
+        board state, so nothing is broadcast.
+        """
+        try:
+            if request.skill_level is not None:
+                validate_skill_level(request.skill_level)
+                if ctx.engine is not None:
+                    ctx.engine.set_skill_level(request.skill_level)
+                ctx.settings.skill_level = request.skill_level
+                ctx.settings.elo = None
+            else:
+                validate_elo(request.elo)
+                if ctx.engine is not None:
+                    ctx.engine.set_elo(request.elo)
+                ctx.settings.elo = request.elo
+                ctx.settings.skill_level = None
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"skill_level": ctx.settings.skill_level, "elo": ctx.settings.elo}
 
     @app.post("/api/command")
     async def command(request: CommandRequest) -> dict[str, Any]:

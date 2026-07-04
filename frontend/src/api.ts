@@ -44,6 +44,48 @@ export async function submitMove(uci: string): Promise<MoveResponse> {
   return (await res.json()) as MoveResponse
 }
 
+const JSON_POST = { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+
+/**
+ * POST a lifecycle mutation and return the authoritative new state, or null
+ * if the backend refused it (e.g. 409: nothing to undo, resigning a finished
+ * game). The board only advances on a state the server actually produced.
+ */
+async function postLifecycle(path: string, body: unknown = {}): Promise<GameState | null> {
+  const res = await fetch(path, { ...JSON_POST, body: JSON.stringify(body) })
+  if (!res.ok) return null
+  const data = (await res.json()) as { state: GameState }
+  return data.state
+}
+
+export function newGame(): Promise<GameState | null> {
+  return postLifecycle('/api/game/new')
+}
+
+export function undo(plies = 1): Promise<GameState | null> {
+  return postLifecycle('/api/game/undo', { plies })
+}
+
+export function resign(color?: 'white' | 'black'): Promise<GameState | null> {
+  return postLifecycle('/api/game/resign', color ? { color } : {})
+}
+
+export interface DifficultyResponse {
+  skill_level: number | null
+  elo: number | null
+}
+
+/** Set engine strength by Stockfish skill level (0–20). Returns the applied
+ * setting, or null if the backend rejected it. Board state is untouched. */
+export async function setDifficulty(skillLevel: number): Promise<DifficultyResponse | null> {
+  const res = await fetch('/api/game/difficulty', {
+    ...JSON_POST,
+    body: JSON.stringify({ skill_level: skillLevel }),
+  })
+  if (!res.ok) return null
+  return (await res.json()) as DifficultyResponse
+}
+
 /** URL of the backend's one-way state broadcast channel. */
 export function stateSocketUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
