@@ -141,6 +141,29 @@ def test_move_rejected_after_game_over():
     assert result.reason
 
 
+# --- legal moves ----------------------------------------------------------
+
+
+def test_legal_moves_start_position():
+    session = GameSession()
+    moves = session.legal_moves()
+    assert len(moves) == 20
+    assert "e4" in moves
+    assert "Nf3" in moves
+
+
+def test_legal_moves_reflect_position():
+    # Cornered king: Qb1 covers h7, so g8 is the only flight square.
+    session = GameSession(fen="7k/8/5K2/8/8/8/8/1Q6 b - - 0 1")
+    assert session.legal_moves() == ["Kg8"]
+
+
+def test_legal_moves_empty_when_game_over():
+    session = GameSession()
+    session.resign("white")
+    assert session.legal_moves() == []
+
+
 # --- turn tracking ------------------------------------------------------
 
 
