@@ -10,7 +10,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Frontend (web board)
 
-- [ ] Scaffold React app in `frontend/` (Vite); decide Chessground vs react-chessboard (licensing note in BRIEF.md)
 - [ ] Interactive board wired to backend state: render position, submit moves by drag/click, illegal-move feedback
 - [ ] Move history + captured pieces panels
 - [ ] Game controls: new game, undo, resign, difficulty
