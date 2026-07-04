@@ -1,0 +1,51 @@
+import { materialScore, PIECE_GLYPHS, type PieceType } from './pieces'
+
+export interface CapturedPiecesProps {
+  /**
+   * Pieces each colour has captured, in capture order (from the backend).
+   * `white` holds the black pieces White took, and vice versa.
+   */
+  captured: { white: string[]; black: string[] }
+}
+
+/** One side's captured pieces, shown with the *opponent's* colour glyphs. */
+function Side({
+  side,
+  symbols,
+  advantage,
+}: {
+  side: 'white' | 'black'
+  symbols: string[]
+  advantage: number
+}) {
+  // White captures black pieces, so render the opposite colour's glyphs.
+  const glyphColor = side === 'white' ? 'black' : 'white'
+  return (
+    <div className="captured-side" aria-label={`Captured by ${side}`}>
+      <span className="captured-side-label">{side}</span>
+      <span className="captured-pieces-glyphs">
+        {symbols.map((s, i) => (
+          <span key={i} aria-hidden>
+            {PIECE_GLYPHS[glyphColor][s as PieceType] ?? '?'}
+          </span>
+        ))}
+      </span>
+      {advantage > 0 && <span className="captured-advantage">{`+${advantage}`}</span>}
+    </div>
+  )
+}
+
+/**
+ * Both players' captured pieces plus the material advantage of whoever is
+ * ahead. Presentational — the backend derives captures from the move stack.
+ */
+export function CapturedPieces({ captured }: CapturedPiecesProps) {
+  const diff = materialScore(captured.white) - materialScore(captured.black)
+  return (
+    <section className="captured" aria-label="Captured pieces">
+      <h2>Captured</h2>
+      <Side side="white" symbols={captured.white} advantage={diff} />
+      <Side side="black" symbols={captured.black} advantage={-diff} />
+    </section>
+  )
+}
