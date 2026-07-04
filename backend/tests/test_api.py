@@ -176,3 +176,65 @@ def test_engine_does_not_reply_to_illegal_move():
         assert body["legal"] is False
         assert body["engine_move"] is None
         assert body["state"]["history"] == []
+
+
+# --- websocket state channel ------------------------------------------------
+
+
+def test_ws_sends_current_state_on_connect(client):
+    client.post("/api/game/move", json={"move": "e4"})
+    with client.websocket_connect("/ws") as ws:
+        message = ws.receive_json()
+    assert message["type"] == "state"
+    assert message["state"]["history"] == ["e4"]
+
+
+def test_ws_broadcasts_state_after_move(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # connect snapshot
+        client.post("/api/game/move", json={"move": "e4"})
+        message = ws.receive_json()
+    assert message["state"]["turn"] == "black"
+    assert message["state"]["history"] == ["e4"]
+
+
+def test_ws_broadcasts_lifecycle_mutations(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        client.post("/api/game/move", json={"move": "e4"})
+        ws.receive_json()
+        client.post("/api/game/undo", json={})
+        assert ws.receive_json()["state"]["history"] == []
+        client.post("/api/game/resign", json={})
+        assert ws.receive_json()["state"]["game_over"] is True
+        client.post("/api/game/new")
+        message = ws.receive_json()
+    assert message["state"]["fen"] == START_FEN
+    assert message["state"]["game_over"] is False
+
+
+def test_ws_no_broadcast_for_illegal_move_or_failed_mutation(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        client.post("/api/game/move", json={"move": "e5"})  # illegal
+        client.post("/api/game/undo", json={})  # 409: nothing played
+        client.post("/api/game/move", json={"move": "e4"})  # legal
+        message = ws.receive_json()
+    assert message["state"]["history"] == ["e4"]
+
+
+def test_ws_multiple_clients_all_receive(client):
+    with client.websocket_connect("/ws") as ws1, client.websocket_connect("/ws") as ws2:
+        ws1.receive_json()
+        ws2.receive_json()
+        client.post("/api/game/move", json={"move": "e4"})
+        assert ws1.receive_json()["state"]["history"] == ["e4"]
+        assert ws2.receive_json()["state"]["history"] == ["e4"]
+
+
+def test_disconnected_client_does_not_break_broadcast(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+    response = client.post("/api/game/move", json={"move": "e4"})
+    assert response.status_code == 200
+    assert response.json()["legal"] is True

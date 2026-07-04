@@ -4,6 +4,7 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] WebSocket `/ws` state channel: snapshot on connect, broadcast to all clients after every successful mutation, dead sockets dropped silently (#16)
 - [x] FastAPI app: game lifecycle endpoints (move w/ optional engine reply, new, undo, resign, PGN) + full state fetch; illegal moves are data, domain failures are 409s (#15)
 - [x] Settings tools: `set_difficulty` (exactly one of skill_level/elo, applied to live engine), `set_personality`, `set_verbosity`, `set_hints_mode`, `set_voice_output` (#14). **Epic "Tool layer" complete.**
 - [x] Write tools through the legality gate: `make_move` (legal/illegal as data), `undo`, `new_game`, `resign`, `save_game`/`resume_game` (traversal-safe names), `export_pgn` (#13)

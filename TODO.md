@@ -6,7 +6,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: API layer
 
-- [ ] WebSocket (or SSE) channel for state updates to the board UI
 - [ ] Text command endpoint: user string in → agent pipeline → tool calls → new state + commentary out
 
 ### Epic: Agent brain (swappable module)
