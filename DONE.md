@@ -4,6 +4,7 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] Write tools through the legality gate: `make_move` (legal/illegal as data), `undo`, `new_game`, `resign`, `save_game`/`resume_game` (traversal-safe names), `export_pgn` (#13)
 - [x] Tool registry + JSON schemas + validated dispatch (un-crashable LLM boundary) + read tools: `get_board_state`, `get_legal_moves`, `get_move_history`, `get_captured_pieces`, `evaluate_position`, `get_best_moves` (#12)
 - [x] Full offline game vs Stockfish with no LLM in the loop — acceptance tests: engine-vs-engine to a result, scripted-user-vs-engine, save/resume mid-game (#11). **Epic "Deterministic core" complete.**
 - [x] Stockfish analysis tools: `evaluate_position` (white-POV cp/mate), `get_best_moves` (MultiPV candidates with SAN + scores) (#10)

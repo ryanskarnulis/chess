@@ -6,7 +6,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Tool layer (agent-facing capability surface)
 
-- [ ] Write tools: `make_move` (returns legal/illegal), `undo`, `new_game`, `resign`, `save_game`, `resume_game`, `export_pgn`
 - [ ] Settings tools: `set_difficulty`, `set_personality`, `set_verbosity`, `set_hints_mode`, `set_voice_output`
 
 ### Epic: API layer
