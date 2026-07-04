@@ -6,7 +6,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Deterministic core (python-chess owns truth)
 
-- [ ] `GameSession` class wrapping `python-chess`: new game, submit move (SAN/UCI → accept/reject), turn tracking, game-over detection (mate/stalemate/draw rules)
 - [ ] Move history + captured-pieces derivation from board state
 - [ ] Undo (full ply takeback, incl. vs-engine pair semantics)
 - [ ] Resign / result recording
