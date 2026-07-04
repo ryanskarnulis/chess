@@ -183,6 +183,171 @@ def test_get_move_history_and_captures(session):
     assert captures["black"] == ["p"]
 
 
+# --- write tools ------------------------------------------------------------
+
+
+def test_registry_lists_all_write_tools(registry):
+    names = {d["function"]["name"] for d in registry.definitions()}
+    assert names >= {
+        "make_move",
+        "undo",
+        "new_game",
+        "resign",
+        "save_game",
+        "resume_game",
+        "export_pgn",
+    }
+
+
+def test_make_move_legal(registry, session):
+    result = registry.dispatch("make_move", {"move": "e4"})
+    assert result["ok"] is True
+    assert result["legal"] is True
+    assert result["san"] == "e4"
+    assert result["uci"] == "e2e4"
+    assert result["game_over"] is False
+    assert result["fen"] == session.fen()
+    assert result["turn"] == "black"
+
+
+def test_make_move_illegal_is_ok_result_with_legal_false(registry, session):
+    before = session.fen()
+    result = registry.dispatch("make_move", {"move": "e5"})
+    assert result["ok"] is True
+    assert result["legal"] is False
+    assert result["reason"]
+    assert session.fen() == before
+
+
+def test_make_move_requires_move_arg(registry):
+    assert registry.dispatch("make_move", {})["ok"] is False
+    assert registry.dispatch("make_move", {"move": 4})["ok"] is False
+
+
+def test_make_move_reports_checkmate(registry):
+    for move in ["f3", "e5", "g4"]:
+        assert registry.dispatch("make_move", {"move": move})["legal"]
+    result = registry.dispatch("make_move", {"move": "Qh4"})
+    assert result["legal"] is True
+    assert result["game_over"] is True
+
+
+def test_undo_reverts_last_ply(registry, session):
+    registry.dispatch("make_move", {"move": "e4"})
+    result = registry.dispatch("undo", {})
+    assert result["ok"] is True
+    assert result["undone"] == ["e4"]
+    assert session.move_history() == []
+
+
+def test_undo_two_plies_for_engine_pair(registry, session):
+    registry.dispatch("make_move", {"move": "e4"})
+    registry.dispatch("make_move", {"move": "e5"})
+    result = registry.dispatch("undo", {"plies": 2})
+    assert result["ok"] is True
+    assert result["undone"] == ["e5", "e4"]
+    assert session.move_history() == []
+
+
+def test_undo_with_nothing_to_undo_is_error(registry):
+    result = registry.dispatch("undo", {})
+    assert result["ok"] is False
+
+
+def test_undo_rejects_bad_plies(registry):
+    assert registry.dispatch("undo", {"plies": 0})["ok"] is False
+    assert registry.dispatch("undo", {"plies": "two"})["ok"] is False
+
+
+def test_new_game_resets(registry, session):
+    registry.dispatch("make_move", {"move": "e4"})
+    result = registry.dispatch("new_game", {})
+    assert result["ok"] is True
+    assert session.move_history() == []
+    assert session.turn == "white"
+
+
+def test_resign_defaults_to_side_to_move(registry, session):
+    registry.dispatch("make_move", {"move": "e4"})
+    result = registry.dispatch("resign", {})
+    assert result["ok"] is True
+    assert result["outcome"] == {
+        "termination": "resignation",
+        "winner": "white",
+        "result": "1-0",
+    }
+    assert session.is_game_over()
+
+
+def test_resign_explicit_color(registry, session):
+    result = registry.dispatch("resign", {"color": "black"})
+    assert result["ok"] is True
+    assert result["outcome"]["winner"] == "white"
+
+
+def test_resign_rejects_bad_color_and_finished_game(registry, session):
+    assert registry.dispatch("resign", {"color": "green"})["ok"] is False
+    registry.dispatch("resign", {})
+    assert registry.dispatch("resign", {})["ok"] is False
+
+
+def test_export_pgn(registry):
+    registry.dispatch("make_move", {"move": "e4"})
+    registry.dispatch("make_move", {"move": "e5"})
+    result = registry.dispatch("export_pgn", {})
+    assert result["ok"] is True
+    assert "1. e4 e5" in result["pgn"]
+
+
+def test_save_and_resume_round_trip(tmp_path, session):
+    registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
+    registry.dispatch("make_move", {"move": "e4"})
+    registry.dispatch("make_move", {"move": "e5"})
+    saved = registry.dispatch("save_game", {"name": "test-game"})
+    assert saved["ok"] is True
+    assert (tmp_path / "test-game.json").exists()
+
+    registry.dispatch("new_game", {})
+    resumed = registry.dispatch("resume_game", {"name": "test-game"})
+    assert resumed["ok"] is True
+    state = registry.dispatch("get_board_state", {})
+    history = registry.dispatch("get_move_history", {})
+    assert history["moves"] == ["e4", "e5"]
+    assert state["turn"] == "white"
+
+
+def test_save_game_default_name_is_autosave(tmp_path, session):
+    registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
+    result = registry.dispatch("save_game", {})
+    assert result["ok"] is True
+    assert (tmp_path / "autosave.json").exists()
+
+
+def test_resume_missing_save_is_error(tmp_path, session):
+    registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
+    result = registry.dispatch("resume_game", {"name": "nope"})
+    assert result["ok"] is False
+
+
+def test_save_tools_reject_path_traversal_names(tmp_path, session):
+    registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
+    for name in ("../evil", "a/b", "", "x" * 65):
+        assert registry.dispatch("save_game", {"name": name})["ok"] is False
+        assert registry.dispatch("resume_game", {"name": name})["ok"] is False
+
+
+def test_save_tools_without_save_dir_are_error(registry):
+    assert registry.dispatch("save_game", {})["ok"] is False
+    assert registry.dispatch("resume_game", {})["ok"] is False
+
+
+def test_resume_corrupt_save_is_error(tmp_path, session):
+    (tmp_path / "bad.json").write_text("{not json")
+    registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
+    result = registry.dispatch("resume_game", {"name": "bad"})
+    assert result["ok"] is False
+
+
 # --- analysis tools (engine-backed) ----------------------------------------
 
 
