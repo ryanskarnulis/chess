@@ -6,7 +6,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Deterministic core (python-chess owns truth)
 
-- [ ] Undo (full ply takeback, incl. vs-engine pair semantics)
 - [ ] Resign / result recording
 - [ ] Save game / resume game (serialize session to disk)
 - [ ] Export PGN

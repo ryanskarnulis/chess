@@ -31,6 +31,15 @@ class MoveResult:
 
 
 @dataclass(frozen=True)
+class UndoResult:
+    """Outcome of a takeback request. `undone` is SAN, in pop order."""
+
+    ok: bool
+    undone: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class Outcome:
     termination: str
     winner: str | None
@@ -69,6 +78,24 @@ class GameSession:
             uci=move.uci(),
             game_over=self._board.is_game_over(),
         )
+
+    def undo(self, plies: int = 1) -> UndoResult:
+        """Take back the last `plies` half-moves.
+
+        The core pops exactly what it's asked to; pairing policy for
+        vs-engine takebacks (plies=2) belongs to the caller.
+        """
+        available = len(self._board.move_stack)
+        if plies < 1:
+            return UndoResult(ok=False, reason="plies must be at least 1")
+        if plies > available:
+            return UndoResult(
+                ok=False, reason=f"cannot undo {plies} plies: only {available} played"
+            )
+        undone = tuple(reversed(self.move_history()[-plies:]))
+        for _ in range(plies):
+            self._board.pop()
+        return UndoResult(ok=True, undone=undone)
 
     def move_history(self) -> list[str]:
         """Moves played so far, in SAN, derived from the board's move stack."""
