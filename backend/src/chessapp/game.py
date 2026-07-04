@@ -4,7 +4,10 @@ The agent layer never touches `chess.Board` directly — it goes through
 `GameSession`, which accepts or rejects moves and reports state.
 """
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import chess
 
@@ -98,6 +101,42 @@ class GameSession:
             uci=move.uci(),
             game_over=self._board.is_game_over(),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialized form: root FEN + UCI moves + resignation flag."""
+        resigned = self._resigned
+        return {
+            "version": 1,
+            "root_fen": self._board.root().fen(),
+            "moves": [move.uci() for move in self._board.move_stack],
+            "resigned": _COLOR_NAMES[resigned] if resigned is not None else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GameSession":
+        """Rebuild a session by replaying moves through the legality gate,
+        so a corrupted file can never produce an inconsistent board."""
+        if data.get("version") != 1:
+            raise ValueError(f"unsupported save version: {data.get('version')!r}")
+        missing = {"root_fen", "moves", "resigned"} - data.keys()
+        if missing:
+            raise ValueError(f"save data missing keys: {sorted(missing)}")
+
+        session = cls(fen=data["root_fen"])
+        for uci in data["moves"]:
+            result = session.submit_move(uci)
+            if not result.legal:
+                raise ValueError(f"save data contains illegal move: {uci!r}")
+        if data["resigned"] is not None:
+            session.resign(data["resigned"])
+        return session
+
+    def save(self, path: str | Path) -> None:
+        Path(path).write_text(json.dumps(self.to_dict(), indent=2))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "GameSession":
+        return cls.from_dict(json.loads(Path(path).read_text()))
 
     def undo(self, plies: int = 1) -> UndoResult:
         """Take back the last `plies` half-moves.
