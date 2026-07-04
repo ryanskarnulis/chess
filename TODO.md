@@ -4,10 +4,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ## Phase 1 — MVP (web board + text agent)
 
-### Epic: Tool layer (agent-facing capability surface)
-
-- [ ] Settings tools: `set_difficulty`, `set_personality`, `set_verbosity`, `set_hints_mode`, `set_voice_output`
-
 ### Epic: API layer
 
 - [ ] FastAPI app: game session lifecycle endpoints + state fetch
