@@ -7,7 +7,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 ### Epic: Agent brain (swappable module)
 
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
-- [ ] Agent game loop: input → agent → tool call(s) → engine executes → agent reacts from *new state* (not from the raw utterance)
 - [ ] Clarifying-question path for ambiguous input
 - [ ] 1–2 personalities (system-prompt level): friendly rival + one more
 - [ ] Fake/scripted brain implementation for tests (no live LLM in the test suite)
