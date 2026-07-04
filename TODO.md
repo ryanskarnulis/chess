@@ -4,10 +4,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ## Phase 1 — MVP (web board + text agent)
 
-### Epic: Deterministic core (python-chess owns truth)
-
-- [ ] Full offline game vs Stockfish with no LLM in the loop (acceptance test for the brief's core requirement)
-
 ### Epic: Tool layer (agent-facing capability surface)
 
 - [ ] Tool registry + JSON schemas for all read tools: `get_board_state`, `get_legal_moves`, `get_move_history`, `get_captured_pieces`, `evaluate_position`, `get_best_moves`
