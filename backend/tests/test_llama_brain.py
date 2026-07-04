@@ -13,19 +13,47 @@ from chessapp.llama_brain import LlamaBrain
 
 # --- fakes -----------------------------------------------------------------
 
-TOOLS = [
-    {
+
+def _fn(name, description, parameters):
+    return {
         "type": "function",
         "function": {
-            "name": "make_move",
-            "description": "Submit a move in SAN or UCI.",
-            "parameters": {
-                "type": "object",
-                "properties": {"move": {"type": "string"}},
-                "required": ["move"],
-            },
+            "name": name,
+            "description": description,
+            "parameters": parameters,
         },
     }
+
+
+TOOLS = [
+    _fn(
+        "make_move",
+        "Submit a move in SAN or UCI.",
+        {
+            "type": "object",
+            "properties": {"move": {"type": "string"}},
+            "required": ["move"],
+            "additionalProperties": False,
+        },
+    ),
+    _fn(
+        "speak",
+        "Say something aloud.",
+        {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    ),
+    _fn(
+        "new_game",
+        "Start a new game.",
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    ),
 ]
 
 
@@ -53,25 +81,32 @@ def _completion(
 
 
 class FakeClient:
-    """Records the create() kwargs; returns a scripted completion."""
+    """Records create() kwargs; returns scripted completions in sequence.
 
-    def __init__(self, completion):
-        self._completion = completion
+    Given one completion it returns it for every call; given several it pops
+    them per call (repeating the last) so a retry loop can be scripted as
+    "bad then good".
+    """
+
+    def __init__(self, *completions):
+        self._completions = list(completions)
         self.calls: list[dict] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **kwargs):
+        i = min(len(self.calls), len(self._completions) - 1)
         self.calls.append(kwargs)
-        return self._completion
+        return self._completions[i]
 
 
-def make_brain(completion) -> tuple[LlamaBrain, FakeClient]:
-    client = FakeClient(completion)
+def make_brain(*completions, **kwargs) -> tuple[LlamaBrain, FakeClient]:
+    client = FakeClient(*completions)
     brain = LlamaBrain(
         client=client,
         model="gemma-test",
         tool_definitions=TOOLS,
         system_prompt="You are a chess opponent.",
+        **kwargs,
     )
     return brain, client
 
@@ -191,3 +226,95 @@ def test_thinking_can_be_enabled_for_analysis():
     brain.get_agent_response(board_state={}, command="was that a blunder?")
     kwargs = client.calls[0]
     assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+# --- defensive parse + retry loop -----------------------------------------
+
+
+def _bad_json_call():
+    # arguments is not valid JSON (a quant hiccup): unquoted value.
+    return _completion(
+        tool_calls=[_tool_call("make_move", '{"move": e2e4}')],
+        finish_reason="tool_calls",
+    )
+
+
+def _good_move():
+    return _completion(
+        tool_calls=[_tool_call("make_move", '{"move":"e2e4"}')],
+        finish_reason="tool_calls",
+    )
+
+
+def test_valid_first_response_makes_one_call():
+    brain, client = make_brain(_good_move())
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert resp.tool_calls[0].args == {"move": "e2e4"}
+    assert len(client.calls) == 1  # no wasted retry on a clean call
+
+
+def test_malformed_json_args_retries_then_succeeds():
+    brain, client = make_brain(_bad_json_call(), _good_move())
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert len(client.calls) == 2
+    assert resp.tool_calls[0].args == {"move": "e2e4"}
+
+
+def test_unknown_tool_name_retries():
+    brain, client = make_brain(
+        _completion(
+            tool_calls=[_tool_call("teleport_king", "{}")], finish_reason="tool_calls"
+        ),
+        _good_move(),
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert len(client.calls) == 2
+    assert [tc.name for tc in resp.tool_calls] == ["make_move"]
+
+
+def test_schema_violation_retries():
+    # make_move wants a string; the model sent a number.
+    brain, client = make_brain(
+        _completion(
+            tool_calls=[_tool_call("make_move", '{"move": 5}')],
+            finish_reason="tool_calls",
+        ),
+        _good_move(),
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert len(client.calls) == 2
+    assert resp.tool_calls[0].args == {"move": "e2e4"}
+
+
+def test_retry_feeds_the_error_back_to_the_model():
+    brain, client = make_brain(_bad_json_call(), _good_move())
+    brain.get_agent_response(board_state={}, command="play e4")
+    # The retry's prompt must have grown a correction turn naming the offender.
+    retry_messages = client.calls[1]["messages"]
+    assert len(retry_messages) > len(client.calls[0]["messages"])
+    correction = retry_messages[-1]["content"]
+    assert "make_move" in correction
+
+
+def test_retries_are_bounded_and_drop_invalid_calls():
+    # Every attempt is malformed; brain gives up without crashing.
+    brain, client = make_brain(_bad_json_call(), max_retries=2)
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert len(client.calls) == 3  # initial + 2 retries
+    assert resp.tool_calls == ()  # invalid calls dropped, no crash
+
+
+def test_exhaustion_keeps_valid_calls_and_text():
+    both = _completion(
+        content="here you go",
+        tool_calls=[
+            _tool_call("make_move", '{"move":"e2e4"}', "ok"),
+            _tool_call("make_move", "{bad", "bad"),
+        ],
+        finish_reason="tool_calls",
+    )
+    brain, client = make_brain(both, max_retries=1)
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert len(client.calls) == 2
+    assert resp.text == "here you go"
+    assert [tc.args for tc in resp.tool_calls] == [{"move": "e2e4"}]
