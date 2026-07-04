@@ -24,6 +24,7 @@ to self-correct. If it never does, the invalid calls are dropped.
 """
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,9 +53,17 @@ class LlamaBrain:
     client: Any
     model: str
     tool_definitions: list[dict[str, Any]]
-    system_prompt: str
+    system_prompt: str | Callable[[], str]
     enable_thinking: bool = False
     max_retries: int = _DEFAULT_MAX_RETRIES
+
+    def _resolve_system_prompt(self) -> str:
+        """The system prompt for this request. A callable is re-resolved every
+        call, so a live personality change (via `set_personality` mutating the
+        setting the provider reads) takes effect on the next command; a plain
+        string is a fixed personality."""
+        prompt = self.system_prompt
+        return prompt() if callable(prompt) else prompt
 
     def get_agent_response(
         self, board_state: dict[str, Any], command: str
@@ -91,7 +100,7 @@ class LlamaBrain:
             "only on these results and the new board. Do not call any tools."
         )
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": self._resolve_system_prompt()},
             {"role": "user", "content": prompt},
         ]
         return self._complete(messages, use_tools=False).content or ""
@@ -123,7 +132,7 @@ class LlamaBrain:
         # future fast-parse path stays free to add.
         user = f"Board state:\n{json.dumps(board_state)}\n\nCommand: {command}"
         return [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": self._resolve_system_prompt()},
             {"role": "user", "content": user},
         ]
 
@@ -179,23 +188,38 @@ def create_llama_brain(
     model: str,
     tool_definitions: list[dict[str, Any]],
     personality: str = DEFAULT_PERSONALITY,
+    system_prompt_provider: Callable[[], str] | None = None,
     enable_thinking: bool = False,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     api_key: str = "llama-server-needs-no-key",
+    client: Any | None = None,
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8080/v1).
 
-    `personality` selects the system prompt (see `chessapp.personality`); the
-    brain itself is personality-agnostic and just carries the resolved string.
-    """
-    from openai import OpenAI
+    Personality selection, two ways: pass a fixed `personality` name (resolved
+    once to that prompt) or a `system_prompt_provider` — a zero-arg callable the
+    brain calls per command, so live `set_personality` changes take effect
+    immediately (the app-assembly wires it to read `ctx.settings.personality`).
+    The provider wins when both are given. Either way the brain stays
+    personality-agnostic: it just carries a string or a callable.
 
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    `client` is injected in tests / alternate backends; otherwise the factory
+    builds a real OpenAI client against `base_url`.
+    """
+    if client is None:
+        from openai import OpenAI
+
+        client = OpenAI(base_url=base_url, api_key=api_key)
+    system_prompt: str | Callable[[], str] = (
+        system_prompt_provider
+        if system_prompt_provider is not None
+        else system_prompt_for(personality)
+    )
     return LlamaBrain(
         client=client,
         model=model,
         tool_definitions=tool_definitions,
-        system_prompt=system_prompt_for(personality),
+        system_prompt=system_prompt,
         enable_thinking=enable_thinking,
         max_retries=max_retries,
     )

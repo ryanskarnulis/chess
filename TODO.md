@@ -8,7 +8,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
 - [ ] Fake/scripted brain implementation for tests (no live LLM in the test suite)
-- [ ] Wire live personality switching once an app-assembly entrypoint exists: `set_personality` records `ctx.settings.personality`, but nothing yet re-resolves the brain's system prompt from it (the brain carries a fixed string chosen at construction). Resolve `system_prompt_for(ctx.settings.personality)` per command when the app is assembled.
 
 ### Epic: Frontend (web board)
 
