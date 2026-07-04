@@ -70,6 +70,32 @@ class GameSession:
             game_over=self._board.is_game_over(),
         )
 
+    def move_history(self) -> list[str]:
+        """Moves played so far, in SAN, derived from the board's move stack."""
+        board = self._board.root()
+        sans = []
+        for move in self._board.move_stack:
+            sans.append(board.san(move))
+            board.push(move)
+        return sans
+
+    def captured_pieces(self) -> dict[str, list[str]]:
+        """Piece symbols each color has captured, in capture order.
+
+        Derived by replaying the move stack — never tracked separately.
+        """
+        board = self._board.root()
+        captured: dict[str, list[str]] = {"white": [], "black": []}
+        for move in self._board.move_stack:
+            if board.is_capture(move):
+                if board.is_en_passant(move):
+                    symbol = chess.PAWN
+                else:
+                    symbol = board.piece_at(move.to_square).piece_type
+                captured[_COLOR_NAMES[board.turn]].append(chess.piece_symbol(symbol))
+            board.push(move)
+        return captured
+
     def _parse(self, move_str: str) -> chess.Move | None:
         try:
             return self._board.parse_san(move_str)
