@@ -31,5 +31,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .[dev]
+      - name: Install Stockfish (engine tests skip without it)
+        run: sudo apt-get update && sudo apt-get install -y stockfish
       - name: Run tests
         run: pytest --cov=chessapp --cov-report=term-missing
