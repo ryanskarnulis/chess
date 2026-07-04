@@ -17,19 +17,7 @@ from fastapi.testclient import TestClient
 from chessapp.app import build_app
 from chessapp.brain import AgentResponse
 from chessapp.personality import system_prompt_for
-
-
-class FakeBrain:
-    """Minimal scripted brain: canned phase-one response, placeholder react."""
-
-    def __init__(self, response: AgentResponse):
-        self._response = response
-
-    def get_agent_response(self, board_state: dict, command: str) -> AgentResponse:
-        return self._response
-
-    def react(self, board_state: dict, changes: list) -> str:
-        return "(reaction)"
+from fakes import ScriptedBrain
 
 
 def _tool_call(name: str, arguments: str, call_id: str = "id0"):
@@ -66,7 +54,7 @@ class FakeOpenAIClient:
 
 
 def test_build_app_serves_state_from_a_fresh_game():
-    app = build_app(brain=FakeBrain(AgentResponse(text="hi")))
+    app = build_app(brain=ScriptedBrain(AgentResponse(text="hi")))
     client = TestClient(app)
     state = client.get("/api/state").json()
     assert state["turn"] == "white"
@@ -74,7 +62,7 @@ def test_build_app_serves_state_from_a_fresh_game():
 
 
 def test_build_app_runs_a_command_through_the_assembled_pipeline():
-    brain = FakeBrain(AgentResponse(text="Which knight did you mean?"))
+    brain = ScriptedBrain(AgentResponse(text="Which knight did you mean?"))
     client = TestClient(build_app(brain=brain))
     body = client.post("/api/command", json={"text": "move the knight"}).json()
     assert body["commentary"] == "Which knight did you mean?"
