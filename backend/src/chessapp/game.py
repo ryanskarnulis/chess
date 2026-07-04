@@ -166,6 +166,13 @@ class GameSession:
             self._board.pop()
         return UndoResult(ok=True, undone=undone)
 
+    def legal_moves(self) -> list[str]:
+        """Legal moves in the current position, in SAN. Empty once the game
+        is over — including session-level terminations like resignation."""
+        if self.is_game_over():
+            return []
+        return [self._board.san(move) for move in self._board.legal_moves]
+
     def move_history(self) -> list[str]:
         """Moves played so far, in SAN, derived from the board's move stack."""
         board = self._board.root()
