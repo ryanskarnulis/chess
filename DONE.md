@@ -4,6 +4,7 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] llama-server brain (`chessapp.llama_brain.LlamaBrain`): the OpenAI-SDK `Brain` behind the seam, pointed at llama.cpp on localhost. Injected client (tests mock it — no live LLM); tool schemas sourced from the registry; reads `content` only (drops Gemma's separate `reasoning_content` so thought blocks never leak); thinking OFF by default (per-request `chat_template_kwargs.enable_thinking`), ON for analysis. **Verified end-to-end against a live Gemma-4 `UD-Q4_K_XL` run: structured tool calls work natively, so the GBNF fallback is deferred as unneeded.**
 - [x] Brain interface (`chessapp.brain`): `Brain.get_agent_response(board_state, command) → AgentResponse{text, tool_calls}` — landed with the command endpoint; also closes the first Agent-brain-epic item (#17)
 - [x] Text command endpoint `/api/command`: string in → brain seam (`Brain.get_agent_response`) → tool calls through the validated registry → commentary + tool results + new state out; broadcasts on change; scripted fake brain in tests (#17). **Epic "API layer" complete.**
 - [x] WebSocket `/ws` state channel: snapshot on connect, broadcast to all clients after every successful mutation, dead sockets dropped silently (#16)
