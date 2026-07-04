@@ -173,6 +173,24 @@ class GameSession:
             return []
         return [self._board.san(move) for move in self._board.legal_moves]
 
+    def legal_destinations(self) -> dict[str, list[str]]:
+        """Legal moves grouped by origin square, in coordinate form
+        (`"e2": ["e3", "e4"]`), for a board UI's move hints. Empty once the
+        game is over. python-chess stays the sole source of move truth — the
+        frontend renders these, it never generates them.
+        """
+        if self.is_game_over():
+            return {}
+        dests: dict[str, list[str]] = {}
+        for move in self._board.legal_moves:
+            origin = chess.square_name(move.from_square)
+            target = chess.square_name(move.to_square)
+            # A promotion yields four moves to the same square; list it once.
+            targets = dests.setdefault(origin, [])
+            if target not in targets:
+                targets.append(target)
+        return dests
+
     def move_history(self) -> list[str]:
         """Moves played so far, in SAN, derived from the board's move stack."""
         board = self._board.root()

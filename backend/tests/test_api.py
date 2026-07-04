@@ -46,6 +46,8 @@ def test_state_of_fresh_game(client):
     assert body["history"] == []
     assert body["captured"] == {"white": [], "black": []}
     assert "e4" in body["legal_moves"]
+    # Move hints for the board UI, grouped by origin square.
+    assert set(body["dests"]["e2"]) == {"e3", "e4"}
 
 
 def test_state_reflects_moves_and_captures(client):
