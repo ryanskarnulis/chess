@@ -6,7 +6,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Deterministic core (python-chess owns truth)
 
-- [ ] Stockfish bridge via python-chess UCI: engine move at configurable difficulty (`Skill Level` / `UCI_Elo`)
 - [ ] Stockfish analysis tools: `evaluate_position`, `get_best_moves` (MultiPV)
 - [ ] Full offline game vs Stockfish with no LLM in the loop (acceptance test for the brief's core requirement)
 

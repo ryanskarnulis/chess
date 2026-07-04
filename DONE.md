@@ -4,6 +4,7 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] Stockfish bridge via python-chess UCI: `EnginePlayer` with `Skill Level` / `UCI_Elo` difficulty; CI installs stockfish, local tests skip without it (#9)
 - [x] Export PGN (SAN movetext, Result incl. resignation, SetUp/FEN headers for custom starts) (#8)
 - [x] Save game / resume game (JSON: root FEN + UCI moves + resignation; resume replays through the legality gate) (#7)
 - [x] Resign / result recording (session-level termination folded into outcome/is_game_over) (#6)
