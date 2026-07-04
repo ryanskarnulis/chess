@@ -4,6 +4,7 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] Full offline game vs Stockfish with no LLM in the loop — acceptance tests: engine-vs-engine to a result, scripted-user-vs-engine, save/resume mid-game (#11). **Epic "Deterministic core" complete.**
 - [x] Stockfish analysis tools: `evaluate_position` (white-POV cp/mate), `get_best_moves` (MultiPV candidates with SAN + scores) (#10)
 - [x] Stockfish bridge via python-chess UCI: `EnginePlayer` with `Skill Level` / `UCI_Elo` difficulty; CI installs stockfish, local tests skip without it (#9)
 - [x] Export PGN (SAN movetext, Result incl. resignation, SetUp/FEN headers for custom starts) (#8)
