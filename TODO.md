@@ -10,7 +10,7 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Frontend (web board)
 
-- [ ] Interactive board wired to backend state: render position, submit moves by drag/click, illegal-move feedback
+- [ ] Pawn-promotion UX: piece picker (or queen-default) — the interactive board sends bare `from+to` UCI, so a promotion is currently rejected as illegal
 - [ ] Move history + captured pieces panels
 - [ ] Game controls: new game, undo, resign, difficulty
 - [ ] Text command box → agent endpoint, commentary display

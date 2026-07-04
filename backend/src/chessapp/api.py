@@ -63,6 +63,7 @@ def _state_dict(session: GameSession) -> dict[str, Any]:
         "history": session.move_history(),
         "captured": session.captured_pieces(),
         "legal_moves": session.legal_moves(),
+        "dests": session.legal_destinations(),
     }
 
 

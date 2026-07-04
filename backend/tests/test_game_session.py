@@ -164,6 +164,29 @@ def test_legal_moves_empty_when_game_over():
     assert session.legal_moves() == []
 
 
+# --- legal destinations (board-UI move hints) -----------------------------
+
+
+def test_legal_destinations_start_position():
+    dests = GameSession().legal_destinations()
+    # Every pawn and the two knights can move; kings/queen/rooks/bishops can't.
+    assert set(dests["e2"]) == {"e3", "e4"}
+    assert set(dests["g1"]) == {"f3", "h3"}
+    assert "e1" not in dests  # king is hemmed in at the start
+
+
+def test_legal_destinations_grouped_by_origin():
+    # Cornered king: g8 is the only flight square.
+    session = GameSession(fen="7k/8/5K2/8/8/8/8/1Q6 b - - 0 1")
+    assert session.legal_destinations() == {"h8": ["g8"]}
+
+
+def test_legal_destinations_empty_when_game_over():
+    session = GameSession()
+    session.resign("white")
+    assert session.legal_destinations() == {}
+
+
 # --- turn tracking ------------------------------------------------------
 
 
