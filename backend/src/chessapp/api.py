@@ -168,11 +168,17 @@ def create_app(ctx: ToolContext, brain: Brain | None = None) -> FastAPI:
 
     @app.post("/api/command")
     async def command(request: CommandRequest) -> dict[str, Any]:
-        """The single pipeline: user string → brain → tool calls → new state.
+        """The single pipeline: user string → brain → tool call(s) → engine
+        executes → agent reacts from the *new* state.
 
-        Tool calls run through the validated registry, so brain mistakes
-        (unknown tools, bad args, domain errors) come back as error results
-        in `tool_results`, never as HTTP failures or corrupted state.
+        Phase one (`get_agent_response`) turns the utterance into tool calls;
+        the validated registry runs them, so brain mistakes (unknown tools,
+        bad args, domain errors) come back as error results in `tool_results`,
+        never as HTTP failures or corrupted state. Phase two (`react`) reads
+        the resulting state and what changed — not the raw utterance — and
+        produces the commentary. When nothing was done (a question or a
+        clarifying reply) there is nothing to react to, so the direct answer
+        stands.
         """
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
@@ -183,10 +189,14 @@ def create_app(ctx: ToolContext, brain: Brain | None = None) -> FastAPI:
             for call in response.tool_calls
         ]
         state = _state_dict(ctx.session)
+        if tool_results:
+            commentary = brain.react(state, tool_results)
+        else:
+            commentary = response.text
         if state != before:
             await broadcaster.broadcast(state)
         return {
-            "commentary": response.text,
+            "commentary": commentary,
             "tool_results": tool_results,
             "state": state,
         }

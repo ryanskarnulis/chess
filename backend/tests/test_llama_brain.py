@@ -228,6 +228,55 @@ def test_thinking_can_be_enabled_for_analysis():
     assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
 
 
+# --- reaction step (game-loop phase two) ----------------------------------
+
+
+def test_react_returns_commentary_text():
+    brain, _ = make_brain(_completion(content="Nice, e4! The classic."))
+    text = brain.react(
+        board_state={"fen": "after-e4", "turn": "black"},
+        changes=[{"name": "make_move", "result": {"legal": True, "san": "e4"}}],
+    )
+    assert text == "Nice, e4! The classic."
+
+
+def test_react_prompt_shows_new_state_and_changes_not_a_command():
+    brain, client = make_brain(_completion(content="ok"))
+    brain.react(
+        board_state={"fen": "8/8/8/8", "turn": "black"},
+        changes=[{"name": "make_move", "result": {"san": "Nf3"}}],
+    )
+    messages = client.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    blob = " ".join(m["content"] for m in messages)
+    assert "8/8/8/8" in blob  # new board reached the model
+    assert "Nf3" in blob  # what changed reached the model
+
+
+def test_react_sends_no_tools():
+    # The reaction is commentary only; it must not be able to act again.
+    brain, client = make_brain(_completion(content="ok"))
+    brain.react(board_state={}, changes=[])
+    assert "tools" not in client.calls[0]
+
+
+def test_react_drops_reasoning_content():
+    brain, _ = make_brain(
+        _completion(
+            content="Solid.",
+            reasoning_content="Black is now slightly worse because...",
+        )
+    )
+    text = brain.react(board_state={}, changes=[])
+    assert text == "Solid."
+    assert "slightly worse" not in text
+
+
+def test_react_null_content_becomes_empty_string():
+    brain, _ = make_brain(_completion(content=None))
+    assert brain.react(board_state={}, changes=[]) == ""
+
+
 # --- defensive parse + retry loop -----------------------------------------
 
 

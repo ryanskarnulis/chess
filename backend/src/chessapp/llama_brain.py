@@ -78,19 +78,40 @@ class LlamaBrain:
 
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def _complete(self, messages: list[dict[str, str]]) -> Any:
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=self.tool_definitions,
-            tool_choice="auto",
-            temperature=_TEMPERATURE,
-            top_p=_TOP_P,
-            extra_body={
+    def react(self, board_state: dict[str, Any], changes: list[dict[str, Any]]) -> str:
+        # Phase two reads the *new* state and what changed, never the raw
+        # utterance, and offers no tools — the reaction is commentary only, so
+        # it cannot loop back into acting.
+        prompt = (
+            "You just acted on the player's behalf. Here is what happened "
+            f"(each entry is a tool call and its result):\n{json.dumps(changes)}"
+            f"\n\nNew board state:\n{json.dumps(board_state)}\n\n"
+            "React with a short, in-character comment for the player, based "
+            "only on these results and the new board. Do not call any tools."
+        )
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        return self._complete(messages, use_tools=False).content or ""
+
+    def _complete(
+        self, messages: list[dict[str, str]], *, use_tools: bool = True
+    ) -> Any:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": _TEMPERATURE,
+            "top_p": _TOP_P,
+            "extra_body": {
                 "top_k": _TOP_K,
                 "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
             },
-        )
+        }
+        if use_tools:
+            kwargs["tools"] = self.tool_definitions
+            kwargs["tool_choice"] = "auto"
+        completion = self.client.chat.completions.create(**kwargs)
         return completion.choices[0].message
 
     def _messages(
