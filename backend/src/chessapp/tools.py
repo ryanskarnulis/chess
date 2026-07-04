@@ -14,13 +14,31 @@ from typing import Any
 
 import jsonschema
 
-from chessapp.engine import EnginePlayer
+from chessapp.engine import ELO_MAX, ELO_MIN, SKILL_MAX, SKILL_MIN, EnginePlayer
 from chessapp.game import GameSession
 
 GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
 # Save names become filenames: one path segment, no traversal.
 SAVE_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+
+# Phase 1 personalities; the list grows in Phase 3.
+PERSONALITIES = ("friendly_rival", "calm_coach")
+VERBOSITY_LEVELS = ("low", "normal", "high")
+
+
+@dataclass
+class Settings:
+    """Agent-adjustable app settings. Difficulty records exactly one of
+    skill_level / elo (the last one set); it is applied to the live engine
+    when present and re-applied when an engine attaches later."""
+
+    personality: str = PERSONALITIES[0]
+    verbosity: str = "normal"
+    hints_mode: bool = False
+    voice_output: bool = False
+    skill_level: int | None = None
+    elo: int | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +62,7 @@ class ToolContext:
     session: GameSession
     engine: EnginePlayer | None = None
     save_dir: Path | None = None
+    settings: Settings = field(default_factory=Settings)
 
 
 @dataclass
@@ -219,6 +238,37 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "turn": ctx.session.turn,
         }
 
+    def set_difficulty(
+        skill_level: int | None = None, elo: int | None = None
+    ) -> dict[str, Any]:
+        if skill_level is not None:
+            if ctx.engine is not None:
+                ctx.engine.set_skill_level(skill_level)
+            ctx.settings.skill_level = skill_level
+            ctx.settings.elo = None
+        else:
+            if ctx.engine is not None:
+                ctx.engine.set_elo(elo)
+            ctx.settings.elo = elo
+            ctx.settings.skill_level = None
+        return {"ok": True, "skill_level": skill_level, "elo": elo}
+
+    def set_personality(personality: str) -> dict[str, Any]:
+        ctx.settings.personality = personality
+        return {"ok": True, "personality": personality}
+
+    def set_verbosity(verbosity: str) -> dict[str, Any]:
+        ctx.settings.verbosity = verbosity
+        return {"ok": True, "verbosity": verbosity}
+
+    def set_hints_mode(enabled: bool) -> dict[str, Any]:
+        ctx.settings.hints_mode = enabled
+        return {"ok": True, "hints_mode": enabled}
+
+    def set_voice_output(enabled: bool) -> dict[str, Any]:
+        ctx.settings.voice_output = enabled
+        return {"ok": True, "voice_output": enabled}
+
     registry.register(
         Tool(
             name="get_board_state",
@@ -386,6 +436,89 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             description="Export the game so far as PGN.",
             parameters=_no_args_schema(),
             handler=export_pgn,
+        )
+    )
+    registry.register(
+        Tool(
+            name="set_difficulty",
+            description=(
+                "Set engine strength: pass exactly one of skill_level "
+                f"({SKILL_MIN}-{SKILL_MAX}) or elo ({ELO_MIN}-{ELO_MAX})."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_level": {
+                        "type": "integer",
+                        "minimum": SKILL_MIN,
+                        "maximum": SKILL_MAX,
+                    },
+                    "elo": {
+                        "type": "integer",
+                        "minimum": ELO_MIN,
+                        "maximum": ELO_MAX,
+                    },
+                },
+                "oneOf": [{"required": ["skill_level"]}, {"required": ["elo"]}],
+                "additionalProperties": False,
+            },
+            handler=set_difficulty,
+        )
+    )
+    registry.register(
+        Tool(
+            name="set_personality",
+            description="Choose the agent's personality.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "personality": {"type": "string", "enum": list(PERSONALITIES)}
+                },
+                "required": ["personality"],
+                "additionalProperties": False,
+            },
+            handler=set_personality,
+        )
+    )
+    registry.register(
+        Tool(
+            name="set_verbosity",
+            description="How chatty the agent's commentary is.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "verbosity": {"type": "string", "enum": list(VERBOSITY_LEVELS)}
+                },
+                "required": ["verbosity"],
+                "additionalProperties": False,
+            },
+            handler=set_verbosity,
+        )
+    )
+    registry.register(
+        Tool(
+            name="set_hints_mode",
+            description="Turn move hints on or off.",
+            parameters={
+                "type": "object",
+                "properties": {"enabled": {"type": "boolean"}},
+                "required": ["enabled"],
+                "additionalProperties": False,
+            },
+            handler=set_hints_mode,
+        )
+    )
+    registry.register(
+        Tool(
+            name="set_voice_output",
+            description="Turn spoken (TTS) output on or off.",
+            parameters={
+                "type": "object",
+                "properties": {"enabled": {"type": "boolean"}},
+                "required": ["enabled"],
+                "additionalProperties": False,
+            },
+            handler=set_voice_output,
         )
     )
     return registry

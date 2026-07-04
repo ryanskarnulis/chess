@@ -12,7 +12,7 @@ import shutil
 import pytest
 
 from chessapp.game import GameSession
-from chessapp.tools import Tool, ToolContext, ToolRegistry, build_registry
+from chessapp.tools import Settings, Tool, ToolContext, ToolRegistry, build_registry
 
 requires_stockfish = pytest.mark.skipif(
     shutil.which("stockfish") is None, reason="stockfish binary not installed"
@@ -346,6 +346,114 @@ def test_resume_corrupt_save_is_error(tmp_path, session):
     registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
     result = registry.dispatch("resume_game", {"name": "bad"})
     assert result["ok"] is False
+
+
+# --- settings tools ---------------------------------------------------------
+
+
+def test_registry_lists_all_settings_tools(registry):
+    names = {d["function"]["name"] for d in registry.definitions()}
+    assert names >= {
+        "set_difficulty",
+        "set_personality",
+        "set_verbosity",
+        "set_hints_mode",
+        "set_voice_output",
+    }
+
+
+def test_settings_defaults(session):
+    ctx = ToolContext(session=session)
+    assert ctx.settings == Settings()
+    assert ctx.settings.personality == "friendly_rival"
+    assert ctx.settings.verbosity == "normal"
+    assert ctx.settings.hints_mode is False
+    assert ctx.settings.voice_output is False
+    assert ctx.settings.skill_level is None
+    assert ctx.settings.elo is None
+
+
+def test_set_difficulty_skill_level_recorded(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    result = registry.dispatch("set_difficulty", {"skill_level": 5})
+    assert result["ok"] is True
+    assert ctx.settings.skill_level == 5
+    assert ctx.settings.elo is None
+
+
+def test_set_difficulty_elo_recorded_and_clears_skill(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    registry.dispatch("set_difficulty", {"skill_level": 5})
+    result = registry.dispatch("set_difficulty", {"elo": 1500})
+    assert result["ok"] is True
+    assert ctx.settings.elo == 1500
+    assert ctx.settings.skill_level is None
+
+
+def test_set_difficulty_requires_exactly_one_of_skill_or_elo(registry):
+    assert registry.dispatch("set_difficulty", {})["ok"] is False
+    assert (
+        registry.dispatch("set_difficulty", {"skill_level": 5, "elo": 1500})["ok"]
+        is False
+    )
+
+
+def test_set_difficulty_rejects_out_of_range(registry):
+    assert registry.dispatch("set_difficulty", {"skill_level": 21})["ok"] is False
+    assert registry.dispatch("set_difficulty", {"skill_level": -1})["ok"] is False
+    assert registry.dispatch("set_difficulty", {"elo": 100})["ok"] is False
+    assert registry.dispatch("set_difficulty", {"elo": 4000})["ok"] is False
+
+
+@requires_stockfish
+def test_set_difficulty_configures_live_engine(session, live_engine):
+    ctx = ToolContext(session=session, engine=live_engine)
+    registry = build_registry(ctx)
+    assert registry.dispatch("set_difficulty", {"skill_level": 3})["ok"] is True
+    assert registry.dispatch("set_difficulty", {"elo": 1400})["ok"] is True
+
+
+def test_set_personality(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    result = registry.dispatch("set_personality", {"personality": "calm_coach"})
+    assert result["ok"] is True
+    assert ctx.settings.personality == "calm_coach"
+
+
+def test_set_personality_rejects_unknown(registry):
+    result = registry.dispatch("set_personality", {"personality": "chaos_gremlin"})
+    assert result["ok"] is False
+
+
+def test_set_verbosity(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    result = registry.dispatch("set_verbosity", {"verbosity": "low"})
+    assert result["ok"] is True
+    assert ctx.settings.verbosity == "low"
+    assert registry.dispatch("set_verbosity", {"verbosity": "shouty"})["ok"] is False
+
+
+def test_set_hints_mode_and_voice_output(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    assert registry.dispatch("set_hints_mode", {"enabled": True})["ok"] is True
+    assert ctx.settings.hints_mode is True
+    assert registry.dispatch("set_voice_output", {"enabled": True})["ok"] is True
+    assert ctx.settings.voice_output is True
+    assert registry.dispatch("set_hints_mode", {})["ok"] is False
+    assert registry.dispatch("set_voice_output", {"enabled": "yes"})["ok"] is False
+
+
+def test_settings_results_are_json_serializable(registry):
+    json.dumps(registry.dispatch("set_difficulty", {"skill_level": 5}))
+    json.dumps(registry.dispatch("set_personality", {"personality": "friendly_rival"}))
+    json.dumps(registry.dispatch("set_verbosity", {"verbosity": "high"}))
+    json.dumps(registry.dispatch("set_hints_mode", {"enabled": False}))
+    json.dumps(registry.dispatch("set_voice_output", {"enabled": False}))
 
 
 # --- analysis tools (engine-backed) ----------------------------------------
