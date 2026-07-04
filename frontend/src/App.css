@@ -1,8 +1,21 @@
 .app {
-  max-width: 640px;
+  max-width: 960px;
   margin: 2rem auto;
   padding: 0 1rem;
   text-align: center;
+}
+
+/* Board on the left, info panels on the right; stacks on narrow screens. */
+.game-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.board-column {
+  flex: 0 0 auto;
 }
 
 /* Chessground sizes to its container; give it a square. */
@@ -11,6 +24,82 @@
   width: min(90vw, 480px);
   aspect-ratio: 1 / 1;
   margin: 1rem auto 0;
+}
+
+/* Info panels beside the board. */
+.panels {
+  flex: 1 1 240px;
+  min-width: 220px;
+  max-width: 320px;
+  text-align: left;
+  margin-top: 1rem;
+}
+
+.panels h2 {
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+  margin: 0 0 0.4rem;
+}
+
+.captured {
+  margin-bottom: 1.5rem;
+}
+
+.captured-side {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.8rem;
+}
+
+.captured-side-label {
+  width: 3.2rem;
+  font-size: 0.8rem;
+  text-transform: capitalize;
+  color: #666;
+}
+
+.captured-pieces-glyphs {
+  font-size: 1.4rem;
+  line-height: 1;
+  letter-spacing: -0.1em;
+}
+
+.captured-advantage {
+  font-weight: 700;
+  color: #2e7d32;
+  font-size: 0.85rem;
+}
+
+.move-history table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.move-history th[scope='row'] {
+  width: 2rem;
+  text-align: right;
+  padding-right: 0.6rem;
+  color: #999;
+  font-weight: 400;
+}
+
+.move-history td {
+  padding: 0.1rem 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.move-history tr:nth-child(even) {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.panel-empty {
+  color: #999;
+  font-style: italic;
+  margin: 0;
 }
 
 /* Promotion picker: modal overlay covering the board. */
