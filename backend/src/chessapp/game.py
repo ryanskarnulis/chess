@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import chess
+import chess.pgn
 
 _COLOR_NAMES = {chess.WHITE: "white", chess.BLACK: "black"}
 
@@ -101,6 +102,13 @@ class GameSession:
             uci=move.uci(),
             game_over=self._board.is_game_over(),
         )
+
+    def export_pgn(self) -> str:
+        """The game so far as PGN. Result reflects resignation too."""
+        game = chess.pgn.Game.from_board(self._board)
+        outcome = self.outcome()
+        game.headers["Result"] = outcome.result if outcome is not None else "*"
+        return str(game)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialized form: root FEN + UCI moves + resignation flag."""

@@ -4,6 +4,7 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] Export PGN (SAN movetext, Result incl. resignation, SetUp/FEN headers for custom starts) (#8)
 - [x] Save game / resume game (JSON: root FEN + UCI moves + resignation; resume replays through the legality gate) (#7)
 - [x] Resign / result recording (session-level termination folded into outcome/is_game_over) (#6)
 - [x] Undo (ply takeback; plies=2 gives vs-engine pair semantics, pairing policy stays in the caller) (#5)
