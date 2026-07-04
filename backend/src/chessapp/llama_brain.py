@@ -30,6 +30,7 @@ from typing import Any
 import jsonschema
 
 from chessapp.brain import AgentResponse, ToolCall
+from chessapp.personality import DEFAULT_PERSONALITY, system_prompt_for
 
 # BRIEF-mandated sampling for Gemma-4 tool calling.
 _TEMPERATURE = 1.0
@@ -177,12 +178,16 @@ def create_llama_brain(
     base_url: str,
     model: str,
     tool_definitions: list[dict[str, Any]],
-    system_prompt: str,
+    personality: str = DEFAULT_PERSONALITY,
     enable_thinking: bool = False,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     api_key: str = "llama-server-needs-no-key",
 ) -> LlamaBrain:
-    """Build a LlamaBrain against a real llama-server (e.g. localhost:8080/v1)."""
+    """Build a LlamaBrain against a real llama-server (e.g. localhost:8080/v1).
+
+    `personality` selects the system prompt (see `chessapp.personality`); the
+    brain itself is personality-agnostic and just carries the resolved string.
+    """
     from openai import OpenAI
 
     client = OpenAI(base_url=base_url, api_key=api_key)
@@ -190,7 +195,7 @@ def create_llama_brain(
         client=client,
         model=model,
         tool_definitions=tool_definitions,
-        system_prompt=system_prompt,
+        system_prompt=system_prompt_for(personality),
         enable_thinking=enable_thinking,
         max_retries=max_retries,
     )

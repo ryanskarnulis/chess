@@ -9,7 +9,8 @@ brain sends (tools, sampling, thinking flag, prompt contents).
 from types import SimpleNamespace
 
 from chessapp.brain import AgentResponse
-from chessapp.llama_brain import LlamaBrain
+from chessapp.llama_brain import LlamaBrain, create_llama_brain
+from chessapp.personality import DEFAULT_PERSONALITY, system_prompt_for
 
 # --- fakes -----------------------------------------------------------------
 
@@ -275,6 +276,31 @@ def test_react_drops_reasoning_content():
 def test_react_null_content_becomes_empty_string():
     brain, _ = make_brain(_completion(content=None))
     assert brain.react(board_state={}, changes=[]) == ""
+
+
+# --- factory wires the personality prompt ---------------------------------
+
+
+def test_create_llama_brain_uses_the_selected_personality_prompt():
+    # The factory turns a personality name into that personality's system
+    # prompt; the brain is model-specific but personality-agnostic, so it just
+    # carries the resolved string.
+    brain = create_llama_brain(
+        base_url="http://localhost:8080/v1",
+        model="gemma",
+        tool_definitions=[],
+        personality="calm_coach",
+    )
+    assert brain.system_prompt == system_prompt_for("calm_coach")
+
+
+def test_create_llama_brain_defaults_to_the_default_personality():
+    brain = create_llama_brain(
+        base_url="http://localhost:8080/v1",
+        model="gemma",
+        tool_definitions=[],
+    )
+    assert brain.system_prompt == system_prompt_for(DEFAULT_PERSONALITY)
 
 
 # --- defensive parse + retry loop -----------------------------------------
