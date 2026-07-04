@@ -31,7 +31,7 @@ ruff format .                                        # auto-format
 ## Git Workflow
 
 - **Never commit or push directly to `main`.** For every change: create a branch (`feat/<slug>`, `fix/<slug>`, `chore/<slug>`, `docs/<slug>`), commit, push, and open a PR with `gh pr create`.
-- PRs are **squash-merged automatically once CI is green**: after opening the PR, run `gh pr merge --auto --squash`; if auto-merge is unavailable on this repo, watch checks with `gh pr checks --watch` and then `gh pr merge --squash`.
+- PRs are **squash-merged once CI is green**. GitHub's native auto-merge and branch protection are unavailable (private repo on the Free plan), so after opening a PR run `gh pr checks --watch` and, when green, `gh pr merge --squash`. Never merge with failing or pending checks. (If the repo ever goes public or Pro, switch to `gh pr merge --auto --squash` + branch protection requiring the `lint` and `test` checks.)
 - CI (`.github/workflows/ci.yml`) runs ruff lint/format-check and pytest on every PR and push to main. Both jobs must pass; run them locally before pushing.
 
 ## What This Is

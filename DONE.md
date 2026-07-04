@@ -4,6 +4,8 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] Pushed initial commit to github.com/ryanskarnulis/chess; first CI run green (lint + test)
+- [x] Repo settings: delete-branch-on-merge enabled; auto-merge/branch protection confirmed unavailable on Free-plan private repos → merge-on-green handled via `gh pr checks --watch` + squash-merge
 - [x] README.md: project overview, architecture summary, status/roadmap, dev setup
 - [x] Restructured to monorepo layout: Python project moved into `backend/` (frontend/ arrives in Phase 1)
 - [x] Removed docs/DEVELOPMENT.md — CLAUDE.md is the single source of truth for process

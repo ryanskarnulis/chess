@@ -78,5 +78,4 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ## Infrastructure / process (ongoing)
 
-- [ ] Resolve `gh` token `workflow` scope; push initial commit; verify CI green on GitHub
-- [ ] Enable repo auto-merge + branch protection requiring CI (fall back to `gh pr checks --watch` + manual squash-merge if plan doesn't allow it on private repos)
+- [ ] If repo goes public or account upgrades to Pro: enable branch protection (require `lint` + `test` checks) and native auto-merge
