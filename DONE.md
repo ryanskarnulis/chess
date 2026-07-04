@@ -4,6 +4,7 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-04
 
+- [x] Move history + captured-pieces derivation from board state (#4)
 - [x] `GameSession` class wrapping `python-chess`: new game, submit move (SAN/UCI → accept/reject), turn tracking, game-over detection (mate/stalemate/draw rules) (#2)
 - [x] Pushed initial commit to github.com/ryanskarnulis/chess; first CI run green (lint + test)
 - [x] Repo settings: delete-branch-on-merge enabled; auto-merge/branch protection confirmed unavailable on Free-plan private repos → merge-on-green handled via `gh pr checks --watch` + squash-merge
