@@ -12,40 +12,19 @@ from chessapp.api import create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
+from fakes import ScriptedBrain
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-
-
-class FakeBrain:
-    """Scripted brain: pops canned responses in order, records prompts.
-
-    `react` is the game-loop's second phase — it pops scripted reaction text
-    and records what it was shown (new board + what changed). When no reaction
-    is scripted it returns a placeholder so tests that don't care about the
-    reaction text don't have to script one.
-    """
-
-    def __init__(self, *responses: AgentResponse, reactions: tuple[str, ...] = ()):
-        self._responses = list(responses)
-        self._reactions = list(reactions)
-        self.calls: list[tuple[dict, str]] = []
-        self.react_calls: list[tuple[dict, list]] = []
-
-    def get_agent_response(self, board_state: dict, command: str) -> AgentResponse:
-        self.calls.append((board_state, command))
-        return self._responses.pop(0)
-
-    def react(self, board_state: dict, changes: list) -> str:
-        self.react_calls.append((board_state, changes))
-        return self._reactions.pop(0) if self._reactions else "(reaction)"
 
 
 def make_client(
     *responses: AgentResponse,
     reactions: tuple[str, ...] = (),
-    brain: FakeBrain | None = None,
+    brain: ScriptedBrain | None = None,
 ):
-    brain = brain if brain is not None else FakeBrain(*responses, reactions=reactions)
+    brain = (
+        brain if brain is not None else ScriptedBrain(*responses, reactions=reactions)
+    )
     ctx = ToolContext(session=GameSession())
     return TestClient(create_app(ctx, brain=brain)), brain
 
