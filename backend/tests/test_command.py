@@ -17,19 +17,35 @@ START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 
 class FakeBrain:
-    """Scripted brain: pops canned responses in order, records prompts."""
+    """Scripted brain: pops canned responses in order, records prompts.
 
-    def __init__(self, *responses: AgentResponse):
+    `react` is the game-loop's second phase — it pops scripted reaction text
+    and records what it was shown (new board + what changed). When no reaction
+    is scripted it returns a placeholder so tests that don't care about the
+    reaction text don't have to script one.
+    """
+
+    def __init__(self, *responses: AgentResponse, reactions: tuple[str, ...] = ()):
         self._responses = list(responses)
+        self._reactions = list(reactions)
         self.calls: list[tuple[dict, str]] = []
+        self.react_calls: list[tuple[dict, list]] = []
 
     def get_agent_response(self, board_state: dict, command: str) -> AgentResponse:
         self.calls.append((board_state, command))
         return self._responses.pop(0)
 
+    def react(self, board_state: dict, changes: list) -> str:
+        self.react_calls.append((board_state, changes))
+        return self._reactions.pop(0) if self._reactions else "(reaction)"
 
-def make_client(*responses: AgentResponse, brain: FakeBrain | None = None):
-    brain = brain if brain is not None else FakeBrain(*responses)
+
+def make_client(
+    *responses: AgentResponse,
+    reactions: tuple[str, ...] = (),
+    brain: FakeBrain | None = None,
+):
+    brain = brain if brain is not None else FakeBrain(*responses, reactions=reactions)
     ctx = ToolContext(session=GameSession())
     return TestClient(create_app(ctx, brain=brain)), brain
 
@@ -65,16 +81,70 @@ def test_command_with_no_tool_calls_returns_commentary_only():
 def test_command_tool_calls_mutate_state_through_registry():
     client, _ = make_client(
         AgentResponse(
-            text="e4, the classic.",
+            # Pre-action text: the model's utterance before the tool ran. When
+            # tools run the user-facing commentary comes from the reaction, not
+            # from this.
+            text="on it",
             tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
-        )
+        ),
+        reactions=("e4 — the classic King's pawn.",),
     )
     body = client.post("/api/command", json={"text": "play e4"}).json()
-    assert body["commentary"] == "e4, the classic."
+    assert body["commentary"] == "e4 — the classic King's pawn."
     assert body["tool_results"][0]["name"] == "make_move"
     assert body["tool_results"][0]["result"]["legal"] is True
     assert body["state"]["history"] == ["e4"]
     assert body["state"]["turn"] == "black"
+
+
+def test_reaction_reads_new_state_and_changes_not_raw_utterance():
+    """The heart of the game loop: after tools run, the agent reacts from the
+    *new* game state plus what the tools returned — never from the raw
+    utterance. This keeps a future deterministic fast-parse path free to add."""
+    client, brain = make_client(
+        AgentResponse(
+            text="on it",
+            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
+        ),
+        reactions=("Nice opening.",),
+    )
+    body = client.post("/api/command", json={"text": "play e4"}).json()
+
+    assert body["commentary"] == "Nice opening."
+    assert len(brain.react_calls) == 1
+    react_state, react_changes = brain.react_calls[0]
+    # React sees the post-move board (Black to move, e4 played)...
+    assert react_state["history"] == ["e4"]
+    assert react_state["turn"] == "black"
+    # ...and the tool results (what changed), but not the raw command.
+    assert react_changes == body["tool_results"]
+    assert react_changes[0]["name"] == "make_move"
+
+
+def test_no_tool_calls_skips_reaction():
+    """A pure question / clarifying reply changes nothing, so there is nothing
+    to react to: the direct answer stands and react is never called."""
+    client, brain = make_client(AgentResponse(text="Which knight did you mean?"))
+    body = client.post("/api/command", json={"text": "move the knight"}).json()
+    assert body["commentary"] == "Which knight did you mean?"
+    assert brain.react_calls == []
+
+
+def test_reaction_runs_for_read_only_tools_and_grounds_the_answer():
+    """Even a read-only tool triggers the reaction: the answer the user sees is
+    grounded in the tool result, not in the model's pre-execution guess."""
+    client, brain = make_client(
+        AgentResponse(
+            text="let me check",
+            tool_calls=(ToolCall(name="get_legal_moves", args={}),),
+        ),
+        reactions=("You have 20 legal moves.",),
+    )
+    body = client.post("/api/command", json={"text": "what are my options?"}).json()
+    assert body["commentary"] == "You have 20 legal moves."
+    assert len(brain.react_calls) == 1
+    _, react_changes = brain.react_calls[0]
+    assert "e4" in react_changes[0]["result"]["moves"]
 
 
 def test_multiple_tool_calls_run_in_order():
