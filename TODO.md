@@ -8,10 +8,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
 
-### Epic: Frontend (web board)
-
-- [ ] Frontend CI job (lint + build + tests)
-
 ### Epic: Deployment
 
 - [ ] Backend Dockerfile
