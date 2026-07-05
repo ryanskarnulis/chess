@@ -38,8 +38,12 @@ ENV PATH=/opt/venv/bin:$PATH \
     CHESSAPP_HOST=0.0.0.0 \
     CHESSAPP_PORT=8000
 
-# Don't run the network service as root.
-RUN useradd --create-home --uid 1000 app
+# Don't run the network service as root. Pre-create the saved-games dir owned
+# by `app` so a named volume mounted there (compose sets CHESSAPP_SAVE_DIR to
+# it) inherits app ownership on first creation and stays writable by uid 1000.
+RUN useradd --create-home --uid 1000 app \
+    && mkdir -p /data/saves \
+    && chown -R app:app /data
 USER app
 
 EXPOSE 8000

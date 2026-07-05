@@ -1,0 +1,102 @@
+# Home-network deployment: one container per layer, tied together here.
+#
+#   app    — the FastAPI backend (chessapp), Stockfish bundled in the image.
+#            Owns board truth + the deterministic engine; reaches the brain
+#            over the network at CHESSAPP_LLAMA_URL.
+#   llama  — the LLM "brain" (Gemma-4 26B on llama.cpp, GPU). Optional: the
+#            app plays a full deterministic game with this container down.
+#   speaches (Phase 2) — self-hosted STT+TTS; a commented placeholder below.
+#
+# Basic gameplay must work fully offline; nothing here reaches the internet at
+# runtime once the model GGUF is cached on the host (see the llama notes).
+#
+#   docker compose up -d --build        # start the stack
+#   docker compose up -d app            # engine-only: skip the brain entirely
+
+services:
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # 0.0.0.0 in the image + this publish makes the app reachable from any
+    # browser on the home LAN, not just localhost on the host.
+    ports:
+      - "8000:8000"
+    environment:
+      # Point the brain seam at the llama service on the compose network.
+      # Unset/override to run the LLM off — /api/command 503s, gameplay is fine.
+      CHESSAPP_LLAMA_URL: http://llama:8080/v1
+      CHESSAPP_MODEL: gemma
+      # Stockfish path + host/port are baked into the image ENV; saved games
+      # persist to a named volume so they survive `compose down`.
+      CHESSAPP_SAVE_DIR: /data/saves
+    volumes:
+      - chess-saves:/data/saves
+    # Ordering only, not a health gate: the app must not wait ~100s for the
+    # model to load before it can serve an engine-only game.
+    depends_on:
+      - llama
+    restart: unless-stopped
+    # Image already ships a HEALTHCHECK (urllib against /api/state).
+
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    ports:
+      # Published for host-side debugging (curl localhost:8080/health); the app
+      # reaches it over the internal network regardless.
+      - "8080:8080"
+    volumes:
+      # GOTCHA: -hf downloads to the HF cache layout, NOT ~/.cache/llama.cpp.
+      # Mount the host HF cache or the ~14GB GGUF re-downloads on every start.
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    # Tuning below is for a 12GB GPU (RTX 3060), the verified dev/home box:
+    # experts split CPU/GPU with -ncmoe, q8 KV cache, vision projector skipped
+    # (chess is text-only). Adjust -ncmoe for other VRAM. MTP speculative
+    # decoding is intentionally absent — no drafter is published for this MoE.
+    command: >
+      -hf unsloth/gemma-4-26B-A4B-it-qat-GGUF:UD-Q4_K_XL
+      --host 0.0.0.0 --port 8080
+      -ngl 99 -ncmoe 12 --no-mmproj -fa on
+      --cache-type-k q8_0 --cache-type-v q8_0
+      -c 8192
+      --jinja --temp 1.0 --top-p 0.95 --top-k 64
+    # NVIDIA Container Toolkit must be installed on the host for GPU passthrough.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      # Model load is ~100s cold; give it a generous start_period before the
+      # first failing probe counts against it.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 3
+    restart: unless-stopped
+
+  # --- Phase 2 (Voice) placeholder — not started yet -------------------------
+  # Speaches is one self-hosted, OpenAI-API-compatible STT+TTS container. It is
+  # left commented until the Voice epic wires the browser mic/TTS paths to it;
+  # uncomment and pin an image tag then.
+  #
+  # speaches:
+  #   image: ghcr.io/speaches-ai/speaches:latest
+  #   ports:
+  #     - "8001:8000"
+  #   volumes:
+  #     - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   restart: unless-stopped
+
+volumes:
+  chess-saves:

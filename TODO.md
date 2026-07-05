@@ -10,8 +10,8 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Deployment
 
-- [ ] docker-compose.yml: app + llama-server (+ Speaches placeholder), home-network config
-- [ ] Verify fully-offline basic gameplay in containers
+- [ ] Verify fully-offline basic gameplay in the full compose stack (bring up `app` + `llama` together, drive a brain-driven game with no internet)
+- [ ] Frontend delivery in compose: containerize/serve the built `frontend/` (static host or backend mount) so browsers on the LAN can load the UI, not just hit `/api`
 
 ## Phase 2 — Voice
 
