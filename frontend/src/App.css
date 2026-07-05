@@ -203,3 +203,55 @@
   color: #b00020;
   font-weight: 600;
 }
+
+/* Free-text command box for the agent + its commentary. */
+.command-box {
+  margin-top: 1.25rem;
+}
+
+.command-box form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.command-box input {
+  flex: 1 1 auto;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.95rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.command-box button {
+  padding: 0.45rem 1rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+  background: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.command-box button:hover:not(:disabled) {
+  background: #d8e6ff;
+  border-color: #7aa7ff;
+}
+
+.command-box button:disabled,
+.command-box input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.commentary {
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
+  text-align: left;
+  line-height: 1.4;
+}
+
+.commentary-thinking {
+  color: #888;
+  font-style: italic;
+}

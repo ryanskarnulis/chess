@@ -61,6 +61,8 @@ beforeEach(() => {
     if (path.includes('/api/game/move')) return jsonResponse(moveResponse)
     if (path.includes('/api/game/difficulty'))
       return jsonResponse({ skill_level: 15, elo: null })
+    if (path.includes('/api/command'))
+      return jsonResponse({ commentary: 'Nice move!', tool_results: [], state: state() })
     // Lifecycle mutations (new / undo / resign) answer with { state }.
     if (path.includes('/api/game/')) return jsonResponse({ state: state() })
     return jsonResponse(state())
@@ -240,6 +242,49 @@ describe('useGame', () => {
     )
     // Difficulty is not a board mutation — no re-render churn.
     expect(result.current.revision).toBe(revisionBefore)
+  })
+
+  it('sends a command, applies the returned state, and surfaces the commentary', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({
+          commentary: 'A classic king-pawn opening.',
+          tool_results: [{ name: 'make_move', result: {} }],
+          state: state({ fen: AFTER_E4_FEN, turn: 'black' }),
+        })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('play e4')
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/command',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ text: 'play e4' }) }),
+    )
+    expect(result.current.commentary).toBe('A classic king-pawn opening.')
+    expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
+    expect(result.current.agentThinking).toBe(false)
+  })
+
+  it('reports an unavailable agent without touching board state', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    // 503: no brain configured — no commentary or state comes back.
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('play e4')
+    })
+    expect(result.current.commentary).toMatch(/unavailable/i)
+    expect(result.current.state?.fen).toBe(START_FEN)
+    expect(result.current.revision).toBe(revisionBefore)
+    expect(result.current.agentThinking).toBe(false)
   })
 
   it('cancels a promotion, snapping the pawn back without submitting', async () => {

@@ -3,6 +3,7 @@ import {
   fetchState,
   newGame as apiNewGame,
   resign as apiResign,
+  sendCommand as apiSendCommand,
   setDifficulty as apiSetDifficulty,
   stateSocketUrl,
   submitMove,
@@ -42,6 +43,12 @@ export interface UseGame {
   resign: () => Promise<void>
   /** Set engine strength by Stockfish skill level (0–20). */
   setDifficulty: (skillLevel: number) => Promise<void>
+  /** The agent's latest commentary, or null before the first command. */
+  commentary: string | null
+  /** True while a command is in flight with the agent. */
+  agentThinking: boolean
+  /** Send a free-form command to the agent. */
+  sendCommand: (text: string) => Promise<void>
 }
 
 /**
@@ -56,6 +63,8 @@ export function useGame(): UseGame {
   const [pendingPromotion, setPendingPromotion] = useState<{ from: string; to: string } | null>(
     null,
   )
+  const [commentary, setCommentary] = useState<string | null>(null)
+  const [agentThinking, setAgentThinking] = useState(false)
   // Latest state without making the move callbacks depend on it — the board
   // holds `play` in a ref, but promotion detection still needs the live fen.
   const stateRef = useRef<GameState | null>(null)
@@ -149,6 +158,28 @@ export function useGame(): UseGame {
     await apiSetDifficulty(skillLevel)
   }, [])
 
+  const sendCommand = useCallback(
+    async (text: string) => {
+      setAgentThinking(true)
+      try {
+        const response = await apiSendCommand(text)
+        if (response) {
+          setCommentary(response.commentary)
+          // The agent acts only through tools; the returned state is
+          // authoritative (unchanged for a question or read-only command).
+          apply(response.state)
+        } else {
+          // Null means the backend refused (e.g. 503: no brain) — leave the
+          // board untouched and tell the user the agent isn't available.
+          setCommentary('The agent is unavailable.')
+        }
+      } finally {
+        setAgentThinking(false)
+      }
+    },
+    [apply],
+  )
+
   return {
     state,
     moveError,
@@ -161,5 +192,8 @@ export function useGame(): UseGame {
     undo,
     resign,
     setDifficulty,
+    commentary,
+    agentThinking,
+    sendCommand,
   }
 }

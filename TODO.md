@@ -10,7 +10,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Frontend (web board)
 
-- [ ] Text command box → agent endpoint, commentary display
 - [ ] Frontend CI job (lint + build + tests)
 
 ### Epic: Deployment
