@@ -1,0 +1,21 @@
+# The build only needs pyproject.toml + src/ (the wheel sources). Keep every-
+# thing else out of the build context so it stays small and cache-stable.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+tests/
+Dockerfile
+.dockerignore
+
+# Never bake local models / engine binaries into the image.
+*.gguf
+stockfish*

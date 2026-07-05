@@ -10,7 +10,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ### Epic: Deployment
 
-- [ ] Backend Dockerfile
 - [ ] docker-compose.yml: app + llama-server (+ Speaches placeholder), home-network config
 - [ ] Verify fully-offline basic gameplay in containers
 
