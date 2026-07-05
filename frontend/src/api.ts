@@ -86,6 +86,27 @@ export async function setDifficulty(skillLevel: number): Promise<DifficultyRespo
   return (await res.json()) as DifficultyResponse
 }
 
+export interface CommandResponse {
+  /** The agent's free-form reply to show the user. */
+  commentary: string
+  /** What each dispatched tool returned (opaque to the UI for now). */
+  tool_results: { name: string; result: unknown }[]
+  /** The authoritative state after any tools ran. */
+  state: GameState
+}
+
+/**
+ * Send a free-form command to the agent. Returns the agent's commentary plus
+ * the authoritative new state, or null if the agent is unavailable (e.g. no
+ * brain is configured → 503). The backend is still the sole move-truth source:
+ * the agent acts only through tools, so a command can never corrupt state.
+ */
+export async function sendCommand(text: string): Promise<CommandResponse | null> {
+  const res = await fetch('/api/command', { ...JSON_POST, body: JSON.stringify({ text }) })
+  if (!res.ok) return null
+  return (await res.json()) as CommandResponse
+}
+
 /** URL of the backend's one-way state broadcast channel. */
 export function stateSocketUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'

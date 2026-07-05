@@ -1,5 +1,6 @@
 import { Board } from './Board'
 import { CapturedPieces } from './CapturedPieces'
+import { CommandBox } from './CommandBox'
 import { GameControls } from './GameControls'
 import { MoveHistory } from './MoveHistory'
 import { PromotionPicker } from './PromotionPicker'
@@ -19,6 +20,9 @@ function App() {
     undo,
     resign,
     setDifficulty,
+    commentary,
+    agentThinking,
+    sendCommand,
   } = useGame()
 
   return (
@@ -59,6 +63,7 @@ function App() {
                 : `${state.turn} to move`}
             </p>
           )}
+          <CommandBox onSubmit={sendCommand} commentary={commentary} thinking={agentThinking} />
         </div>
         {state && (
           <aside className="panels">
