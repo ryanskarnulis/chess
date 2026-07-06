@@ -8,11 +8,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
 
-## Phase 2 — Voice
-
-- [ ] Voice options: output on/off, mute, talk more/less
-- [ ] Evaluate Web Speech API fast path vs local-only privacy mode
-
 ## Phase 3 — Full personality & settings
 
 - [ ] Remaining personalities (calm coach, trash-talker, grandmaster, villain, silent assassin, beginner bot, streamer)
