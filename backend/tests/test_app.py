@@ -68,6 +68,36 @@ def test_build_app_runs_a_command_through_the_assembled_pipeline():
     assert body["commentary"] == "Which knight did you mean?"
 
 
+def test_build_app_serves_the_frontend_when_a_static_dir_is_configured(tmp_path):
+    # The compose stack serves the built frontend from the app container:
+    # same-origin, so the UI's relative /api + /ws URLs just work.
+    (tmp_path / "index.html").write_text("<html><body>chess ui</body></html>")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "app.js").write_text("console.log('ui')")
+
+    app = build_app(brain=ScriptedBrain(AgentResponse(text="hi")), static_dir=tmp_path)
+    client = TestClient(app)
+
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "chess ui" in root.text
+
+    asset = client.get("/assets/app.js")
+    assert asset.status_code == 200
+    assert "console.log" in asset.text
+
+    # The API keeps priority over the static mount.
+    assert client.get("/api/state").status_code == 200
+
+
+def test_build_app_without_a_static_dir_serves_no_frontend():
+    app = build_app(brain=ScriptedBrain(AgentResponse(text="hi")))
+    client = TestClient(app)
+    assert client.get("/").status_code == 404
+    assert client.get("/api/state").status_code == 200
+
+
 def test_build_app_wires_live_personality_switching():
     # The whole point of item 3: a set_personality command changes which
     # system prompt the brain uses on the *next* command — end to end, through
