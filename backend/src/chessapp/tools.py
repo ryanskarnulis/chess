@@ -14,7 +14,7 @@ from typing import Any
 
 import jsonschema
 
-from chessapp.analysis import analyze_last_move
+from chessapp.analysis import analyze_last_move, review_game
 from chessapp.engine import ELO_MAX, ELO_MIN, SKILL_MAX, SKILL_MIN, EnginePlayer
 from chessapp.game import GameSession
 
@@ -201,6 +201,26 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "color": analysis.color,
         }
 
+    def review_game_tool() -> dict[str, Any]:
+        review = review_game(_require_engine(ctx), ctx.session)
+        return {
+            "ok": True,
+            "moves": [
+                {
+                    "san": m.san,
+                    "uci": m.uci,
+                    "color": m.color,
+                    "cp_loss": m.cp_loss,
+                    "classification": m.classification,
+                    "best": m.best_san,
+                    "accuracy": m.accuracy,
+                }
+                for m in review.moves
+            ],
+            "accuracy": review.accuracy,
+            "counts": review.counts,
+        }
+
     def make_move(move: str) -> dict[str, Any]:
         result = ctx.session.submit_move(move)
         if not result.legal:
@@ -373,6 +393,18 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             ),
             parameters=_no_args_schema(),
             handler=analyze_last_move_tool,
+        )
+    )
+    registry.register(
+        Tool(
+            name="review_game",
+            description=(
+                "Review the whole game so far: every move classified "
+                "(good/inaccuracy/mistake/blunder) with centipawn loss and "
+                "the best alternative, plus per-color accuracy scores."
+            ),
+            parameters=_no_args_schema(),
+            handler=review_game_tool,
         )
     )
     registry.register(

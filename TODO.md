@@ -8,10 +8,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
 
-## Phase 3 — Full personality & settings
-
-- [ ] Game review: fork/integrate an existing Stockfish-based review engine (move classification, accuracy)
-
 ## Phase 4 — Physical board (walled off; separate project)
 
 - [ ] Verify Chessnut Move motorized actuation is programmatically controllable **before any design work**

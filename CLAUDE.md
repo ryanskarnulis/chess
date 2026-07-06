@@ -64,7 +64,7 @@ Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a strin
 
 Capabilities, not hardcoded behaviors — the agent maps free-form commands to tools itself (no per-phrase branching); ambiguous input → clarifying question.
 
-- Reads: `get_board_state`, `get_legal_moves`, `get_move_history`, `get_captured_pieces`, `evaluate_position`, `get_best_moves` (Stockfish MultiPV)
+- Reads: `get_board_state`, `get_legal_moves`, `get_move_history`, `get_captured_pieces`, `evaluate_position`, `get_best_moves` (Stockfish MultiPV), `analyze_last_move` ("what was my mistake"), `review_game` (whole-game classification + accuracy)
 - Writes: `make_move` (returns legal/illegal), `undo`, `new_game`, `resign`, `save_game`, `resume_game`, `export_pgn`
 - Settings: `set_difficulty`, `set_personality`, `set_verbosity`, `set_hints_mode`, `set_voice_output`
 - Output: `speak` (TTS) + returned commentary text

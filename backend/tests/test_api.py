@@ -266,6 +266,35 @@ def test_engine_reply_with_default_personality_plays_best():
     assert engine.multipv_requests == []
 
 
+# --- game review ------------------------------------------------------------
+
+
+def test_review_without_engine_is_503(client):
+    assert client.get("/api/game/review").status_code == 503
+
+
+@requires_stockfish
+def test_review_of_an_empty_game_is_409():
+    with EnginePlayer() as engine:
+        ctx = ToolContext(session=GameSession(), engine=engine)
+        client = TestClient(create_app(ctx))
+        assert client.get("/api/game/review").status_code == 409
+
+
+@requires_stockfish
+def test_review_returns_moves_and_accuracy():
+    with EnginePlayer() as engine:
+        ctx = ToolContext(session=GameSession(), engine=engine)
+        client = TestClient(create_app(ctx))
+        client.post("/api/game/move", json={"move": "e4"})
+        response = client.get("/api/game/review")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["moves"]) == len(ctx.session.move_history())
+        assert body["moves"][0]["san"] == "e4"
+        assert "accuracy" in body and "counts" in body
+
+
 # --- websocket state channel ------------------------------------------------
 
 
