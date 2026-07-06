@@ -39,6 +39,12 @@ _TOP_P = 0.95
 _TOP_K = 64
 _DEFAULT_MAX_RETRIES = 2
 
+# Reacting to these tools' results is analysis work: thinking goes ON
+# (BRIEF: thinking OFF for fast move parsing/reactions, ON for analysis).
+_ANALYSIS_TOOLS = frozenset(
+    {"evaluate_position", "get_best_moves", "analyze_last_move"}
+)
+
 
 @dataclass
 class LlamaBrain:
@@ -103,10 +109,16 @@ class LlamaBrain:
             {"role": "system", "content": self._resolve_system_prompt()},
             {"role": "user", "content": prompt},
         ]
-        return self._complete(messages, use_tools=False).content or ""
+        thinking = any(change.get("name") in _ANALYSIS_TOOLS for change in changes)
+        message = self._complete(messages, use_tools=False, thinking=thinking)
+        return message.content or ""
 
     def _complete(
-        self, messages: list[dict[str, str]], *, use_tools: bool = True
+        self,
+        messages: list[dict[str, str]],
+        *,
+        use_tools: bool = True,
+        thinking: bool | None = None,
     ) -> Any:
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -115,7 +127,11 @@ class LlamaBrain:
             "top_p": _TOP_P,
             "extra_body": {
                 "top_k": _TOP_K,
-                "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
+                "chat_template_kwargs": {
+                    "enable_thinking": (
+                        self.enable_thinking if thinking is None else thinking
+                    )
+                },
             },
         }
         if use_tools:

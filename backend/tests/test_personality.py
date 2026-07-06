@@ -97,3 +97,28 @@ def test_unknown_verbosity_falls_back_to_normal():
         system_prompt_for("calm_coach", verbosity="shouting")
         == SYSTEM_PROMPTS["calm_coach"]
     )
+
+
+# --- hints mode ---------------------------------------------------------------
+
+
+def test_hints_off_leaves_the_prompt_unchanged():
+    assert (
+        system_prompt_for("calm_coach", hints_mode=False)
+        == SYSTEM_PROMPTS["calm_coach"]
+    )
+
+
+def test_hints_on_appends_a_hint_instruction():
+    base = SYSTEM_PROMPTS["calm_coach"]
+    prompt = system_prompt_for("calm_coach", hints_mode=True)
+    assert prompt.startswith(base)
+    assert "hint" in prompt[len(base) :].lower()
+
+
+def test_hints_and_verbosity_layer_together():
+    prompt = system_prompt_for("calm_coach", verbosity="low", hints_mode=True)
+    base = SYSTEM_PROMPTS["calm_coach"]
+    assert prompt.startswith(base)
+    assert "hint" in prompt.lower()
+    assert prompt != system_prompt_for("calm_coach", verbosity="low")

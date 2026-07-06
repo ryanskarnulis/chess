@@ -14,6 +14,7 @@ from typing import Any
 
 import jsonschema
 
+from chessapp.analysis import analyze_last_move
 from chessapp.engine import ELO_MAX, ELO_MIN, SKILL_MAX, SKILL_MIN, EnginePlayer
 from chessapp.game import GameSession
 
@@ -187,6 +188,19 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             ],
         }
 
+    def analyze_last_move_tool() -> dict[str, Any]:
+        analysis = analyze_last_move(_require_engine(ctx), ctx.session)
+        return {
+            "ok": True,
+            "played": analysis.played_san,
+            "played_uci": analysis.played_uci,
+            "best": analysis.best_san,
+            "best_uci": analysis.best_uci,
+            "cp_loss": analysis.cp_loss,
+            "classification": analysis.classification,
+            "color": analysis.color,
+        }
+
     def make_move(move: str) -> dict[str, Any]:
         result = ctx.session.submit_move(move)
         if not result.legal:
@@ -346,6 +360,19 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
                 "additionalProperties": False,
             },
             handler=get_best_moves,
+        )
+    )
+    registry.register(
+        Tool(
+            name="analyze_last_move",
+            description=(
+                "Analyze the last move played: how it compares to Stockfish's "
+                "best from the same position — centipawn loss, verdict "
+                "(good/inaccuracy/mistake/blunder), and what was best. Use "
+                "this to answer 'what was my mistake?' and to explain moves."
+            ),
+            parameters=_no_args_schema(),
+            handler=analyze_last_move_tool,
         )
     )
     registry.register(

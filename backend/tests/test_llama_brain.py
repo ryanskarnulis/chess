@@ -8,6 +8,8 @@ brain sends (tools, sampling, thinking flag, prompt contents).
 
 from types import SimpleNamespace
 
+import pytest
+
 from chessapp.brain import AgentResponse
 from chessapp.llama_brain import LlamaBrain, create_llama_brain
 from chessapp.personality import DEFAULT_PERSONALITY, system_prompt_for
@@ -276,6 +278,44 @@ def test_react_drops_reasoning_content():
 def test_react_null_content_becomes_empty_string():
     brain, _ = make_brain(_completion(content=None))
     assert brain.react(board_state={}, changes=[]) == ""
+
+
+# --- thinking mode: ON for analysis, OFF for speed -------------------------
+
+
+@pytest.mark.parametrize(
+    "tool", ["evaluate_position", "get_best_moves", "analyze_last_move"]
+)
+def test_react_to_analysis_results_thinks(tool):
+    # BRIEF: thinking OFF for fast reactions, ON for analysis. Reacting to
+    # analysis-tool results is exactly the analysis case.
+    brain, client = make_brain(_completion(content="deep thoughts"))
+    brain.react(board_state={}, changes=[{"name": tool, "result": {"ok": True}}])
+    kwargs = client.calls[0]
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_react_to_a_plain_move_does_not_think():
+    brain, client = make_brain(_completion(content="nice move"))
+    brain.react(
+        board_state={},
+        changes=[{"name": "make_move", "result": {"legal": True}}],
+    )
+    kwargs = client.calls[0]
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_react_mixed_changes_with_any_analysis_thinks():
+    brain, client = make_brain(_completion(content="ok"))
+    brain.react(
+        board_state={},
+        changes=[
+            {"name": "make_move", "result": {"legal": True}},
+            {"name": "evaluate_position", "result": {"ok": True, "score_cp": 30}},
+        ],
+    )
+    kwargs = client.calls[0]
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
 
 
 # --- factory wires the personality prompt ---------------------------------

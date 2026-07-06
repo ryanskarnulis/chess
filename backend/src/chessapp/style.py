@@ -17,13 +17,11 @@ Stockfish's own candidate ordering changing as the game changes.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from chessapp.engine import pov_cp
+
 if TYPE_CHECKING:
     from chessapp.engine import CandidateMove, EnginePlayer
     from chessapp.game import GameSession, MoveResult
-
-# A mate scores far beyond any centipawn evaluation; nearer mates score
-# higher so a mate-in-1 beats a mate-in-3.
-_MATE_CP = 100_000
 
 
 @dataclass(frozen=True)
@@ -64,12 +62,7 @@ def profile_for(personality: str) -> StyleProfile:
 
 def _pov_cp(candidate: "CandidateMove", turn: str) -> int:
     """Candidate score in centipawns from the side to move's point of view."""
-    if candidate.mate_in is not None:
-        magnitude = _MATE_CP - abs(candidate.mate_in)
-        cp = magnitude if candidate.mate_in > 0 else -magnitude
-    else:
-        cp = candidate.score_cp or 0
-    return cp if turn == "white" else -cp
+    return pov_cp(candidate.score_cp, candidate.mate_in, turn)
 
 
 def _is_forcing(san: str) -> bool:
