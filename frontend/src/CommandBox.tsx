@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { MicButton } from './MicButton'
 
 export interface CommandBoxProps {
   /** Send a (trimmed, non-empty) command to the agent. */
@@ -39,6 +40,9 @@ export function CommandBox({ onSubmit, commentary, thinking }: CommandBoxProps) 
         <button type="submit" disabled={thinking || !trimmed}>
           Send
         </button>
+        {/* Voice in: the transcript goes down the exact same pipeline as a
+            typed command. Renders nothing in unsupporting browsers. */}
+        <MicButton onTranscript={onSubmit} disabled={thinking} />
       </form>
       {thinking ? (
         <p className="commentary commentary-thinking" role="status">

@@ -27,6 +27,7 @@ from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
 from chessapp.personality import system_prompt_for
 from chessapp.tools import ToolContext, build_registry
+from chessapp.voice import DEFAULT_STT_MODEL, SpeechClient, create_speech_client
 
 DEFAULT_LLAMA_BASE_URL = "http://localhost:8080/v1"
 DEFAULT_MODEL = "gemma"
@@ -40,6 +41,7 @@ def build_app(
     save_dir: Path | None = None,
     brain: Brain | None = None,
     openai_client: object | None = None,
+    speech: SpeechClient | None = None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
@@ -59,12 +61,24 @@ def build_app(
             system_prompt_provider=lambda: system_prompt_for(ctx.settings.personality),
             client=openai_client,
         )
-    return create_app(ctx, brain=brain, static_dir=static_dir)
+    return create_app(ctx, brain=brain, speech=speech, static_dir=static_dir)
 
 
 def _engine_from_env() -> EnginePlayer | None:
     path = os.environ.get("CHESSAPP_STOCKFISH")
     return EnginePlayer(path=path) if path else None
+
+
+def _speech_from_env() -> SpeechClient | None:
+    """Voice is optional exactly like the brain: no CHESSAPP_SPEACHES_URL
+    means no speech client, and the voice endpoints answer 503."""
+    url = os.environ.get("CHESSAPP_SPEACHES_URL")
+    if not url:
+        return None
+    return create_speech_client(
+        base_url=url,
+        stt_model=os.environ.get("CHESSAPP_STT_MODEL", DEFAULT_STT_MODEL),
+    )
 
 
 def build_app_from_env() -> FastAPI:
@@ -76,6 +90,7 @@ def build_app_from_env() -> FastAPI:
         model=os.environ.get("CHESSAPP_MODEL", DEFAULT_MODEL),
         engine=_engine_from_env(),
         save_dir=Path(save_dir_env) if save_dir_env else None,
+        speech=_speech_from_env(),
         static_dir=Path(static_dir_env) if static_dir_env else None,
     )
 

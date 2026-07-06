@@ -107,6 +107,22 @@ export async function sendCommand(text: string): Promise<CommandResponse | null>
   return (await res.json()) as CommandResponse
 }
 
+/**
+ * Send recorded audio to the backend for transcription. Returns the
+ * recognized text, or null when voice is unavailable (no speech service →
+ * 503, speech backend down → 502). The caller feeds the text into the same
+ * command pipeline as typed input — voice never gets its own path.
+ */
+export async function transcribe(audio: Blob): Promise<string | null> {
+  const form = new FormData()
+  // The filename extension tells the speech backend the container format.
+  form.append('audio', audio, 'clip.webm')
+  const res = await fetch('/api/voice/transcribe', { method: 'POST', body: form })
+  if (!res.ok) return null
+  const data = (await res.json()) as { text: string }
+  return data.text
+}
+
 /** URL of the backend's one-way state broadcast channel. */
 export function stateSocketUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
