@@ -65,7 +65,9 @@ def build_app(
             model=model,
             tool_definitions=build_registry(ctx).definitions(),
             system_prompt_provider=lambda: system_prompt_for(
-                ctx.settings.personality, ctx.settings.verbosity
+                ctx.settings.personality,
+                ctx.settings.verbosity,
+                ctx.settings.hints_mode,
             ),
             client=openai_client,
         )

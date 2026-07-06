@@ -140,8 +140,21 @@ _VERBOSITY_INSTRUCTIONS: dict[str, str] = {
 }
 
 
-def system_prompt_for(personality: str, verbosity: str = "normal") -> str:
-    """The system prompt for `personality` at `verbosity`.
+# Hints mode: with hints on, the agent volunteers help; with hints off it
+# stays a fair opponent and keeps the engine's secrets unless asked.
+_HINTS_INSTRUCTION = (
+    "\nHints are on: the player wants help. When it is their turn and they "
+    "seem unsure, offer a hint — use get_best_moves for candidate moves and "
+    "analyze_last_move to explain what a move cost. Suggest, don't move for "
+    "them.\n"
+)
+
+
+def system_prompt_for(
+    personality: str, verbosity: str = "normal", hints_mode: bool = False
+) -> str:
+    """The system prompt for `personality` at `verbosity`, plus the hints
+    instruction when `hints_mode` is on.
 
     Falls back to the default personality's prompt for any unknown name (and
     to no extra instruction for an unknown verbosity): the setting tools are
@@ -149,4 +162,7 @@ def system_prompt_for(personality: str, verbosity: str = "normal") -> str:
     the agent without a valid prompt.
     """
     prompt = SYSTEM_PROMPTS.get(personality, SYSTEM_PROMPTS[DEFAULT_PERSONALITY])
-    return prompt + _VERBOSITY_INSTRUCTIONS.get(verbosity, "")
+    prompt += _VERBOSITY_INSTRUCTIONS.get(verbosity, "")
+    if hints_mode:
+        prompt += _HINTS_INSTRUCTION
+    return prompt

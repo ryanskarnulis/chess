@@ -143,3 +143,25 @@ def test_build_app_wires_live_verbosity_switching():
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
         "friendly_rival", verbosity="low"
     )
+
+
+def test_build_app_wires_live_hints_switching():
+    # "Give me hints": set_hints_mode must change the system prompt the brain
+    # gets on the next command, same live-settings seam as personality and
+    # verbosity.
+    switch = _tool_call("set_hints_mode", '{"enabled":true}')
+    fake = FakeOpenAIClient(
+        _completion(tool_calls=[switch]),
+        _completion(content="ok"),
+    )
+    client = TestClient(build_app(model="gemma", openai_client=fake))
+
+    client.post("/api/command", json={"text": "give me hints"})
+    client.post("/api/command", json={"text": "hello"})
+
+    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for(
+        "friendly_rival"
+    )
+    assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
+        "friendly_rival", hints_mode=True
+    )

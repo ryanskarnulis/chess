@@ -20,6 +20,10 @@ ELO_MIN, ELO_MAX = 1320, 3190
 DEFAULT_MOVE_TIME = 0.1
 DEFAULT_ANALYSIS_DEPTH = 12
 
+# A mate scores far beyond any centipawn evaluation; nearer mates score
+# higher, so a mate-in-1 beats a mate-in-3.
+MATE_CP = 100_000
+
 
 @dataclass(frozen=True)
 class Evaluation:
@@ -41,6 +45,18 @@ class CandidateMove:
     san: str
     score_cp: int | None
     mate_in: int | None
+
+
+def pov_cp(score_cp: int | None, mate_in: int | None, turn: str) -> int:
+    """Collapse a White-POV (score_cp, mate_in) pair — the shape every
+    analysis result uses — into one comparable centipawn number from `turn`'s
+    point of view. Mates map onto the `MATE_CP` scale."""
+    if mate_in is not None:
+        magnitude = MATE_CP - abs(mate_in)
+        cp = magnitude if mate_in > 0 else -magnitude
+    else:
+        cp = score_cp or 0
+    return cp if turn == "white" else -cp
 
 
 def _score_fields(score: chess.engine.PovScore) -> tuple[int | None, int | None]:
