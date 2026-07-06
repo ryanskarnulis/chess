@@ -24,6 +24,7 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from chessapp.analysis import review_game
 from chessapp.brain import Brain
 from chessapp.engine import validate_elo, validate_skill_level
 from chessapp.game import GameSession, MoveResult
@@ -328,6 +329,35 @@ def create_app(
                 status_code=502, detail=f"speech service error: {exc}"
             ) from exc
         return Response(content=audio, media_type="audio/mpeg")
+
+    @app.get("/api/game/review")
+    def get_review() -> dict[str, Any]:
+        """Whole-game review for the UI (trusted path, same numbers as the
+        `review_game` tool). Analysis needs Stockfish (503 without one);
+        reviewing an empty game is a domain failure (409). Read-only —
+        nothing is broadcast."""
+        if ctx.engine is None:
+            raise HTTPException(status_code=503, detail="review unavailable: no engine")
+        try:
+            review = review_game(ctx.engine, ctx.session)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "moves": [
+                {
+                    "san": m.san,
+                    "uci": m.uci,
+                    "color": m.color,
+                    "cp_loss": m.cp_loss,
+                    "classification": m.classification,
+                    "best": m.best_san,
+                    "accuracy": m.accuracy,
+                }
+                for m in review.moves
+            ],
+            "accuracy": review.accuracy,
+            "counts": review.counts,
+        }
 
     @app.get("/api/game/pgn")
     def export_pgn() -> dict[str, Any]:
