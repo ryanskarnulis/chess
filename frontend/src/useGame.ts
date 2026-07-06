@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  fetchSettings,
   fetchState,
   newGame as apiNewGame,
   resign as apiResign,
   sendCommand as apiSendCommand,
   setDifficulty as apiSetDifficulty,
+  setVoiceOutput as apiSetVoiceOutput,
   stateSocketUrl,
   submitMove,
   undo as apiUndo,
@@ -50,6 +52,10 @@ export interface UseGame {
   agentThinking: boolean
   /** Send a free-form command to the agent. */
   sendCommand: (text: string) => Promise<void>
+  /** Whether agent replies are spoken aloud; null until settings load. */
+  voiceOutput: boolean | null
+  /** Turn voice output on/off (the UI mute toggle). */
+  setVoiceOutput: (enabled: boolean) => Promise<void>
 }
 
 /**
@@ -66,6 +72,7 @@ export function useGame(): UseGame {
   )
   const [commentary, setCommentary] = useState<string | null>(null)
   const [agentThinking, setAgentThinking] = useState(false)
+  const [voiceOutput, setVoiceOutputState] = useState<boolean | null>(null)
   // Latest state without making the move callbacks depend on it — the board
   // holds `play` in a ref, but promotion detection still needs the live fen.
   const stateRef = useRef<GameState | null>(null)
@@ -80,6 +87,9 @@ export function useGame(): UseGame {
     let live = true
     fetchState().then((s) => {
       if (live) apply(s)
+    })
+    fetchSettings().then((s) => {
+      if (live) setVoiceOutputState(s.voice_output)
     })
     const socket = new WebSocket(stateSocketUrl())
     socket.onmessage = (ev) => {
@@ -172,6 +182,9 @@ export function useGame(): UseGame {
           // Voice out is fire-and-forget: the reply is already on screen,
           // and a playback failure must never block the game.
           if (response.speak && response.commentary) void playText(response.commentary)
+          // speak mirrors the server-side voice_output setting, so an
+          // agent-side toggle ("turn on voice") keeps the UI switch in sync.
+          if (typeof response.speak === 'boolean') setVoiceOutputState(response.speak)
         } else {
           // Null means the backend refused (e.g. 503: no brain) — leave the
           // board untouched and tell the user the agent isn't available.
@@ -183,6 +196,13 @@ export function useGame(): UseGame {
     },
     [apply],
   )
+
+  const setVoiceOutput = useCallback(async (enabled: boolean) => {
+    // Settings change, not a board mutation. The hook reflects what the
+    // server confirmed, so the toggle can never drift from the truth.
+    const confirmed = await apiSetVoiceOutput(enabled)
+    if (confirmed !== null) setVoiceOutputState(confirmed)
+  }, [])
 
   return {
     state,
@@ -199,5 +219,7 @@ export function useGame(): UseGame {
     commentary,
     agentThinking,
     sendCommand,
+    voiceOutput,
+    setVoiceOutput,
   }
 }

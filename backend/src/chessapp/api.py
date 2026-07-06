@@ -43,6 +43,10 @@ class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, pattern=r"\S")
 
 
+class VoiceOutputRequest(BaseModel):
+    enabled: bool
+
+
 class UndoRequest(BaseModel):
     plies: int = Field(default=1, ge=1, le=UNDO_PLIES_MAX)
 
@@ -259,6 +263,28 @@ def create_app(
             # The server owns the decision; the client owns the playback.
             "speak": ctx.settings.voice_output,
         }
+
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        """The agent-adjustable settings, for the UI to render its controls
+        from (the same truth the tools mutate)."""
+        s = ctx.settings
+        return {
+            "personality": s.personality,
+            "verbosity": s.verbosity,
+            "hints_mode": s.hints_mode,
+            "voice_output": s.voice_output,
+            "skill_level": s.skill_level,
+            "elo": s.elo,
+        }
+
+    @app.post("/api/settings/voice")
+    def set_voice_output(request: VoiceOutputRequest) -> dict[str, Any]:
+        """Voice output on/off from the UI (trusted path, mirroring the
+        `set_voice_output` tool — the mute button shouldn't need the LLM).
+        Not a board mutation, so nothing is broadcast."""
+        ctx.settings.voice_output = request.enabled
+        return {"voice_output": ctx.settings.voice_output}
 
     @app.post("/api/voice/transcribe")
     async def transcribe(audio: UploadFile) -> dict[str, Any]:

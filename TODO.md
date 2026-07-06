@@ -10,7 +10,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ## Phase 2 — Voice
 
-- [ ] TTS path: `speak` tool output → audio in browser
 - [ ] Voice options: output on/off, mute, talk more/less
 - [ ] Evaluate Web Speech API fast path vs local-only privacy mode
 

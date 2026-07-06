@@ -110,6 +110,34 @@ export async function sendCommand(text: string): Promise<CommandResponse | null>
   return (await res.json()) as CommandResponse
 }
 
+export interface Settings {
+  personality: string
+  verbosity: string
+  hints_mode: boolean
+  voice_output: boolean
+  skill_level: number | null
+  elo: number | null
+}
+
+/** Fetch the agent-adjustable settings (the same truth the tools mutate). */
+export async function fetchSettings(): Promise<Settings> {
+  const res = await fetch('/api/settings')
+  return (await res.json()) as Settings
+}
+
+/** Turn voice output on/off directly (trusted UI path — the mute button
+ * shouldn't need the LLM). Returns the confirmed setting, or null if the
+ * backend refused. */
+export async function setVoiceOutput(enabled: boolean): Promise<boolean | null> {
+  const res = await fetch('/api/settings/voice', {
+    ...JSON_POST,
+    body: JSON.stringify({ enabled }),
+  })
+  if (!res.ok) return null
+  const data = (await res.json()) as { voice_output: boolean }
+  return data.voice_output
+}
+
 /**
  * Send recorded audio to the backend for transcription. Returns the
  * recognized text, or null when voice is unavailable (no speech service →
