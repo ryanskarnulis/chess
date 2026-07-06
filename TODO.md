@@ -2,17 +2,61 @@
 
 The backlog, in priority order. One task = one vertical slice = one branch = one PR (TDD: failing test first). When a task is finished and merged, move its line to `DONE.md` with the merge date. Re-plan freely between slices — this file is the living backlog, not a contract.
 
-## Phase 1 — MVP (web board + text agent)
+## Phase 4 — Manual testing (walkthrough together, take notes)
 
-### Epic: Agent brain (swappable module)
+No manual testing has happened yet — everything below has only been exercised by automated tests. Go through this list at the desk, note anything that feels wrong or needs to change, then turn the notes into new backlog items.
 
-- [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
+### Setup / stack
+- [ ] `docker compose up` brings up all three containers (llama-server, Speaches, app) cleanly from cold
+- [ ] App is reachable from another device on the home network (phone/laptop browser)
+- [ ] Basic gameplay works fully offline (network unplugged)
+- [ ] Full game against Stockfish with the LLM turned off (agent layer disabled)
 
-## Phase 4 — Physical board (walled off; separate project)
+### Core gameplay (board UI)
+- [ ] Play a complete game start to checkmate; board renders correctly throughout
+- [ ] Illegal moves on the board are rejected without corrupting state
+- [ ] Special moves work end-to-end: castling (both sides), en passant, pawn promotion (incl. underpromotion)
+- [ ] Check, checkmate, stalemate, and draw conditions are detected and surfaced in the UI
+- [ ] Captured pieces display updates correctly
 
-- [ ] Verify Chessnut Move motorized actuation is programmatically controllable **before any design work**
-- [ ] `control_physical_board` tool seam only until then
+### Text agent (tool boundary in real use)
+- [ ] Moves via free-form text ("knight to f3", "Nf3", "castle kingside") land as the intended move
+- [ ] Ambiguous input ("move the rook") produces a clarifying question, not a guess or a wrong move
+- [ ] Illegal move requests get a clear rejection from the agent, board unchanged
+- [ ] `undo`, `resign`, `new_game` via natural language
+- [ ] `save_game`, `resume_game` round-trip (save mid-game, restart app, resume)
+- [ ] `export_pgn` output loads in an external PGN viewer
+- [ ] Reads behave sensibly: "what's the position?", "what are my legal moves?", "show move history", "what's been captured?"
+- [ ] Agent reaction latency after each move feels acceptable (thinking OFF path)
+- [ ] Long game: prompts/KV-cache don't degrade tool-call reliability late in the game
+
+### Analysis & review
+- [ ] "What was my mistake?" (`analyze_last_move`) gives a sensible answer, thinking ON
+- [ ] Hints mode: hints appear when on, never when off
+- [ ] `evaluate_position` / "who's winning?" gives a coherent eval
+- [ ] Post-game `review_game`: move classifications and per-color accuracy look plausible against a known game
+- [ ] Analysis latency (thinking ON) is tolerable
+
+### Personalities & settings
+- [ ] Each personality is distinguishable in commentary and move style
+- [ ] Personality-biased move selection still produces legal, reasonable moves at each difficulty
+- [ ] `set_difficulty` visibly changes engine strength (easy loses to a casual player, hard doesn't)
+- [ ] Settings by speech/text: difficulty, personality, verbosity, hints mode, voice output all switchable mid-game and persist
+- [ ] Verbosity levels actually differ (terse vs chatty)
+
+### Voice (STT/TTS)
+- [ ] Voice input: spoken moves transcribe and execute correctly (test noisy vs quiet room)
+- [ ] STT latency (~2.5s known) is acceptable in the play loop
+- [ ] TTS output (`speak`) is intelligible, correct voice, reasonable latency
+- [ ] `set_voice_output` on/off actually mutes/unmutes TTS
+- [ ] Misrecognized speech fails safe (clarifying question, not a wrong move)
 
 ## Infrastructure / process (ongoing)
 
 - [ ] If repo goes public or account upgrades to Pro: enable branch protection (require `lint` + `test` checks) and native auto-merge
+
+## Backlog (no near-term timeline)
+
+- [ ] UI: post-game review panel — surface `review_game` results (move classifications, per-color accuracy) in the web UI after game over
+- [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
+- [ ] Physical board (Chessnut Move — blocked on hardware purchase): verify motorized actuation is programmatically controllable **before any design work**; until then, `control_physical_board` tool seam only
