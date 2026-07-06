@@ -19,7 +19,7 @@ object on the context.
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
@@ -27,6 +27,7 @@ from chessapp.brain import Brain
 from chessapp.engine import validate_elo, validate_skill_level
 from chessapp.game import GameSession, MoveResult
 from chessapp.tools import UNDO_PLIES_MAX, ToolContext, build_registry
+from chessapp.voice import SpeechClient
 
 
 class MoveRequest(BaseModel):
@@ -117,6 +118,7 @@ class StateBroadcaster:
 def create_app(
     ctx: ToolContext,
     brain: Brain | None = None,
+    speech: SpeechClient | None = None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="chessapp")
@@ -248,6 +250,27 @@ def create_app(
             "tool_results": tool_results,
             "state": state,
         }
+
+    @app.post("/api/voice/transcribe")
+    async def transcribe(audio: UploadFile) -> dict[str, Any]:
+        """STT proxy: browser audio in, plain text out. The text goes back to
+        the client, which feeds it into the same /api/command pipeline as
+        typed input — voice never gets its own path to the game. Board state
+        is untouched here, so nothing is broadcast. Like the brain (503
+        without one), voice is optional: no speech service means 503, and an
+        unreachable/failing one is the upstream's fault (502)."""
+        if speech is None:
+            raise HTTPException(
+                status_code=503, detail="voice unavailable: no speech service"
+            )
+        data = await audio.read()
+        try:
+            text = speech.transcribe(data, filename=audio.filename or "audio.webm")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"speech service error: {exc}"
+            ) from exc
+        return {"text": text}
 
     @app.get("/api/game/pgn")
     def export_pgn() -> dict[str, Any]:

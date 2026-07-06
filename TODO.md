@@ -10,7 +10,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ## Phase 2 — Voice
 
-- [ ] Speaches container (OpenAI-compatible STT+TTS) in compose
 - [ ] STT path: mic in browser → transcription → same text pipeline
 - [ ] TTS path: `speak` tool output → audio in browser
 - [ ] Voice options: output on/off, mute, talk more/less

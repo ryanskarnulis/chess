@@ -89,10 +89,14 @@ services:
   # Speaches: one self-hosted, OpenAI-API-compatible STT+TTS container
   # (faster-whisper + Kokoro/Piper). CPU image on purpose: the llama service
   # already fills the 12GB GPU, and whisper-small/Kokoro are fine on CPU for
-  # single-user voice. Models download from HF on first use and land in the
-  # mounted cache — same offline story as the llama GGUF: internet once, then
-  # fully local. Optional like llama: the app serves board + text play with
-  # this container down (voice endpoints just fail).
+  # single-user voice. Models are a one-time explicit install (they land in
+  # the mounted cache — internet once, then fully local, same story as the
+  # llama GGUF):
+  #
+  #   curl -X POST http://localhost:8001/v1/models/Systran%2Ffaster-whisper-small
+  #
+  # Optional like llama: the app serves board + text play with this container
+  # down (voice endpoints 503/502).
   speaches:
     image: ghcr.io/speaches-ai/speaches:0.8.3-cpu
     ports:
