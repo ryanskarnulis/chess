@@ -278,3 +278,27 @@ def test_disconnected_client_does_not_break_broadcast(client):
     response = client.post("/api/game/move", json={"move": "e4"})
     assert response.status_code == 200
     assert response.json()["legal"] is True
+
+
+# --- settings ----------------------------------------------------------------
+
+
+def test_get_settings_returns_the_full_settings_document(client):
+    body = client.get("/api/settings").json()
+    assert body == {
+        "personality": "friendly_rival",
+        "verbosity": "normal",
+        "hints_mode": False,
+        "voice_output": False,
+        "skill_level": None,
+        "elo": None,
+    }
+
+
+def test_set_voice_output_toggles_the_setting(ctx, client):
+    body = client.post("/api/settings/voice", json={"enabled": True}).json()
+    assert body == {"voice_output": True}
+    assert ctx.settings.voice_output is True
+    assert client.get("/api/settings").json()["voice_output"] is True
+    client.post("/api/settings/voice", json={"enabled": False})
+    assert ctx.settings.voice_output is False

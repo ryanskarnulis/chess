@@ -51,3 +51,34 @@ def test_unknown_personality_falls_back_to_default():
     # `set_personality` is enum-guarded, but the lookup must never leave the
     # agent without a prompt.
     assert system_prompt_for("nonexistent") == SYSTEM_PROMPTS[DEFAULT_PERSONALITY]
+
+
+# --- verbosity ("talk more / talk less") -------------------------------------
+
+
+def test_normal_verbosity_leaves_the_prompt_unchanged():
+    assert (
+        system_prompt_for("calm_coach", verbosity="normal")
+        == SYSTEM_PROMPTS["calm_coach"]
+    )
+
+
+@pytest.mark.parametrize("verbosity", ["low", "high"])
+def test_low_and_high_verbosity_append_an_instruction(verbosity):
+    base = SYSTEM_PROMPTS["calm_coach"]
+    prompt = system_prompt_for("calm_coach", verbosity=verbosity)
+    assert prompt.startswith(base)
+    assert len(prompt) > len(base)
+
+
+def test_low_and_high_verbosity_instructions_differ():
+    low = system_prompt_for("calm_coach", verbosity="low")
+    high = system_prompt_for("calm_coach", verbosity="high")
+    assert low != high
+
+
+def test_unknown_verbosity_falls_back_to_normal():
+    assert (
+        system_prompt_for("calm_coach", verbosity="shouting")
+        == SYSTEM_PROMPTS["calm_coach"]
+    )

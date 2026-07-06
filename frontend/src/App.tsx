@@ -23,6 +23,8 @@ function App() {
     commentary,
     agentThinking,
     sendCommand,
+    voiceOutput,
+    setVoiceOutput,
   } = useGame()
 
   return (
@@ -63,7 +65,13 @@ function App() {
                 : `${state.turn} to move`}
             </p>
           )}
-          <CommandBox onSubmit={sendCommand} commentary={commentary} thinking={agentThinking} />
+          <CommandBox
+            onSubmit={sendCommand}
+            commentary={commentary}
+            thinking={agentThinking}
+            voiceOutput={voiceOutput}
+            onToggleVoice={setVoiceOutput}
+          />
         </div>
         {state && (
           <aside className="panels">

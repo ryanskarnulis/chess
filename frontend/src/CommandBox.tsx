@@ -8,6 +8,10 @@ export interface CommandBoxProps {
   commentary: string | null
   /** A command is in flight — the input locks and a hint replaces the reply. */
   thinking: boolean
+  /** Whether replies are spoken aloud; null hides the toggle until known. */
+  voiceOutput: boolean | null
+  /** Ask the parent to turn voice output on/off (the mute toggle). */
+  onToggleVoice: (enabled: boolean) => void
 }
 
 /**
@@ -15,7 +19,13 @@ export interface CommandBoxProps {
  * presentational: it owns only the ephemeral input text and hands trimmed,
  * non-empty commands to the parent, which owns the backend call.
  */
-export function CommandBox({ onSubmit, commentary, thinking }: CommandBoxProps) {
+export function CommandBox({
+  onSubmit,
+  commentary,
+  thinking,
+  voiceOutput,
+  onToggleVoice,
+}: CommandBoxProps) {
   const [text, setText] = useState('')
   const trimmed = text.trim()
 
@@ -43,6 +53,19 @@ export function CommandBox({ onSubmit, commentary, thinking }: CommandBoxProps) 
         {/* Voice in: the transcript goes down the exact same pipeline as a
             typed command. Renders nothing in unsupporting browsers. */}
         <MicButton onTranscript={onSubmit} disabled={thinking} />
+        {/* Voice out: mute/unmute. Hidden until the setting has loaded so
+            the toggle never shows a state it just guessed. */}
+        {voiceOutput !== null && (
+          <button
+            type="button"
+            className="voice-toggle"
+            aria-label={voiceOutput ? 'Turn voice output off' : 'Turn voice output on'}
+            title={voiceOutput ? 'Mute the agent' : 'Speak replies aloud'}
+            onClick={() => onToggleVoice(!voiceOutput)}
+          >
+            {voiceOutput ? '🔊' : '🔇'}
+          </button>
+        )}
       </form>
       {thinking ? (
         <p className="commentary commentary-thinking" role="status">

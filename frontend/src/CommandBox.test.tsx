@@ -7,6 +7,8 @@ function setup(overrides: Partial<React.ComponentProps<typeof CommandBox>> = {})
     onSubmit: vi.fn(),
     commentary: null as string | null,
     thinking: false,
+    voiceOutput: false as boolean | null,
+    onToggleVoice: vi.fn(),
     ...overrides,
   }
   render(<CommandBox {...props} />)
@@ -40,6 +42,24 @@ describe('CommandBox', () => {
   it('displays the agent commentary', () => {
     setup({ commentary: 'A bold opening!' })
     expect(screen.getByText('A bold opening!')).toBeInTheDocument()
+  })
+
+  it('offers a voice-output toggle that reports the opposite of the current state', () => {
+    const props = setup({ voiceOutput: false })
+    const toggle = screen.getByRole('button', { name: /turn voice output on/i })
+    fireEvent.click(toggle)
+    expect(props.onToggleVoice).toHaveBeenCalledWith(true)
+  })
+
+  it('lets the user mute when voice output is on', () => {
+    const props = setup({ voiceOutput: true })
+    fireEvent.click(screen.getByRole('button', { name: /turn voice output off/i }))
+    expect(props.onToggleVoice).toHaveBeenCalledWith(false)
+  })
+
+  it('hides the voice toggle until the setting has loaded', () => {
+    setup({ voiceOutput: null })
+    expect(screen.queryByRole('button', { name: /voice output/i })).not.toBeInTheDocument()
   })
 
   it('shows a thinking indicator and disables input while the agent works', () => {

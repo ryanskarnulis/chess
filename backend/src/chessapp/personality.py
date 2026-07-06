@@ -59,12 +59,29 @@ SYSTEM_PROMPTS: dict[str, str] = {
     "calm_coach": _CALM_COACH,
 }
 
+# "Talk more / talk less": verbosity layers an output-length instruction on
+# top of whichever personality is active. `normal` adds nothing — the base
+# prompt already says "keep your replies short".
+_VERBOSITY_INSTRUCTIONS: dict[str, str] = {
+    "low": (
+        "\nThe player asked you to talk less: reply in one short sentence at "
+        "most, no elaboration, unless they ask a direct question.\n"
+    ),
+    "normal": "",
+    "high": (
+        "\nThe player asked you to talk more: be chattier — add a remark "
+        "about the position, their play, or the game so far when you reply.\n"
+    ),
+}
 
-def system_prompt_for(personality: str) -> str:
-    """The system prompt for `personality`.
 
-    Falls back to the default personality's prompt for any unknown name:
-    `set_personality` is enum-guarded so this shouldn't happen, but the lookup
-    must never leave the agent without a valid prompt.
+def system_prompt_for(personality: str, verbosity: str = "normal") -> str:
+    """The system prompt for `personality` at `verbosity`.
+
+    Falls back to the default personality's prompt for any unknown name (and
+    to no extra instruction for an unknown verbosity): the setting tools are
+    enum-guarded so this shouldn't happen, but the lookup must never leave
+    the agent without a valid prompt.
     """
-    return SYSTEM_PROMPTS.get(personality, SYSTEM_PROMPTS[DEFAULT_PERSONALITY])
+    prompt = SYSTEM_PROMPTS.get(personality, SYSTEM_PROMPTS[DEFAULT_PERSONALITY])
+    return prompt + _VERBOSITY_INSTRUCTIONS.get(verbosity, "")

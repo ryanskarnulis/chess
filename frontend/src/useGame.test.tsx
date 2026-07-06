@@ -67,6 +67,16 @@ beforeEach(() => {
       return jsonResponse({ skill_level: 15, elo: null })
     if (path.includes('/api/command'))
       return jsonResponse({ commentary: 'Nice move!', tool_results: [], state: state() })
+    if (path.includes('/api/settings/voice')) return jsonResponse({ voice_output: true })
+    if (path.includes('/api/settings'))
+      return jsonResponse({
+        personality: 'friendly_rival',
+        verbosity: 'normal',
+        hints_mode: false,
+        voice_output: false,
+        skill_level: null,
+        elo: null,
+      })
     // Lifecycle mutations (new / undo / resign) answer with { state }.
     if (path.includes('/api/game/')) return jsonResponse({ state: state() })
     return jsonResponse(state())
@@ -270,6 +280,41 @@ describe('useGame', () => {
     expect(result.current.commentary).toBe('A classic king-pawn opening.')
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
     expect(result.current.agentThinking).toBe(false)
+  })
+
+  it('loads the voice-output setting on mount', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.voiceOutput).toBe(false))
+    expect(fetchMock).toHaveBeenCalledWith('/api/settings')
+  })
+
+  it('toggles voice output through the settings endpoint', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.voiceOutput).toBe(false))
+    await act(async () => {
+      await result.current.setVoiceOutput(true)
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/voice',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ enabled: true }) }),
+    )
+    // The hook reflects what the server confirmed, not what was requested.
+    expect(result.current.voiceOutput).toBe(true)
+  })
+
+  it('syncs voice output from the command speak flag (agent-side toggle)', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.voiceOutput).toBe(false))
+    // The agent flipped voice on via set_voice_output: speak comes back true.
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({ commentary: 'Voice on!', tool_results: [], state: state(), speak: true })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('turn on voice')
+    })
+    expect(result.current.voiceOutput).toBe(true)
   })
 
   it('voices the commentary when the backend says speak', async () => {

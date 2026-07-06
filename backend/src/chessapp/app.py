@@ -64,7 +64,9 @@ def build_app(
             base_url=llama_base_url,
             model=model,
             tool_definitions=build_registry(ctx).definitions(),
-            system_prompt_provider=lambda: system_prompt_for(ctx.settings.personality),
+            system_prompt_provider=lambda: system_prompt_for(
+                ctx.settings.personality, ctx.settings.verbosity
+            ),
             client=openai_client,
         )
     return create_app(ctx, brain=brain, speech=speech, static_dir=static_dir)

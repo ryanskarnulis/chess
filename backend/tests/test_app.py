@@ -121,3 +121,25 @@ def test_build_app_wires_live_personality_switching():
     )
     # ...and the last command, after the switch, uses calm_coach's prompt.
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for("calm_coach")
+
+
+def test_build_app_wires_live_verbosity_switching():
+    # "Talk less": a set_verbosity command must change the system prompt the
+    # brain gets on the *next* command — same live-settings seam as
+    # personality, so voice commands like "talk more/less" are real.
+    switch = _tool_call("set_verbosity", '{"verbosity":"low"}')
+    fake = FakeOpenAIClient(
+        _completion(tool_calls=[switch]),
+        _completion(content="ok"),
+    )
+    client = TestClient(build_app(model="gemma", openai_client=fake))
+
+    client.post("/api/command", json={"text": "talk less"})
+    client.post("/api/command", json={"text": "hello"})
+
+    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for(
+        "friendly_rival"
+    )
+    assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
+        "friendly_rival", verbosity="low"
+    )
