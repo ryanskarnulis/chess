@@ -16,9 +16,11 @@ Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
 """
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from chessapp.brain import Brain
@@ -112,7 +114,11 @@ class StateBroadcaster:
                 self.disconnect(client)
 
 
-def create_app(ctx: ToolContext, brain: Brain | None = None) -> FastAPI:
+def create_app(
+    ctx: ToolContext,
+    brain: Brain | None = None,
+    static_dir: Path | None = None,
+) -> FastAPI:
     app = FastAPI(title="chessapp")
     broadcaster = StateBroadcaster()
     registry = build_registry(ctx)
@@ -246,5 +252,11 @@ def create_app(ctx: ToolContext, brain: Brain | None = None) -> FastAPI:
     @app.get("/api/game/pgn")
     def export_pgn() -> dict[str, Any]:
         return {"pgn": ctx.session.export_pgn()}
+
+    if static_dir is not None:
+        # Serve the built frontend from the same origin as the API, so the
+        # UI's relative /api + /ws URLs work with no proxy or CORS. Mounted
+        # last: explicit routes above always win over the catch-all.
+        app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
 
     return app

@@ -1,0 +1,34 @@
+# Build context for the app image is the repo root (backend/Dockerfile needs
+# backend/ for the wheel and frontend/ for the UI bundle). Keep everything the
+# build doesn't read out of the context so it stays small and cache-stable.
+
+.git/
+.github/
+*.md
+
+# Backend: only pyproject.toml + src/ enter the build.
+backend/.venv/
+backend/venv/
+backend/tests/
+backend/**/__pycache__/
+backend/**/*.py[cod]
+backend/**/*.egg-info/
+backend/dist/
+backend/build/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/.coverage
+backend/htmlcov/
+
+# Frontend: dependencies are installed and the bundle built inside the image.
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
+# Never bake local models / engine binaries into the image.
+*.gguf
+stockfish*
+
+backend/Dockerfile
+.dockerignore
+docker-compose.yml

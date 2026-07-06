@@ -1,9 +1,26 @@
-# Backend service image — the "app" layer of the compose stack.
+# App service image — the "app" layer of the compose stack.
+#
+# Build context is the REPO ROOT (see docker-compose.yml / .dockerignore): the
+# image bakes in both the backend and the built frontend, so one container
+# serves the UI and the API from the same origin — the UI's relative /api and
+# /ws URLs need no proxy or CORS.
 #
 # Bundles Stockfish so a full deterministic game works with the LLM turned off:
 # the engine is a calculation tool driven in-process via python-chess UCI, not a
 # separate container. The llama-server "brain" *is* a separate container, reached
 # over the network (CHESSAPP_LLAMA_URL) — so nothing here needs the model.
+
+# --- frontend stage: build the static UI bundle --------------------------------
+FROM node:24-slim AS frontend
+
+WORKDIR /ui
+
+# Lockfile first so the (slow) npm ci layer caches across source-only changes.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
 
 # --- build stage: compile the wheel into a self-contained venv -----------------
 FROM python:3.12-slim AS build
@@ -12,8 +29,8 @@ WORKDIR /app
 
 # Only the package sources are needed to build (see .dockerignore); copying them
 # explicitly keeps the build cache tight and the layer independent of tests/docs.
-COPY pyproject.toml ./
-COPY src ./src
+COPY backend/pyproject.toml ./
+COPY backend/src ./src
 
 # A venv at a fixed path is relocatable to the same path in the runtime stage,
 # which keeps the console-script shebangs (#!/opt/venv/bin/python) valid.
@@ -29,12 +46,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/venv /opt/venv
+COPY --from=frontend /ui/dist /opt/frontend
 
 # PATH puts the venv first (resolves `chessapp` + `python`). CHESSAPP_STOCKFISH
 # attaches the engine by default; still optional — unset it to run engine-off.
+# CHESSAPP_STATIC_DIR serves the baked-in UI at / (unset it for API-only).
 # Host 0.0.0.0 so the app is reachable across the home network.
 ENV PATH=/opt/venv/bin:$PATH \
     CHESSAPP_STOCKFISH=/usr/games/stockfish \
+    CHESSAPP_STATIC_DIR=/opt/frontend \
     CHESSAPP_HOST=0.0.0.0 \
     CHESSAPP_PORT=8000
 

@@ -1,6 +1,8 @@
 # Home-network deployment: one container per layer, tied together here.
 #
-#   app    — the FastAPI backend (chessapp), Stockfish bundled in the image.
+#   app    — the FastAPI backend (chessapp) with the built frontend baked in
+#            and served at / (same origin as the API, so the UI's relative
+#            /api + /ws URLs need no proxy); Stockfish bundled in the image.
 #            Owns board truth + the deterministic engine; reaches the brain
 #            over the network at CHESSAPP_LLAMA_URL.
 #   llama  — the LLM "brain" (Gemma-4 26B on llama.cpp, GPU). Optional: the
@@ -16,8 +18,9 @@
 services:
   app:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      # Root context: the image needs backend/ (wheel) AND frontend/ (UI build).
+      context: .
+      dockerfile: backend/Dockerfile
     # 0.0.0.0 in the image + this publish makes the app reachable from any
     # browser on the home LAN, not just localhost on the host.
     ports:

@@ -40,6 +40,7 @@ def build_app(
     save_dir: Path | None = None,
     brain: Brain | None = None,
     openai_client: object | None = None,
+    static_dir: Path | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -58,7 +59,7 @@ def build_app(
             system_prompt_provider=lambda: system_prompt_for(ctx.settings.personality),
             client=openai_client,
         )
-    return create_app(ctx, brain=brain)
+    return create_app(ctx, brain=brain, static_dir=static_dir)
 
 
 def _engine_from_env() -> EnginePlayer | None:
@@ -69,11 +70,13 @@ def _engine_from_env() -> EnginePlayer | None:
 def build_app_from_env() -> FastAPI:
     """`build_app` configured from environment variables (for `main`/ASGI)."""
     save_dir_env = os.environ.get("CHESSAPP_SAVE_DIR")
+    static_dir_env = os.environ.get("CHESSAPP_STATIC_DIR")
     return build_app(
         llama_base_url=os.environ.get("CHESSAPP_LLAMA_URL", DEFAULT_LLAMA_BASE_URL),
         model=os.environ.get("CHESSAPP_MODEL", DEFAULT_MODEL),
         engine=_engine_from_env(),
         save_dir=Path(save_dir_env) if save_dir_env else None,
+        static_dir=Path(static_dir_env) if static_dir_env else None,
     )
 
 
