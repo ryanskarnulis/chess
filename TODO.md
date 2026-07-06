@@ -10,7 +10,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 ## Phase 3 — Full personality & settings
 
-- [ ] Settings by natural speech (difficulty, personality, verbosity, hints mode)
 - [ ] Hints, "what was my mistake" explanations (thinking mode ON for analysis)
 - [ ] Game review: fork/integrate an existing Stockfish-based review engine (move classification, accuracy)
 
