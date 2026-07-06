@@ -8,11 +8,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
 
-### Epic: Deployment
-
-- [ ] Verify fully-offline basic gameplay in the full compose stack (bring up `app` + `llama` together, drive a brain-driven game with no internet)
-- [ ] Frontend delivery in compose: containerize/serve the built `frontend/` (static host or backend mount) so browsers on the LAN can load the UI, not just hit `/api`
-
 ## Phase 2 — Voice
 
 - [ ] Speaches container (OpenAI-compatible STT+TTS) in compose
