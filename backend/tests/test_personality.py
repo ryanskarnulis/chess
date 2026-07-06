@@ -17,6 +17,21 @@ from chessapp.personality import (
 from chessapp.tools import PERSONALITIES
 
 
+def test_full_phase3_roster_is_selectable():
+    # The complete personality roster from the brief: the Phase 1 pair plus
+    # the Phase 3 additions. Every one must be selectable via set_personality.
+    assert set(PERSONALITIES) == {
+        "friendly_rival",
+        "calm_coach",
+        "trash_talker",
+        "grandmaster",
+        "villain",
+        "silent_assassin",
+        "beginner_bot",
+        "streamer",
+    }
+
+
 def test_prompts_and_personality_names_stay_in_lockstep():
     # No personality selectable without a prompt, and no orphan prompt for a
     # name `set_personality` would reject.

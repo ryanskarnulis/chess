@@ -22,8 +22,17 @@ UNDO_PLIES_MAX = 100
 # Save names become filenames: one path segment, no traversal.
 SAVE_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
-# Phase 1 personalities; the list grows in Phase 3.
-PERSONALITIES = ("friendly_rival", "calm_coach")
+# The full personality roster (Phase 1 pair + Phase 3 additions).
+PERSONALITIES = (
+    "friendly_rival",
+    "calm_coach",
+    "trash_talker",
+    "grandmaster",
+    "villain",
+    "silent_assassin",
+    "beginner_bot",
+    "streamer",
+)
 VERBOSITY_LEVELS = ("low", "normal", "high")
 
 
