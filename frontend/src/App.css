@@ -145,6 +145,69 @@
   background: rgba(0, 0, 0, 0.03);
 }
 
+/* Post-game review panel. */
+.review-summary {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.review-color {
+  display: flex;
+  flex-direction: column;
+}
+
+.review-color-label {
+  color: #999;
+  font-size: 0.85rem;
+  text-transform: capitalize;
+}
+
+.review-accuracy {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.review-counts {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.review-moves {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-moves th[scope='row'] {
+  width: 2rem;
+  text-align: right;
+  padding-right: 0.6rem;
+  color: #999;
+  font-weight: 400;
+}
+
+.review-moves td {
+  padding: 0.1rem 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.review-verdict {
+  font-size: 0.8rem;
+}
+
+.review-inaccuracy .review-verdict {
+  color: #b58900;
+}
+
+.review-mistake .review-verdict {
+  color: #cb6b16;
+}
+
+.review-blunder .review-verdict {
+  color: #c62828;
+}
+
 .panel-empty {
   color: #999;
   font-style: italic;

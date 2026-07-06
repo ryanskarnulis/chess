@@ -154,6 +154,33 @@ export async function transcribe(audio: Blob): Promise<string | null> {
   return data.text
 }
 
+export interface ReviewedMove {
+  san: string
+  uci: string
+  color: 'white' | 'black'
+  cp_loss: number
+  classification: 'good' | 'inaccuracy' | 'mistake' | 'blunder'
+  /** The engine's preferred move from the same position, in SAN. */
+  best: string
+  accuracy: number
+}
+
+export interface GameReview {
+  moves: ReviewedMove[]
+  /** Per-color accuracy percentage (0–100). */
+  accuracy: Record<string, number>
+  /** Per-color classification counts. */
+  counts: Record<string, Record<string, number>>
+}
+
+/** Fetch the whole-game review, or null if the backend refused (no engine →
+ * 503, no moves yet → 409). Read-only — never touches board state. */
+export async function fetchReview(): Promise<GameReview | null> {
+  const res = await fetch('/api/game/review')
+  if (!res.ok) return null
+  return (await res.json()) as GameReview
+}
+
 /** URL of the backend's one-way state broadcast channel. */
 export function stateSocketUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'

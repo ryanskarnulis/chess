@@ -35,7 +35,9 @@ No manual testing has happened yet — everything below has only been exercised 
 - [ ] Hints mode: hints appear when on, never when off
 - [ ] `evaluate_position` / "who's winning?" gives a coherent eval
 - [ ] Post-game `review_game`: move classifications and per-color accuracy look plausible against a known game
-- [ ] Analysis latency (thinking ON) is tolerable
+- [ ] Review panel: after game over, "Review game" shows per-color accuracy, classification counts, and flagged moves with better alternatives; panel resets on new game
+- [ ] Review panel: "Review unavailable" (not a crash) when the engine is off, and the button allows a retry
+- [ ] Analysis latency (thinking ON) is tolerable; whole-game review latency acceptable on a long game
 
 ### Personalities & settings
 - [ ] Each personality is distinguishable in commentary and move style
@@ -57,6 +59,5 @@ No manual testing has happened yet — everything below has only been exercised 
 
 ## Backlog (no near-term timeline)
 
-- [ ] UI: post-game review panel — surface `review_game` results (move classifications, per-color accuracy) in the web UI after game over
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
 - [ ] Physical board (Chessnut Move — blocked on hardware purchase): verify motorized actuation is programmatically controllable **before any design work**; until then, `control_physical_board` tool seam only

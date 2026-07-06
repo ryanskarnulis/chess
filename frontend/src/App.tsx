@@ -4,6 +4,7 @@ import { CommandBox } from './CommandBox'
 import { GameControls } from './GameControls'
 import { MoveHistory } from './MoveHistory'
 import { PromotionPicker } from './PromotionPicker'
+import { ReviewPanel } from './ReviewPanel'
 import { useGame } from './useGame'
 import './App.css'
 
@@ -85,6 +86,8 @@ function App() {
             />
             <CapturedPieces captured={state.captured} />
             <MoveHistory history={state.history} />
+            {/* Only after game over; unmounting on a new game resets it. */}
+            {state.game_over && <ReviewPanel />}
           </aside>
         )}
       </div>
