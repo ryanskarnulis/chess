@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, model_validator
 from chessapp.brain import Brain
 from chessapp.engine import validate_elo, validate_skill_level
 from chessapp.game import GameSession, MoveResult
+from chessapp.style import play_styled_move, profile_for
 from chessapp.tools import UNDO_PLIES_MAX, ToolContext, build_registry
 from chessapp.voice import SpeechClient
 
@@ -157,7 +158,10 @@ def create_app(
         result = ctx.session.submit_move(request.move)
         engine_move: dict[str, Any] | None = None
         if result.legal and ctx.engine is not None and not ctx.session.is_game_over():
-            engine_move = _move_dict(ctx.engine.play_move(ctx.session))
+            # The reply is biased by the active personality's move style;
+            # legality is still the session's call, never the style layer's.
+            profile = profile_for(ctx.settings.personality)
+            engine_move = _move_dict(play_styled_move(ctx.engine, ctx.session, profile))
         if result.legal:
             await _broadcast_state()
         return {

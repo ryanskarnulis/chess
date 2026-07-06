@@ -218,6 +218,54 @@ def test_engine_does_not_reply_to_illegal_move():
         assert body["state"]["history"] == []
 
 
+class StyleAwareFakeEngine:
+    """Engine double for the styled-reply path: best move differs from the
+    MultiPV pick a biased personality would make, so the test can tell which
+    path the API took."""
+
+    def __init__(self):
+        self.multipv_requests = []
+
+    def play_move(self, session):
+        return session.submit_move("e7e5")  # the plain "best move" path
+
+    def choose_move(self, session):
+        return "e7e5"
+
+    def get_best_moves(self, session, n=3):
+        from chessapp.engine import CandidateMove
+
+        self.multipv_requests.append(n)
+        # Best-first, White-POV scores; the weakest eligible (modest pick,
+        # i.e. best for White) is a7a6.
+        return [
+            CandidateMove(uci="e7e5", san="e5", score_cp=-30, mate_in=None),
+            CandidateMove(uci="a7a6", san="a6", score_cp=60, mate_in=None),
+        ][:n]
+
+
+def test_engine_reply_is_biased_by_the_active_personality():
+    # With beginner_bot active, the reply comes from the styled MultiPV pick,
+    # not the engine's best move.
+    engine = StyleAwareFakeEngine()
+    ctx = ToolContext(session=GameSession(), engine=engine)
+    ctx.settings.personality = "beginner_bot"
+    client = TestClient(create_app(ctx))
+    body = client.post("/api/game/move", json={"move": "e4"}).json()
+    assert body["engine_move"]["legal"] is True
+    assert body["engine_move"]["uci"] == "a7a6"
+    assert engine.multipv_requests  # MultiPV was actually consulted
+
+
+def test_engine_reply_with_default_personality_plays_best():
+    engine = StyleAwareFakeEngine()
+    ctx = ToolContext(session=GameSession(), engine=engine)
+    client = TestClient(create_app(ctx))
+    body = client.post("/api/game/move", json={"move": "e4"}).json()
+    assert body["engine_move"]["uci"] == "e7e5"
+    assert engine.multipv_requests == []
+
+
 # --- websocket state channel ------------------------------------------------
 
 
