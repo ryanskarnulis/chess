@@ -94,6 +94,7 @@ services:
   # llama GGUF):
   #
   #   curl -X POST http://localhost:8001/v1/models/Systran%2Ffaster-whisper-small
+  #   curl -X POST http://localhost:8001/v1/models/speaches-ai%2FKokoro-82M-v1.0-ONNX
   #
   # Optional like llama: the app serves board + text play with this container
   # down (voice endpoints 503/502).

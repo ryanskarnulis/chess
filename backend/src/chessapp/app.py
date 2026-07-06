@@ -27,7 +27,13 @@ from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
 from chessapp.personality import system_prompt_for
 from chessapp.tools import ToolContext, build_registry
-from chessapp.voice import DEFAULT_STT_MODEL, SpeechClient, create_speech_client
+from chessapp.voice import (
+    DEFAULT_STT_MODEL,
+    DEFAULT_TTS_MODEL,
+    DEFAULT_TTS_VOICE,
+    SpeechClient,
+    create_speech_client,
+)
 
 DEFAULT_LLAMA_BASE_URL = "http://localhost:8080/v1"
 DEFAULT_MODEL = "gemma"
@@ -78,6 +84,8 @@ def _speech_from_env() -> SpeechClient | None:
     return create_speech_client(
         base_url=url,
         stt_model=os.environ.get("CHESSAPP_STT_MODEL", DEFAULT_STT_MODEL),
+        tts_model=os.environ.get("CHESSAPP_TTS_MODEL", DEFAULT_TTS_MODEL),
+        tts_voice=os.environ.get("CHESSAPP_TTS_VOICE", DEFAULT_TTS_VOICE),
     )
 
 
