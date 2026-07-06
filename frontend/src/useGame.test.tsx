@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useGame } from './useGame'
 import type { GameState, MoveResponse } from './api'
 
+// Playback is a side effect owned by tts.ts (tested there); here we only
+// assert the hook asks for it when — and only when — the backend says so.
+vi.mock('./tts', () => ({ playText: vi.fn() }))
+
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 const AFTER_E4_FEN = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1'
 // A white pawn on e7, ready to promote.
@@ -266,6 +270,43 @@ describe('useGame', () => {
     expect(result.current.commentary).toBe('A classic king-pawn opening.')
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
     expect(result.current.agentThinking).toBe(false)
+  })
+
+  it('voices the commentary when the backend says speak', async () => {
+    const { playText } = await import('./tts')
+    vi.mocked(playText).mockClear()
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({
+          commentary: 'Check!',
+          tool_results: [],
+          state: state(),
+          speak: true,
+        })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('any threats?')
+    })
+    expect(playText).toHaveBeenCalledWith('Check!')
+  })
+
+  it('stays silent when the backend does not ask to speak', async () => {
+    const { playText } = await import('./tts')
+    vi.mocked(playText).mockClear()
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({ commentary: 'Check!', tool_results: [], state: state(), speak: false })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('any threats?')
+    })
+    expect(playText).not.toHaveBeenCalled()
   })
 
   it('reports an unavailable agent without touching board state', async () => {

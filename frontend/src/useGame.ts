@@ -11,6 +11,7 @@ import {
   type GameState,
 } from './api'
 import { isPromotion, type PromotionPiece } from './promotion'
+import { playText } from './tts'
 
 export interface UseGame {
   /** Latest authoritative game state, or null until the first load. */
@@ -168,6 +169,9 @@ export function useGame(): UseGame {
           // The agent acts only through tools; the returned state is
           // authoritative (unchanged for a question or read-only command).
           apply(response.state)
+          // Voice out is fire-and-forget: the reply is already on screen,
+          // and a playback failure must never block the game.
+          if (response.speak && response.commentary) void playText(response.commentary)
         } else {
           // Null means the backend refused (e.g. 503: no brain) — leave the
           // board untouched and tell the user the agent isn't available.

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
@@ -36,6 +37,10 @@ class MoveRequest(BaseModel):
 
 class CommandRequest(BaseModel):
     text: str
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, pattern=r"\S")
 
 
 class UndoRequest(BaseModel):
@@ -249,6 +254,10 @@ def create_app(
             "commentary": commentary,
             "tool_results": tool_results,
             "state": state,
+            # Whether the client should voice the commentary (the user's
+            # voice_output setting, agent-togglable via set_voice_output).
+            # The server owns the decision; the client owns the playback.
+            "speak": ctx.settings.voice_output,
         }
 
     @app.post("/api/voice/transcribe")
@@ -271,6 +280,24 @@ def create_app(
                 status_code=502, detail=f"speech service error: {exc}"
             ) from exc
         return {"text": text}
+
+    @app.post("/api/voice/speak")
+    def speak_text(request: SpeakRequest) -> Response:
+        """TTS proxy: text in, mp3 out — the audio for whatever commentary
+        the client decided to voice. Same optionality contract as
+        /api/voice/transcribe: 503 without a speech service, 502 when the
+        upstream fails; board state is never touched."""
+        if speech is None:
+            raise HTTPException(
+                status_code=503, detail="voice unavailable: no speech service"
+            )
+        try:
+            audio = speech.speak(request.text)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"speech service error: {exc}"
+            ) from exc
+        return Response(content=audio, media_type="audio/mpeg")
 
     @app.get("/api/game/pgn")
     def export_pgn() -> dict[str, Any]:

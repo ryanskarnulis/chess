@@ -93,6 +93,9 @@ export interface CommandResponse {
   tool_results: { name: string; result: unknown }[]
   /** The authoritative state after any tools ran. */
   state: GameState
+  /** Whether the user wants the commentary voiced (their voice_output
+   * setting — the server decides, the client plays). */
+  speak: boolean
 }
 
 /**
