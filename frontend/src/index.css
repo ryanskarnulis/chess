@@ -1,33 +1,34 @@
+/* Night-silk theme (The Web design language) — dark only.
+   Tokens come from silk.css (copied from the gateway repo). */
+@import './silk.css';
+
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-
   font: 18px/145% var(--sans);
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
+  color-scheme: dark;
+  color: var(--ink);
+  background-color: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-  }
-}
-
 body {
   margin: 0;
+  min-height: 100vh;
+  /* A faint quarter orb-web in the top-right corner over the night vignette —
+     the launcher's motif, kept subtle so the board stays the focus. */
+  background:
+    url('./assets/corner-web.svg') top right / min(680px, 88vmin) auto no-repeat fixed,
+    radial-gradient(1100px 750px at 50% 38%, var(--bg-vignette) 0%, var(--bg) 62%);
 }
 
+/* Signature heading recipe. */
 h1 {
-  font-weight: 500;
-  color: var(--text-h);
+  font-weight: 300;
+  font-size: 1.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.38em;
+  text-indent: 0.38em;
+  color: var(--ink);
 }
