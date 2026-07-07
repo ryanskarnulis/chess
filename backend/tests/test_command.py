@@ -182,6 +182,48 @@ def test_command_mutation_broadcasts_state_to_ws():
     assert message["state"]["history"] == ["e4"]
 
 
+def test_first_command_sees_empty_transcript():
+    client, brain = make_client(AgentResponse(text="hello"))
+    client.post("/api/command", json={"text": "hi there"})
+    assert brain.transcripts == [[]]
+
+
+def test_transcript_carries_prior_turns_to_the_brain():
+    """The conversation memory: turn N+1's brain call includes turn N's
+    user command and the commentary the user actually saw."""
+    client, brain = make_client(
+        AgentResponse(text="Which knight did you mean?"),
+        AgentResponse(text="noted"),
+    )
+    client.post("/api/command", json={"text": "move the knight"})
+    client.post("/api/command", json={"text": "the queenside one"})
+    assert brain.transcripts[1] == [
+        {"role": "user", "content": "move the knight"},
+        {"role": "assistant", "content": "Which knight did you mean?"},
+    ]
+
+
+def test_reaction_commentary_is_what_the_transcript_records():
+    """When tools run, the user sees the reaction — so that, not the brain's
+    pre-action text, is what the next turn remembers. React itself also gets
+    the prior turns (not including the in-flight one)."""
+    client, brain = make_client(
+        AgentResponse(
+            text="on it",
+            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
+        ),
+        AgentResponse(text="you did"),
+        reactions=("A bold king's pawn!",),
+    )
+    client.post("/api/command", json={"text": "play e4"})
+    assert brain.react_transcripts == [[]]
+    client.post("/api/command", json={"text": "did I open well?"})
+    assert brain.transcripts[1] == [
+        {"role": "user", "content": "play e4"},
+        {"role": "assistant", "content": "A bold king's pawn!"},
+    ]
+
+
 def test_read_only_command_does_not_broadcast():
     client, _ = make_client(
         AgentResponse(

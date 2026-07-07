@@ -7,6 +7,7 @@ domain errors (ValueError) all come back as `{"ok": False, "error": ...}` so
 the agent loop can feed the failure back to the model instead of crashing.
 """
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 import jsonschema
 
 from chessapp.analysis import analyze_last_move, review_game
+from chessapp.conversation import Transcript
 from chessapp.engine import (
     DEFAULT_TIER,
     DIFFICULTY_TIERS,
@@ -77,13 +79,17 @@ class ToolContext:
     """What tools operate on. `engine` is optional: analysis tools report
     an error result without one; everything else works engine-free.
     `save_dir` is where save_game/resume_game keep their files; without it
-    those tools report an error. `resume_game` replaces `session`, so the
-    context — not any captured reference — is the source of truth."""
+    those tools report an error. `resume_game` replaces `session` (and
+    `transcript`), so the context — not any captured reference — is the
+    source of truth. `transcript` is the conversation memory the agent loop
+    reads and records; it rides inside save files so a resumed game keeps
+    its conversational thread."""
 
     session: GameSession
     engine: EnginePlayer | None = None
     save_dir: Path | None = None
     settings: Settings = field(default_factory=Settings)
+    transcript: Transcript = field(default_factory=Transcript)
 
 
 @dataclass
@@ -284,15 +290,26 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         return {"ok": True, "pgn": ctx.session.export_pgn()}
 
     def save_game(name: str = "autosave") -> dict[str, Any]:
+        # The transcript rides in the same file under a key GameSession
+        # ignores, so game truth and conversation stay in one save and old
+        # saves (no transcript key) remain loadable.
         path = _save_path(ctx, name)
-        ctx.session.save(path)
+        data = ctx.session.to_dict()
+        data["transcript"] = ctx.transcript.to_dict()
+        path.write_text(json.dumps(data, indent=2))
         return {"ok": True, "name": name}
 
     def resume_game(name: str = "autosave") -> dict[str, Any]:
         path = _save_path(ctx, name)
         if not path.exists():
             raise ValueError(f"no saved game named {name!r}")
-        ctx.session = GameSession.load(path)
+        data = json.loads(path.read_text())
+        # Validate both parts before touching the context, so a corrupt file
+        # can't leave a restored board with someone else's conversation.
+        session = GameSession.from_dict(data)
+        transcript = Transcript.from_dict(data.get("transcript", []))
+        ctx.session = session
+        ctx.transcript = transcript
         return {
             "ok": True,
             "name": name,

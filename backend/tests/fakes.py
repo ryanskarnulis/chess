@@ -62,11 +62,17 @@ class ScriptedBrain:
         self._reactions = list(reactions)
         self.calls: list[tuple[dict, str]] = []
         self.react_calls: list[tuple[dict, list]] = []
+        self.transcripts: list[list] = []
+        self.react_transcripts: list[list] = []
 
-    def get_agent_response(self, board_state: dict, command: str) -> AgentResponse:
+    def get_agent_response(
+        self, board_state: dict, command: str, transcript=()
+    ) -> AgentResponse:
         self.calls.append((board_state, command))
+        self.transcripts.append(list(transcript))
         return self._responses.pop(0)
 
-    def react(self, board_state: dict, changes: list) -> str:
+    def react(self, board_state: dict, changes: list, transcript=()) -> str:
         self.react_calls.append((board_state, changes))
+        self.react_transcripts.append(list(transcript))
         return self._reactions.pop(0) if self._reactions else "(reaction)"
