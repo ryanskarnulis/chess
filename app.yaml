@@ -1,0 +1,15 @@
+# Workspace app manifest — consumed by gateway/gen.py (and later the hub app).
+# Schema reference: ../gateway/README.md
+name: chess
+title: Chess
+description: Play against a tool-using AI agent — voice-first, with personalities.
+icon: "♞"
+upstream: 127.0.0.1:8000
+health: /api/state
+lan: true
+runtime:
+  type: compose
+  start: docker compose up -d
+  stop: docker compose down
+  notes: "GPU llama brain is optional: `docker compose up -d app` runs engine-only."
+tags: [game, ai]

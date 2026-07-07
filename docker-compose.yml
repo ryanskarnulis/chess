@@ -22,10 +22,11 @@ services:
       # Root context: the image needs backend/ (wheel) AND frontend/ (UI build).
       context: .
       dockerfile: backend/Dockerfile
-    # 0.0.0.0 in the image + this publish makes the app reachable from any
-    # browser on the home LAN, not just localhost on the host.
+    # Host-only bind: LAN traffic comes in through the workspace gateway
+    # (chess.$HOMELAB_DOMAIN → 127.0.0.1:8000). Port block 8000-8099 belongs to
+    # chess — see ../gateway/README.md for the registry.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       # Point the brain seam at the llama service on the compose network.
       # Unset/override to run the LLM off — /api/command 503s, gameplay is fine.
@@ -49,9 +50,9 @@ services:
   llama:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     ports:
-      # Published for host-side debugging (curl localhost:8080/health); the app
+      # Published for host-side debugging (curl localhost:8010/health); the app
       # reaches it over the internal network regardless.
-      - "8080:8080"
+      - "127.0.0.1:8010:8080"
     volumes:
       # GOTCHA: -hf downloads to the HF cache layout, NOT ~/.cache/llama.cpp.
       # Mount the host HF cache or the ~14GB GGUF re-downloads on every start.
@@ -93,8 +94,8 @@ services:
   # the mounted cache — internet once, then fully local, same story as the
   # llama GGUF):
   #
-  #   curl -X POST http://localhost:8001/v1/models/Systran%2Ffaster-whisper-small
-  #   curl -X POST http://localhost:8001/v1/models/speaches-ai%2FKokoro-82M-v1.0-ONNX
+  #   curl -X POST http://localhost:8020/v1/models/Systran%2Ffaster-whisper-small
+  #   curl -X POST http://localhost:8020/v1/models/speaches-ai%2FKokoro-82M-v1.0-ONNX
   #
   # Optional like llama: the app serves board + text play with this container
   # down (voice endpoints 503/502).
@@ -103,7 +104,7 @@ services:
     ports:
       # Published for host-side debugging only; the app proxies to it over the
       # internal network so the browser never needs this port.
-      - "8001:8000"
+      - "127.0.0.1:8020:8000"
     volumes:
       - ${HOME}/.cache/huggingface:/home/ubuntu/.cache/huggingface
     restart: unless-stopped
