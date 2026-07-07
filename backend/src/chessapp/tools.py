@@ -17,6 +17,7 @@ import jsonschema
 from chessapp.analysis import analyze_last_move, review_game
 from chessapp.engine import ELO_MAX, ELO_MIN, SKILL_MAX, SKILL_MIN, EnginePlayer
 from chessapp.game import GameSession
+from chessapp.style import play_styled_move, profile_for
 
 GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
@@ -225,12 +226,21 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         result = ctx.session.submit_move(move)
         if not result.legal:
             return {"ok": True, "legal": False, "reason": result.reason}
+        # Mirror the UI move path: a legal player move gets the engine's
+        # (personality-styled) reply in the same call, so a move sent through
+        # the agent never leaves the player to move for both sides.
+        engine_move: dict[str, Any] | None = None
+        if ctx.engine is not None and not ctx.session.is_game_over():
+            profile = profile_for(ctx.settings.personality)
+            reply = play_styled_move(ctx.engine, ctx.session, profile)
+            engine_move = {"san": reply.san, "uci": reply.uci}
         return {
             "ok": True,
             "legal": True,
             "san": result.san,
             "uci": result.uci,
-            "game_over": result.game_over,
+            "engine_move": engine_move,
+            "game_over": ctx.session.is_game_over(),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }
@@ -411,8 +421,10 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         Tool(
             name="make_move",
             description=(
-                "Submit a move in SAN (e.g. 'Nf3') or UCI (e.g. 'g1f3'). The "
-                "engine decides legality: the result says legal or illegal."
+                "Submit the player's move in SAN (e.g. 'Nf3') or UCI (e.g. "
+                "'g1f3'). The engine decides legality: the result says legal "
+                "or illegal. When the move is legal, the engine opponent "
+                "replies immediately — the result's engine_move is its answer."
             ),
             parameters={
                 "type": "object",

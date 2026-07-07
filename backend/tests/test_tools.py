@@ -13,6 +13,7 @@ import pytest
 
 from chessapp.game import GameSession
 from chessapp.tools import Settings, Tool, ToolContext, ToolRegistry, build_registry
+from fakes import StyleAwareFakeEngine
 
 requires_stockfish = pytest.mark.skipif(
     shutil.which("stockfish") is None, reason="stockfish binary not installed"
@@ -222,6 +223,59 @@ def test_make_move_illegal_is_ok_result_with_legal_false(registry, session):
 def test_make_move_requires_move_arg(registry):
     assert registry.dispatch("make_move", {})["ok"] is False
     assert registry.dispatch("make_move", {"move": 4})["ok"] is False
+
+
+def test_make_move_with_engine_triggers_reply(session):
+    """The agent path mirrors the UI path: a legal player move gets the
+    engine's reply in the same tool call, so texting 'e4' never leaves the
+    player to move for both sides."""
+    registry = build_registry(
+        ToolContext(session=session, engine=StyleAwareFakeEngine())
+    )
+    result = registry.dispatch("make_move", {"move": "e4"})
+    assert result["legal"] is True
+    assert result["engine_move"] == {"san": "e5", "uci": "e7e5"}
+    assert result["turn"] == "white"
+    assert session.move_history() == ["e4", "e5"]
+    assert result["fen"] == session.fen()
+
+
+def test_make_move_reply_is_biased_by_the_active_personality(session):
+    engine = StyleAwareFakeEngine()
+    ctx = ToolContext(session=session, engine=engine)
+    ctx.settings.personality = "beginner_bot"
+    registry = build_registry(ctx)
+    result = registry.dispatch("make_move", {"move": "e4"})
+    assert result["engine_move"]["uci"] == "a7a6"
+    assert engine.multipv_requests  # MultiPV was actually consulted
+
+
+def test_make_move_illegal_gets_no_engine_reply(session):
+    registry = build_registry(
+        ToolContext(session=session, engine=StyleAwareFakeEngine())
+    )
+    result = registry.dispatch("make_move", {"move": "e5"})
+    assert result["legal"] is False
+    assert "engine_move" not in result
+    assert session.move_history() == []
+
+
+def test_make_move_no_engine_reply_once_game_is_over():
+    class MustNotPlay:
+        def play_move(self, session):
+            raise AssertionError("engine must not reply to a game-ending move")
+
+    session = GameSession(WHITE_MATE_IN_1)
+    registry = build_registry(ToolContext(session=session, engine=MustNotPlay()))
+    result = registry.dispatch("make_move", {"move": "Qxf7#"})
+    assert result["game_over"] is True
+    assert result["engine_move"] is None
+
+
+def test_make_move_without_engine_has_no_reply(registry):
+    result = registry.dispatch("make_move", {"move": "e4"})
+    assert result["engine_move"] is None
+    assert result["turn"] == "black"
 
 
 def test_make_move_reports_checkmate(registry):
