@@ -8,7 +8,7 @@ export interface CapturedPiecesProps {
   captured: { white: string[]; black: string[] }
 }
 
-/** One side's captured pieces, shown with the *opponent's* colour glyphs. */
+/** One side's captured pieces — glyphs that *look like* the opponent's. */
 function Side({
   side,
   symbols,
@@ -18,8 +18,12 @@ function Side({
   symbols: string[]
   advantage: number
 }) {
-  // White captures black pieces, so render the opposite colour's glyphs.
-  const glyphColor = side === 'white' ? 'black' : 'white'
+  // White captures black pieces, which must *look* black. The dark theme
+  // renders text glyphs in the light ink color, so the filled ("black")
+  // set reads as white pieces and the hollow ("white") set reads as black —
+  // the perceived colors are inverted from the glyph names. Use the same-
+  // name set so the rendered color matches the captured piece's color.
+  const glyphColor = side
   return (
     <div className="captured-side" aria-label={`Captured by ${side}`}>
       <span className="captured-side-label">{side}</span>
