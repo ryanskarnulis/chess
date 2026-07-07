@@ -7,9 +7,15 @@ describe('CapturedPieces', () => {
     // White has captured a black pawn and knight; black a white pawn.
     render(<CapturedPieces captured={{ white: ['p', 'n'], black: ['p'] }} />)
     const white = screen.getByLabelText(/captured by white/i)
-    // Black glyphs (the pieces white took): ♟ pawn, ♞ knight.
-    expect(within(white).getByText('♟')).toBeInTheDocument()
-    expect(within(white).getByText('♞')).toBeInTheDocument()
+    // The dark theme renders glyphs in the light ink color, so the *filled*
+    // ("black") glyphs read as white pieces. White's captures — black
+    // pieces — must therefore use the hollow set: ♙ pawn, ♘ knight.
+    expect(within(white).getByText('♙')).toBeInTheDocument()
+    expect(within(white).getByText('♘')).toBeInTheDocument()
+    const black = screen.getByLabelText(/captured by black/i)
+    // Black's capture (a white pawn) gets the filled glyph, which renders
+    // light: ♟.
+    expect(within(black).getByText('♟')).toBeInTheDocument()
   })
 
   it('shows the material advantage for the side that is ahead', () => {
