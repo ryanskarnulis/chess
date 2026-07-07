@@ -15,9 +15,15 @@ from typing import Any
 import jsonschema
 
 from chessapp.analysis import analyze_last_move, review_game
-from chessapp.engine import ELO_MAX, ELO_MIN, SKILL_MAX, SKILL_MIN, EnginePlayer
+from chessapp.engine import (
+    DEFAULT_SKILL_LEVEL,
+    ELO_MAX,
+    ELO_MIN,
+    SKILL_MAX,
+    SKILL_MIN,
+    EnginePlayer,
+)
 from chessapp.game import GameSession
-from chessapp.style import play_styled_move, profile_for
 
 GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
@@ -42,13 +48,15 @@ VERBOSITY_LEVELS = ("low", "normal", "high")
 class Settings:
     """Agent-adjustable app settings. Difficulty records exactly one of
     skill_level / elo (the last one set); it is applied to the live engine
-    when present and re-applied when an engine attaches later."""
+    when present and applied at assembly when an engine attaches. Personality
+    is tone only — it shapes the agent's commentary, never move choice or any
+    other setting."""
 
     personality: str = PERSONALITIES[0]
     verbosity: str = "normal"
     hints_mode: bool = False
     voice_output: bool = False
-    skill_level: int | None = None
+    skill_level: int | None = DEFAULT_SKILL_LEVEL
     elo: int | None = None
 
 
@@ -227,12 +235,11 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         if not result.legal:
             return {"ok": True, "legal": False, "reason": result.reason}
         # Mirror the UI move path: a legal player move gets the engine's
-        # (personality-styled) reply in the same call, so a move sent through
-        # the agent never leaves the player to move for both sides.
+        # reply in the same call, so a move sent through the agent never
+        # leaves the player to move for both sides.
         engine_move: dict[str, Any] | None = None
         if ctx.engine is not None and not ctx.session.is_game_over():
-            profile = profile_for(ctx.settings.personality)
-            reply = play_styled_move(ctx.engine, ctx.session, profile)
+            reply = ctx.engine.play_move(ctx.session)
             engine_move = {"san": reply.san, "uci": reply.uci}
         return {
             "ok": True,

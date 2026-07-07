@@ -40,9 +40,8 @@ No manual testing has happened yet — everything below has only been exercised 
 - [ ] Analysis latency (thinking ON) is tolerable; whole-game review latency acceptable on a long game
 
 ### Personalities & settings
-- [ ] Each personality is distinguishable in commentary and move style
-- [ ] Personality-biased move selection still produces legal, reasonable moves at each difficulty
-- [ ] `set_difficulty` visibly changes engine strength (easy loses to a casual player, hard doesn't)
+- [ ] Each personality is distinguishable in commentary (tone only — personalities must NOT change move strength or settings)
+- [ ] `set_difficulty` visibly changes engine strength (easy loses to a casual player, hard doesn't); the UI difficulty selector matches what the engine actually plays, including after an app restart
 - [ ] Settings by speech/text: difficulty, personality, verbosity, hints mode, voice output all switchable mid-game and persist
 - [ ] Verbosity levels actually differ (terse vs chatty)
 

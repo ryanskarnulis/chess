@@ -46,6 +46,9 @@ export interface UseGame {
   resign: () => Promise<void>
   /** Set engine strength by Stockfish skill level (0–20). */
   setDifficulty: (skillLevel: number) => Promise<void>
+  /** Server-confirmed skill level; null until settings load (or when the
+   * strength was last set outside the skill scale, e.g. by elo). */
+  skillLevel: number | null
   /** The agent's latest commentary, or null before the first command. */
   commentary: string | null
   /** True while a command is in flight with the agent. */
@@ -73,6 +76,7 @@ export function useGame(): UseGame {
   const [commentary, setCommentary] = useState<string | null>(null)
   const [agentThinking, setAgentThinking] = useState(false)
   const [voiceOutput, setVoiceOutputState] = useState<boolean | null>(null)
+  const [skillLevel, setSkillLevelState] = useState<number | null>(null)
   // Latest state without making the move callbacks depend on it — the board
   // holds `play` in a ref, but promotion detection still needs the live fen.
   const stateRef = useRef<GameState | null>(null)
@@ -89,7 +93,10 @@ export function useGame(): UseGame {
       if (live) apply(s)
     })
     fetchSettings().then((s) => {
-      if (live) setVoiceOutputState(s.voice_output)
+      if (live) {
+        setVoiceOutputState(s.voice_output)
+        setSkillLevelState(s.skill_level)
+      }
     })
     const socket = new WebSocket(stateSocketUrl())
     socket.onmessage = (ev) => {
@@ -164,9 +171,12 @@ export function useGame(): UseGame {
     if (next) apply(next)
   }, [apply])
 
-  const setDifficulty = useCallback(async (skillLevel: number) => {
-    // Difficulty is a settings change, not a board mutation — nothing to apply.
-    await apiSetDifficulty(skillLevel)
+  const setDifficulty = useCallback(async (level: number) => {
+    // Difficulty is a settings change, not a board mutation — no state to
+    // apply. The hook reflects only what the server confirmed, so the
+    // selector can never drift from the strength the engine actually plays.
+    const confirmed = await apiSetDifficulty(level)
+    if (confirmed !== null) setSkillLevelState(confirmed.skill_level)
   }, [])
 
   const sendCommand = useCallback(
@@ -216,6 +226,7 @@ export function useGame(): UseGame {
     undo,
     resign,
     setDifficulty,
+    skillLevel,
     commentary,
     agentThinking,
     sendCommand,

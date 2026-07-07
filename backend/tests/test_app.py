@@ -16,8 +16,9 @@ from fastapi.testclient import TestClient
 
 from chessapp.app import build_app
 from chessapp.brain import AgentResponse
+from chessapp.engine import DEFAULT_SKILL_LEVEL
 from chessapp.personality import system_prompt_for
-from fakes import ScriptedBrain
+from fakes import FakeEngine, ScriptedBrain
 
 
 def _tool_call(name: str, arguments: str, call_id: str = "id0"):
@@ -59,6 +60,18 @@ def test_build_app_serves_state_from_a_fresh_game():
     state = client.get("/api/state").json()
     assert state["turn"] == "white"
     assert state["history"] == []
+
+
+def test_build_app_applies_the_default_difficulty_to_the_engine():
+    # Stockfish's own default is full strength (Skill Level 20); assembling
+    # the app must configure the attached engine to the settings default so
+    # the strength the UI reports is the strength that actually plays.
+    engine = FakeEngine()
+    app = build_app(brain=ScriptedBrain(), engine=engine)
+    assert engine.skill_levels == [DEFAULT_SKILL_LEVEL]
+    settings = TestClient(app).get("/api/settings").json()
+    assert settings["skill_level"] == DEFAULT_SKILL_LEVEL
+    assert settings["elo"] is None
 
 
 def test_build_app_runs_a_command_through_the_assembled_pipeline():

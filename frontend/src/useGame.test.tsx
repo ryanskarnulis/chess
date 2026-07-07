@@ -74,7 +74,7 @@ beforeEach(() => {
         verbosity: 'normal',
         hints_mode: false,
         voice_output: false,
-        skill_level: null,
+        skill_level: 5,
         elo: null,
       })
     // Lifecycle mutations (new / undo / resign) answer with { state }.
@@ -243,6 +243,11 @@ describe('useGame', () => {
     )
   })
 
+  it('loads the current difficulty from settings', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.skillLevel).toBe(5))
+  })
+
   it('sets difficulty by skill level without touching board state', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
@@ -254,6 +259,8 @@ describe('useGame', () => {
       '/api/game/difficulty',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ skill_level: 15 }) }),
     )
+    // The hook reflects only what the server confirmed.
+    expect(result.current.skillLevel).toBe(15)
     // Difficulty is not a board mutation — no re-render churn.
     expect(result.current.revision).toBe(revisionBefore)
   })

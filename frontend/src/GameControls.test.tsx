@@ -11,6 +11,7 @@ function setup(overrides: Partial<React.ComponentProps<typeof GameControls>> = {
     onUndo: vi.fn(),
     onResign: vi.fn(),
     onSetDifficulty: vi.fn(),
+    skillLevel: 5 as number | null,
     ...overrides,
   }
   render(<GameControls {...props} />)
@@ -46,5 +47,21 @@ describe('GameControls', () => {
     const advanced = DIFFICULTY_LEVELS.find((l) => l.label === 'Advanced')!
     fireEvent.change(select, { target: { value: String(advanced.skillLevel) } })
     expect(props.onSetDifficulty).toHaveBeenCalledWith(advanced.skillLevel)
+  })
+
+  it('shows the tier for the server-confirmed skill level', () => {
+    setup({ skillLevel: 15 })
+    expect(screen.getByLabelText(/difficulty/i)).toHaveValue('15')
+  })
+
+  it('shows no tier before settings load', () => {
+    setup({ skillLevel: null })
+    expect(screen.getByLabelText(/difficulty/i)).toHaveValue('')
+  })
+
+  it('shows no tier for a strength outside the presets', () => {
+    // e.g. the agent set skill 7 or an elo — don't lie by snapping to a tier.
+    setup({ skillLevel: 7 })
+    expect(screen.getByLabelText(/difficulty/i)).toHaveValue('')
   })
 })

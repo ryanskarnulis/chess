@@ -16,6 +16,9 @@ from chessapp.game import GameSession, MoveResult
 SKILL_MIN, SKILL_MAX = 0, 20
 # Stockfish's own UCI_Elo bounds.
 ELO_MIN, ELO_MAX = 1320, 3190
+# What a fresh app plays at ("Casual"). Stockfish's own default is full
+# strength, so an engine must never be left unconfigured.
+DEFAULT_SKILL_LEVEL = 5
 
 DEFAULT_MOVE_TIME = 0.1
 DEFAULT_ANALYSIS_DEPTH = 12

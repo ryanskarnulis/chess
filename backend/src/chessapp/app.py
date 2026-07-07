@@ -59,6 +59,13 @@ def build_app(
     OpenAI client into that default brain without a real llama-server.
     """
     ctx = ToolContext(session=GameSession(), engine=engine, save_dir=save_dir)
+    if engine is not None:
+        # Stockfish's own default is full strength; make the engine play at
+        # the settings default so strength and reported settings agree.
+        if ctx.settings.skill_level is not None:
+            engine.set_skill_level(ctx.settings.skill_level)
+        elif ctx.settings.elo is not None:
+            engine.set_elo(ctx.settings.elo)
     if brain is None:
         brain = create_llama_brain(
             base_url=llama_base_url,
