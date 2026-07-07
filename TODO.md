@@ -2,10 +2,6 @@
 
 The backlog, in priority order. One task = one vertical slice = one branch = one PR (TDD: failing test first). When a task is finished and merged, move its line to `DONE.md` with the merge date. Re-plan freely between slices — this file is the living backlog, not a contract.
 
-## Up next
-
-- [ ] Difficulty tiers with real target strengths: named tiers (beginner ≈500, casual ≈1000, intermediate ≈1500, advanced ≈2000, maximum) as the difficulty contract across tool/API/UI. Stockfish can't go below ~1320 via UCI, so sub-1320 tiers get a deterministic weakening layer in `engine.py`: skill 0 + tiny node limits + seeded random blunder injection.
-
 ## Phase 4 — Manual testing (walkthrough together, take notes)
 
 No manual testing has happened yet — everything below has only been exercised by automated tests. Go through this list at the desk, note anything that feels wrong or needs to change, then turn the notes into new backlog items.
