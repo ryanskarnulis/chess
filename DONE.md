@@ -2,6 +2,10 @@
 
 Completed tasks, newest first. Moved here from `TODO.md` with the completion date.
 
+## 2026-07-07
+
+- [x] Difficulty is real now — default strength applied, personality is tone only (#55): two bugs had the engine playing full strength no matter what the UI said. (1) No default difficulty was ever applied — Stockfish boots at Skill Level 20 and the uncontrolled dropdown displayed "Intermediate" without sending it; now `Settings.skill_level` defaults to `DEFAULT_SKILL_LEVEL = 5` (Casual), `build_app` applies the settings difficulty to any attached engine, and the selector is controlled by `GET /api/settings` (placeholder, never a lie, before load or off-preset). (2) The personality style layer picked replies from a full-strength MultiPV analysis (≤150cp below best), bypassing difficulty for the flashy personalities — **product decision: personality affects tone only, never move choice or settings** (BRIEF/CLAUDE.md updated); `chessapp.style` deleted, every engine reply is `EnginePlayer.play_move` at the configured strength. TDD red→green at the API and tool boundaries. Backend 357, frontend 75.
+
 ## 2026-07-06
 
 - [x] UI: post-game review panel (#49) — `ReviewPanel` in the web UI surfaces `GET /api/game/review` after game over: on-demand button (whole-game Stockfish analysis is too heavy to auto-run), per-color accuracy + classification counts, and the move list with inaccuracies/mistakes/blunders flagged alongside the engine's better alternative. Purely presentational over the backend's numbers; `fetchReview` in the typed client returns null on 503/409, which the panel renders as "Review unavailable" with the button left in place for retry. Rendered only when `game_over`, so a new game unmounts and resets it. TDD: +4 component tests (mocked client, same pattern as the other panels). Frontend 70 tests.
