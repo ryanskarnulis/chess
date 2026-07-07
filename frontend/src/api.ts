@@ -71,16 +71,18 @@ export function resign(color?: 'white' | 'black'): Promise<GameState | null> {
 }
 
 export interface DifficultyResponse {
+  tier: string | null
   skill_level: number | null
   elo: number | null
 }
 
-/** Set engine strength by Stockfish skill level (0–20). Returns the applied
- * setting, or null if the backend rejected it. Board state is untouched. */
-export async function setDifficulty(skillLevel: number): Promise<DifficultyResponse | null> {
+/** Set engine strength by named tier (beginner … maximum). Returns the
+ * applied setting, or null if the backend rejected it. Board state is
+ * untouched. */
+export async function setDifficulty(tier: string): Promise<DifficultyResponse | null> {
   const res = await fetch('/api/game/difficulty', {
     ...JSON_POST,
-    body: JSON.stringify({ skill_level: skillLevel }),
+    body: JSON.stringify({ tier }),
   })
   if (!res.ok) return null
   return (await res.json()) as DifficultyResponse
@@ -115,6 +117,7 @@ export interface Settings {
   verbosity: string
   hints_mode: boolean
   voice_output: boolean
+  tier: string | null
   skill_level: number | null
   elo: number | null
 }

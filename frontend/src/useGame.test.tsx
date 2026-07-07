@@ -64,7 +64,7 @@ beforeEach(() => {
     const path = String(url)
     if (path.includes('/api/game/move')) return jsonResponse(moveResponse)
     if (path.includes('/api/game/difficulty'))
-      return jsonResponse({ skill_level: 15, elo: null })
+      return jsonResponse({ tier: 'advanced', skill_level: null, elo: null })
     if (path.includes('/api/command'))
       return jsonResponse({ commentary: 'Nice move!', tool_results: [], state: state() })
     if (path.includes('/api/settings/voice')) return jsonResponse({ voice_output: true })
@@ -74,7 +74,8 @@ beforeEach(() => {
         verbosity: 'normal',
         hints_mode: false,
         voice_output: false,
-        skill_level: 5,
+        tier: 'casual',
+        skill_level: null,
         elo: null,
       })
     // Lifecycle mutations (new / undo / resign) answer with { state }.
@@ -245,22 +246,22 @@ describe('useGame', () => {
 
   it('loads the current difficulty from settings', async () => {
     const { result } = renderHook(() => useGame())
-    await waitFor(() => expect(result.current.skillLevel).toBe(5))
+    await waitFor(() => expect(result.current.tier).toBe('casual'))
   })
 
-  it('sets difficulty by skill level without touching board state', async () => {
+  it('sets difficulty by tier without touching board state', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     const revisionBefore = result.current.revision
     await act(async () => {
-      await result.current.setDifficulty(15)
+      await result.current.setDifficulty('advanced')
     })
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/difficulty',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ skill_level: 15 }) }),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ tier: 'advanced' }) }),
     )
     // The hook reflects only what the server confirmed.
-    expect(result.current.skillLevel).toBe(15)
+    expect(result.current.tier).toBe('advanced')
     // Difficulty is not a board mutation — no re-render churn.
     expect(result.current.revision).toBe(revisionBefore)
   })

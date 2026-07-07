@@ -6,6 +6,7 @@ every move still enters the game through `GameSession.submit_move`, and
 touch session truth.
 """
 
+import random
 from dataclasses import dataclass
 
 import chess
@@ -16,9 +17,43 @@ from chessapp.game import GameSession, MoveResult
 SKILL_MIN, SKILL_MAX = 0, 20
 # Stockfish's own UCI_Elo bounds.
 ELO_MIN, ELO_MAX = 1320, 3190
-# What a fresh app plays at ("Casual"). Stockfish's own default is full
-# strength, so an engine must never be left unconfigured.
-DEFAULT_SKILL_LEVEL = 5
+
+
+@dataclass(frozen=True)
+class DifficultyProfile:
+    """How one named tier is realized on the engine.
+
+    Stockfish cannot play below ~1300 through UCI options alone (UCI_Elo
+    floors at 1320 and Skill Level 0 is still club strength), so the low
+    tiers add a weakening layer on top: `max_nodes` starves the search and
+    `blunder_chance` is the per-move probability of playing a random legal
+    move instead of the engine's choice.
+    """
+
+    name: str
+    skill_level: int | None = None
+    elo: int | None = None
+    max_nodes: int | None = None
+    blunder_chance: float = 0.0
+
+
+# Named tiers with human target strengths: beginner ~500, casual ~1000,
+# intermediate ~1500, advanced ~2000, maximum = full strength. Node counts
+# and blunder rates are calibration knobs — tune from real games.
+DIFFICULTY_TIERS = {
+    "beginner": DifficultyProfile(
+        "beginner", skill_level=0, max_nodes=150, blunder_chance=0.25
+    ),
+    "casual": DifficultyProfile(
+        "casual", skill_level=2, max_nodes=800, blunder_chance=0.10
+    ),
+    "intermediate": DifficultyProfile("intermediate", elo=1500),
+    "advanced": DifficultyProfile("advanced", elo=2000),
+    "maximum": DifficultyProfile("maximum", skill_level=20),
+}
+# What a fresh app plays at. Stockfish's own default is full strength, so an
+# engine must never be left unconfigured.
+DEFAULT_TIER = "casual"
 
 DEFAULT_MOVE_TIME = 0.1
 DEFAULT_ANALYSIS_DEPTH = 12
@@ -85,12 +120,30 @@ def validate_elo(elo: object) -> int:
     return elo
 
 
+def validate_tier(name: object) -> DifficultyProfile:
+    profile = DIFFICULTY_TIERS.get(name) if isinstance(name, str) else None
+    if profile is None:
+        options = ", ".join(DIFFICULTY_TIERS)
+        raise ValueError(f"unknown difficulty tier {name!r}; expected one of {options}")
+    return profile
+
+
 class EnginePlayer:
     """One Stockfish process playing moves at a configurable strength."""
 
-    def __init__(self, path: str = "stockfish", move_time: float = DEFAULT_MOVE_TIME):
+    def __init__(
+        self,
+        path: str = "stockfish",
+        move_time: float = DEFAULT_MOVE_TIME,
+        rng: random.Random | None = None,
+    ):
         self._engine = chess.engine.SimpleEngine.popen_uci(path)
         self._limit = chess.engine.Limit(time=move_time)
+        # Blunder injection randomness; injectable so tests can force or
+        # forbid the blunder path deterministically.
+        self._rng = rng if rng is not None else random.Random()
+        self._max_nodes: int | None = None
+        self._blunder_chance = 0.0
 
     def __enter__(self) -> "EnginePlayer":
         return self
@@ -103,18 +156,43 @@ class EnginePlayer:
 
     def set_skill_level(self, level: int) -> None:
         validate_skill_level(level)
+        # Raw knobs mean exactly the UCI strength asked for — no leftover
+        # tier weakening on top.
+        self._max_nodes = None
+        self._blunder_chance = 0.0
         self._engine.configure({"UCI_LimitStrength": False, "Skill Level": level})
 
     def set_elo(self, elo: int) -> None:
         validate_elo(elo)
+        self._max_nodes = None
+        self._blunder_chance = 0.0
         self._engine.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
+
+    def set_tier(self, name: str) -> None:
+        """Play at a named difficulty tier (see `DIFFICULTY_TIERS`)."""
+        profile = validate_tier(name)
+        if profile.elo is not None:
+            self._engine.configure({"UCI_LimitStrength": True, "UCI_Elo": profile.elo})
+        else:
+            self._engine.configure(
+                {"UCI_LimitStrength": False, "Skill Level": profile.skill_level}
+            )
+        self._max_nodes = profile.max_nodes
+        self._blunder_chance = profile.blunder_chance
 
     def choose_move(self, session: GameSession) -> str:
         """The engine's move for the current position, as UCI."""
         if session.is_game_over():
             raise ValueError("cannot choose a move: game is over")
         board = chess.Board(session.fen())
-        result = self._engine.play(board, self._limit)
+        if self._blunder_chance and self._rng.random() < self._blunder_chance:
+            return self._rng.choice(list(board.legal_moves)).uci()
+        limit = (
+            chess.engine.Limit(nodes=self._max_nodes)
+            if self._max_nodes is not None
+            else self._limit
+        )
+        result = self._engine.play(board, limit)
         if result.move is None:
             raise ValueError("engine returned no move")
         return result.move.uci()

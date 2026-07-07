@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from chessapp.analysis import review_game
 from chessapp.brain import Brain
-from chessapp.engine import validate_elo, validate_skill_level
+from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.game import GameSession, MoveResult
 from chessapp.tools import UNDO_PLIES_MAX, ToolContext, build_registry
 from chessapp.voice import SpeechClient
@@ -57,16 +57,18 @@ class ResignRequest(BaseModel):
 
 
 class DifficultyRequest(BaseModel):
-    """Exactly one of skill_level / elo — the same contract as the
+    """Exactly one of tier / skill_level / elo — the same contract as the
     `set_difficulty` tool. Range is validated by the engine when applied."""
 
+    tier: str | None = None
     skill_level: int | None = None
     elo: int | None = None
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "DifficultyRequest":
-        if (self.skill_level is None) == (self.elo is None):
-            raise ValueError("pass exactly one of skill_level or elo")
+        given = [v for v in (self.tier, self.skill_level, self.elo) if v is not None]
+        if len(given) != 1:
+            raise ValueError("pass exactly one of tier, skill_level, or elo")
         return self
 
 
@@ -210,21 +212,34 @@ def create_app(
         board state, so nothing is broadcast.
         """
         try:
-            if request.skill_level is not None:
+            if request.tier is not None:
+                validate_tier(request.tier)
+                if ctx.engine is not None:
+                    ctx.engine.set_tier(request.tier)
+                ctx.settings.tier = request.tier
+                ctx.settings.skill_level = None
+                ctx.settings.elo = None
+            elif request.skill_level is not None:
                 validate_skill_level(request.skill_level)
                 if ctx.engine is not None:
                     ctx.engine.set_skill_level(request.skill_level)
                 ctx.settings.skill_level = request.skill_level
+                ctx.settings.tier = None
                 ctx.settings.elo = None
             else:
                 validate_elo(request.elo)
                 if ctx.engine is not None:
                     ctx.engine.set_elo(request.elo)
                 ctx.settings.elo = request.elo
+                ctx.settings.tier = None
                 ctx.settings.skill_level = None
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"skill_level": ctx.settings.skill_level, "elo": ctx.settings.elo}
+        return {
+            "tier": ctx.settings.tier,
+            "skill_level": ctx.settings.skill_level,
+            "elo": ctx.settings.elo,
+        }
 
     @app.post("/api/command")
     async def command(request: CommandRequest) -> dict[str, Any]:
@@ -275,6 +290,7 @@ def create_app(
             "verbosity": s.verbosity,
             "hints_mode": s.hints_mode,
             "voice_output": s.voice_output,
+            "tier": s.tier,
             "skill_level": s.skill_level,
             "elo": s.elo,
         }

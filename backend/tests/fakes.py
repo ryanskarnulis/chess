@@ -20,6 +20,7 @@ class FakeEngine:
         self.multipv_requests: list[int] = []
         self.skill_levels: list[int] = []
         self.elos: list[int] = []
+        self.tiers: list[str] = []
 
     def play_move(self, session):
         return session.submit_move(self.reply_uci)
@@ -36,6 +37,9 @@ class FakeEngine:
 
     def set_elo(self, elo: int) -> None:
         self.elos.append(elo)
+
+    def set_tier(self, tier: str) -> None:
+        self.tiers.append(tier)
 
 
 class ScriptedBrain:

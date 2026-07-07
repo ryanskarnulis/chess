@@ -11,7 +11,7 @@ function setup(overrides: Partial<React.ComponentProps<typeof GameControls>> = {
     onUndo: vi.fn(),
     onResign: vi.fn(),
     onSetDifficulty: vi.fn(),
-    skillLevel: 5 as number | null,
+    tier: 'casual' as string | null,
     ...overrides,
   }
   render(<GameControls {...props} />)
@@ -41,27 +41,27 @@ describe('GameControls', () => {
     expect(screen.getByRole('button', { name: /new game/i })).not.toBeDisabled()
   })
 
-  it('reports the chosen difficulty as a skill level', () => {
+  it('reports the chosen difficulty as a tier name', () => {
     const props = setup()
     const select = screen.getByLabelText(/difficulty/i)
     const advanced = DIFFICULTY_LEVELS.find((l) => l.label === 'Advanced')!
-    fireEvent.change(select, { target: { value: String(advanced.skillLevel) } })
-    expect(props.onSetDifficulty).toHaveBeenCalledWith(advanced.skillLevel)
+    fireEvent.change(select, { target: { value: advanced.tier } })
+    expect(props.onSetDifficulty).toHaveBeenCalledWith(advanced.tier)
   })
 
-  it('shows the tier for the server-confirmed skill level', () => {
-    setup({ skillLevel: 15 })
-    expect(screen.getByLabelText(/difficulty/i)).toHaveValue('15')
+  it('shows the server-confirmed tier', () => {
+    setup({ tier: 'advanced' })
+    expect(screen.getByLabelText(/difficulty/i)).toHaveValue('advanced')
   })
 
   it('shows no tier before settings load', () => {
-    setup({ skillLevel: null })
+    setup({ tier: null })
     expect(screen.getByLabelText(/difficulty/i)).toHaveValue('')
   })
 
   it('shows no tier for a strength outside the presets', () => {
-    // e.g. the agent set skill 7 or an elo — don't lie by snapping to a tier.
-    setup({ skillLevel: 7 })
+    // e.g. the agent set a raw skill/elo — don't lie by snapping to a tier.
+    setup({ tier: 'custom' })
     expect(screen.getByLabelText(/difficulty/i)).toHaveValue('')
   })
 })

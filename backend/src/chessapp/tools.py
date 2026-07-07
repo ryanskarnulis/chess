@@ -16,7 +16,8 @@ import jsonschema
 
 from chessapp.analysis import analyze_last_move, review_game
 from chessapp.engine import (
-    DEFAULT_SKILL_LEVEL,
+    DEFAULT_TIER,
+    DIFFICULTY_TIERS,
     ELO_MAX,
     ELO_MIN,
     SKILL_MAX,
@@ -47,16 +48,17 @@ VERBOSITY_LEVELS = ("low", "normal", "high")
 @dataclass
 class Settings:
     """Agent-adjustable app settings. Difficulty records exactly one of
-    skill_level / elo (the last one set); it is applied to the live engine
-    when present and applied at assembly when an engine attaches. Personality
-    is tone only — it shapes the agent's commentary, never move choice or any
-    other setting."""
+    tier / skill_level / elo (the last one set); it is applied to the live
+    engine when present and applied at assembly when an engine attaches.
+    Personality is tone only — it shapes the agent's commentary, never move
+    choice or any other setting."""
 
     personality: str = PERSONALITIES[0]
     verbosity: str = "normal"
     hints_mode: bool = False
     voice_output: bool = False
-    skill_level: int | None = DEFAULT_SKILL_LEVEL
+    tier: str | None = DEFAULT_TIER
+    skill_level: int | None = None
     elo: int | None = None
 
 
@@ -299,19 +301,29 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         }
 
     def set_difficulty(
-        skill_level: int | None = None, elo: int | None = None
+        tier: str | None = None,
+        skill_level: int | None = None,
+        elo: int | None = None,
     ) -> dict[str, Any]:
-        if skill_level is not None:
+        if tier is not None:
+            if ctx.engine is not None:
+                ctx.engine.set_tier(tier)
+            ctx.settings.tier = tier
+            ctx.settings.skill_level = None
+            ctx.settings.elo = None
+        elif skill_level is not None:
             if ctx.engine is not None:
                 ctx.engine.set_skill_level(skill_level)
             ctx.settings.skill_level = skill_level
+            ctx.settings.tier = None
             ctx.settings.elo = None
         else:
             if ctx.engine is not None:
                 ctx.engine.set_elo(elo)
             ctx.settings.elo = elo
+            ctx.settings.tier = None
             ctx.settings.skill_level = None
-        return {"ok": True, "skill_level": skill_level, "elo": elo}
+        return {"ok": True, "tier": tier, "skill_level": skill_level, "elo": elo}
 
     def set_personality(personality: str) -> dict[str, Any]:
         ctx.settings.personality = personality
@@ -529,12 +541,16 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         Tool(
             name="set_difficulty",
             description=(
-                "Set engine strength: pass exactly one of skill_level "
-                f"({SKILL_MIN}-{SKILL_MAX}) or elo ({ELO_MIN}-{ELO_MAX})."
+                "Set engine strength: pass exactly one of tier (named level: "
+                "beginner ~500, casual ~1000, intermediate ~1500, advanced "
+                f"~2000, maximum = full strength), skill_level ({SKILL_MIN}-"
+                f"{SKILL_MAX}), or elo ({ELO_MIN}-{ELO_MAX}). Prefer tier "
+                "unless the user asks for a specific number."
             ),
             parameters={
                 "type": "object",
                 "properties": {
+                    "tier": {"type": "string", "enum": list(DIFFICULTY_TIERS)},
                     "skill_level": {
                         "type": "integer",
                         "minimum": SKILL_MIN,
@@ -546,7 +562,11 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
                         "maximum": ELO_MAX,
                     },
                 },
-                "oneOf": [{"required": ["skill_level"]}, {"required": ["elo"]}],
+                "oneOf": [
+                    {"required": ["tier"]},
+                    {"required": ["skill_level"]},
+                    {"required": ["elo"]},
+                ],
                 "additionalProperties": False,
             },
             handler=set_difficulty,

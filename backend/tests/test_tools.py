@@ -11,7 +11,7 @@ import shutil
 
 import pytest
 
-from chessapp.engine import DEFAULT_SKILL_LEVEL
+from chessapp.engine import DEFAULT_TIER
 from chessapp.game import GameSession
 from chessapp.tools import Settings, Tool, ToolContext, ToolRegistry, build_registry
 from fakes import FakeEngine
@@ -424,7 +424,8 @@ def test_settings_defaults(session):
     assert ctx.settings.voice_output is False
     # A real default strength, not None: without one the engine silently
     # plays at Stockfish's full-strength default.
-    assert ctx.settings.skill_level == DEFAULT_SKILL_LEVEL
+    assert ctx.settings.tier == DEFAULT_TIER
+    assert ctx.settings.skill_level is None
     assert ctx.settings.elo is None
 
 
@@ -435,6 +436,26 @@ def test_set_difficulty_skill_level_recorded(session):
     assert result["ok"] is True
     assert ctx.settings.skill_level == 5
     assert ctx.settings.elo is None
+    # A raw knob replaces the named tier.
+    assert ctx.settings.tier is None
+
+
+def test_set_difficulty_by_tier_reaches_engine_and_clears_raw_knobs(session):
+    engine = FakeEngine()
+    ctx = ToolContext(session=session, engine=engine)
+    registry = build_registry(ctx)
+    registry.dispatch("set_difficulty", {"skill_level": 5})
+    result = registry.dispatch("set_difficulty", {"tier": "beginner"})
+    assert result["ok"] is True
+    assert result["tier"] == "beginner"
+    assert ctx.settings.tier == "beginner"
+    assert ctx.settings.skill_level is None
+    assert ctx.settings.elo is None
+    assert engine.tiers == ["beginner"]
+
+
+def test_set_difficulty_rejects_unknown_tier(registry):
+    assert registry.dispatch("set_difficulty", {"tier": "impossible"})["ok"] is False
 
 
 def test_set_difficulty_elo_recorded_and_clears_skill(session):
