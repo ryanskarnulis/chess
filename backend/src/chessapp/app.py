@@ -62,7 +62,9 @@ def build_app(
     if engine is not None:
         # Stockfish's own default is full strength; make the engine play at
         # the settings default so strength and reported settings agree.
-        if ctx.settings.skill_level is not None:
+        if ctx.settings.tier is not None:
+            engine.set_tier(ctx.settings.tier)
+        elif ctx.settings.skill_level is not None:
             engine.set_skill_level(ctx.settings.skill_level)
         elif ctx.settings.elo is not None:
             engine.set_elo(ctx.settings.elo)

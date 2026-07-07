@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from chessapp.app import build_app
 from chessapp.brain import AgentResponse
-from chessapp.engine import DEFAULT_SKILL_LEVEL
+from chessapp.engine import DEFAULT_TIER
 from chessapp.personality import system_prompt_for
 from fakes import FakeEngine, ScriptedBrain
 
@@ -68,9 +68,10 @@ def test_build_app_applies_the_default_difficulty_to_the_engine():
     # the strength the UI reports is the strength that actually plays.
     engine = FakeEngine()
     app = build_app(brain=ScriptedBrain(), engine=engine)
-    assert engine.skill_levels == [DEFAULT_SKILL_LEVEL]
+    assert engine.tiers == [DEFAULT_TIER]
     settings = TestClient(app).get("/api/settings").json()
-    assert settings["skill_level"] == DEFAULT_SKILL_LEVEL
+    assert settings["tier"] == DEFAULT_TIER
+    assert settings["skill_level"] is None
     assert settings["elo"] is None
 
 

@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.api import create_app
-from chessapp.engine import DEFAULT_SKILL_LEVEL, EnginePlayer
+from chessapp.engine import DEFAULT_TIER, EnginePlayer
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
 from fakes import FakeEngine
@@ -181,10 +181,43 @@ def test_set_difficulty_updates_settings(ctx):
     assert ctx.settings.skill_level is None
 
 
+def test_set_difficulty_by_tier(ctx):
+    engine = FakeEngine()
+    ctx.engine = engine
+    client = TestClient(create_app(ctx))
+    body = client.post("/api/game/difficulty", json={"tier": "beginner"}).json()
+    assert body["tier"] == "beginner"
+    assert body["skill_level"] is None
+    assert body["elo"] is None
+    assert ctx.settings.tier == "beginner"
+    assert engine.tiers == ["beginner"]
+    # A raw knob replaces the tier, and vice versa.
+    client.post("/api/game/difficulty", json={"skill_level": 7})
+    assert ctx.settings.tier is None
+    assert ctx.settings.skill_level == 7
+
+
+def test_set_difficulty_unknown_tier_is_409(client):
+    assert (
+        client.post("/api/game/difficulty", json={"tier": "impossible"}).status_code
+        == 409
+    )
+
+
+def test_settings_report_tier(client):
+    client.post("/api/game/difficulty", json={"tier": "advanced"})
+    settings = client.get("/api/settings").json()
+    assert settings["tier"] == "advanced"
+
+
 def test_set_difficulty_requires_exactly_one(client):
     assert client.post("/api/game/difficulty", json={}).status_code == 422
     both = client.post("/api/game/difficulty", json={"skill_level": 5, "elo": 1500})
     assert both.status_code == 422
+    tier_and_skill = client.post(
+        "/api/game/difficulty", json={"tier": "beginner", "skill_level": 5}
+    )
+    assert tier_and_skill.status_code == 422
 
 
 def test_set_difficulty_out_of_range_is_409(client):
@@ -334,7 +367,8 @@ def test_get_settings_returns_the_full_settings_document(client):
         "verbosity": "normal",
         "hints_mode": False,
         "voice_output": False,
-        "skill_level": DEFAULT_SKILL_LEVEL,
+        "tier": DEFAULT_TIER,
+        "skill_level": None,
         "elo": None,
     }
 

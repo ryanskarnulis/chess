@@ -7,14 +7,17 @@ tested.
 
 import shutil
 
+import chess
 import pytest
 
 from chessapp.engine import (
+    DIFFICULTY_TIERS,
     ELO_MAX,
     ELO_MIN,
     EnginePlayer,
     validate_elo,
     validate_skill_level,
+    validate_tier,
 )
 from chessapp.game import GameSession
 
@@ -45,6 +48,61 @@ def test_elo_bounds_accepted():
 def test_bad_elo_rejected(elo):
     with pytest.raises(ValueError):
         validate_elo(elo)
+
+
+# --- difficulty tiers (pure, no binary) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["beginner", "casual", "intermediate", "advanced", "maximum"]
+)
+def test_every_tier_resolves(name):
+    assert validate_tier(name).name == name
+
+
+@pytest.mark.parametrize("name", ["impossible", "", "Beginner", None, 3])
+def test_unknown_tier_rejected(name):
+    with pytest.raises(ValueError):
+        validate_tier(name)
+
+
+def test_sub_floor_tiers_weaken_beyond_uci_options():
+    # Stockfish's UCI_Elo floor is ~1320 and Skill Level 0 still plays
+    # ~1300+, so the ~500/~1000 tiers must starve the search and inject
+    # blunders — UCI knobs alone cannot produce them.
+    beginner = DIFFICULTY_TIERS["beginner"]
+    assert beginner.skill_level == 0
+    assert beginner.max_nodes is not None
+    assert beginner.blunder_chance > 0
+    casual = DIFFICULTY_TIERS["casual"]
+    assert casual.max_nodes is not None
+    assert casual.blunder_chance > 0
+    assert beginner.max_nodes < casual.max_nodes
+    assert beginner.blunder_chance > casual.blunder_chance
+
+
+def test_upper_tiers_map_to_plain_uci_strength():
+    assert DIFFICULTY_TIERS["intermediate"].elo == 1500
+    assert DIFFICULTY_TIERS["advanced"].elo == 2000
+    maximum = DIFFICULTY_TIERS["maximum"]
+    assert maximum.skill_level == 20
+    assert maximum.max_nodes is None
+    assert maximum.blunder_chance == 0
+
+
+class ForcedRng:
+    """RNG double: fixed `random()` roll; `choice` picks first or forbids."""
+
+    def __init__(self, roll: float, allow_choice: bool = True):
+        self._roll = roll
+        self._allow_choice = allow_choice
+
+    def random(self) -> float:
+        return self._roll
+
+    def choice(self, seq):
+        assert self._allow_choice, "engine took the blunder path unexpectedly"
+        return seq[0]
 
 
 # --- live engine ----------------------------------------------------------
@@ -100,6 +158,45 @@ def test_engine_plays_at_limited_elo(engine):
     session = GameSession()
     engine.set_elo(ELO_MIN)
     assert engine.play_move(session).legal
+
+
+@requires_stockfish
+@pytest.mark.parametrize(
+    "tier", ["beginner", "casual", "intermediate", "advanced", "maximum"]
+)
+def test_engine_plays_legal_moves_at_every_tier(engine, tier):
+    session = GameSession()
+    engine.set_tier(tier)
+    assert engine.play_move(session).legal
+
+
+@requires_stockfish
+def test_blunder_roll_plays_a_random_legal_move():
+    session = GameSession()
+    with EnginePlayer(rng=ForcedRng(roll=0.0)) as player:
+        player.set_tier("beginner")
+        uci = player.choose_move(session)
+    first_legal = next(iter(chess.Board().legal_moves)).uci()
+    assert uci == first_legal
+
+
+@requires_stockfish
+def test_no_blunder_roll_consults_the_engine():
+    session = GameSession()
+    with EnginePlayer(rng=ForcedRng(roll=1.0, allow_choice=False)) as player:
+        player.set_tier("beginner")
+        assert session.submit_move(player.choose_move(session)).legal
+
+
+@requires_stockfish
+def test_raw_strength_setting_clears_tier_weakening():
+    # A roll of 0.0 blunders whenever any blunder chance survives, so the
+    # ForcedRng's forbidden `choice` proves set_skill_level cleared it.
+    session = GameSession()
+    with EnginePlayer(rng=ForcedRng(roll=0.0, allow_choice=False)) as player:
+        player.set_tier("beginner")
+        player.set_skill_level(20)
+        assert session.submit_move(player.choose_move(session)).legal
 
 
 @requires_stockfish

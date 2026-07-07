@@ -5,13 +5,13 @@ export interface GameControlsProps {
   canUndo: boolean
   /** Game already finished — resign is disabled. */
   gameOver: boolean
-  /** Server-confirmed skill level; null while settings load (or when the
-   * strength was set outside the presets, e.g. by elo). */
-  skillLevel: number | null
+  /** Server-confirmed difficulty tier; null while settings load (or when the
+   * strength was set outside the tiers, e.g. by raw skill/elo). */
+  tier: string | null
   onNewGame: () => void
   onUndo: () => void
   onResign: () => void
-  onSetDifficulty: (skillLevel: number) => void
+  onSetDifficulty: (tier: string) => void
 }
 
 /**
@@ -24,13 +24,13 @@ export interface GameControlsProps {
 export function GameControls({
   canUndo,
   gameOver,
-  skillLevel,
+  tier,
   onNewGame,
   onUndo,
   onResign,
   onSetDifficulty,
 }: GameControlsProps) {
-  const isPreset = DIFFICULTY_LEVELS.some((l) => l.skillLevel === skillLevel)
+  const isPreset = DIFFICULTY_LEVELS.some((l) => l.tier === tier)
   return (
     <section className="game-controls" aria-label="Game controls">
       <div className="control-buttons">
@@ -47,14 +47,14 @@ export function GameControls({
       <label className="difficulty">
         Difficulty
         <select
-          value={isPreset ? String(skillLevel) : ''}
-          onChange={(e) => onSetDifficulty(Number(e.target.value))}
+          value={isPreset && tier !== null ? tier : ''}
+          onChange={(e) => onSetDifficulty(e.target.value)}
         >
           <option value="" disabled hidden>
             —
           </option>
-          {DIFFICULTY_LEVELS.map(({ label, skillLevel: level }) => (
-            <option key={level} value={level}>
+          {DIFFICULTY_LEVELS.map(({ label, tier: value }) => (
+            <option key={value} value={value}>
               {label}
             </option>
           ))}
