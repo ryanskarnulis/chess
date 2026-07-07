@@ -21,6 +21,7 @@ function App() {
     undo,
     resign,
     setDifficulty,
+    skillLevel,
     commentary,
     agentThinking,
     sendCommand,
@@ -83,6 +84,7 @@ function App() {
               onUndo={undo}
               onResign={resign}
               onSetDifficulty={setDifficulty}
+              skillLevel={skillLevel}
             />
             <CapturedPieces captured={state.captured} />
             <MoveHistory history={state.history} />

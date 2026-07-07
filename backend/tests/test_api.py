@@ -13,10 +13,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.api import create_app
-from chessapp.engine import EnginePlayer
+from chessapp.engine import DEFAULT_SKILL_LEVEL, EnginePlayer
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
-from fakes import StyleAwareFakeEngine
+from fakes import FakeEngine
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -219,24 +219,16 @@ def test_engine_does_not_reply_to_illegal_move():
         assert body["state"]["history"] == []
 
 
-def test_engine_reply_is_biased_by_the_active_personality():
-    # With beginner_bot active, the reply comes from the styled MultiPV pick,
-    # not the engine's best move.
-    engine = StyleAwareFakeEngine()
+def test_engine_reply_ignores_personality():
+    # Personality is tone only: whatever the active personality, the reply is
+    # the engine's own move at the configured strength — never a MultiPV
+    # detour that would bypass the difficulty setting.
+    engine = FakeEngine()
     ctx = ToolContext(session=GameSession(), engine=engine)
     ctx.settings.personality = "beginner_bot"
     client = TestClient(create_app(ctx))
     body = client.post("/api/game/move", json={"move": "e4"}).json()
     assert body["engine_move"]["legal"] is True
-    assert body["engine_move"]["uci"] == "a7a6"
-    assert engine.multipv_requests  # MultiPV was actually consulted
-
-
-def test_engine_reply_with_default_personality_plays_best():
-    engine = StyleAwareFakeEngine()
-    ctx = ToolContext(session=GameSession(), engine=engine)
-    client = TestClient(create_app(ctx))
-    body = client.post("/api/game/move", json={"move": "e4"}).json()
     assert body["engine_move"]["uci"] == "e7e5"
     assert engine.multipv_requests == []
 
@@ -342,7 +334,7 @@ def test_get_settings_returns_the_full_settings_document(client):
         "verbosity": "normal",
         "hints_mode": False,
         "voice_output": False,
-        "skill_level": None,
+        "skill_level": DEFAULT_SKILL_LEVEL,
         "elo": None,
     }
 

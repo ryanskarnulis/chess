@@ -1,10 +1,13 @@
-import { DEFAULT_SKILL_LEVEL, DIFFICULTY_LEVELS } from './difficulty'
+import { DIFFICULTY_LEVELS } from './difficulty'
 
 export interface GameControlsProps {
   /** No moves to take back — undo is disabled. */
   canUndo: boolean
   /** Game already finished — resign is disabled. */
   gameOver: boolean
+  /** Server-confirmed skill level; null while settings load (or when the
+   * strength was set outside the presets, e.g. by elo). */
+  skillLevel: number | null
   onNewGame: () => void
   onUndo: () => void
   onResign: () => void
@@ -14,17 +17,20 @@ export interface GameControlsProps {
 /**
  * Buttons for the game lifecycle (new / undo / resign) plus a difficulty
  * selector. Purely presentational — the parent owns the backend calls. The
- * difficulty select is uncontrolled: it starts at a sensible default and only
- * emits on user change (the backend defaults to full strength until set).
+ * difficulty select is controlled by the server's settings: it shows a tier
+ * only when the backend's skill level matches one, so it never claims a
+ * strength the engine isn't actually playing at.
  */
 export function GameControls({
   canUndo,
   gameOver,
+  skillLevel,
   onNewGame,
   onUndo,
   onResign,
   onSetDifficulty,
 }: GameControlsProps) {
+  const isPreset = DIFFICULTY_LEVELS.some((l) => l.skillLevel === skillLevel)
   return (
     <section className="game-controls" aria-label="Game controls">
       <div className="control-buttons">
@@ -41,11 +47,14 @@ export function GameControls({
       <label className="difficulty">
         Difficulty
         <select
-          defaultValue={DEFAULT_SKILL_LEVEL}
+          value={isPreset ? String(skillLevel) : ''}
           onChange={(e) => onSetDifficulty(Number(e.target.value))}
         >
-          {DIFFICULTY_LEVELS.map(({ label, skillLevel }) => (
-            <option key={skillLevel} value={skillLevel}>
+          <option value="" disabled hidden>
+            —
+          </option>
+          {DIFFICULTY_LEVELS.map(({ label, skillLevel: level }) => (
+            <option key={level} value={level}>
               {label}
             </option>
           ))}

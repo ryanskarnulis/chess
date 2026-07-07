@@ -11,9 +11,10 @@ import shutil
 
 import pytest
 
+from chessapp.engine import DEFAULT_SKILL_LEVEL
 from chessapp.game import GameSession
 from chessapp.tools import Settings, Tool, ToolContext, ToolRegistry, build_registry
-from fakes import StyleAwareFakeEngine
+from fakes import FakeEngine
 
 requires_stockfish = pytest.mark.skipif(
     shutil.which("stockfish") is None, reason="stockfish binary not installed"
@@ -229,9 +230,7 @@ def test_make_move_with_engine_triggers_reply(session):
     """The agent path mirrors the UI path: a legal player move gets the
     engine's reply in the same tool call, so texting 'e4' never leaves the
     player to move for both sides."""
-    registry = build_registry(
-        ToolContext(session=session, engine=StyleAwareFakeEngine())
-    )
+    registry = build_registry(ToolContext(session=session, engine=FakeEngine()))
     result = registry.dispatch("make_move", {"move": "e4"})
     assert result["legal"] is True
     assert result["engine_move"] == {"san": "e5", "uci": "e7e5"}
@@ -240,20 +239,20 @@ def test_make_move_with_engine_triggers_reply(session):
     assert result["fen"] == session.fen()
 
 
-def test_make_move_reply_is_biased_by_the_active_personality(session):
-    engine = StyleAwareFakeEngine()
+def test_make_move_reply_ignores_personality(session):
+    # Personality is tone only: the reply is the engine's own move at the
+    # configured strength, never a MultiPV detour around the difficulty.
+    engine = FakeEngine()
     ctx = ToolContext(session=session, engine=engine)
     ctx.settings.personality = "beginner_bot"
     registry = build_registry(ctx)
     result = registry.dispatch("make_move", {"move": "e4"})
-    assert result["engine_move"]["uci"] == "a7a6"
-    assert engine.multipv_requests  # MultiPV was actually consulted
+    assert result["engine_move"]["uci"] == "e7e5"
+    assert engine.multipv_requests == []
 
 
 def test_make_move_illegal_gets_no_engine_reply(session):
-    registry = build_registry(
-        ToolContext(session=session, engine=StyleAwareFakeEngine())
-    )
+    registry = build_registry(ToolContext(session=session, engine=FakeEngine()))
     result = registry.dispatch("make_move", {"move": "e5"})
     assert result["legal"] is False
     assert "engine_move" not in result
@@ -423,7 +422,9 @@ def test_settings_defaults(session):
     assert ctx.settings.verbosity == "normal"
     assert ctx.settings.hints_mode is False
     assert ctx.settings.voice_output is False
-    assert ctx.settings.skill_level is None
+    # A real default strength, not None: without one the engine silently
+    # plays at Stockfish's full-strength default.
+    assert ctx.settings.skill_level == DEFAULT_SKILL_LEVEL
     assert ctx.settings.elo is None
 
 

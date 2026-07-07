@@ -37,7 +37,7 @@ The agent maps free-form commands to tools itself (no per-phrase branching). Amb
 Interactive board, legal-move validation, play vs. agent, Stockfish-powered moves, adjustable difficulty (Stockfish `Skill Level` / `UCI_Elo`), move history, captured pieces, new game, undo, resign, save/resume, export PGN, game review, basic analysis, hints, explanations.
 
 ## Personality
-Selectable personalities (friendly rival, calm coach, savage trash-talker, old grandmaster, evil villain, silent assassin, beginner bot, streamer). Personality affects tone/teaching/reactions and *may* bias move selection (via choosing among Stockfish's top MultiPV candidates), but Stockfish still guarantees legal, reasonable moves. Difficulty and personality changeable by natural speech.
+Selectable personalities (friendly rival, calm coach, savage trash-talker, old grandmaster, evil villain, silent assassin, beginner bot, streamer). Personality affects tone/teaching/reactions **only** — never move selection, difficulty, or any other setting (decided 2026-07: a move-bias layer was tried and removed because it bypassed the difficulty setting). Difficulty and personality changeable by natural speech.
 
 ## Voice
 - STT + TTS. Speak moves ("pawn to e4", "castle kingside") and natural commands ("make it easier", "switch to coach mode", "give me a hint", "what was my mistake").
@@ -58,7 +58,7 @@ Selectable personalities (friendly rival, calm coach, savage trash-talker, old g
 Guiding rule: use existing open source wherever possible. Roughly ~80% of the stack exists; what's left to write is the glue (agent brain module, tool definitions, game-loop wiring).
 
 - **Chess truth + Stockfish bridge:** `python-chess` (niklasf). One library = move generation, legal-move validation, PGN read/write, AND UCI engine communication (drives Stockfish directly). This IS the deterministic core + the Stockfish tool. License: GPL-3.0. NOTE: ignore the unrelated PyPI package named "Chessnut" (a ~200-line toy model, no engine, unrelated to the hardware).
-- **Stockfish:** the engine binary, GPL. Driven via python-chess UCI. Use `Skill Level` / `UCI_Elo` for difficulty, MultiPV for candidate moves (personality picks among top candidates).
+- **Stockfish:** the engine binary, GPL. Driven via python-chess UCI. Use `Skill Level` / `UCI_Elo` for difficulty, MultiPV for candidate moves (analysis/hints only).
 - **Web board UI (pick one):**
   - `Chessground` (Lichess) — most featureful (fast DOM-diff, SVG arrows/shapes, no deps). GPL-3.0 → copyleft: fine for personal self-hosted use, but distributing the combined work forces GPL + source release. React wrapper exists.
   - `react-chessboard` (Clariity) — **MIT**, pairs with `chess.js`. Prefer this if permissive licensing matters.

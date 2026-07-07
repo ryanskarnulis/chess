@@ -80,7 +80,7 @@ Capabilities, not hardcoded behaviors — the agent maps free-form commands to t
 ## Chosen Stack (assemble first, build glue only)
 
 - Chess truth + Stockfish bridge: `python-chess` (GPL-3.0). Ignore the unrelated PyPI package named "Chessnut" (a toy, not the hardware).
-- Difficulty: Stockfish `Skill Level` / `UCI_Elo`; personality may bias move choice among MultiPV candidates but Stockfish guarantees legal, reasonable moves.
+- Difficulty: Stockfish `Skill Level` / `UCI_Elo`, with a real default applied at app assembly (Stockfish's own default is full strength — never leave an engine unconfigured). Personality is **tone only**: it shapes commentary, never move choice, difficulty, or any other setting.
 - Web board: `Chessground` (GPL) or `react-chessboard` + `chess.js` (MIT — prefer if permissive licensing matters); `@mdwebb/react-chess` has reusable game scaffolding.
 - Voice: `Speaches` (MIT) — one self-hosted container, OpenAI-API-compatible STT+TTS. Lighter alternative: whisper.cpp + Piper/Kokoro. **Local-only by decision** — no browser Web Speech API path (cloud STT breaks the offline/privacy invariant; see `docs/voice-fast-path-evaluation.md`).
 - Agent orchestration: likely no framework — llama-server is OpenAI-compatible, so the loop is just the OpenAI SDK pointed at localhost with `tools`. Adopt the GBNF technique from `llama-cpp-agent` but don't depend on that unmaintained repo. LangGraph is likely overkill.
