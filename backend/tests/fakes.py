@@ -3,10 +3,37 @@
 `ScriptedBrain` is the one canonical no-LLM `Brain` for the whole suite: it
 pops canned responses in order and records what it was shown, so the agent
 loop can be exercised deterministically without ever reaching a live model.
-Keep the brain double here — not copied into individual test files.
+`StyleAwareFakeEngine` is the canonical no-Stockfish engine double for the
+styled-reply path. Keep the doubles here — not copied into test files.
 """
 
 from chessapp.brain import AgentResponse
+
+
+class StyleAwareFakeEngine:
+    """Engine double for the styled-reply path: best move differs from the
+    MultiPV pick a biased personality would make, so a test can tell which
+    path the code under test took."""
+
+    def __init__(self):
+        self.multipv_requests = []
+
+    def play_move(self, session):
+        return session.submit_move("e7e5")  # the plain "best move" path
+
+    def choose_move(self, session):
+        return "e7e5"
+
+    def get_best_moves(self, session, n=3):
+        from chessapp.engine import CandidateMove
+
+        self.multipv_requests.append(n)
+        # Best-first, White-POV scores; the weakest eligible (modest pick,
+        # i.e. best for White) is a7a6.
+        return [
+            CandidateMove(uci="e7e5", san="e5", score_cp=-30, mate_in=None),
+            CandidateMove(uci="a7a6", san="a6", score_cp=60, mate_in=None),
+        ][:n]
 
 
 class ScriptedBrain:
