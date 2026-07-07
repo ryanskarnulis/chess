@@ -54,7 +54,21 @@ export function Board({ fen, turnColor, dests, onMove, viewOnly = false, revisio
   useEffect(() => {
     if (!mountRef.current) return
     apiRef.current = Chessground(mountRef.current, { coordinates: true })
+    // Chessground caches its screen bounds and only re-measures on window
+    // resize/scroll. Content-driven layout shifts (commentary appearing,
+    // panels growing, a scrollbar showing up) move the board without either
+    // event, so clicks would map through stale coordinates. Any such shift
+    // changes the page's size, so watch it and fire chessground's own
+    // re-measure event. (Guarded: jsdom has no ResizeObserver.)
+    let observer: ResizeObserver | null = null
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() =>
+        document.body.dispatchEvent(new Event('chessground.resize')),
+      )
+      observer.observe(document.body)
+    }
     return () => {
+      observer?.disconnect()
       apiRef.current?.destroy()
       apiRef.current = null
     }

@@ -2,6 +2,13 @@
    Tokens come from silk.css (copied from the gateway repo). */
 @import './silk.css';
 
+html {
+  /* Reserve the scrollbar gutter: without it, the scrollbar appearing as
+     content grows shifts the centered layout sideways under the cursor
+     (and under the board's cached click coordinates). */
+  scrollbar-gutter: stable;
+}
+
 :root {
   font: 18px/145% var(--sans);
   color-scheme: dark;
