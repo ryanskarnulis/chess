@@ -231,6 +231,53 @@ def test_thinking_can_be_enabled_for_analysis():
     assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
 
 
+# --- conversation transcript ------------------------------------------------
+
+TRANSCRIPT = [
+    {"role": "user", "content": "play e4"},
+    {"role": "assistant", "content": "e4 — the classic."},
+]
+
+
+def test_transcript_sits_between_system_and_current_command():
+    brain, client = make_brain(_completion(content="ok"))
+    brain.get_agent_response(
+        board_state={"fen": "8/8/8/8"}, command="play Nf3", transcript=TRANSCRIPT
+    )
+    messages = client.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[1:3] == TRANSCRIPT
+    assert messages[-1]["role"] == "user"
+    assert "Nf3" in messages[-1]["content"]
+
+
+def test_transcript_defaults_to_empty():
+    brain, client = make_brain(_completion(content="ok"))
+    brain.get_agent_response(board_state={}, command="hi")
+    assert len(client.calls[0]["messages"]) == 2  # system + current turn only
+
+
+def test_react_includes_the_transcript():
+    brain, client = make_brain(_completion(content="ok"))
+    brain.react(
+        board_state={"fen": "8/8/8/8"},
+        changes=[{"name": "make_move", "result": {"san": "Nf3"}}],
+        transcript=TRANSCRIPT,
+    )
+    messages = client.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[1:3] == TRANSCRIPT
+    assert "Nf3" in messages[-1]["content"]
+
+
+def test_retry_correction_lands_after_the_transcript():
+    brain, client = make_brain(_bad_json_call(), _good_move())
+    brain.get_agent_response(board_state={}, command="play e4", transcript=TRANSCRIPT)
+    retry_messages = client.calls[1]["messages"]
+    assert retry_messages[1:3] == TRANSCRIPT  # history preserved on retry
+    assert "make_move" in retry_messages[-1]["content"]
+
+
 # --- reaction step (game-loop phase two) ----------------------------------
 
 

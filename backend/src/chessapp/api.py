@@ -254,20 +254,30 @@ def create_app(
         produces the commentary. When nothing was done (a question or a
         clarifying reply) there is nothing to react to, so the direct answer
         stands.
+
+        Both phases see the transcript — prior turns' commands plus the
+        commentary the user actually saw (a bounded window, final answers
+        only) — and the turn is recorded once its commentary is settled, so
+        the agent can follow references to earlier conversation.
         """
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
         before = _state_dict(ctx.session)
-        response = brain.get_agent_response(before, request.text)
+        transcript = ctx.transcript.window()
+        response = brain.get_agent_response(before, request.text, transcript)
         tool_results = [
             {"name": call.name, "result": registry.dispatch(call.name, call.args)}
             for call in response.tool_calls
         ]
         state = _state_dict(ctx.session)
         if tool_results:
-            commentary = brain.react(state, tool_results)
+            commentary = brain.react(state, tool_results, transcript)
         else:
             commentary = response.text
+        # Record on the context, not a captured reference: resume_game may
+        # have just swapped in the saved game's transcript, and this turn
+        # belongs to that thread.
+        ctx.transcript.record(request.text, commentary)
         if state != before:
             await broadcaster.broadcast(state)
         return {

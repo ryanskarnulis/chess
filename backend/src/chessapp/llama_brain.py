@@ -24,7 +24,7 @@ to self-correct. If it never does, the invalid calls are dropped.
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,13 +72,16 @@ class LlamaBrain:
         return prompt() if callable(prompt) else prompt
 
     def get_agent_response(
-        self, board_state: dict[str, Any], command: str
+        self,
+        board_state: dict[str, Any],
+        command: str,
+        transcript: Sequence[dict[str, str]] = (),
     ) -> AgentResponse:
         schemas = {
             d["function"]["name"]: d["function"]["parameters"]
             for d in self.tool_definitions
         }
-        messages = self._messages(board_state, command)
+        messages = self._messages(board_state, command, transcript)
 
         for attempt in range(self.max_retries + 1):
             message = self._complete(messages)
@@ -94,7 +97,12 @@ class LlamaBrain:
 
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def react(self, board_state: dict[str, Any], changes: list[dict[str, Any]]) -> str:
+    def react(
+        self,
+        board_state: dict[str, Any],
+        changes: list[dict[str, Any]],
+        transcript: Sequence[dict[str, str]] = (),
+    ) -> str:
         # Phase two reads the *new* state and what changed, never the raw
         # utterance, and offers no tools — the reaction is commentary only, so
         # it cannot loop back into acting.
@@ -107,6 +115,7 @@ class LlamaBrain:
         )
         messages = [
             {"role": "system", "content": self._resolve_system_prompt()},
+            *transcript,
             {"role": "user", "content": prompt},
         ]
         thinking = any(change.get("name") in _ANALYSIS_TOOLS for change in changes)
@@ -141,14 +150,19 @@ class LlamaBrain:
         return completion.choices[0].message
 
     def _messages(
-        self, board_state: dict[str, Any], command: str
+        self,
+        board_state: dict[str, Any],
+        command: str,
+        transcript: Sequence[dict[str, str]] = (),
     ) -> list[dict[str, str]]:
-        # Small prompt: personality/instructions, then board truth + command.
-        # State comes from current game state, not the raw utterance, so a
-        # future fast-parse path stays free to add.
+        # Small prompt: personality/instructions, prior conversation (a
+        # bounded Transcript window, final answers only), then board truth +
+        # command. State comes from current game state, not the raw
+        # utterance, so a future fast-parse path stays free to add.
         user = f"Board state:\n{json.dumps(board_state)}\n\nCommand: {command}"
         return [
             {"role": "system", "content": self._resolve_system_prompt()},
+            *transcript,
             {"role": "user", "content": user},
         ]
 

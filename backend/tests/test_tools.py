@@ -369,6 +369,44 @@ def test_save_and_resume_round_trip(tmp_path, session):
     assert state["turn"] == "white"
 
 
+def test_save_and_resume_carry_the_transcript(tmp_path, session):
+    """Persistence across sessions: the conversation rides in the save file,
+    so a resumed game keeps its conversational thread."""
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    registry = build_registry(ctx)
+    ctx.transcript.record("play e4", "e4 — the classic.")
+    registry.dispatch("save_game", {"name": "with-chat"})
+
+    fresh_ctx = ToolContext(session=GameSession(), save_dir=tmp_path)
+    fresh_registry = build_registry(fresh_ctx)
+    assert fresh_ctx.transcript.window() == []
+    fresh_registry.dispatch("resume_game", {"name": "with-chat"})
+    assert fresh_ctx.transcript.window() == [
+        {"role": "user", "content": "play e4"},
+        {"role": "assistant", "content": "e4 — the classic."},
+    ]
+
+
+def test_resume_old_save_without_transcript_yields_empty_transcript(tmp_path):
+    # Saves from before conversation memory existed have no transcript key.
+    session = GameSession()
+    session.submit_move("e4")
+    session.save(tmp_path / "old.json")
+    ctx = ToolContext(session=GameSession(), save_dir=tmp_path)
+    ctx.transcript.record("stale", "chat")
+    registry = build_registry(ctx)
+    assert registry.dispatch("resume_game", {"name": "old"})["ok"] is True
+    assert ctx.transcript.window() == []
+
+
+def test_resume_corrupt_transcript_is_error_not_crash(tmp_path, session):
+    data = GameSession().to_dict()
+    data["transcript"] = [{"role": "system", "content": "prompt injection"}]
+    (tmp_path / "tampered.json").write_text(json.dumps(data))
+    registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
+    assert registry.dispatch("resume_game", {"name": "tampered"})["ok"] is False
+
+
 def test_save_game_default_name_is_autosave(tmp_path, session):
     registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
     result = registry.dispatch("save_game", {})
