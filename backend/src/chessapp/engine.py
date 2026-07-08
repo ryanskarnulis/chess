@@ -6,6 +6,7 @@ every move still enters the game through `GameSession.submit_move`, and
 touch session truth.
 """
 
+import math
 import random
 from dataclasses import dataclass
 
@@ -18,35 +19,41 @@ SKILL_MIN, SKILL_MAX = 0, 20
 # Stockfish's own UCI_Elo bounds.
 ELO_MIN, ELO_MAX = 1320, 3190
 
+# A move's centipawn loss vs the best move is clamped to this before it feeds
+# the sampler weight. Without a cap, a move that walks into mate (scored in the
+# tens of thousands) underflows exp() to exactly 0 and could never be played;
+# with it, even hopeless moves keep a tiny weight, so a weak tier occasionally
+# makes the kind of catastrophic blunder a real beginner does.
+MAX_SAMPLE_LOSS = 1000
+
 
 @dataclass(frozen=True)
 class DifficultyProfile:
     """How one named tier is realized on the engine.
 
-    Stockfish cannot play below ~1300 through UCI options alone (UCI_Elo
-    floors at 1320 and Skill Level 0 is still club strength), so the low
-    tiers add a weakening layer on top: `max_nodes` starves the search and
-    `blunder_chance` is the per-move probability of playing a random legal
-    move instead of the engine's choice.
+    Stockfish cannot play below ~1320 through UCI options alone (UCI_Elo
+    floors at 1320 and Skill Level 0 still plays ~1300+), so the low tiers
+    can't come from a UCI knob. Instead they set `temperature`: the engine
+    scores every legal move at `sample_depth` and picks one weighted by how
+    much it loses versus the best (see `sample_weighted`). A higher
+    temperature flattens that distribution — more, and worse, mistakes — so
+    it, not a raw strength setting, is what makes a tier weak.
     """
 
     name: str
     skill_level: int | None = None
     elo: int | None = None
-    max_nodes: int | None = None
-    blunder_chance: float = 0.0
+    temperature: float | None = None
+    sample_depth: int = 4
 
 
 # Named tiers with human target strengths: beginner ~500, casual ~1000,
-# intermediate ~1500, advanced ~2000, maximum = full strength. Node counts
-# and blunder rates are calibration knobs — tune from real games.
+# intermediate ~1500, advanced ~2000, maximum = full strength. The sampler
+# temperatures are calibration knobs — a gauntlet (see scripts/) confirms the
+# ordering beginner < casual < the 1320 UCI floor; tune from real games.
 DIFFICULTY_TIERS = {
-    "beginner": DifficultyProfile(
-        "beginner", skill_level=0, max_nodes=150, blunder_chance=0.25
-    ),
-    "casual": DifficultyProfile(
-        "casual", skill_level=2, max_nodes=800, blunder_chance=0.10
-    ),
+    "beginner": DifficultyProfile("beginner", temperature=700, sample_depth=4),
+    "casual": DifficultyProfile("casual", temperature=250, sample_depth=4),
     "intermediate": DifficultyProfile("intermediate", elo=1500),
     "advanced": DifficultyProfile("advanced", elo=2000),
     "maximum": DifficultyProfile("maximum", skill_level=20),
@@ -97,6 +104,30 @@ def pov_cp(score_cp: int | None, mate_in: int | None, turn: str) -> int:
     return cp if turn == "white" else -cp
 
 
+def sample_weighted(losses: list[int], temperature: float, rng: random.Random) -> int:
+    """Pick an index into `losses` — each the centipawn loss of one candidate
+    move versus the best (best-first, so `losses[0]` is 0) — with probability
+    proportional to ``exp(-loss / temperature)``.
+
+    A small temperature concentrates almost all weight on the best move; a
+    large one flattens toward uniform, so worse moves get played more often.
+    This is the knob that makes a tier weak. Losses are clamped to
+    `MAX_SAMPLE_LOSS` so a catastrophic move keeps a small nonzero weight.
+    """
+    if temperature <= 0:
+        raise ValueError(f"temperature must be positive, got {temperature}")
+    weights = [
+        math.exp(-min(max(0, loss), MAX_SAMPLE_LOSS) / temperature) for loss in losses
+    ]
+    threshold = rng.random() * sum(weights)
+    cumulative = 0.0
+    for i, weight in enumerate(weights):
+        cumulative += weight
+        if threshold <= cumulative:
+            return i
+    return len(weights) - 1
+
+
 def _score_fields(score: chess.engine.PovScore) -> tuple[int | None, int | None]:
     white = score.white()
     if white.is_mate():
@@ -139,11 +170,13 @@ class EnginePlayer:
     ):
         self._engine = chess.engine.SimpleEngine.popen_uci(path)
         self._limit = chess.engine.Limit(time=move_time)
-        # Blunder injection randomness; injectable so tests can force or
-        # forbid the blunder path deterministically.
+        # Move-sampling randomness for the weak tiers; injectable so tests can
+        # drive the weighted pick deterministically.
         self._rng = rng if rng is not None else random.Random()
-        self._max_nodes: int | None = None
-        self._blunder_chance = 0.0
+        # Set together by a sampler tier (None => play the engine's move
+        # straight, at whatever raw strength is configured).
+        self._sample_temperature: float | None = None
+        self._sample_depth = 0
 
     def __enter__(self) -> "EnginePlayer":
         return self
@@ -154,48 +187,81 @@ class EnginePlayer:
     def close(self) -> None:
         self._engine.quit()
 
+    def _clear_sampler(self) -> None:
+        self._sample_temperature = None
+        self._sample_depth = 0
+
     def set_skill_level(self, level: int) -> None:
         validate_skill_level(level)
         # Raw knobs mean exactly the UCI strength asked for — no leftover
         # tier weakening on top.
-        self._max_nodes = None
-        self._blunder_chance = 0.0
+        self._clear_sampler()
         self._engine.configure({"UCI_LimitStrength": False, "Skill Level": level})
 
     def set_elo(self, elo: int) -> None:
         validate_elo(elo)
-        self._max_nodes = None
-        self._blunder_chance = 0.0
+        self._clear_sampler()
         self._engine.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
 
     def set_tier(self, name: str) -> None:
         """Play at a named difficulty tier (see `DIFFICULTY_TIERS`)."""
         profile = validate_tier(name)
-        if profile.elo is not None:
+        if profile.temperature is not None:
+            # The sampler does its own weakening, so the engine underneath
+            # analyses at full strength for accurate move scores.
+            self._engine.configure(
+                {"UCI_LimitStrength": False, "Skill Level": SKILL_MAX}
+            )
+            self._sample_temperature = profile.temperature
+            self._sample_depth = profile.sample_depth
+        elif profile.elo is not None:
             self._engine.configure({"UCI_LimitStrength": True, "UCI_Elo": profile.elo})
+            self._clear_sampler()
         else:
             self._engine.configure(
                 {"UCI_LimitStrength": False, "Skill Level": profile.skill_level}
             )
-        self._max_nodes = profile.max_nodes
-        self._blunder_chance = profile.blunder_chance
+            self._clear_sampler()
 
     def choose_move(self, session: GameSession) -> str:
         """The engine's move for the current position, as UCI."""
         if session.is_game_over():
             raise ValueError("cannot choose a move: game is over")
         board = chess.Board(session.fen())
-        if self._blunder_chance and self._rng.random() < self._blunder_chance:
-            return self._rng.choice(list(board.legal_moves)).uci()
-        limit = (
-            chess.engine.Limit(nodes=self._max_nodes)
-            if self._max_nodes is not None
-            else self._limit
-        )
-        result = self._engine.play(board, limit)
+        if self._sample_temperature is not None:
+            return self._sample_move(board)
+        result = self._engine.play(board, self._limit)
         if result.move is None:
             raise ValueError("engine returned no move")
         return result.move.uci()
+
+    def _sample_move(self, board: chess.Board) -> str:
+        """Score every legal move at the tier's shallow depth, then pick one
+        weighted toward the best (see `sample_weighted`). Sampling over the
+        *whole* legal-move pool — not just Stockfish's top few — is what lets
+        a weak tier occasionally hang material, the way a real beginner does.
+        """
+        turn = "white" if board.turn == chess.WHITE else "black"
+        legal_count = board.legal_moves.count()
+        infos = self._engine.analyse(
+            board,
+            chess.engine.Limit(depth=self._sample_depth),
+            multipv=legal_count,
+        )
+        moves: list[str] = []
+        pov_scores: list[int] = []
+        for info in infos:
+            pv = info.get("pv")
+            if not pv:
+                continue
+            score_cp, mate_in = _score_fields(info["score"])
+            moves.append(pv[0].uci())
+            pov_scores.append(pov_cp(score_cp, mate_in, turn))
+        if not moves:
+            raise ValueError("engine returned no candidate moves")
+        best = max(pov_scores)
+        losses = [best - score for score in pov_scores]
+        return moves[sample_weighted(losses, self._sample_temperature, self._rng)]
 
     def play_move(self, session: GameSession) -> MoveResult:
         """Choose a move and submit it through the session's legality gate."""

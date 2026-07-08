@@ -5,21 +5,37 @@ CI installs it and runs them. Difficulty validation is pure and always
 tested.
 """
 
+import random
 import shutil
 
-import chess
 import pytest
 
 from chessapp.engine import (
     DIFFICULTY_TIERS,
     ELO_MAX,
     ELO_MIN,
+    MAX_SAMPLE_LOSS,
     EnginePlayer,
+    sample_weighted,
     validate_elo,
     validate_skill_level,
     validate_tier,
 )
 from chessapp.game import GameSession
+
+
+class RollRng:
+    """RNG double for the weighted sampler: `random()` returns a fixed roll
+    in [0, 1). The sampler multiplies it by the total weight, so roll=0.0
+    always lands on the best candidate and a roll just under 1.0 lands on
+    the worst."""
+
+    def __init__(self, roll: float):
+        self._roll = roll
+
+    def random(self) -> float:
+        return self._roll
+
 
 requires_stockfish = pytest.mark.skipif(
     shutil.which("stockfish") is None, reason="stockfish binary not installed"
@@ -66,19 +82,19 @@ def test_unknown_tier_rejected(name):
         validate_tier(name)
 
 
-def test_sub_floor_tiers_weaken_beyond_uci_options():
+def test_sub_floor_tiers_weaken_by_weighted_sampling():
     # Stockfish's UCI_Elo floor is ~1320 and Skill Level 0 still plays
-    # ~1300+, so the ~500/~1000 tiers must starve the search and inject
-    # blunders — UCI knobs alone cannot produce them.
+    # ~1300+, so the ~500/~1000 tiers can't come from UCI knobs. They pick a
+    # move by sampling all legal moves weighted by how much each loses vs the
+    # best (a higher `temperature` = flatter = sloppier). Beginner is the
+    # sloppier of the two, so it carries the higher temperature.
     beginner = DIFFICULTY_TIERS["beginner"]
-    assert beginner.skill_level == 0
-    assert beginner.max_nodes is not None
-    assert beginner.blunder_chance > 0
     casual = DIFFICULTY_TIERS["casual"]
-    assert casual.max_nodes is not None
-    assert casual.blunder_chance > 0
-    assert beginner.max_nodes < casual.max_nodes
-    assert beginner.blunder_chance > casual.blunder_chance
+    for tier in (beginner, casual):
+        assert tier.temperature is not None
+        assert tier.sample_depth is not None
+        assert tier.elo is None and tier.skill_level is None
+    assert beginner.temperature > casual.temperature
 
 
 def test_upper_tiers_map_to_plain_uci_strength():
@@ -86,23 +102,50 @@ def test_upper_tiers_map_to_plain_uci_strength():
     assert DIFFICULTY_TIERS["advanced"].elo == 2000
     maximum = DIFFICULTY_TIERS["maximum"]
     assert maximum.skill_level == 20
-    assert maximum.max_nodes is None
-    assert maximum.blunder_chance == 0
+    assert maximum.temperature is None
 
 
-class ForcedRng:
-    """RNG double: fixed `random()` roll; `choice` picks first or forbids."""
+# --- weighted sampler (pure, no binary) -----------------------------------
 
-    def __init__(self, roll: float, allow_choice: bool = True):
-        self._roll = roll
-        self._allow_choice = allow_choice
 
-    def random(self) -> float:
-        return self._roll
+def test_sample_weighted_low_roll_picks_best():
+    # Candidates are best-first (loss 0 is the engine's top move); a roll of
+    # 0.0 always lands in the first bucket.
+    assert sample_weighted([0, 50, 300], temperature=200, rng=RollRng(0.0)) == 0
 
-    def choice(self, seq):
-        assert self._allow_choice, "engine took the blunder path unexpectedly"
-        return seq[0]
+
+def test_sample_weighted_high_roll_reaches_worst():
+    # A roll just under 1.0 exhausts every earlier bucket and lands on the
+    # worst candidate — the sampler can play a genuine blunder.
+    losses = [0, 50, 300]
+    assert sample_weighted(losses, temperature=200, rng=RollRng(0.999)) == 2
+
+
+def test_low_temperature_concentrates_on_the_best():
+    # As temperature -> 0 the best move dominates, so even a large roll still
+    # picks it: at T=1 a 300cp-worse move has weight e**-300 ~ 0.
+    assert sample_weighted([0, 300], temperature=1, rng=RollRng(0.999)) == 0
+
+
+def test_higher_temperature_spreads_weight_to_worse_moves():
+    # The same middling roll that the best move still wins at low temperature
+    # tips to a worse move once temperature flattens the distribution.
+    losses = [0, 120]
+    assert sample_weighted(losses, temperature=20, rng=RollRng(0.8)) == 0
+    assert sample_weighted(losses, temperature=400, rng=RollRng(0.8)) == 1
+
+
+def test_sample_weighted_caps_catastrophic_losses():
+    # Losses past MAX_SAMPLE_LOSS (e.g. walking into mate, scored in the tens
+    # of thousands) are clamped, so a hopeless move keeps a small but nonzero
+    # weight instead of underflowing to exactly zero and never being played.
+    huge = MAX_SAMPLE_LOSS * 100
+    assert sample_weighted([0, huge], temperature=300, rng=RollRng(0.999)) == 1
+
+
+def test_sample_weighted_rejects_nonpositive_temperature():
+    with pytest.raises(ValueError):
+        sample_weighted([0, 50], temperature=0, rng=RollRng(0.5))
 
 
 # --- live engine ----------------------------------------------------------
@@ -171,32 +214,31 @@ def test_engine_plays_legal_moves_at_every_tier(engine, tier):
 
 
 @requires_stockfish
-def test_blunder_roll_plays_a_random_legal_move():
+def test_sampler_tier_is_deterministic_under_a_seeded_rng():
+    # Same seed, same position => same sampled move, so a weak tier is
+    # reproducible (and its blunders aren't a live coin flip).
     session = GameSession()
-    with EnginePlayer(rng=ForcedRng(roll=0.0)) as player:
-        player.set_tier("beginner")
-        uci = player.choose_move(session)
-    first_legal = next(iter(chess.Board().legal_moves)).uci()
-    assert uci == first_legal
+    moves = []
+    for _ in range(2):
+        with EnginePlayer(rng=random.Random(1234)) as player:
+            player.set_tier("beginner")
+            moves.append(player.choose_move(session))
+    assert moves[0] == moves[1]
+    assert session.submit_move(moves[0]).legal
 
 
 @requires_stockfish
-def test_no_blunder_roll_consults_the_engine():
-    session = GameSession()
-    with EnginePlayer(rng=ForcedRng(roll=1.0, allow_choice=False)) as player:
+def test_raw_strength_setting_clears_the_sampler():
+    # Switching to a raw skill/elo escape hatch must drop the tier's sampler
+    # so choose_move consults the engine directly, not the weighted pool.
+    with EnginePlayer(rng=random.Random(0)) as player:
         player.set_tier("beginner")
-        assert session.submit_move(player.choose_move(session)).legal
-
-
-@requires_stockfish
-def test_raw_strength_setting_clears_tier_weakening():
-    # A roll of 0.0 blunders whenever any blunder chance survives, so the
-    # ForcedRng's forbidden `choice` proves set_skill_level cleared it.
-    session = GameSession()
-    with EnginePlayer(rng=ForcedRng(roll=0.0, allow_choice=False)) as player:
-        player.set_tier("beginner")
+        assert player._sample_temperature is not None
         player.set_skill_level(20)
-        assert session.submit_move(player.choose_move(session)).legal
+        assert player._sample_temperature is None
+        player.set_tier("casual")
+        player.set_elo(ELO_MIN)
+        assert player._sample_temperature is None
 
 
 @requires_stockfish
