@@ -61,12 +61,20 @@ services:
     # experts split CPU/GPU with -ncmoe, q8 KV cache, vision projector skipped
     # (chess is text-only). Adjust -ncmoe for other VRAM. MTP speculative
     # decoding is intentionally absent — no drafter is published for this MoE.
+    #
+    # --sleep-idle-seconds: the GPU is shared with host-side Ollama (PCC task
+    # extraction) — without this, ~9.7GB stays resident 24/7 and anything else
+    # lands on CPU. After 10 idle minutes the server unloads weights + KV cache
+    # and auto-reloads on the next request (~100s cold — the first command of a
+    # new session is slow; mid-game is unaffected). Idleness counts inference
+    # tasks only, so the /health probe below doesn't keep it awake.
     command: >
       -hf unsloth/gemma-4-26B-A4B-it-qat-GGUF:UD-Q4_K_XL
       --host 0.0.0.0 --port 8080
       -ngl 99 -ncmoe 12 --no-mmproj -fa on
       --cache-type-k q8_0 --cache-type-v q8_0
       -c 8192
+      --sleep-idle-seconds 600
       --jinja --temp 1.0 --top-p 0.95 --top-k 64
     # NVIDIA Container Toolkit must be installed on the host for GPU passthrough.
     deploy:
