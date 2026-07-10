@@ -39,17 +39,8 @@ export function CommandBox({
   return (
     <section className="command-box" aria-label="Agent">
       <form onSubmit={handleSubmit}>
-        <input
-          type="text"
-          aria-label="Command"
-          placeholder="Tell the agent what to do…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          disabled={thinking}
-        />
-        <button type="submit" disabled={thinking || !trimmed}>
-          Send
-        </button>
+        {/* Voice in/out controls lead the row so they hold their position
+            regardless of how the input or commentary below reflows. */}
         {/* Voice in: the transcript goes down the exact same pipeline as a
             typed command. Renders nothing in unsupporting browsers. */}
         <MicButton onTranscript={onSubmit} disabled={thinking} />
@@ -66,6 +57,17 @@ export function CommandBox({
             {voiceOutput ? '🔊' : '🔇'}
           </button>
         )}
+        <input
+          type="text"
+          aria-label="Command"
+          placeholder="Tell the agent what to do…"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          disabled={thinking}
+        />
+        <button type="submit" disabled={thinking || !trimmed}>
+          Send
+        </button>
       </form>
       {thinking ? (
         <p className="commentary commentary-thinking" role="status">
