@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Early scaffold. `BRIEF.md` is the full project brief — read it before making design decisions; this file summarizes its binding decisions. Monorepo layout: Python backend lives in `backend/` (src-layout package `chessapp`); `frontend/` will be added in Phase 1.
+Early scaffold. `BRIEF.md` is the full project brief — the chosen stack, licensing analysis, LLM serving details (model, quant, llama-server flags), difficulty-tier design, and agent tool list all live there and are authoritative. Read it before making design decisions; this file holds only the always-needed rules. Monorepo layout: Python backend lives in `backend/` (src-layout package `chessapp`); `frontend/` will be added in Phase 1.
 
 ## Task Tracking
 
@@ -31,7 +31,7 @@ ruff format .                                        # auto-format
 ## Git Workflow
 
 - **Never commit or push directly to `main`.** For every change: create a branch (`feat/<slug>`, `fix/<slug>`, `chore/<slug>`, `docs/<slug>`), commit, push, and open a PR with `gh pr create`.
-- PRs are **squash-merged once CI is green**. GitHub's native auto-merge and branch protection are unavailable (private repo on the Free plan), so after opening a PR run `gh pr checks --watch` and, when green, `gh pr merge --squash`. Never merge with failing or pending checks. (If the repo ever goes public or Pro, switch to `gh pr merge --auto --squash` + branch protection requiring the `lint` and `test` checks.)
+- PRs are **squash-merged once CI is green**. GitHub's native auto-merge and branch protection are unavailable (private repo on the Free plan), so after opening a PR run `gh pr checks --watch` and, when green, `gh pr merge --squash`. Never merge with failing or pending checks.
 - CI (`.github/workflows/ci.yml`) runs ruff lint/format-check and pytest on every PR and push to main. Both jobs must pass; run them locally before pushing.
 
 ## What This Is
@@ -49,44 +49,20 @@ The agent is the **orchestrator and personality, NOT the referee**:
 
 ## Game Loop
 
-Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a string → agent → tool call(s) → deterministic engine executes → state updates → agent reacts. One road in, one brain, no dual-path race conditions. The agent's reaction step reads from **current game state** ("new board + what changed"), not from the raw user utterance — this keeps a future fast-parse optimization free to add.
+Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a string → agent → tool call(s) → deterministic engine executes → state updates → agent reacts. One road in, one brain, no dual-path race conditions. The agent's reaction step reads from **current game state** ("new board + what changed"), not from the raw user utterance.
 
-## The Brain (LLM layer)
+## Binding Invariants (details in BRIEF.md)
 
-- Model: Gemma 4 26B A4B (MoE), served by llama.cpp using the **Unsloth QAT GGUF** quant `UD-Q4_K_XL` (`unsloth/gemma-4-26B-A4B-it-qat-GGUF`). Do NOT hand-roll a Q4_0 conversion.
-- llama-server flags: `--jinja` (required for tool-calling), sampling `--temp 1.0 --top-p 0.95 --top-k 64`; enable MTP speculative decoding.
-- Thinking mode: OFF for fast move parsing/reactions, ON for analysis. Never feed thought blocks back into multi-turn history — final answers only.
 - **Swappable brain module:** all model-specific logic lives behind one interface — `get_agent_response(board_state, command) → {text, tool_calls}`. Nothing else in the app may know which model/backend is behind it.
-- Tool-call reliability under quantization: prefer GBNF grammar-constrained decoding (valid-by-construction tool calls); otherwise a defensive parser + retry loop validated against the tool schema.
-- Keep prompts small (board state + short command) to control KV-cache growth.
-
-## Agent Tools
-
-Capabilities, not hardcoded behaviors — the agent maps free-form commands to tools itself (no per-phrase branching); ambiguous input → clarifying question.
-
-- Reads: `get_board_state`, `get_legal_moves`, `get_move_history`, `get_captured_pieces`, `evaluate_position`, `get_best_moves` (Stockfish MultiPV), `analyze_last_move` ("what was my mistake"), `review_game` (whole-game classification + accuracy)
-- Writes: `make_move` (returns legal/illegal), `undo`, `new_game`, `resign`, `save_game`, `resume_game`, `export_pgn`
-- Settings: `set_difficulty`, `set_personality`, `set_verbosity`, `set_hints_mode`, `set_voice_output`
-- Output: `speak` (TTS) + returned commentary text
-- Future seam only: `control_physical_board`
+- **Agent tools are capabilities, not hardcoded behaviors** — the agent maps free-form commands to tools itself (no per-phrase branching); ambiguous input → clarifying question. The full tool list is in BRIEF.md; `control_physical_board` stays a future seam only.
+- **Personality is tone only:** it shapes commentary, never move choice, difficulty, or any other setting.
+- **Never leave an engine unconfigured:** a real default difficulty tier is applied at app assembly (Stockfish's own default is full strength).
+- **Local-only voice by decision** — no browser Web Speech API path (see `docs/voice-fast-path-evaluation.md`).
+- **Never feed LLM thought blocks back into multi-turn history** — final answers only.
 
 ## Phasing
 
 1. **MVP:** web board + python-chess + Stockfish + **text** commands to the agent, 1–2 personalities. Get the tool boundaries right with text first.
 2. Voice (STT/TTS).
 3. Remaining personalities + settings-by-voice.
-4. Physical board (Chessnut Move) — walled-off separate project. Do not let it shape core architecture; motorized actuation is unverified. Leave only the `control_physical_board` tool seam.
-
-## Chosen Stack (assemble first, build glue only)
-
-- Chess truth + Stockfish bridge: `python-chess` (GPL-3.0). Ignore the unrelated PyPI package named "Chessnut" (a toy, not the hardware).
-- Difficulty: named tiers (beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum) are the primary contract, with raw Stockfish `Skill Level` / `UCI_Elo` as escape hatches. Stockfish can't play below ~1320 via UCI, so sub-floor tiers add a deterministic weakening layer in `engine.py` (tiny node limits + seeded random blunder injection). A real default tier is applied at app assembly (Stockfish's own default is full strength — never leave an engine unconfigured). Personality is **tone only**: it shapes commentary, never move choice, difficulty, or any other setting.
-- Web board: `Chessground` (GPL) or `react-chessboard` + `chess.js` (MIT — prefer if permissive licensing matters); `@mdwebb/react-chess` has reusable game scaffolding.
-- Voice: `Speaches` (MIT) — one self-hosted container, OpenAI-API-compatible STT+TTS. Lighter alternative: whisper.cpp + Piper/Kokoro. **Local-only by decision** — no browser Web Speech API path (cloud STT breaks the offline/privacy invariant; see `docs/voice-fast-path-evaluation.md`).
-- Agent orchestration: likely no framework — llama-server is OpenAI-compatible, so the loop is just the OpenAI SDK pointed at localhost with `tools`. Adopt the GBNF technique from `llama-cpp-agent` but don't depend on that unmaintained repo. LangGraph is likely overkill.
-- Game review: fork an existing Stockfish-based review engine rather than building from scratch.
-- Deployment: one container per layer (llama-server, Speaches, app) tied together with Docker Compose. Basic gameplay must work fully offline.
-
-## Licensing
-
-The key pieces cluster around GPL (python-chess, Chessground, Stockfish, ChessnutPy) — fine for a personal, non-distributed home-network app. It only bites on public distribution. If avoiding GPL matters, choose the MIT pieces (react-chessboard + chess.js) early.
+4. Physical board (Chessnut Move) — walled-off separate project; do not let it shape core architecture.
