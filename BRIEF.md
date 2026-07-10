@@ -17,8 +17,8 @@ The app must support a full game against Stockfish with the LLM turned off — t
 - The agent's reaction step reads from **current game state** ("here's the new board + what changed"), not from "the user said e4" — this keeps a future fast-parse optimization free to add later.
 
 ## Runtime Model (the "brain")
-- **Model:** Gemma 4 26B A4B (Mixture-of-Experts, ~3.8B active params/token, latency-optimized, native tool-calling, hybrid-thinking, multimodal/vision).
-- **Serving:** llama.cpp with the **Unsloth QAT GGUF**, quant `UD-Q4_K_XL` (`unsloth/gemma-4-26B-A4B-it-qat-GGUF`). ~15 GB, runs on a 16 GB GPU. Do NOT hand-roll a Q4_0 conversion (scale mismatch tanks accuracy); use Unsloth's dynamic quant.
+- **Model:** Gemma 4 12B (dense, native tool-calling, hybrid-thinking, multimodal/vision + experimental audio encoder). Fully GPU-offloadable on a 12GB card; faster than the 26B MoE (~94 tok/s on tool calls with MTP) at the cost of some capability.
+- **Serving:** llama.cpp with the **Unsloth QAT GGUF**, quant `UD-Q4_K_XL` (`unsloth/gemma-4-12B-it-qat-GGUF`). ~6.7 GB. Do NOT hand-roll a Q4_0 conversion (scale mismatch tanks accuracy); use Unsloth's dynamic quant.
 - **Speed:** enable MTP (Multi-Token Prediction) speculative decoding — 1.4–2.2x faster, no accuracy loss, drafter auto-discovered from `-hf`.
 - **Flags:** `--jinja` (required for tool-calling/chat template); sampling `--temp 1.0 --top-p 0.95 --top-k 64`.
 - **Thinking mode as a lever:** OFF for fast move parsing/quick reactions; ON for analysis ("what was my mistake"). Toggle via `enable_thinking`. In multi-turn history, keep only final answers — never feed thought blocks back.

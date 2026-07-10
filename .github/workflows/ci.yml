@@ -31,8 +31,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .[dev]
-      - name: Install Stockfish (engine tests skip without it)
-        run: sudo apt-get update && sudo apt-get install -y stockfish
+      # Stockfish is intentionally NOT installed here — apt-get install is slow
+      # and engine-dependent tests skip cleanly without it. Run engine tests
+      # locally (Stockfish bundled in the app image) before opening a PR.
       - name: Run tests
         run: pytest --cov=chessapp --cov-report=term-missing
 
