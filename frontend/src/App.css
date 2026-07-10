@@ -298,6 +298,10 @@
 
 /* Free-text command box for the agent + its commentary. */
 .command-box {
+  /* Match the board width so long commentary wraps instead of stretching
+     the (flex: 0 0 auto) board-column to fit one long line. */
+  width: min(90vw, 480px);
+  box-sizing: border-box;
   margin-top: 1.25rem;
   background: var(--surface-veil);
   border: 1px solid var(--silk-border);
