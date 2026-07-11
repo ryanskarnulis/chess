@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Early scaffold. `BRIEF.md` is the full project brief — the chosen stack, licensing analysis, LLM serving details (model, quant, llama-server flags), difficulty-tier design, and agent tool list all live there and are authoritative. Read it before making design decisions; this file holds only the always-needed rules. Monorepo layout: Python backend lives in `backend/` (src-layout package `chessapp`); `frontend/` will be added in Phase 1.
+Early scaffold. `BRIEF.md` is the full project brief — the chosen stack, licensing analysis, LLM serving details (model + quant), difficulty-tier design, and agent tool list all live there and are authoritative. The llama-server *flags* are owned by the shared workspace `../llama-swap/config.yaml` (one GPU server serves chess and project-command-center); change them there, not here. Read it before making design decisions; this file holds only the always-needed rules. Monorepo layout: Python backend lives in `backend/` (src-layout package `chessapp`); `frontend/` will be added in Phase 1.
 
 ## Task Tracking
 

@@ -5,16 +5,22 @@
 #            /api + /ws URLs need no proxy); Stockfish bundled in the image.
 #            Owns board truth + the deterministic engine; reaches the brain
 #            over the network at CHESSAPP_LLAMA_URL.
-#   llama  — the LLM "brain" (Gemma-4 12B on llama.cpp, GPU). Optional: the
-#            app plays a full deterministic game with this container down.
-#   speaches — self-hosted STT+TTS (OpenAI-compatible). Optional like llama:
-#            text/board play works with it down.
+#   speaches — self-hosted STT+TTS (OpenAI-compatible). Optional: text/board
+#            play works with it down.
+#
+# The LLM "brain" (Gemma-4 12B on llama.cpp, GPU) is no longer a service here:
+# it lives in the workspace-level ../llama-swap/ stack, shared with
+# project-command-center, and the app reaches it over host.docker.internal.
+# The server flags (MTP, ctx, KV quant) are owned by ../llama-swap/config.yaml
+# — BRIEF.md's model/quant choice still stands, but the serving flags moved.
+# Optional as ever: the app plays a full deterministic game with the brain
+# down or the llama-swap stack stopped.
 #
 # Basic gameplay must work fully offline; nothing here reaches the internet at
-# runtime once the model GGUF is cached on the host (see the llama notes).
+# runtime once the model GGUF is cached on the host.
 #
 #   docker compose up -d --build        # start the stack
-#   docker compose up -d app            # engine-only: skip the brain entirely
+#   docker compose up -d app            # same thing now — the brain is external
 
 services:
   app:
@@ -28,10 +34,12 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      # Point the brain seam at the llama service on the compose network.
-      # Unset/override to run the LLM off — /api/command 503s, gameplay is fine.
-      CHESSAPP_LLAMA_URL: http://llama:8080/v1
-      CHESSAPP_MODEL: gemma
+      # Brain seam → the shared workspace llama-swap proxy on the host
+      # (port block 8200, see ../gateway/README.md). The model name must match
+      # a ../llama-swap/config.yaml entry. Unset/override to run the LLM off —
+      # /api/command 503s, gameplay is fine.
+      CHESSAPP_LLAMA_URL: http://host.docker.internal:8200/v1
+      CHESSAPP_MODEL: gemma-4-12b
       # Voice seam: where the app proxies STT/TTS requests. Unset to run
       # voiceless — the voice endpoints 503, gameplay is untouched.
       CHESSAPP_SPEACHES_URL: http://speaches:8000/v1
@@ -40,76 +48,26 @@ services:
       CHESSAPP_SAVE_DIR: /data/saves
     volumes:
       - chess-saves:/data/saves
-    # Ordering only, not a health gate: the app must not wait ~100s for the
-    # model to load before it can serve an engine-only game.
-    depends_on:
-      - llama
+    # host.docker.internal → the host, where llama-swap publishes :8200. Same
+    # mechanism PCC's backend uses; compose projects don't share a network.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     # Image already ships a HEALTHCHECK (urllib against /api/state).
 
-  llama:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    ports:
-      # Published for host-side debugging (curl localhost:8010/health); the app
-      # reaches it over the internal network regardless.
-      - "127.0.0.1:8010:8080"
-    volumes:
-      # GOTCHA: -hf downloads to the HF cache layout, NOT ~/.cache/llama.cpp.
-      # Mount the host HF cache or the ~14GB GGUF re-downloads on every start.
-      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
-    # Tuning below is for a 12GB GPU (RTX 3060), the verified dev/home box:
-    # dense 12B (6.72GB) fully GPU-offloaded (-ngl 999), vision projector skipped
-    # (chess is text-only). MTP speculative decoding IS enabled here — the 12B
-    # ships a drafter (mtp-gemma-4-12B-it.gguf, auto-found by -hf), giving
-    # ~94 tok/s on structured tool/move calls (75% draft acceptance). VRAM
-    # ~10.2GB with MTP. A harmless "[spec] failed to measure draft model memory"
-    # warning prints but MTP still works.
-    #
-    # --sleep-idle-seconds: the GPU is shared with host-side Ollama (PCC task
-    # extraction) — without this, weights stay resident 24/7 and anything else
-    # lands on CPU. After 10 idle minutes the server unloads weights + KV cache
-    # and auto-reloads on the next request (~100s cold — the first command of a
-    # new session is slow; mid-game is unaffected). Idleness counts inference
-    # tasks only, so the /health probe below doesn't keep it awake.
-    command: >
-      -hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL
-      --host 0.0.0.0 --port 8080
-      -ngl 999 --no-mmproj -fa on
-      --spec-type draft-mtp --spec-draft-n-max 4
-      -c 8192
-      --sleep-idle-seconds 600
-      --jinja --temp 1.0 --top-p 0.95 --top-k 64
-    # NVIDIA Container Toolkit must be installed on the host for GPU passthrough.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      # Model load is ~100s cold; give it a generous start_period before the
-      # first failing probe counts against it.
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 180s
-      retries: 3
-    restart: unless-stopped
-
   # --- Phase 2 (Voice) ------------------------------------------------------
   # Speaches: one self-hosted, OpenAI-API-compatible STT+TTS container
-  # (faster-whisper + Kokoro/Piper). CPU image on purpose: the llama service
-  # already fills the 12GB GPU, and whisper-small/Kokoro are fine on CPU for
-  # single-user voice. Models are a one-time explicit install (they land in
+  # (faster-whisper + Kokoro/Piper). CPU image on purpose: the shared GPU
+  # server already fills the 12GB GPU when loaded, and whisper-small/Kokoro
+  # are fine on CPU for single-user voice. Models are a one-time explicit install (they land in
   # the mounted cache — internet once, then fully local, same story as the
   # llama GGUF):
   #
   #   curl -X POST http://localhost:8020/v1/models/Systran%2Ffaster-whisper-small
   #   curl -X POST http://localhost:8020/v1/models/speaches-ai%2FKokoro-82M-v1.0-ONNX
   #
-  # Optional like llama: the app serves board + text play with this container
-  # down (voice endpoints 503/502).
+  # Optional like the brain: the app serves board + text play with this
+  # container down (voice endpoints 503/502).
   speaches:
     image: ghcr.io/speaches-ai/speaches:0.8.3-cpu
     ports:
