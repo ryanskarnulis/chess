@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.api import create_app
-from chessapp.engine import DEFAULT_TIER, EnginePlayer
+from chessapp.engine import DEFAULT_TIER, CandidateMove, EnginePlayer
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
 from fakes import FakeEngine
@@ -58,6 +58,16 @@ def test_state_reflects_moves_and_captures(client):
     assert body["history"] == ["e4", "d5", "exd5"]
     assert body["captured"] == {"white": ["p"], "black": []}
     assert body["turn"] == "black"
+
+
+def test_state_includes_per_ply_fens(client):
+    assert client.get("/api/state").json()["fens"] == [START_FEN]
+    for move in ["e4", "d5", "exd5"]:
+        client.post("/api/game/move", json={"move": move})
+    body = client.get("/api/state").json()
+    assert len(body["fens"]) == len(body["history"]) + 1
+    assert body["fens"][0] == START_FEN
+    assert body["fens"][-1] == body["fen"]
 
 
 # --- moves -----------------------------------------------------------------
@@ -380,3 +390,43 @@ def test_set_voice_output_toggles_the_setting(ctx, client):
     assert client.get("/api/settings").json()["voice_output"] is True
     client.post("/api/settings/voice", json={"enabled": False})
     assert ctx.settings.voice_output is False
+
+
+# --- hint --------------------------------------------------------------
+
+
+def _hint_client(ctx, best_moves=()):
+    ctx.engine = FakeEngine(best_moves=best_moves)
+    return TestClient(create_app(ctx))
+
+
+def test_hint_without_engine_is_503(client):
+    assert client.get("/api/game/hint").status_code == 503
+
+
+def test_hint_returns_best_move(ctx):
+    best = CandidateMove(uci="e2e4", san="e4", score_cp=30, mate_in=None)
+    client = _hint_client(ctx, best_moves=(best,))
+    body = client.get("/api/game/hint").json()
+    assert body == {"uci": "e2e4", "san": "e4", "from": "e2", "to": "e4"}
+
+
+def test_hint_destination_is_correct_for_promotion(ctx):
+    best = CandidateMove(uci="e7e8q", san="e8=Q", score_cp=900, mate_in=None)
+    client = _hint_client(ctx, best_moves=(best,))
+    body = client.get("/api/game/hint").json()
+    assert body["from"] == "e7"
+    assert body["to"] == "e8"
+
+
+def test_hint_when_game_over_is_409(ctx):
+    client = _hint_client(
+        ctx, best_moves=(CandidateMove(uci="e2e4", san="e4", score_cp=0, mate_in=None),)
+    )
+    ctx.session.resign()
+    assert client.get("/api/game/hint").status_code == 409
+
+
+def test_hint_with_no_candidates_is_409(ctx):
+    client = _hint_client(ctx)
+    assert client.get("/api/game/hint").status_code == 409

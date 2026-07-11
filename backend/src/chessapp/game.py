@@ -200,6 +200,17 @@ class GameSession:
             board.push(move)
         return sans
 
+    def position_fens(self) -> list[str]:
+        """FEN of every position reached, root first, current last — one per
+        ply plus the root. Derived by replaying the move stack, like
+        `move_history()`, so the board stays the sole source of truth."""
+        board = self._board.root()
+        fens = [board.fen()]
+        for move in self._board.move_stack:
+            board.push(move)
+            fens.append(board.fen())
+        return fens
+
     def captured_pieces(self) -> dict[str, list[str]]:
         """Piece symbols each color has captured, in capture order.
 

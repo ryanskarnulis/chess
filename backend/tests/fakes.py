@@ -15,8 +15,9 @@ from chessapp.brain import AgentResponse
 class FakeEngine:
     """Engine double: scripted reply + recorders for strength and MultiPV."""
 
-    def __init__(self, reply_uci: str = "e7e5"):
+    def __init__(self, reply_uci: str = "e7e5", best_moves: tuple = ()):
         self.reply_uci = reply_uci
+        self.best_moves = list(best_moves)
         self.multipv_requests: list[int] = []
         self.skill_levels: list[int] = []
         self.elos: list[int] = []
@@ -30,7 +31,7 @@ class FakeEngine:
 
     def get_best_moves(self, session, n=3):
         self.multipv_requests.append(n)
-        return []
+        return self.best_moves[:n]
 
     def set_skill_level(self, level: int) -> None:
         self.skill_levels.append(level)

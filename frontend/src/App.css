@@ -378,3 +378,228 @@
   color: var(--muted);
   font-style: italic;
 }
+
+/* --- mobile layout (chess.com-style stack) ------------------------------ */
+
+.mobile-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0.5rem auto;
+  /* Clear the fixed bottom bar (plus the phone's home-indicator inset). */
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+}
+
+.mobile-layout .board-wrap,
+.mobile-layout .command-box {
+  width: 100%;
+}
+
+/* Spider mascot + speech bubble */
+
+.agent-bubble {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  text-align: left;
+  /* Reserve room so the board doesn't jump as commentary changes. */
+  min-height: 4.5rem;
+}
+
+.spider-icon {
+  width: 56px;
+  height: 70px;
+  flex: 0 0 auto;
+}
+
+.agent-bubble .bubble {
+  position: relative;
+  flex: 1;
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface-veil);
+  border: 1px solid var(--silk-border);
+  border-radius: var(--radius);
+  line-height: 1.4;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+/* Speech-bubble tail pointing at the spider. */
+.agent-bubble .bubble::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 14px;
+  border: 7px solid transparent;
+  border-left: none;
+  border-right-color: var(--silk-border);
+}
+
+.agent-bubble .bubble-thinking {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* One-line move history with review arrows */
+
+.move-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+.move-strip button {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.7rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--silk-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.move-strip button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.move-strip-moves {
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+  text-align: left;
+  scrollbar-width: none;
+  padding: 0.3rem 0;
+}
+
+.move-strip-item {
+  margin-right: 0.45rem;
+}
+
+.move-strip .move-number {
+  color: var(--muted);
+  margin-right: 0.2rem;
+}
+
+.move-strip .move.current {
+  color: var(--glow);
+  font-weight: 600;
+}
+
+/* Fixed bottom control bar */
+
+.bottom-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  background: var(--surface-veil);
+  border-top: 1px solid var(--silk-border);
+  backdrop-filter: blur(6px);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.bottom-bar button {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.5rem 0 0.6rem;
+  background: none;
+  border: none;
+  color: var(--ink);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.bottom-bar button span {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.bottom-bar button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Options bottom sheet */
+
+.options-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(10, 12, 18, 0.6);
+}
+
+.options-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--silk-border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  box-shadow: var(--shadow-glow);
+}
+
+.options-sheet button,
+.options-sheet select {
+  padding: 0.6rem 0.75rem;
+  background: var(--surface-veil);
+  color: var(--ink);
+  border: 1px solid var(--silk-border);
+  border-radius: 8px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.options-sheet .difficulty {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  text-align: left;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.options-sheet .options-close {
+  color: var(--muted);
+}
+
+/* Mobile reuses the panels' small-caps card headings and keeps the
+   captured row compact. */
+.mobile-layout h2 {
+  font-size: 0.78rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin: 0;
+}
+
+.mobile-layout .captured {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: left;
+}
+
+.mobile-layout .captured-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.mobile-layout .status {
+  margin: 0;
+}
