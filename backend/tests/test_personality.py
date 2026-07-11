@@ -112,6 +112,25 @@ def test_prompt_explains_one_move_per_turn_and_engine_reply(name):
 
 
 @pytest.mark.parametrize("name", PERSONALITIES)
+def test_prompt_teaches_the_file_capture_form(name):
+    # "d takes e5" is how players pronounce dxe5; without the example the
+    # model has rejected the spoken form while offering the SAN back.
+    prompt = system_prompt_for(name)
+    assert "d takes e5" in prompt.lower()
+    assert '"dxe5"' in prompt
+
+
+@pytest.mark.parametrize("name", PERSONALITIES)
+def test_prompt_requires_acting_on_an_accepted_proposal(name):
+    # Propose a move → player says yes → the agent must CALL make_move, not
+    # announce the move in words (seen live: "moving forward with dxe5",
+    # no tool call, no move).
+    prompt = system_prompt_for(name).lower()
+    assert "accept" in prompt
+    assert "announc" in prompt
+
+
+@pytest.mark.parametrize("name", PERSONALITIES)
 def test_prompt_requires_confirmation_before_destructive_tools(name):
     prompt = system_prompt_for(name)
     assert "resign" in prompt

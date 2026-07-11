@@ -27,6 +27,11 @@ BXC6 = "7k/8/2p5/1P6/4B3/8/8/4K3 w - - 0 1"
 ROOK_CHECK = "4k3/8/8/8/8/8/8/R3K3 w - - 0 1"
 # Fool's mate delivered — game over, no legal moves.
 GAME_OVER = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+# 1. d4 e5 — dxe5 is the pawn capture named by file.
+DXE5 = "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq e6 0 2"
+# A knight on d3 can take e5, but no pawn can: "d takes e5" names a pawn
+# capture (SAN dxe5 semantics), so nothing matches.
+KNIGHT_NOT_PAWN = "4k3/8/8/4p3/8/3N4/8/4K3 w - - 0 1"
 
 
 # --- notation: SAN and UCI, case- and suffix-forgiving ------------------------
@@ -94,6 +99,36 @@ def test_piece_word_settles_a_capture_collision():
     assert parse_move("bishop takes on c6", BXC6) == "Bxc6"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "d takes e5",
+        "d takes on e5",
+        "d captures e5",
+        "d x e5",
+        "d ex e5",  # how STT hears "dxe5"
+        "D takes E5",
+    ],
+)
+def test_file_source_capture_phrases(text):
+    # "d takes e5" is how players pronounce dxe5: a pawn capture named by
+    # its source file.
+    assert parse_move(text, DXE5) == "dxe5"
+
+
+def test_file_source_capture_settles_the_bxc6_collision():
+    # "b takes c6" names the pawn capture, never the bishop's.
+    assert parse_move("b takes c6", BXC6) == "bxc6"
+
+
+def test_file_source_capture_means_a_pawn():
+    # SAN dxe5 semantics: a piece capture is named by its piece ("knight
+    # takes e5"), so when only a knight can take, the file phrase matches
+    # nothing and falls through.
+    assert parse_move("d takes e5", KNIGHT_NOT_PAWN) is None
+    assert parse_move("knight takes e5", KNIGHT_NOT_PAWN) == "Nxe5"
+
+
 def test_bare_square_fires_only_when_one_move_lands_there():
     # Ra8+ is the only move to a8 — "a8" names it. d5 from the start position
     # is reachable by nothing, and no phrase means no move.
@@ -150,6 +185,12 @@ def test_promotion_forms(text, san):
 def test_promotion_without_a_piece_is_ambiguous():
     # Four promotions land on e8 — which piece is the agent's question to ask.
     assert parse_move("pawn to e8", PROMOTION) is None
+
+
+def test_file_source_capture_promotion():
+    # White pawn g7, black rook h8: a capture-promotion named by file.
+    fen = "7r/6P1/8/8/8/8/8/K3k3 w - - 0 1"
+    assert parse_move("g takes h8 promote to queen", fen) == "gxh8=Q"
 
 
 # --- everything else falls through ---------------------------------------

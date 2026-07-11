@@ -144,6 +144,9 @@ def test_stt_prompt_covers_the_chess_vocabulary():
         ("Night takes e5", "knight takes e5"),
         ("castle king side", "castle kingside"),
         ("castle queen side", "castle queenside"),
+        ("d ex e5", "dxe5"),  # how STT hears "dxe5"
+        ("d x e5", "dxe5"),
+        ("D ex E 5", "dxe5"),
     ],
 )
 def test_normalizer_repairs_known_transcription_slips(raw, repaired):
@@ -158,11 +161,18 @@ def test_normalizer_repairs_known_transcription_slips(raw, repaired):
         "what are my legal moves?",
         "resign",
         "a knight for a bishop",
+        "exd5",
         "",
     ],
 )
 def test_normalizer_leaves_clean_text_alone(text):
     assert normalize_transcript(text) == text
+
+
+def test_stt_prompt_shows_the_file_capture_form():
+    # "d takes e5" is how players pronounce dxe5; showing it biases whisper
+    # away from mangled forms like "d ex e5".
+    assert "d takes e5" in STT_PROMPT
 
 
 def test_transcribe_returns_the_normalized_transcript():
