@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { Board } from './Board'
 
@@ -73,6 +73,31 @@ describe('Board', () => {
     } finally {
       document.body.removeEventListener('chessground.resize', remeasured)
       vi.unstubAllGlobals()
+    }
+  })
+
+  it('draws an auto-shape arrow for a hint and clears it when removed', async () => {
+    // Chessground skips shape drawing when its container has zero bounds,
+    // and jsdom sizes everything at 0 — give the board a real footprint.
+    const rect = { x: 0, y: 0, top: 0, left: 0, bottom: 512, right: 512, width: 512, height: 512, toJSON: () => ({}) } as DOMRect
+    const spy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue(rect)
+    try {
+      const { container, rerender } = render(
+        <Board fen={START_FEN} autoShapes={[{ orig: 'e2', dest: 'e4', brush: 'green' }]} />,
+      )
+      // Chessground renders each auto-shape as a group in its shapes svg
+      // (on its next animation frame, hence the waits).
+      await waitFor(() =>
+        expect(container.querySelectorAll('svg.cg-shapes g *').length).toBeGreaterThan(0),
+      )
+      rerender(<Board fen={START_FEN} autoShapes={[]} />)
+      await waitFor(() =>
+        expect(container.querySelectorAll('svg.cg-shapes g *')).toHaveLength(0),
+      )
+    } finally {
+      spy.mockRestore()
     }
   })
 

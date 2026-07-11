@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  fetchHint,
   fetchSettings,
   fetchState,
   newGame as apiNewGame,
@@ -59,6 +60,27 @@ export interface UseGame {
   voiceOutput: boolean | null
   /** Turn voice output on/off (the UI mute toggle). */
   setVoiceOutput: (enabled: boolean) => Promise<void>
+  /**
+   * Index into `state.fens` of the position being reviewed, or null when
+   * showing the live game. Review is client-side only — it never mutates
+   * the game, and any authoritative state (a move, an agent action, another
+   * tab) snaps back to live.
+   */
+  viewPly: number | null
+  /** True while browsing history (viewPly !== null). */
+  reviewing: boolean
+  /** The FEN the board should render: the reviewed position, or live. */
+  displayFen: string | null
+  /** Step one position back through history (clamped at the root). */
+  stepBack: () => void
+  /** Step one position forward; reaching the latest resumes live view. */
+  stepForward: () => void
+  /** Hint arrow(s) for the board, from the last requestHint call. Cleared
+   * whenever a new authoritative state applies. */
+  hintShapes: { orig: string; dest: string; brush: string }[]
+  /** Ask the engine for its best move and show it as an arrow. No-op while
+   * reviewing; silently does nothing when the backend refuses. */
+  requestHint: () => Promise<void>
 }
 
 /**
@@ -77,14 +99,30 @@ export function useGame(): UseGame {
   const [agentThinking, setAgentThinking] = useState(false)
   const [voiceOutput, setVoiceOutputState] = useState<boolean | null>(null)
   const [tier, setTierState] = useState<string | null>(null)
+  const [viewPly, setViewPly] = useState<number | null>(null)
+  const [hintShapes, setHintShapes] = useState<
+    { orig: string; dest: string; brush: string }[]
+  >([])
   // Latest state without making the move callbacks depend on it — the board
   // holds `play` in a ref, but promotion detection still needs the live fen.
   const stateRef = useRef<GameState | null>(null)
+  // Mirror of viewPly for the same reason: `play` must see the live value.
+  const viewPlyRef = useRef<number | null>(null)
+
+  const setView = useCallback((ply: number | null) => {
+    viewPlyRef.current = ply
+    setViewPly(ply)
+  }, [])
 
   const apply = useCallback((next: GameState) => {
     stateRef.current = next
     setState(next)
     setRevision((r) => r + 1)
+    // Any authoritative state ends a history review and invalidates the
+    // hint arrow — both were drawn for a position that may no longer exist.
+    viewPlyRef.current = null
+    setViewPly(null)
+    setHintShapes([])
   }, [])
 
   useEffect(() => {
@@ -122,6 +160,9 @@ export function useGame(): UseGame {
 
   const play = useCallback(
     async (from: string, to: string) => {
+      // Belt-and-braces: the board is viewOnly during review, but never let
+      // a stray drag submit a move against a position that isn't live.
+      if (viewPlyRef.current !== null) return
       // A promotion can't be expressed as bare from+to; hold it for a piece
       // choice rather than submitting a move the backend would reject.
       if (stateRef.current && isPromotion(stateRef.current.fen, from, to)) {
@@ -207,6 +248,30 @@ export function useGame(): UseGame {
     [apply],
   )
 
+  const stepBack = useCallback(() => {
+    const fens = stateRef.current?.fens
+    if (!fens || fens.length < 2) return
+    // From live, start at the position before the last ply; while
+    // reviewing, keep walking back, clamped at the root.
+    setView(viewPlyRef.current === null ? fens.length - 2 : Math.max(0, viewPlyRef.current - 1))
+  }, [setView])
+
+  const stepForward = useCallback(() => {
+    const fens = stateRef.current?.fens
+    if (!fens || viewPlyRef.current === null) return
+    const next = viewPlyRef.current + 1
+    // Reaching the latest position resumes the live view.
+    setView(next >= fens.length - 1 ? null : next)
+  }, [setView])
+
+  const requestHint = useCallback(async () => {
+    // A hint only makes sense for the live position.
+    if (viewPlyRef.current !== null || stateRef.current?.game_over) return
+    const hint = await fetchHint()
+    // Null means the backend refused (no engine, game over) — no arrow.
+    setHintShapes(hint ? [{ orig: hint.from, dest: hint.to, brush: 'green' }] : [])
+  }, [])
+
   const setVoiceOutput = useCallback(async (enabled: boolean) => {
     // Settings change, not a board mutation. The hook reflects what the
     // server confirmed, so the toggle can never drift from the truth.
@@ -232,5 +297,13 @@ export function useGame(): UseGame {
     sendCommand,
     voiceOutput,
     setVoiceOutput,
+    viewPly,
+    reviewing: viewPly !== null,
+    displayFen:
+      viewPly !== null && state ? (state.fens[viewPly] ?? state.fen) : (state?.fen ?? null),
+    stepBack,
+    stepForward,
+    hintShapes,
+    requestHint,
   }
 }

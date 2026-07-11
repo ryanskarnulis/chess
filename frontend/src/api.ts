@@ -14,6 +14,9 @@ export interface GameState {
   game_over: boolean
   outcome: Outcome | null
   history: string[]
+  /** FEN of every position reached, root first, current last — one entry
+   * per ply plus the root. Drives client-side history review. */
+  fens: string[]
   captured: { white: string[]; black: string[] }
   legal_moves: string[]
   /** Legal destinations by origin square, e.g. `{ e2: ['e3', 'e4'] }`. */
@@ -155,6 +158,22 @@ export async function transcribe(audio: Blob): Promise<string | null> {
   if (!res.ok) return null
   const data = (await res.json()) as { text: string }
   return data.text
+}
+
+export interface HintResponse {
+  uci: string
+  san: string
+  from: string
+  to: string
+}
+
+/** Fetch the engine's best move for the side to move, or null if the backend
+ * refused (no engine → 503, game over / no moves → 409). Read-only — never
+ * touches board state. */
+export async function fetchHint(): Promise<HintResponse | null> {
+  const res = await fetch('/api/game/hint')
+  if (!res.ok) return null
+  return (await res.json()) as HintResponse
 }
 
 export interface ReviewedMove {

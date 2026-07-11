@@ -12,6 +12,9 @@ export interface CommandBoxProps {
   voiceOutput: boolean | null
   /** Ask the parent to turn voice output on/off (the mute toggle). */
   onToggleVoice: (enabled: boolean) => void
+  /** Render the commentary/thinking block below the input (default). The
+   * mobile layout passes false and stages commentary in the agent bubble. */
+  showCommentary?: boolean
 }
 
 /**
@@ -25,6 +28,7 @@ export function CommandBox({
   thinking,
   voiceOutput,
   onToggleVoice,
+  showCommentary = true,
 }: CommandBoxProps) {
   const [text, setText] = useState('')
   const trimmed = text.trim()
@@ -69,17 +73,18 @@ export function CommandBox({
           Send
         </button>
       </form>
-      {thinking ? (
-        <p className="commentary commentary-thinking" role="status">
-          Thinking…
-        </p>
-      ) : (
-        commentary && (
-          <p className="commentary" role="status">
-            {commentary}
+      {showCommentary &&
+        (thinking ? (
+          <p className="commentary commentary-thinking" role="status">
+            Thinking…
           </p>
-        )
-      )}
+        ) : (
+          commentary && (
+            <p className="commentary" role="status">
+              {commentary}
+            </p>
+          )
+        ))}
     </section>
   )
 }

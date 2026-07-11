@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Chessground } from 'chessground'
 import type { Api } from 'chessground/api'
+import type { DrawShape } from 'chessground/draw'
 import type { Key } from 'chessground/types'
 
 import 'chessground/assets/chessground.base.css'
@@ -24,6 +25,9 @@ export interface BoardProps {
    * rejects it (the position, and thus `fen`, is unchanged in that case).
    */
   revision?: number
+  /** Program-drawn arrows/highlights (e.g. the hint arrow); replaces the
+   * previous set on every change, so `[]` clears them. */
+  autoShapes?: { orig: string; dest?: string; brush: string }[]
 }
 
 function toDests(dests?: Record<string, string[]>): Map<Key, Key[]> {
@@ -40,7 +44,15 @@ function toDests(dests?: Record<string, string[]>): Map<Key, Key[]> {
  * The board never validates or generates moves — legal destinations come from
  * the backend and completed moves are handed back to `onMove` for submission.
  */
-export function Board({ fen, turnColor, dests, onMove, viewOnly = false, revision }: BoardProps) {
+export function Board({
+  fen,
+  turnColor,
+  dests,
+  onMove,
+  viewOnly = false,
+  revision,
+  autoShapes,
+}: BoardProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<Api | null>(null)
   // Hold the latest handler without making it a sync-effect dependency, so a
@@ -90,6 +102,12 @@ export function Board({ fen, turnColor, dests, onMove, viewOnly = false, revisio
       },
     })
   }, [fen, viewOnly, turnColor, dests, revision])
+
+  // Shapes are pushed through their own API call: `set` merges config, but
+  // setAutoShapes replaces the drawn set, which is what a hint needs.
+  useEffect(() => {
+    apiRef.current?.setAutoShapes((autoShapes ?? []) as DrawShape[])
+  }, [autoShapes])
 
   return <div ref={mountRef} className="board" />
 }

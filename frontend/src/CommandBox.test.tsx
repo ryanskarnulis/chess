@@ -70,4 +70,16 @@ describe('CommandBox', () => {
     // The prior commentary is hidden while a new reply is pending.
     expect(screen.queryByText('stale reply')).not.toBeInTheDocument()
   })
+
+  it('hides the commentary block when showCommentary is false', () => {
+    // Mobile shows commentary in the agent bubble instead; the input row
+    // must keep working on its own.
+    const props = setup({ showCommentary: false, commentary: 'elsewhere', thinking: false })
+    expect(screen.queryByText('elsewhere')).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    const input = screen.getByLabelText(/command/i)
+    fireEvent.change(input, { target: { value: 'play e4' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+    expect(props.onSubmit).toHaveBeenCalledWith('play e4')
+  })
 })

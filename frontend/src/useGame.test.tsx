@@ -20,11 +20,23 @@ function state(overrides: Partial<GameState> = {}): GameState {
     game_over: false,
     outcome: null,
     history: [],
+    fens: [START_FEN],
     captured: { white: [], black: [] },
     legal_moves: ['e4'],
     dests: { e2: ['e3', 'e4'] },
     ...overrides,
   }
+}
+
+const AFTER_E4_E5_FEN = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2'
+
+/** State two plies in, with the per-ply fens the review arrows walk. */
+function reviewableState(): GameState {
+  return state({
+    fen: AFTER_E4_E5_FEN,
+    history: ['e4', 'e5'],
+    fens: [START_FEN, AFTER_E4_FEN, AFTER_E4_E5_FEN],
+  })
 }
 
 // jsdom has no WebSocket; this stand-in lets a test push a server frame.
@@ -67,6 +79,8 @@ beforeEach(() => {
       return jsonResponse({ tier: 'advanced', skill_level: null, elo: null })
     if (path.includes('/api/command'))
       return jsonResponse({ commentary: 'Nice move!', tool_results: [], state: state() })
+    if (path.includes('/api/game/hint'))
+      return jsonResponse({ uci: 'e2e4', san: 'e4', from: 'e2', to: 'e4' })
     if (path.includes('/api/settings/voice')) return jsonResponse({ voice_output: true })
     if (path.includes('/api/settings'))
       return jsonResponse({
@@ -379,6 +393,129 @@ describe('useGame', () => {
     expect(result.current.state?.fen).toBe(START_FEN)
     expect(result.current.revision).toBe(revisionBefore)
     expect(result.current.agentThinking).toBe(false)
+  })
+
+  // --- history review: browse past positions without undoing ------------
+
+  async function renderReviewable() {
+    const rendered = renderHook(() => useGame())
+    await waitFor(() => expect(rendered.result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: reviewableState() })
+    })
+    return rendered
+  }
+
+  it('shows the live position and is not reviewing by default', async () => {
+    const { result } = await renderReviewable()
+    expect(result.current.reviewing).toBe(false)
+    expect(result.current.viewPly).toBeNull()
+    expect(result.current.displayFen).toBe(AFTER_E4_E5_FEN)
+  })
+
+  it('steps back from live to the previous position without submitting anything', async () => {
+    const { result } = await renderReviewable()
+    const callsBefore = fetchMock.mock.calls.length
+    act(() => result.current.stepBack())
+    expect(result.current.reviewing).toBe(true)
+    expect(result.current.viewPly).toBe(1)
+    expect(result.current.displayFen).toBe(AFTER_E4_FEN)
+    // Review is client-side only — no backend mutation.
+    expect(fetchMock.mock.calls.length).toBe(callsBefore)
+  })
+
+  it('clamps stepping back at the root position', async () => {
+    const { result } = await renderReviewable()
+    act(() => result.current.stepBack())
+    act(() => result.current.stepBack())
+    expect(result.current.viewPly).toBe(0)
+    expect(result.current.displayFen).toBe(START_FEN)
+    act(() => result.current.stepBack())
+    expect(result.current.viewPly).toBe(0)
+  })
+
+  it('steps forward back to live at the last position', async () => {
+    const { result } = await renderReviewable()
+    act(() => result.current.stepBack())
+    act(() => result.current.stepForward())
+    expect(result.current.reviewing).toBe(false)
+    expect(result.current.viewPly).toBeNull()
+    expect(result.current.displayFen).toBe(AFTER_E4_E5_FEN)
+  })
+
+  it('ignores stepping forward while live', async () => {
+    const { result } = await renderReviewable()
+    act(() => result.current.stepForward())
+    expect(result.current.viewPly).toBeNull()
+  })
+
+  it('snaps back to live when an authoritative state arrives during review', async () => {
+    const { result } = await renderReviewable()
+    act(() => result.current.stepBack())
+    expect(result.current.reviewing).toBe(true)
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: reviewableState() })
+    })
+    expect(result.current.reviewing).toBe(false)
+    expect(result.current.displayFen).toBe(AFTER_E4_E5_FEN)
+  })
+
+  it('does not submit moves while reviewing', async () => {
+    const { result } = await renderReviewable()
+    act(() => result.current.stepBack())
+    await act(async () => {
+      await result.current.play('e2', 'e4')
+    })
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/game/move', expect.anything())
+  })
+
+  // --- hint: engine best move as a board arrow ---------------------------
+
+  it('fetches a hint and exposes it as a board arrow shape', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    expect(result.current.hintShapes).toEqual([])
+    await act(async () => {
+      await result.current.requestHint()
+    })
+    expect(result.current.hintShapes).toEqual([{ orig: 'e2', dest: 'e4', brush: 'green' }])
+  })
+
+  it('clears the hint arrow when a new authoritative state arrives', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    await act(async () => {
+      await result.current.requestHint()
+    })
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: state({ fen: AFTER_E4_FEN }) })
+    })
+    expect(result.current.hintShapes).toEqual([])
+  })
+
+  it('leaves the hint empty when the backend refuses (no engine)', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/game/hint'))
+        return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.requestHint()
+    })
+    expect(result.current.hintShapes).toEqual([])
+  })
+
+  it('ignores hint requests while reviewing', async () => {
+    const { result } = await renderReviewable()
+    act(() => result.current.stepBack())
+    const callsBefore = fetchMock.mock.calls.length
+    await act(async () => {
+      await result.current.requestHint()
+    })
+    expect(fetchMock.mock.calls.length).toBe(callsBefore)
+    expect(result.current.hintShapes).toEqual([])
   })
 
   it('cancels a promotion, snapping the pawn back without submitting', async () => {
