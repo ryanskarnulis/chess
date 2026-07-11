@@ -129,6 +129,11 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
       onSpeechEnd: (audio) => {
         if (sessionRef.current === session) void handleUtterance(audio, session)
       },
+      onUnavailable: (reason) => {
+        // Surfaced, not swallowed: on a phone this line is the only
+        // diagnostic anyone will ever see.
+        setError(`Hands-free unavailable (${reason}) — tap-to-talk instead.`)
+      },
     })
     if (sessionRef.current !== session) {
       // The user tapped out (or the component unmounted) while loading.
