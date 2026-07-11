@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, model_validator
 from chessapp.analysis import review_game
 from chessapp.brain import Brain
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
+from chessapp.fastparse import parse_move
 from chessapp.game import GameSession, MoveResult
 from chessapp.tools import UNDO_PLIES_MAX, ToolContext, build_registry
 from chessapp.voice import SpeechClient
@@ -119,6 +120,21 @@ def _agent_state_dict(session: GameSession, player_color: str) -> dict[str, Any]
 
 def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
+
+
+def _move_confirmation(result: dict[str, Any], session: GameSession) -> str:
+    """Deterministic stand-in for the reaction on the fast path at
+    verbosity=low: the move, the engine's reply, and the outcome if the game
+    ended — facts from the tool result, zero LLM calls."""
+    parts = [f"{result['san']}."]
+    engine_move = result.get("engine_move")
+    if engine_move:
+        parts.append(f"{engine_move['san']}.")
+    if result.get("game_over"):
+        outcome = _outcome_dict(session)
+        if outcome:
+            parts.append(f"Game over: {outcome['result']} ({outcome['termination']}).")
+    return " ".join(parts)
 
 
 # How many self-correction rounds a turn's failed tool calls get before the
@@ -324,6 +340,15 @@ def create_app(
         commentary the user actually saw (a bounded window, final answers
         only) — and the turn is recorded once its commentary is settled, so
         the agent can follow references to earlier conversation.
+
+        The fast path (the seam BRIEF reserves): an utterance that is exactly
+        one unambiguous legal move skips phase one and goes straight to
+        make_move — through the same registry, so the road stays one road,
+        minus a model round-trip. The reaction still runs as usual; at
+        verbosity=low a canned confirmation stands in for it too, making a
+        plain move a zero-LLM turn. Anything ambiguous or non-move reaches
+        the brain unchanged. No retry loop here: the parse matched a
+        currently legal move, so the dispatch cannot be rejected.
         """
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
@@ -334,40 +359,56 @@ def create_app(
         player_color = ctx.session.turn
         before = _agent_state_dict(ctx.session, player_color)
         transcript = ctx.transcript.window()
-        response = brain.get_agent_response(before, request.text, transcript)
-        tool_results = [
-            {"name": call.name, "result": registry.dispatch(call.name, call.args)}
-            for call in response.tool_calls
-        ]
         direct_reply: str | None = None
-        failures = _failed_calls(tool_results)
-        for _ in range(MAX_TOOL_RETRY_ROUNDS):
-            if not failures:
-                break
-            retry = brain.get_agent_response(
-                _agent_state_dict(ctx.session, player_color),
-                _retry_command(failures, ctx.session),
-                transcript,
-            )
-            if not retry.tool_calls:
-                # The brain answered in words instead of retrying — a
-                # clarifying question or a concession. That is the final,
-                # user-facing reply; reacting to the failure would bury it.
-                direct_reply = retry.text
-                break
-            round_results = [
-                {"name": call.name, "result": registry.dispatch(call.name, call.args)}
-                for call in retry.tool_calls
+        pre_action_text = ""
+        fast_san = parse_move(request.text, ctx.session.fen())
+        if fast_san is not None:
+            tool_results = [
+                {
+                    "name": "make_move",
+                    "result": registry.dispatch("make_move", {"move": fast_san}),
+                }
             ]
-            tool_results.extend(round_results)
-            failures = _failed_calls(round_results)
+        else:
+            response = brain.get_agent_response(before, request.text, transcript)
+            pre_action_text = response.text
+            tool_results = [
+                {"name": call.name, "result": registry.dispatch(call.name, call.args)}
+                for call in response.tool_calls
+            ]
+            failures = _failed_calls(tool_results)
+            for _ in range(MAX_TOOL_RETRY_ROUNDS):
+                if not failures:
+                    break
+                retry = brain.get_agent_response(
+                    _agent_state_dict(ctx.session, player_color),
+                    _retry_command(failures, ctx.session),
+                    transcript,
+                )
+                if not retry.tool_calls:
+                    # The brain answered in words instead of retrying — a
+                    # clarifying question or a concession. That is the final,
+                    # user-facing reply; reacting to the failure would bury it.
+                    direct_reply = retry.text
+                    break
+                round_results = [
+                    {
+                        "name": call.name,
+                        "result": registry.dispatch(call.name, call.args),
+                    }
+                    for call in retry.tool_calls
+                ]
+                tool_results.extend(round_results)
+                failures = _failed_calls(round_results)
         agent_state = _agent_state_dict(ctx.session, player_color)
         if direct_reply is not None:
             commentary = direct_reply
+        elif fast_san is not None and ctx.settings.verbosity == "low":
+            commentary = _move_confirmation(tool_results[0]["result"], ctx.session)
         elif tool_results:
             commentary = brain.react(agent_state, tool_results, transcript)
         else:
-            commentary = response.text
+            commentary = pre_action_text
         # Record on the context, not a captured reference: resume_game may
         # have just swapped in the saved game's transcript, and this turn
         # belongs to that thread.

@@ -12,7 +12,7 @@ from chessapp.api import create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
-from fakes import ScriptedBrain
+from fakes import FakeEngine, ScriptedBrain
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -268,6 +268,114 @@ def test_reaction_commentary_is_what_the_transcript_records():
         {"role": "user", "content": "play e4"},
         {"role": "assistant", "content": "A bold king's pawn!"},
     ]
+
+
+# --- deterministic fast-parse path (the seam BRIEF reserves) ------------------
+#
+# An utterance that is exactly one unambiguous legal move skips the phase-one
+# LLM call and goes straight to make_move through the same registry — one road
+# in, one pipeline, minus a model round-trip. The agent still reacts from the
+# new state; at verbosity=low a canned confirmation stands in for the reaction
+# too, making a plain move a zero-LLM turn. Anything ambiguous or non-move
+# reaches the brain unchanged. A ScriptedBrain with no scripted responses
+# fails loudly (IndexError) if phase one is ever consulted.
+
+
+def make_fast_client(
+    *responses: AgentResponse,
+    reactions: tuple[str, ...] = (),
+    verbosity: str = "normal",
+    engine=None,
+):
+    brain = ScriptedBrain(*responses, reactions=reactions)
+    ctx = ToolContext(session=GameSession(), engine=engine)
+    ctx.settings.verbosity = verbosity
+    return TestClient(create_app(ctx, brain=brain)), brain, ctx
+
+
+def test_plain_move_skips_the_phase_one_llm_call():
+    client, brain, _ = make_fast_client(reactions=("Pawn out.",))
+    body = client.post("/api/command", json={"text": "e4"}).json()
+    assert brain.calls == []  # phase one never consulted
+    assert body["commentary"] == "Pawn out."
+    assert body["tool_results"][0]["name"] == "make_move"
+    assert body["tool_results"][0]["result"]["legal"] is True
+    assert body["state"]["history"] == ["e4"]
+
+
+def test_fast_path_covers_spoken_phrases():
+    client, brain, _ = make_fast_client()
+    body = client.post("/api/command", json={"text": "knight to f3"}).json()
+    assert brain.calls == []
+    assert body["state"]["history"] == ["Nf3"]
+
+
+def test_fast_path_reacts_from_the_new_state():
+    client, brain, _ = make_fast_client(reactions=("Classic.",))
+    body = client.post("/api/command", json={"text": "e4"}).json()
+    react_state, react_changes = brain.react_calls[0]
+    assert react_state["history"] == ["e4"]
+    assert react_state["player_color"] == "white"
+    assert react_changes == body["tool_results"]
+
+
+def test_low_verbosity_fast_move_is_a_zero_llm_turn():
+    client, brain, _ = make_fast_client(verbosity="low")
+    body = client.post("/api/command", json={"text": "e4"}).json()
+    assert brain.calls == []
+    assert brain.react_calls == []
+    assert body["commentary"] == "e4."
+
+
+def test_low_verbosity_confirmation_includes_the_engine_reply():
+    client, _, _ = make_fast_client(verbosity="low", engine=FakeEngine("e7e5"))
+    body = client.post("/api/command", json={"text": "e4"}).json()
+    assert body["commentary"] == "e4. e5."
+    assert body["state"]["history"] == ["e4", "e5"]
+
+
+def test_low_verbosity_confirmation_reports_game_over():
+    client, _, ctx = make_fast_client(verbosity="low")
+    for move in ("e4", "f6", "d3", "g5"):
+        ctx.session.submit_move(move)
+    body = client.post("/api/command", json={"text": "queen to h5"}).json()
+    assert body["commentary"] == "Qh5#. Game over: 1-0 (checkmate)."
+
+
+def test_non_move_text_reaches_the_brain_unchanged():
+    client, brain, _ = make_fast_client(AgentResponse(text="hi!"))
+    body = client.post("/api/command", json={"text": "hello"}).json()
+    assert brain.calls[0][1] == "hello"
+    assert body["commentary"] == "hi!"
+
+
+def test_illegal_move_text_reaches_the_brain_unchanged():
+    # Nf6 is Black's move — nothing legal matches, so the utterance falls
+    # through to the agent (whose retry loop owns illegal-move recovery).
+    client, brain, _ = make_fast_client(AgentResponse(text="That's not legal."))
+    client.post("/api/command", json={"text": "knight to f6"})
+    assert [command for _, command in brain.calls] == ["knight to f6"]
+
+
+def test_fast_path_turn_is_recorded_in_the_transcript():
+    client, brain, _ = make_fast_client(
+        AgentResponse(text="you did"), reactions=("Sharp.",)
+    )
+    client.post("/api/command", json={"text": "e4"})
+    client.post("/api/command", json={"text": "did I open well?"})
+    assert brain.transcripts[0] == [
+        {"role": "user", "content": "e4"},
+        {"role": "assistant", "content": "Sharp."},
+    ]
+
+
+def test_fast_move_broadcasts_state_to_ws():
+    client, _, _ = make_fast_client(reactions=("ok",))
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # connect snapshot
+        client.post("/api/command", json={"text": "e4"})
+        message = ws.receive_json()
+    assert message["state"]["history"] == ["e4"]
 
 
 def test_read_only_command_does_not_broadcast():
