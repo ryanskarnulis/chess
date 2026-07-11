@@ -58,13 +58,18 @@ def normalize_transcript(text: str) -> str:
 
 @dataclass
 class SpeechClient:
-    """STT + TTS bound to one OpenAI-compatible backend and model choices."""
+    """STT + TTS bound to OpenAI-compatible backends and model choices.
+
+    One backend serves both by default; `tts_client` splits TTS onto its own
+    server (the custom Glitch voice lives in a Kokoro-FastAPI container while
+    STT stays on Speaches)."""
 
     client: Any
     stt_model: str = DEFAULT_STT_MODEL
     tts_model: str = DEFAULT_TTS_MODEL
     tts_voice: str = DEFAULT_TTS_VOICE
     stt_prompt: str = STT_PROMPT
+    tts_client: Any | None = None
 
     def transcribe(self, audio: bytes, filename: str = "audio.webm") -> str:
         """Audio bytes (any container whisper accepts; the browser sends
@@ -81,7 +86,8 @@ class SpeechClient:
     def speak(self, text: str) -> bytes:
         """Text → spoken audio bytes. mp3, because every browser <audio>
         plays it and it's small enough for LAN round-trips."""
-        result = self.client.audio.speech.create(
+        client = self.tts_client if self.tts_client is not None else self.client
+        result = client.audio.speech.create(
             model=self.tts_model,
             voice=self.tts_voice,
             input=text,
@@ -93,21 +99,33 @@ class SpeechClient:
 def create_speech_client(
     *,
     base_url: str,
+    tts_base_url: str | None = None,
     stt_model: str = DEFAULT_STT_MODEL,
     tts_model: str = DEFAULT_TTS_MODEL,
     tts_voice: str = DEFAULT_TTS_VOICE,
     api_key: str = "speaches-needs-no-key",
     client: Any | None = None,
+    tts_client: Any | None = None,
 ) -> SpeechClient:
     """Build a SpeechClient against a real Speaches (e.g. speaches:8000/v1).
 
-    `client` is injected in tests / alternate backends; otherwise the factory
-    builds a real OpenAI client against `base_url`.
+    `tts_base_url` points TTS at its own OpenAI-compatible server (e.g. the
+    Kokoro-FastAPI container serving the custom voice); without it the one
+    backend serves both. `client`/`tts_client` are injected in tests /
+    alternate backends; otherwise the factory builds real OpenAI clients.
     """
     if client is None:
         from openai import OpenAI
 
         client = OpenAI(base_url=base_url, api_key=api_key)
+    if tts_client is None and tts_base_url is not None:
+        from openai import OpenAI
+
+        tts_client = OpenAI(base_url=tts_base_url, api_key=api_key)
     return SpeechClient(
-        client=client, stt_model=stt_model, tts_model=tts_model, tts_voice=tts_voice
+        client=client,
+        stt_model=stt_model,
+        tts_model=tts_model,
+        tts_voice=tts_voice,
+        tts_client=tts_client,
     )

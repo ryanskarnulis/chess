@@ -95,6 +95,9 @@ def _speech_from_env() -> SpeechClient | None:
         return None
     return create_speech_client(
         base_url=url,
+        # TTS on its own server (the custom-voice Kokoro container); unset
+        # means the Speaches backend serves both, exactly as before.
+        tts_base_url=os.environ.get("CHESSAPP_TTS_URL"),
         stt_model=os.environ.get("CHESSAPP_STT_MODEL", DEFAULT_STT_MODEL),
         tts_model=os.environ.get("CHESSAPP_TTS_MODEL", DEFAULT_TTS_MODEL),
         tts_voice=os.environ.get("CHESSAPP_TTS_VOICE", DEFAULT_TTS_VOICE),

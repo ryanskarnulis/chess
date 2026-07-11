@@ -43,6 +43,12 @@ services:
       # Voice seam: where the app proxies STT/TTS requests. Unset to run
       # voiceless — the voice endpoints 503, gameplay is untouched.
       CHESSAPP_SPEACHES_URL: http://speaches:8000/v1
+      # Glitch's custom voice: TTS goes to the Kokoro container (a designed
+      # blend, see the kokoro service note); STT stays on Speaches. Unset
+      # CHESSAPP_TTS_URL to fall back to Speaches for both.
+      CHESSAPP_TTS_URL: http://kokoro:8880/v1
+      CHESSAPP_TTS_MODEL: kokoro
+      CHESSAPP_TTS_VOICE: am_fenrir(2)+am_michael(1)
       # Stockfish path + host/port are baked into the image ENV; saved games
       # persist to a named volume so they survive `compose down`.
       CHESSAPP_SAVE_DIR: /data/saves
@@ -76,6 +82,22 @@ services:
       - "127.0.0.1:8020:8000"
     volumes:
       - ${HOME}/.cache/huggingface:/home/ubuntu/.cache/huggingface
+    restart: unless-stopped
+
+  # Kokoro-FastAPI: serves Glitch's custom voice (Speaches can't blend or
+  # clone — stock voices only). CPU image on purpose, same GPU story as
+  # speaches; Kokoro-82M is realtime on CPU. The voice is a weighted blend of
+  # stock Kokoro voices, expressed right in the OpenAI `voice` param (e.g.
+  # "am_fenrir+am_michael" or "am_fenrir(2)+am_michael(1)") — swap
+  # CHESSAPP_TTS_VOICE on the app service to retune; no state lives here.
+  # Model weights download into the image volume on first start (internet
+  # once, then fully local).
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.5.0
+    ports:
+      # Host-side debugging/auditioning only, like speaches. Port from the
+      # chess block 8000-8099 (../gateway/README.md).
+      - "127.0.0.1:8030:8880"
     restart: unless-stopped
 
 volumes:
