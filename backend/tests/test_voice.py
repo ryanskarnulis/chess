@@ -108,6 +108,74 @@ def test_speak_forwards_text_and_returns_audio_bytes():
     assert call["response_format"] == "mp3"
 
 
+# --- split TTS backend (custom-voice epic) ------------------------------------
+#
+# The custom voice (Glitch) is served by a dedicated Kokoro-FastAPI container
+# while STT stays on Speaches, so the SpeechClient can carry a second
+# OpenAI-compatible client for TTS only. No `tts_client` means the one
+# backend serves both, exactly as before.
+
+
+def test_speak_uses_the_dedicated_tts_client_when_given():
+    stt_backend = FakeSpeechBackend()
+    tts_backend = FakeSpeechBackend(audio=b"kokoro-blend-mp3")
+    speech = SpeechClient(client=stt_backend, tts_client=tts_backend)
+    assert speech.speak("Check!") == b"kokoro-blend-mp3"
+    assert stt_backend.speech.calls == []
+    (call,) = tts_backend.speech.calls
+    assert call["input"] == "Check!"
+
+
+def test_transcribe_ignores_the_tts_client():
+    stt_backend = FakeSpeechBackend(text="knight f3")
+    tts_backend = FakeSpeechBackend()
+    speech = SpeechClient(client=stt_backend, tts_client=tts_backend)
+    assert speech.transcribe(b"opus-bytes") == "knight f3"
+    assert tts_backend.transcriptions.calls == []
+
+
+def test_create_speech_client_wires_an_injected_tts_client():
+    stt_backend = FakeSpeechBackend()
+    tts_backend = FakeSpeechBackend(audio=b"blend")
+    speech = create_speech_client(
+        base_url="http://speaches:8000/v1",
+        tts_base_url="http://kokoro:8880/v1",
+        client=stt_backend,
+        tts_client=tts_backend,
+    )
+    assert speech.speak("hi") == b"blend"
+    assert stt_backend.speech.calls == []
+
+
+def test_create_speech_client_without_tts_base_url_uses_one_backend():
+    backend = FakeSpeechBackend(audio=b"one-backend")
+    speech = create_speech_client(base_url="http://speaches:8000/v1", client=backend)
+    assert speech.tts_client is None
+    assert speech.speak("hi") == b"one-backend"
+
+
+def test_speech_from_env_builds_a_separate_tts_client(monkeypatch):
+    from chessapp.app import _speech_from_env
+
+    monkeypatch.setenv("CHESSAPP_SPEACHES_URL", "http://speaches:8000/v1")
+    monkeypatch.setenv("CHESSAPP_TTS_URL", "http://kokoro:8880/v1")
+    speech = _speech_from_env()
+    assert speech is not None
+    assert speech.tts_client is not None
+    assert "kokoro:8880" in str(speech.tts_client.base_url)
+    assert "speaches:8000" in str(speech.client.base_url)
+
+
+def test_speech_from_env_without_tts_url_stays_single_backend(monkeypatch):
+    from chessapp.app import _speech_from_env
+
+    monkeypatch.setenv("CHESSAPP_SPEACHES_URL", "http://speaches:8000/v1")
+    monkeypatch.delenv("CHESSAPP_TTS_URL", raising=False)
+    speech = _speech_from_env()
+    assert speech is not None
+    assert speech.tts_client is None
+
+
 # --- STT hardening (agent-reliability epic) -----------------------------------
 #
 # Voice games die when a spoken move transcribes badly. Two deterministic
