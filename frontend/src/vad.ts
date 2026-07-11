@@ -34,6 +34,31 @@ export interface Vad {
  */
 export const END_OF_SPEECH_MS = 1000
 
+const RELOADED_KEY = 'vad-stale-chunk-reloaded'
+
+/**
+ * True when `e` is a dynamic-import failure and this tab hasn't already
+ * reloaded for one. A rebuilt image renames every hashed chunk, so a tab
+ * still running the old build 404s importing the lazy VAD chunk; one reload
+ * fetches the fresh index.html. The storage flag stops a reload loop when a
+ * chunk is genuinely missing.
+ */
+export function staleChunkReload(
+  e: unknown,
+  storage: Storage = sessionStorage,
+): boolean {
+  const message = e instanceof Error ? e.message : String(e)
+  const stale =
+    /dynamically imported module|module script failed/i.test(message)
+  try {
+    if (!stale || storage.getItem(RELOADED_KEY)) return false
+    storage.setItem(RELOADED_KEY, '1')
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * Build and start a microphone VAD, or return null when anything fails
  * (no worklet support, model failed to load, mic denied) — the caller
@@ -53,6 +78,12 @@ export async function createVad(events: SpeechEvents): Promise<Vad | null> {
       onSpeechStart: events.onSpeechStart,
       onSpeechEnd: events.onSpeechEnd,
     })
+    try {
+      // Healthy again: allow a future stale-build state to reload once more.
+      sessionStorage.removeItem(RELOADED_KEY)
+    } catch {
+      // Storage unavailable (private mode); the guard just stays one-shot.
+    }
     return {
       pause: () => void vad.pause(),
       resume: () => void vad.start(),
@@ -60,6 +91,12 @@ export async function createVad(events: SpeechEvents): Promise<Vad | null> {
     }
   } catch (e) {
     console.warn('hands-free VAD unavailable:', e)
+    if (staleChunkReload(e)) {
+      // Stale build: the lazy chunk this page references no longer exists
+      // on the server. Reload once to pick up the fresh index.html.
+      location.reload()
+      return null
+    }
     events.onUnavailable?.(e instanceof Error ? e.message : String(e))
     return null
   }
