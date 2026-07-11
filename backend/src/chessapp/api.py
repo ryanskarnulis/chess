@@ -436,7 +436,6 @@ def create_app(
         from (the same truth the tools mutate)."""
         s = ctx.settings
         return {
-            "personality": s.personality,
             "verbosity": s.verbosity,
             "hints_mode": s.hints_mode,
             "voice_output": s.voice_output,

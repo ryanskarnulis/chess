@@ -2,7 +2,16 @@
 
 The backlog, in priority order. One task = one vertical slice = one branch = one PR (TDD: failing test first). When a task is finished and merged, move its line to `DONE.md` with the merge date. Re-plan freely between slices — this file is the living backlog, not a contract.
 
-## Agent reliability — finish a game by voice (top priority)
+## Personality & voice — Glitch (current focus)
+
+The 2026-07-11 direction: one hand-dialed personality — **Glitch**, a gen-z Jarvis (fully casual, low-key troll, help stays real, swearing allowed) — instead of the selectable roster, plus a designed custom TTS voice ("laid-back young American, audible smirk") instead of stock Kokoro `af_heart`. Voice-option research (Kokoro blending / Chatterbox Turbo / Qwen3-TTS / NeuTTS Air, with the 12 GB VRAM constraint) is in Claude's project memory.
+
+- [ ] **Collapse personalities to Glitch**: remove the roster + `set_personality`, rewrite `personality.py` around the dialed-in Glitch prompt, update BRIEF/CLAUDE/tests (in progress)
+- [ ] **Verify Glitch live**: play a real game; check the troll tone lands, callbacks happen, and Gemma actually swears instead of softening — tune the prompt block from notes
+- [ ] **Custom voice — Kokoro blend**: add a Kokoro-FastAPI container (CPU), audition `am_*` voice blends against the voice spec, save the winning blend, point `CHESSAPP_TTS_*` at it
+- [ ] **Spike — Qwen3-TTS voice design** (only if the blend ceiling disappoints): trim shared llama-swap context to free ~2 GB VRAM, serve via vLLM-Omni, design the voice from the prose spec
+
+## Agent reliability — finish a game by voice
 
 From the 2026-07-10 agent deep dive: voice games die by attrition — an illegal-move guess ends the turn with no recovery, the brain's prompt is ~75% UI noise (`fens`/`dests`) that grows every ply, the system prompt gives zero speech→SAN guidance, and every plain move pays the full two-LLM-call round trip (~10–20s). Slices in priority order; the first three are small, independent, and low-risk.
 
@@ -47,10 +56,10 @@ No manual testing has happened yet — everything below has only been exercised 
 - [ ] Review panel: "Review unavailable" (not a crash) when the engine is off, and the button allows a retry
 - [ ] Analysis latency (thinking ON) is tolerable; whole-game review latency acceptable on a long game
 
-### Personalities & settings
-- [ ] Each personality is distinguishable in commentary (tone only — personalities must NOT change move strength or settings)
+### Personality & settings
+- [ ] Glitch's tone comes through in commentary (tone only — personality must NOT change move strength or settings)
 - [ ] `set_difficulty` visibly changes engine strength (easy loses to a casual player, hard doesn't); the UI difficulty selector matches what the engine actually plays, including after an app restart
-- [ ] Settings by speech/text: difficulty, personality, verbosity, hints mode, voice output all switchable mid-game and persist
+- [ ] Settings by speech/text: difficulty, verbosity, hints mode, voice output all switchable mid-game and persist
 - [ ] Verbosity levels actually differ (terse vs chatty)
 
 ### Voice (STT/TTS)

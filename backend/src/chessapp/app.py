@@ -5,10 +5,10 @@ this module is what builds them and wires them together into a runnable app.
 One shared `ToolContext` holds the session, settings, and optional engine, so
 the tools the brain calls and the state the API serves are the same truth.
 
-Live personality switching lands here: the brain is built with a
-`system_prompt_provider` that reads `ctx.settings.personality`, and
-`set_personality` mutates exactly that setting — so a personality change takes
-effect on the very next command, no rebuild.
+Live prompt settings land here: the brain is built with a
+`system_prompt_provider` that reads `ctx.settings`, and `set_verbosity` /
+`set_hints_mode` mutate exactly those settings — so a change takes effect on
+the very next command, no rebuild.
 
 `main()` reads config from the environment and runs the app under uvicorn.
 Basic gameplay works with the LLM off (no brain / no `/api/command`) and with
@@ -54,9 +54,9 @@ def build_app(
 
     Pass a `brain` to inject one (tests, or an alternate backend); otherwise a
     `LlamaBrain` is built against `llama_base_url`, wired to resolve its system
-    prompt from `ctx.settings.personality` on every command so
-    `set_personality` switches personality live. `openai_client` injects a fake
-    OpenAI client into that default brain without a real llama-server.
+    prompt from `ctx.settings` on every command so `set_verbosity` and
+    `set_hints_mode` take effect live. `openai_client` injects a fake OpenAI
+    client into that default brain without a real llama-server.
     """
     ctx = ToolContext(session=GameSession(), engine=engine, save_dir=save_dir)
     if engine is not None:
@@ -74,7 +74,6 @@ def build_app(
             model=model,
             tool_definitions=build_registry(ctx).definitions(),
             system_prompt_provider=lambda: system_prompt_for(
-                ctx.settings.personality,
                 ctx.settings.verbosity,
                 ctx.settings.hints_mode,
             ),

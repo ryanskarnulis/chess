@@ -1,10 +1,10 @@
 """App-assembly entrypoint: wire a real ToolContext + brain into one app.
 
 `build_app` is where the pieces finally meet — session, settings, optional
-engine, and a `Brain` all share one context. This is also where live
-personality switching lands: `set_personality` records
-`ctx.settings.personality`, and the brain resolves its system prompt from
-that setting per command, so the change takes effect on the next command.
+engine, and a `Brain` all share one context. This is also where live prompt
+settings land: `set_verbosity`/`set_hints_mode` record onto `ctx.settings`,
+and the brain resolves its system prompt from those settings per command, so
+a change takes effect on the next command.
 
 Exercised only through a fake OpenAI client that records request kwargs and
 returns scripted completions — never a live LLM.
@@ -130,38 +130,16 @@ def test_build_app_without_a_static_dir_serves_no_frontend():
     assert client.get("/api/state").status_code == 200
 
 
-def test_build_app_wires_live_personality_switching():
-    # The whole point of item 3: a set_personality command changes which
-    # system prompt the brain uses on the *next* command — end to end, through
-    # the assembled app (settings mutated by the tool, read by the brain).
-    switch = _tool_call("set_personality", '{"personality":"calm_coach"}')
-    fake = FakeOpenAIClient(
-        # cmd 1, phase one: switch personality to calm_coach.
-        _completion(tool_calls=[switch]),
-        # cmd 1, phase two (react) + everything after: plain text, no tools.
-        _completion(content="ok"),
-    )
-    app = build_app(model="gemma", openai_client=fake)
-    client = TestClient(app)
-
-    client.post("/api/command", json={"text": "be a calm coach"})
-    client.post("/api/command", json={"text": "hello"})
-
-    # Before the switch the first command used the default (friendly_rival)...
-    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for(
-        "friendly_rival"
-    )
-    # ...and the last command, after the switch, uses calm_coach's prompt.
-    assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for("calm_coach")
-
-
 def test_build_app_wires_live_verbosity_switching():
     # "Talk less": a set_verbosity command must change the system prompt the
-    # brain gets on the *next* command — same live-settings seam as
-    # personality, so voice commands like "talk more/less" are real.
+    # brain gets on the *next* command — end to end, through the assembled app
+    # (settings mutated by the tool, read by the brain), so voice commands
+    # like "talk more/less" are real.
     switch = _tool_call("set_verbosity", '{"verbosity":"low"}')
     fake = FakeOpenAIClient(
+        # cmd 1, phase one: the verbosity switch.
         _completion(tool_calls=[switch]),
+        # cmd 1, phase two (react) + everything after: plain text, no tools.
         _completion(content="ok"),
     )
     client = TestClient(build_app(model="gemma", openai_client=fake))
@@ -169,18 +147,17 @@ def test_build_app_wires_live_verbosity_switching():
     client.post("/api/command", json={"text": "talk less"})
     client.post("/api/command", json={"text": "hello"})
 
-    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for(
-        "friendly_rival"
-    )
+    # Before the switch the first command used the plain prompt...
+    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for()
+    # ...and the last command, after the switch, gets the low-verbosity layer.
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
-        "friendly_rival", verbosity="low"
+        verbosity="low"
     )
 
 
 def test_build_app_wires_live_hints_switching():
     # "Give me hints": set_hints_mode must change the system prompt the brain
-    # gets on the next command, same live-settings seam as personality and
-    # verbosity.
+    # gets on the next command, same live-settings seam as verbosity.
     switch = _tool_call("set_hints_mode", '{"enabled":true}')
     fake = FakeOpenAIClient(
         _completion(tool_calls=[switch]),
@@ -191,9 +168,7 @@ def test_build_app_wires_live_hints_switching():
     client.post("/api/command", json={"text": "give me hints"})
     client.post("/api/command", json={"text": "hello"})
 
-    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for(
-        "friendly_rival"
-    )
+    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for()
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
-        "friendly_rival", hints_mode=True
+        hints_mode=True
     )

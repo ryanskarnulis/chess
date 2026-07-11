@@ -49,7 +49,6 @@ beforeEach(() => {
       const path = String(url)
       const body = path.includes('/api/settings')
         ? {
-            personality: 'friendly_rival',
             verbosity: 'normal',
             hints_mode: false,
             voice_output: false,

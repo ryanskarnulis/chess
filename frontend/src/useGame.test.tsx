@@ -84,7 +84,6 @@ beforeEach(() => {
     if (path.includes('/api/settings/voice')) return jsonResponse({ voice_output: true })
     if (path.includes('/api/settings'))
       return jsonResponse({
-        personality: 'friendly_rival',
         verbosity: 'normal',
         hints_mode: false,
         voice_output: false,

@@ -33,17 +33,6 @@ UNDO_PLIES_MAX = 100
 # Save names become filenames: one path segment, no traversal.
 SAVE_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
-# The full personality roster (Phase 1 pair + Phase 3 additions).
-PERSONALITIES = (
-    "friendly_rival",
-    "calm_coach",
-    "trash_talker",
-    "grandmaster",
-    "villain",
-    "silent_assassin",
-    "beginner_bot",
-    "streamer",
-)
 VERBOSITY_LEVELS = ("low", "normal", "high")
 
 
@@ -52,10 +41,9 @@ class Settings:
     """Agent-adjustable app settings. Difficulty records exactly one of
     tier / skill_level / elo (the last one set); it is applied to the live
     engine when present and applied at assembly when an engine attaches.
-    Personality is tone only — it shapes the agent's commentary, never move
-    choice or any other setting."""
+    The personality (Glitch) is fixed, not a setting — see
+    `chessapp.personality`."""
 
-    personality: str = PERSONALITIES[0]
     verbosity: str = "normal"
     hints_mode: bool = False
     voice_output: bool = False
@@ -342,10 +330,6 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             ctx.settings.skill_level = None
         return {"ok": True, "tier": tier, "skill_level": skill_level, "elo": elo}
 
-    def set_personality(personality: str) -> dict[str, Any]:
-        ctx.settings.personality = personality
-        return {"ok": True, "personality": personality}
-
     def set_verbosity(verbosity: str) -> dict[str, Any]:
         ctx.settings.verbosity = verbosity
         return {"ok": True, "verbosity": verbosity}
@@ -587,21 +571,6 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
                 "additionalProperties": False,
             },
             handler=set_difficulty,
-        )
-    )
-    registry.register(
-        Tool(
-            name="set_personality",
-            description="Choose the agent's personality.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "personality": {"type": "string", "enum": list(PERSONALITIES)}
-                },
-                "required": ["personality"],
-                "additionalProperties": False,
-            },
-            handler=set_personality,
         )
     )
     registry.register(

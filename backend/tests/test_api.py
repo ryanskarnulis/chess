@@ -262,13 +262,12 @@ def test_engine_does_not_reply_to_illegal_move():
         assert body["state"]["history"] == []
 
 
-def test_engine_reply_ignores_personality():
-    # Personality is tone only: whatever the active personality, the reply is
-    # the engine's own move at the configured strength — never a MultiPV
-    # detour that would bypass the difficulty setting.
+def test_engine_reply_never_detours_through_multipv():
+    # The reply is the engine's own move at the configured strength — never a
+    # MultiPV detour that would bypass the difficulty setting (a personality
+    # move-bias layer was tried in 2026-07 and removed for exactly this).
     engine = FakeEngine()
     ctx = ToolContext(session=GameSession(), engine=engine)
-    ctx.settings.personality = "beginner_bot"
     client = TestClient(create_app(ctx))
     body = client.post("/api/game/move", json={"move": "e4"}).json()
     assert body["engine_move"]["legal"] is True
@@ -373,7 +372,6 @@ def test_disconnected_client_does_not_break_broadcast(client):
 def test_get_settings_returns_the_full_settings_document(client):
     body = client.get("/api/settings").json()
     assert body == {
-        "personality": "friendly_rival",
         "verbosity": "normal",
         "hints_mode": False,
         "voice_output": False,
