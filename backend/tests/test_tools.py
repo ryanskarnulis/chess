@@ -239,12 +239,12 @@ def test_make_move_with_engine_triggers_reply(session):
     assert result["fen"] == session.fen()
 
 
-def test_make_move_reply_ignores_personality(session):
-    # Personality is tone only: the reply is the engine's own move at the
-    # configured strength, never a MultiPV detour around the difficulty.
+def test_make_move_reply_never_detours_through_multipv(session):
+    # The reply is the engine's own move at the configured strength, never a
+    # MultiPV detour around the difficulty (a personality move-bias layer was
+    # tried in 2026-07 and removed for exactly this).
     engine = FakeEngine()
     ctx = ToolContext(session=session, engine=engine)
-    ctx.settings.personality = "beginner_bot"
     registry = build_registry(ctx)
     result = registry.dispatch("make_move", {"move": "e4"})
     assert result["engine_move"]["uci"] == "e7e5"
@@ -446,17 +446,17 @@ def test_registry_lists_all_settings_tools(registry):
     names = {d["function"]["name"] for d in registry.definitions()}
     assert names >= {
         "set_difficulty",
-        "set_personality",
         "set_verbosity",
         "set_hints_mode",
         "set_voice_output",
     }
+    # The personality is fixed (Glitch); there is no set_personality tool.
+    assert "set_personality" not in names
 
 
 def test_settings_defaults(session):
     ctx = ToolContext(session=session)
     assert ctx.settings == Settings()
-    assert ctx.settings.personality == "friendly_rival"
     assert ctx.settings.verbosity == "normal"
     assert ctx.settings.hints_mode is False
     assert ctx.settings.voice_output is False
@@ -529,19 +529,6 @@ def test_set_difficulty_configures_live_engine(session, live_engine):
     assert registry.dispatch("set_difficulty", {"elo": 1400})["ok"] is True
 
 
-def test_set_personality(session):
-    ctx = ToolContext(session=session)
-    registry = build_registry(ctx)
-    result = registry.dispatch("set_personality", {"personality": "calm_coach"})
-    assert result["ok"] is True
-    assert ctx.settings.personality == "calm_coach"
-
-
-def test_set_personality_rejects_unknown(registry):
-    result = registry.dispatch("set_personality", {"personality": "chaos_gremlin"})
-    assert result["ok"] is False
-
-
 def test_set_verbosity(session):
     ctx = ToolContext(session=session)
     registry = build_registry(ctx)
@@ -564,7 +551,6 @@ def test_set_hints_mode_and_voice_output(session):
 
 def test_settings_results_are_json_serializable(registry):
     json.dumps(registry.dispatch("set_difficulty", {"skill_level": 5}))
-    json.dumps(registry.dispatch("set_personality", {"personality": "friendly_rival"}))
     json.dumps(registry.dispatch("set_verbosity", {"verbosity": "high"}))
     json.dumps(registry.dispatch("set_hints_mode", {"enabled": False}))
     json.dumps(registry.dispatch("set_voice_output", {"enabled": False}))

@@ -116,7 +116,6 @@ export async function sendCommand(text: string): Promise<CommandResponse | null>
 }
 
 export interface Settings {
-  personality: string
   verbosity: string
   hints_mode: boolean
   voice_output: boolean

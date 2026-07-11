@@ -70,19 +70,10 @@ def test_difficulty_by_elo_by_speech():
     assert engine.elos == [1500]
 
 
-def test_personality_by_speech():
-    client, ctx = make_client(
-        ToolCall(name="set_personality", args={"personality": "villain"})
-    )
-    body = command(client, "be the villain")
-    assert body["tool_results"][0]["result"]["ok"] is True
-    assert ctx.settings.personality == "villain"
-    assert client.get("/api/settings").json()["personality"] == "villain"
-
-
 def test_verbosity_by_speech():
     client, ctx = make_client(ToolCall(name="set_verbosity", args={"verbosity": "low"}))
-    command(client, "talk less")
+    body = command(client, "talk less")
+    assert body["tool_results"][0]["result"]["ok"] is True
     assert ctx.settings.verbosity == "low"
     assert client.get("/api/settings").json()["verbosity"] == "low"
 
@@ -103,7 +94,7 @@ def test_voice_output_by_speech_flips_the_speak_flag():
 
 
 def test_bad_setting_from_the_brain_is_data_not_an_error():
-    # An out-of-enum personality is an error *result* the agent can react to,
+    # An out-of-enum verbosity is an error *result* the agent can react to,
     # never an HTTP failure or a corrupted setting. The failure earns a retry
     # round; here the brain concedes in words.
     ctx = ToolContext(session=GameSession())
@@ -111,24 +102,24 @@ def test_bad_setting_from_the_brain_is_data_not_an_error():
         AgentResponse(
             text="on it",
             tool_calls=(
-                ToolCall(name="set_personality", args={"personality": "chaos_gremlin"}),
+                ToolCall(name="set_verbosity", args={"verbosity": "shouting"}),
             ),
         ),
-        AgentResponse(text="I don't know that personality."),
+        AgentResponse(text="I can't talk like that."),
     )
     client = TestClient(create_app(ctx, brain=brain))
-    body = command(client, "be a chaos gremlin")
+    body = command(client, "start shouting")
     assert body["tool_results"][0]["result"]["ok"] is False
-    assert ctx.settings.personality == "friendly_rival"
+    assert ctx.settings.verbosity == "normal"
 
 
 def test_several_settings_in_one_utterance():
-    # "Be the grandmaster and talk less" — one utterance, two tool calls,
-    # both land.
+    # "Talk less and give me hints" — one utterance, two tool calls, both
+    # land.
     client, ctx = make_client(
-        ToolCall(name="set_personality", args={"personality": "grandmaster"}),
         ToolCall(name="set_verbosity", args={"verbosity": "low"}),
+        ToolCall(name="set_hints_mode", args={"enabled": True}),
     )
-    command(client, "be the grandmaster and talk less")
-    assert ctx.settings.personality == "grandmaster"
+    command(client, "talk less and give me hints")
     assert ctx.settings.verbosity == "low"
+    assert ctx.settings.hints_mode is True

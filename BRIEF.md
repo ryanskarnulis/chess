@@ -27,7 +27,7 @@ The app must support a full game against Stockfish with the LLM turned off — t
 ## Agent Tools (capabilities, not hardcoded behaviors)
 - **Reads:** get_board_state, get_legal_moves, get_move_history, get_captured_pieces, evaluate_position (Stockfish), get_best_moves (Stockfish MultiPV)
 - **Writes/actions:** make_move (returns legal/illegal), undo, new_game, resign, save_game, resume_game, export_pgn
-- **Settings:** set_difficulty, set_personality, set_verbosity, set_hints_mode, set_voice_output
+- **Settings:** set_difficulty, set_verbosity, set_hints_mode, set_voice_output
 - **Output:** speak (TTS) + returned commentary text
 - **Future:** control_physical_board
 
@@ -37,10 +37,10 @@ The agent maps free-form commands to tools itself (no per-phrase branching). Amb
 Interactive board, legal-move validation, play vs. agent, Stockfish-powered moves, adjustable difficulty (Stockfish `Skill Level` / `UCI_Elo`), move history, captured pieces, new game, undo, resign, save/resume, export PGN, game review, basic analysis, hints, explanations.
 
 ## Personality
-Selectable personalities (friendly rival, calm coach, savage trash-talker, old grandmaster, evil villain, silent assassin, beginner bot, streamer). Personality affects tone/teaching/reactions **only** — never move selection, difficulty, or any other setting (decided 2026-07: a move-bias layer was tried and removed because it bypassed the difficulty setting). Difficulty and personality changeable by natural speech.
+One personality, dialed in by hand: **Glitch** — a gen-z Jarvis; effortlessly competent, fully casual, low-key troll-y (understated needles, dry roasts, fake sympathy, long-game callbacks; help stays real, swearing allowed). Decided 2026-07-11: the original selectable eight-personality roster was collapsed into this one character and `set_personality` removed — one voice done exactly right beat eight approximations. Personality affects tone/teaching/reactions **only** — never move selection, difficulty, or any other setting (decided 2026-07: a move-bias layer was tried and removed because it bypassed the difficulty setting). The prompt lives in `backend/src/chessapp/personality.py`.
 
 ## Voice
-- STT + TTS. Speak moves ("pawn to e4", "castle kingside") and natural commands ("make it easier", "switch to coach mode", "give me a hint", "what was my mistake").
+- STT + TTS. Speak moves ("pawn to e4", "castle kingside") and natural commands ("make it easier", "talk less", "give me a hint", "what was my mistake").
 - Options: voice output on/off, mute, talk more/less, hints freely vs. on-request.
 - Privacy note: browser Web Speech API is the fast path but some browsers send audio to the cloud; prefer local Whisper if strict privacy is required.
 
@@ -51,7 +51,7 @@ Selectable personalities (friendly rival, calm coach, savage trash-talker, old g
 ## Phasing
 1. **MVP:** web board + python-chess + Stockfish + **text** commands to the agent, deterministic engine underneath, 1–2 personalities. Get the tool boundaries right with text first.
 2. Add voice (STT/TTS).
-3. Add remaining personalities + settings-by-voice.
+3. Settings-by-voice + dial in the single personality and a custom voice (originally "remaining personalities"; the roster was collapsed to Glitch, 2026-07).
 4. **Physical board (own project, Phase 3+):** Chessnut Move. Wall this off — robotic board control depends on whatever API/BLE the vendor exposes, which is often limited/undocumented. Verify actual programmatic control before designing around it. Leave a clean `control_physical_board` tool seam only. Future: detect board moves, drive opponent pieces, keep digital/physical synced, handle desync, agent narrates. Gemma 4 vision could later read the board from a camera.
 
 ## Reuse / OSS Components (assemble first, build glue only)

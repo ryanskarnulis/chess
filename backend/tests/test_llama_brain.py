@@ -12,7 +12,7 @@ import pytest
 
 from chessapp.brain import AgentResponse
 from chessapp.llama_brain import LlamaBrain, create_llama_brain
-from chessapp.personality import DEFAULT_PERSONALITY, system_prompt_for
+from chessapp.personality import system_prompt_for
 
 # --- fakes -----------------------------------------------------------------
 
@@ -365,83 +365,74 @@ def test_react_mixed_changes_with_any_analysis_thinks():
     assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
 
 
-# --- factory wires the personality prompt ---------------------------------
+# --- factory wires the system prompt ---------------------------------------
 
 
-def test_create_llama_brain_uses_the_selected_personality_prompt():
-    # The factory turns a personality name into that personality's system
-    # prompt; the brain is model-specific but personality-agnostic, so it just
-    # carries the resolved string.
-    brain = create_llama_brain(
-        base_url="http://localhost:8080/v1",
-        model="gemma",
-        tool_definitions=[],
-        personality="calm_coach",
-    )
-    assert brain.system_prompt == system_prompt_for("calm_coach")
-
-
-def test_create_llama_brain_defaults_to_the_default_personality():
+def test_create_llama_brain_defaults_to_the_glitch_prompt():
+    # The brain is model-specific but personality-agnostic: without a provider
+    # the factory resolves the one system prompt once and carries the string.
     brain = create_llama_brain(
         base_url="http://localhost:8080/v1",
         model="gemma",
         tool_definitions=[],
     )
-    assert brain.system_prompt == system_prompt_for(DEFAULT_PERSONALITY)
+    assert brain.system_prompt == system_prompt_for()
 
 
-# --- live personality switching -------------------------------------------
+# --- live prompt switching --------------------------------------------------
 
 
 def test_callable_system_prompt_is_resolved_per_request():
     # Live switching: the brain may carry a provider instead of a frozen
-    # string, so a personality change between commands takes effect on the
-    # very next command — the prompt is resolved fresh each request.
-    personality = {"name": "friendly_rival"}
+    # string, so a settings change (verbosity/hints) between commands takes
+    # effect on the very next command — the prompt is resolved fresh each
+    # request.
+    live = {"verbosity": "normal"}
     client = FakeClient(_completion(content="a"), _completion(content="b"))
     brain = LlamaBrain(
         client=client,
         model="m",
         tool_definitions=TOOLS,
-        system_prompt=lambda: system_prompt_for(personality["name"]),
+        system_prompt=lambda: system_prompt_for(verbosity=live["verbosity"]),
     )
     brain.get_agent_response(board_state={}, command="hi")
-    assert client.calls[0]["messages"][0]["content"] == system_prompt_for(
-        "friendly_rival"
-    )
-    personality["name"] = "calm_coach"
+    assert client.calls[0]["messages"][0]["content"] == system_prompt_for()
+    live["verbosity"] = "low"
     brain.get_agent_response(board_state={}, command="hi again")
-    assert client.calls[1]["messages"][0]["content"] == system_prompt_for("calm_coach")
+    assert client.calls[1]["messages"][0]["content"] == system_prompt_for(
+        verbosity="low"
+    )
 
 
 def test_callable_system_prompt_also_drives_the_reaction():
-    # The reaction (phase two) must use the same live personality as phase one.
-    personality = {"name": "calm_coach"}
+    # The reaction (phase two) must use the same live prompt as phase one.
     client = FakeClient(_completion(content="ok"))
     brain = LlamaBrain(
         client=client,
         model="m",
         tool_definitions=TOOLS,
-        system_prompt=lambda: system_prompt_for(personality["name"]),
+        system_prompt=lambda: system_prompt_for(verbosity="low"),
     )
     brain.react(board_state={}, changes=[])
-    assert client.calls[0]["messages"][0]["content"] == system_prompt_for("calm_coach")
+    assert client.calls[0]["messages"][0]["content"] == system_prompt_for(
+        verbosity="low"
+    )
 
 
-def test_create_llama_brain_accepts_a_live_personality_provider():
+def test_create_llama_brain_accepts_a_live_prompt_provider():
     from chessapp.tools import Settings
 
-    settings = Settings()  # defaults to friendly_rival
+    settings = Settings()  # verbosity defaults to normal
     brain = create_llama_brain(
         base_url="http://localhost:8080/v1",
         model="gemma",
         tool_definitions=[],
-        system_prompt_provider=lambda: system_prompt_for(settings.personality),
+        system_prompt_provider=lambda: system_prompt_for(settings.verbosity),
         client=FakeClient(_completion(content="ok")),
     )
-    assert brain.system_prompt() == system_prompt_for("friendly_rival")
-    settings.personality = "calm_coach"
-    assert brain.system_prompt() == system_prompt_for("calm_coach")
+    assert brain.system_prompt() == system_prompt_for()
+    settings.verbosity = "low"
+    assert brain.system_prompt() == system_prompt_for(verbosity="low")
 
 
 def test_create_llama_brain_accepts_an_injected_client():

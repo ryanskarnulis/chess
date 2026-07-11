@@ -62,7 +62,7 @@ Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a strin
 
 ## Phasing
 
-1. **MVP:** web board + python-chess + Stockfish + **text** commands to the agent, 1–2 personalities. Get the tool boundaries right with text first.
+1. **MVP:** web board + python-chess + Stockfish + **text** commands to the agent. Get the tool boundaries right with text first.
 2. Voice (STT/TTS).
-3. Remaining personalities + settings-by-voice.
+3. Settings-by-voice + the single dialed-in personality (Glitch) and a custom voice.
 4. Physical board (Chessnut Move) — walled-off separate project; do not let it shape core architecture.

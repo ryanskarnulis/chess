@@ -31,7 +31,7 @@ from typing import Any
 import jsonschema
 
 from chessapp.brain import AgentResponse, ToolCall
-from chessapp.personality import DEFAULT_PERSONALITY, system_prompt_for
+from chessapp.personality import system_prompt_for
 
 # BRIEF-mandated sampling for Gemma-4 tool calling.
 _TEMPERATURE = 1.0
@@ -65,9 +65,9 @@ class LlamaBrain:
 
     def _resolve_system_prompt(self) -> str:
         """The system prompt for this request. A callable is re-resolved every
-        call, so a live personality change (via `set_personality` mutating the
-        setting the provider reads) takes effect on the next command; a plain
-        string is a fixed personality."""
+        call, so a live settings change (verbosity/hints mutating what the
+        provider reads) takes effect on the next command; a plain string is a
+        fixed prompt."""
         prompt = self.system_prompt
         return prompt() if callable(prompt) else prompt
 
@@ -217,7 +217,6 @@ def create_llama_brain(
     base_url: str,
     model: str,
     tool_definitions: list[dict[str, Any]],
-    personality: str = DEFAULT_PERSONALITY,
     system_prompt_provider: Callable[[], str] | None = None,
     enable_thinking: bool = False,
     max_retries: int = _DEFAULT_MAX_RETRIES,
@@ -226,12 +225,11 @@ def create_llama_brain(
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8080/v1).
 
-    Personality selection, two ways: pass a fixed `personality` name (resolved
-    once to that prompt) or a `system_prompt_provider` — a zero-arg callable the
-    brain calls per command, so live `set_personality` changes take effect
-    immediately (the app-assembly wires it to read `ctx.settings.personality`).
-    The provider wins when both are given. Either way the brain stays
-    personality-agnostic: it just carries a string or a callable.
+    The system prompt, two ways: by default it is resolved once to a fixed
+    string; pass a `system_prompt_provider` — a zero-arg callable the brain
+    calls per command — so live settings changes (verbosity/hints) take effect
+    immediately (the app-assembly wires it to read `ctx.settings`). Either way
+    the brain stays prompt-agnostic: it just carries a string or a callable.
 
     `client` is injected in tests / alternate backends; otherwise the factory
     builds a real OpenAI client against `base_url`.
@@ -243,7 +241,7 @@ def create_llama_brain(
     system_prompt: str | Callable[[], str] = (
         system_prompt_provider
         if system_prompt_provider is not None
-        else system_prompt_for(personality)
+        else system_prompt_for()
     )
     return LlamaBrain(
         client=client,
