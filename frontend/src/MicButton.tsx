@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { transcribe } from './api'
+import { unlockAudio } from './tts'
 
 export interface MicButtonProps {
   /** Receives the recognized text — the caller sends it down the same
@@ -63,6 +64,9 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
   }
 
   function toggle() {
+    // Mobile browsers only allow audio primed inside a user gesture; a mic
+    // tap is the last gesture before the agent's spoken reply.
+    unlockAudio()
     if (micState === 'recording') recorderRef.current?.stop()
     else if (micState === 'idle') void start()
   }

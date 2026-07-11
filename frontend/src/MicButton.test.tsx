@@ -1,6 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MicButton } from './MicButton'
+import { unlockAudio } from './tts'
+
+// Mobile browsers only allow playback primed inside a user gesture; the mic
+// tap is the last gesture before the agent's spoken reply, so it must unlock.
+vi.mock('./tts', () => ({ unlockAudio: vi.fn(), playText: vi.fn() }))
 
 // jsdom has no MediaRecorder/getUserMedia; these fakes stand in so the tests
 // drive the full record → stop → transcribe → submit flow without a browser.
@@ -57,6 +62,7 @@ beforeEach(() => {
   getUserMedia.mockReset()
   getUserMedia.mockResolvedValue(fakeStream)
   fakeTrack.stop.mockReset()
+  vi.mocked(unlockAudio).mockClear()
 })
 
 afterEach(() => {
@@ -88,6 +94,14 @@ describe('MicButton', () => {
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(url).toBe('/api/voice/transcribe')
     expect(init.body).toBeInstanceOf(FormData)
+  })
+
+  it('unlocks audio playback inside the mic-tap gesture', async () => {
+    stubMediaSupport()
+    stubTranscribeResponse({ ok: true, text: 'pawn to e4' })
+    render(<MicButton onTranscript={vi.fn()} disabled={false} />)
+    fireEvent.click(screen.getByRole('button', { name: /voice command/i }))
+    expect(unlockAudio).toHaveBeenCalled()
   })
 
   it('shows an error and submits nothing when the backend refuses', async () => {

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { MicButton } from './MicButton'
+import { unlockAudio } from './tts'
 
 export interface CommandBoxProps {
   /** Send a (trimmed, non-empty) command to the agent. */
@@ -35,6 +36,9 @@ export function CommandBox({
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
+    // Mobile browsers only allow audio primed inside a user gesture; this
+    // submit is the gesture that precedes the agent's spoken reply.
+    unlockAudio()
     if (!trimmed || thinking) return
     onSubmit(trimmed)
     setText('')
@@ -56,7 +60,11 @@ export function CommandBox({
             className="voice-toggle"
             aria-label={voiceOutput ? 'Turn voice output off' : 'Turn voice output on'}
             title={voiceOutput ? 'Mute the agent' : 'Speak replies aloud'}
-            onClick={() => onToggleVoice(!voiceOutput)}
+            onClick={() => {
+              // Unmuting is a gesture too — prime playback while we have it.
+              unlockAudio()
+              onToggleVoice(!voiceOutput)
+            }}
           >
             {voiceOutput ? '🔊' : '🔇'}
           </button>
