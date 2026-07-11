@@ -139,6 +139,16 @@ def test_prompt_requires_confirmation_before_destructive_tools(name):
 
 
 @pytest.mark.parametrize("name", PERSONALITIES)
+def test_prompt_skips_new_game_confirmation_once_game_is_over(name):
+    # A finished game has nothing left to lose: "new game" after checkmate
+    # must start immediately, not trigger the destructive-tool confirmation
+    # question (seen live: agent asks "are you sure?" after the game ended).
+    prompt = system_prompt_for(name)
+    assert "game_over" in prompt
+    assert "without asking" in prompt.lower()
+
+
+@pytest.mark.parametrize("name", PERSONALITIES)
 def test_prompt_warns_about_mangled_voice_transcripts(name):
     prompt = system_prompt_for(name).lower()
     # Transcribed speech arrives mangled ("e 4", "night to f3"); the agent

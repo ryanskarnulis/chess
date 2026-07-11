@@ -3,19 +3,31 @@ import { describe, expect, it } from 'vitest'
 import { CapturedPieces } from './CapturedPieces'
 
 describe('CapturedPieces', () => {
-  it('renders each side captures under its label', () => {
+  it('renders each side captures under its accessible label', () => {
     // White has captured a black pawn and knight; black a white pawn.
     render(<CapturedPieces captured={{ white: ['p', 'n'], black: ['p'] }} />)
     const white = screen.getByLabelText(/captured by white/i)
     // The dark theme renders glyphs in the light ink color, so the *filled*
     // ("black") glyphs read as white pieces. White's captures — black
-    // pieces — must therefore use the hollow set: ♙ pawn, ♘ knight.
-    expect(within(white).getByText('♙')).toBeInTheDocument()
-    expect(within(white).getByText('♘')).toBeInTheDocument()
+    // pieces — must therefore use the hollow set: ♙ pawn, ♘ knight. Every
+    // glyph carries U+FE0E so the black pawn (an emoji-default codepoint)
+    // renders as text at the same size as the other pieces.
+    expect(within(white).getByText('♙︎')).toBeInTheDocument()
+    expect(within(white).getByText('♘︎')).toBeInTheDocument()
     const black = screen.getByLabelText(/captured by black/i)
     // Black's capture (a white pawn) gets the filled glyph, which renders
     // light: ♟.
-    expect(within(black).getByText('♟')).toBeInTheDocument()
+    expect(within(black).getByText('♟︎')).toBeInTheDocument()
+  })
+
+  it('shows no visible text labels, freeing the row for glyphs', () => {
+    // The heading and per-side "white"/"black" labels overflowed the panel;
+    // the section is labelled for assistive tech only.
+    render(<CapturedPieces captured={{ white: ['p'], black: [] }} />)
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument()
+    expect(screen.queryByText(/^captured$/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^white$/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^black$/i)).not.toBeInTheDocument()
   })
 
   it('shows the material advantage for the side that is ahead', () => {

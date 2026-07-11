@@ -128,13 +128,6 @@
   min-height: 1.8rem;
 }
 
-.captured-side-label {
-  width: 3.2rem;
-  font-size: 0.8rem;
-  text-transform: capitalize;
-  color: var(--muted);
-}
-
 .captured-pieces-glyphs {
   font-size: 1.4rem;
   line-height: 1;
