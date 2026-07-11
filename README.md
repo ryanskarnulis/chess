@@ -11,7 +11,7 @@ The agent is the orchestrator and personality, **not** the referee:
 - **The LLM only routes natural language to tools.** It submits moves and the engine accepts or rejects; it reads state through tools. It cannot corrupt the game.
 - The app plays a full game against Stockfish with the LLM switched off — the agent layer is an optional enhancement on top.
 
-Everything runs in containers on your own hardware (llama.cpp serving Gemma, Speaches for voice, the app itself) — basic gameplay works fully offline.
+Everything runs in containers on your own hardware (the app, Speaches for voice, and Gemma on llama.cpp via the shared workspace `../llama-swap/` stack) — basic gameplay works fully offline.
 
 ## Status
 

@@ -11,5 +11,5 @@ runtime:
   type: compose
   start: docker compose up -d
   stop: docker compose down
-  notes: "GPU llama brain is optional: `docker compose up -d app` runs engine-only."
+  notes: "LLM brain is the shared ../llama-swap stack and optional: with it down the app runs engine-only."
 tags: [game, ai]

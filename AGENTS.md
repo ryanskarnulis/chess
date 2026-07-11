@@ -22,8 +22,9 @@ cd ../frontend
 npm install
 ```
 
-The full Docker Compose stack includes local GPU-oriented llama.cpp and
-optional voice services. Do not require those services for normal development,
+The LLM brain is served by the workspace-level `../llama-swap/` stack (shared
+GPU llama.cpp, outside this repo); the compose stack here includes optional
+voice services. Do not require the brain or voice for normal development,
 testing, or Cloud tasks: engine-only gameplay and the automated test suites
 must work without them.
 
