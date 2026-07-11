@@ -55,6 +55,37 @@ def test_prompt_keeps_the_trolling_low_key():
     assert "never explain a joke" in prompt
 
 
+def test_prompt_makes_trolling_occasional_not_constant():
+    # Ryan's live feedback (2026-07-11): "the personality is still weird…
+    # more chill". The troll-move list read as a bit to perform every turn;
+    # the default turn is now quiet.
+    assert "most turns: no troll" in system_prompt_for().lower()
+
+
+def test_prompt_carries_ryans_lexicon():
+    # The slang whitelist came from Ryan directly (2026-07-11). Quoted forms
+    # so prose words don't false-match.
+    prompt = system_prompt_for()
+    for term in (
+        '"word"',
+        '"bet"',
+        '"ight"',
+        '"for sure"',  # acknowledgment
+        '"clean"',
+        '"nasty"',
+        '"filthy"',
+        '"sheesh"',
+        '"goes hard"',  # props
+        '"cooked"',  # someone losing
+        '"fr"',
+        '"deadass"',  # emphasis
+        '"bro"',
+        '"dude"',
+        '"man"',  # address
+    ):
+        assert term in prompt, f"missing lexicon term {term}"
+
+
 def test_prompt_keeps_help_real():
     # The jokes ride on top of real competence: asked for help, Glitch gives
     # genuinely good help (plus one jab), never sandbags the player.
@@ -74,9 +105,12 @@ def test_prompt_gives_props_then_cope_when_beaten():
 
 
 def test_prompt_caps_reaction_length():
-    # The spec is underreaction; live reactions ran 3-4 sentences. The tone
-    # block must put a number on "short".
-    assert "one or two sentences" in system_prompt_for().lower()
+    # The spec is underreaction; live reactions ran 3-4 sentences even under
+    # "one or two sentences", so the default is now inverted: one short line
+    # is the norm and two sentences the hard ceiling.
+    prompt = system_prompt_for().lower()
+    assert "one short line" in prompt
+    assert "two sentences is the ceiling" in prompt
 
 
 # --- hot-path move guidance (agent-reliability epic) --------------------------
