@@ -7,7 +7,8 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 From the 2026-07-10 agent deep dive: voice games die by attrition — an illegal-move guess ends the turn with no recovery, the brain's prompt is ~75% UI noise (`fens`/`dests`) that grows every ply, the system prompt gives zero speech→SAN guidance, and every plain move pays the full two-LLM-call round trip (~10–20s). Slices in priority order; the first three are small, independent, and low-risk.
 
 - [ ] **Experiment — phase-1 sampling**: A/B a lower temperature (~0.2–0.6) for the tool-decision call only, keeping BRIEF sampling for commentary; record tool-call accuracy before changing any default.
-- [ ] **Experiment — skip react() for plain confirmed moves at verbosity=low**: halves LLM calls on the hot path; measure per-turn latency before/after and keep only if commentary quality holds.
+- [ ] **Experiment — skip react() for agent-parsed moves at verbosity=low**: the fast path already makes parser-hit moves zero-LLM at low verbosity (#83); this would extend the canned confirmation to plain moves only the agent could parse. Check real-game frequency of agent-path plain moves first — may no longer be worth it.
+- [ ] **Pending-proposal state for confirmations** (only if the dead-end recurs after #85): when the agent proposes a specific move and the player answers a bare "yes", only the #85 prompt rule guarantees the move gets played. A small pipeline-owned "pending proposed move" would make the confirmation itself deterministic ("yes" → make_move(pending)) — but it adds conversation state to the pipeline; hold unless live games show the prompt rule isn't enough.
 
 ## Phase 4 — Manual testing (walkthrough together, take notes)
 
