@@ -17,8 +17,10 @@ from chessapp.voice import (
     DEFAULT_STT_MODEL,
     DEFAULT_TTS_MODEL,
     DEFAULT_TTS_VOICE,
+    STT_PROMPT,
     SpeechClient,
     create_speech_client,
+    normalize_transcript,
 )
 from fakes import ScriptedBrain
 
@@ -106,6 +108,69 @@ def test_speak_forwards_text_and_returns_audio_bytes():
     assert call["response_format"] == "mp3"
 
 
+# --- STT hardening (agent-reliability epic) -----------------------------------
+#
+# Voice games die when a spoken move transcribes badly. Two deterministic
+# defenses: whisper is biased toward chess vocabulary via its `prompt`
+# parameter, and known transcription slips are repaired before the text ever
+# reaches the command pipeline.
+
+
+def test_transcribe_biases_whisper_with_the_chess_vocabulary_prompt():
+    backend = FakeSpeechBackend()
+    speech = SpeechClient(client=backend)
+    speech.transcribe(b"opus-bytes")
+    (call,) = backend.transcriptions.calls
+    assert call["prompt"] == STT_PROMPT
+
+
+def test_stt_prompt_covers_the_chess_vocabulary():
+    # The prompt biases recognition toward these over their homophones, and
+    # shows squares glued (e4, not "e 4") — whisper mimics its formatting.
+    for term in ("knight", "kingside", "queenside", "e4", "pawn", "en passant"):
+        assert term in STT_PROMPT
+
+
+@pytest.mark.parametrize(
+    ("raw", "repaired"),
+    [
+        ("e 4", "e4"),
+        ("E 4", "e4"),
+        ("pawn to e 4", "pawn to e4"),
+        ("e four", "e4"),
+        ("B six", "b6"),
+        ("knight to f 3", "knight to f3"),
+        ("night to f3", "knight to f3"),
+        ("Night takes e5", "knight takes e5"),
+        ("castle king side", "castle kingside"),
+        ("castle queen side", "castle queenside"),
+    ],
+)
+def test_normalizer_repairs_known_transcription_slips(raw, repaired):
+    assert normalize_transcript(raw) == repaired
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "knight to f3",
+        "castle kingside",
+        "what are my legal moves?",
+        "resign",
+        "a knight for a bishop",
+        "",
+    ],
+)
+def test_normalizer_leaves_clean_text_alone(text):
+    assert normalize_transcript(text) == text
+
+
+def test_transcribe_returns_the_normalized_transcript():
+    backend = FakeSpeechBackend(text="night to f 3")
+    speech = SpeechClient(client=backend)
+    assert speech.transcribe(b"opus-bytes") == "knight to f3"
+
+
 # --- API endpoint ------------------------------------------------------------
 
 
@@ -129,6 +194,18 @@ def test_transcribe_endpoint_returns_text(ctx):
     assert response.json() == {"text": "castle kingside"}
     (call,) = backend.transcriptions.calls
     assert call["file"] == ("clip.webm", b"opus-bytes")
+
+
+def test_transcribe_endpoint_returns_repaired_text(ctx):
+    # The text the browser feeds back into /api/command is the normalized
+    # transcript, so voice slips are fixed before the pipeline ever sees them.
+    backend = FakeSpeechBackend(text="night to e 4")
+    client = _client(ctx, speech=SpeechClient(client=backend))
+    response = client.post(
+        "/api/voice/transcribe",
+        files={"audio": ("clip.webm", b"opus-bytes", "audio/webm")},
+    )
+    assert response.json() == {"text": "knight to e4"}
 
 
 def test_transcribe_without_speech_service_is_503(ctx):
