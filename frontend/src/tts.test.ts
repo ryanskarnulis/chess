@@ -12,6 +12,7 @@ let audioInstances: FakeAudio[]
 class FakeAudio {
   src = ''
   onended: (() => void) | null = null
+  onerror: (() => void) | null = null
 
   constructor(src?: string) {
     if (src !== undefined) this.src = src
@@ -24,6 +25,11 @@ class FakeAudio {
 async function loadTts() {
   vi.resetModules()
   return import('./tts')
+}
+
+/** Let the fetch → blob → play microtask chain run to completion. */
+async function playbackStarted() {
+  await vi.waitFor(() => expect(play).toHaveBeenCalled())
 }
 
 beforeEach(() => {
@@ -47,13 +53,41 @@ describe('playText', () => {
       'fetch',
       vi.fn(async () => new Response(new Blob([new Uint8Array([1, 2])]), { status: 200 })),
     )
-    await playText('Check!')
+    const done = playText('Check!')
+    await playbackStarted()
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(url).toBe('/api/voice/speak')
     expect(JSON.parse(init.body)).toEqual({ text: 'Check!' })
     expect(audioInstances).toHaveLength(1)
     expect(audioInstances[0].src).toBe('blob:fake-url')
-    expect(play).toHaveBeenCalled()
+    audioInstances[0].onended?.()
+    await done
+  })
+
+  it('resolves only once playback has finished (hands-free needs this)', async () => {
+    // The conversation loop reopens the mic when the spoken reply ends —
+    // resolving at playback *start* would make the agent hear itself.
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    let finished = false
+    const done = playText('Check!').then(() => {
+      finished = true
+    })
+    await playbackStarted()
+    expect(finished).toBe(false)
+    audioInstances[0].onended?.()
+    await done
+    expect(finished).toBe(true)
+  })
+
+  it('resolves when the element reports a playback error', async () => {
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const done = playText('Check!')
+    await playbackStarted()
+    audioInstances[0].onerror?.()
+    await done
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:fake-url')
   })
 
   it('reuses one shared audio element across plays (mobile autoplay unlock)', async () => {
@@ -62,30 +96,45 @@ describe('playText', () => {
     // never be unlocked, so every clip must go through the same element.
     const { playText } = await loadTts()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
-    await playText('Check!')
-    await playText('Mate!')
+    const first = playText('Check!')
+    await playbackStarted()
+    audioInstances[0].onended?.()
+    await first
+    const second = playText('Mate!')
+    await vi.waitFor(() => expect(play).toHaveBeenCalledTimes(2))
+    audioInstances[0].onended?.()
+    await second
     expect(audioInstances).toHaveLength(1)
-    expect(play).toHaveBeenCalledTimes(2)
   })
 
   it('releases the object URL once playback ends', async () => {
     const { playText } = await loadTts()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
-    await playText('Check!')
+    const done = playText('Check!')
+    await playbackStarted()
     audioInstances[0].onended?.()
+    await done
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:fake-url')
   })
 
-  it('releases the previous clip when a new one interrupts it', async () => {
+  it('releases the previous clip and settles its promise when a new one interrupts', async () => {
     const { playText } = await loadTts()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
     const urls = ['blob:first', 'blob:second']
     ;(URL.createObjectURL as ReturnType<typeof vi.fn>).mockImplementation(() => urls.shift())
-    await playText('Check!')
-    await playText('Mate!')
+    const first = playText('Check!')
+    await playbackStarted()
+    const second = playText('Mate!')
+    await vi.waitFor(() => expect(play).toHaveBeenCalledTimes(2))
+    // The interrupted clip's promise must not hang forever — its onended
+    // will never fire now that the element has moved on.
+    await first
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first')
     // The interrupted clip's stale onended must not revoke the live one.
     expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:second')
+    audioInstances[0].onended?.()
+    await second
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:second')
   })
 
   it('does nothing when voice is unavailable (non-ok response)', async () => {
@@ -104,6 +153,29 @@ describe('playText', () => {
   })
 })
 
+describe('audioIdle', () => {
+  it('resolves immediately when nothing was ever played', async () => {
+    const { audioIdle } = await loadTts()
+    await expect(audioIdle()).resolves.toBeUndefined()
+  })
+
+  it('waits for the in-flight clip to finish', async () => {
+    const { playText, audioIdle } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const done = playText('Check!')
+    let idle = false
+    const wait = audioIdle().then(() => {
+      idle = true
+    })
+    await playbackStarted()
+    expect(idle).toBe(false)
+    audioInstances[0].onended?.()
+    await done
+    await wait
+    expect(idle).toBe(true)
+  })
+})
+
 describe('unlockAudio', () => {
   it('synchronously plays a silent clip on the shared element', async () => {
     const { unlockAudio } = await loadTts()
@@ -117,7 +189,10 @@ describe('unlockAudio', () => {
     const { unlockAudio, playText } = await loadTts()
     unlockAudio()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
-    await playText('Check!')
+    const done = playText('Check!')
+    await vi.waitFor(() => expect(play).toHaveBeenCalledTimes(2))
+    audioInstances[0].onended?.()
+    await done
     expect(audioInstances).toHaveLength(1)
     expect(audioInstances[0].src).toBe('blob:fake-url')
   })

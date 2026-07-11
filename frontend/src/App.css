@@ -362,6 +362,33 @@
   cursor: not-allowed;
 }
 
+/* Hands-free mic: the button must read as "live" the whole session — a
+   steady glow while waiting for speech, a faster pulse while capturing. */
+.mic-listening {
+  border-color: var(--glow);
+  animation: mic-pulse 2s ease-in-out infinite;
+}
+
+.mic-capturing {
+  border-color: var(--glow);
+  animation: mic-pulse 0.8s ease-in-out infinite;
+}
+
+.mic-working,
+.mic-starting {
+  color: var(--muted);
+}
+
+@keyframes mic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 4px var(--glow-soft);
+  }
+  50% {
+    box-shadow: 0 0 14px var(--glow);
+  }
+}
+
 .commentary {
   margin-top: 0.75rem;
   padding: 0.6rem 0.75rem;

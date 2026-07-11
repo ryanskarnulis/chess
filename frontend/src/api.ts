@@ -150,10 +150,11 @@ export async function setVoiceOutput(enabled: boolean): Promise<boolean | null> 
  * 503, speech backend down → 502). The caller feeds the text into the same
  * command pipeline as typed input — voice never gets its own path.
  */
-export async function transcribe(audio: Blob): Promise<string | null> {
+export async function transcribe(audio: Blob, filename = 'clip.webm'): Promise<string | null> {
   const form = new FormData()
-  // The filename extension tells the speech backend the container format.
-  form.append('audio', audio, 'clip.webm')
+  // The filename extension tells the speech backend the container format
+  // (webm from MediaRecorder push-to-talk, wav from the hands-free VAD).
+  form.append('audio', audio, filename)
   const res = await fetch('/api/voice/transcribe', { method: 'POST', body: form })
   if (!res.ok) return null
   const data = (await res.json()) as { text: string }

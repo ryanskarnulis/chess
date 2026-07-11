@@ -16,6 +16,7 @@ Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
 """
 
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -555,6 +556,11 @@ def create_app(
         # Serve the built frontend from the same origin as the API, so the
         # UI's relative /api + /ws URLs work with no proxy or CORS. Mounted
         # last: explicit routes above always win over the catch-all.
+        # The hands-free VAD ships onnxruntime WASM under /vad/; browsers
+        # compile it with instantiateStreaming, which requires the response
+        # to be application/wasm — not every Python's mimetypes table knows
+        # the extension, so register it explicitly.
+        mimetypes.add_type("application/wasm", ".wasm")
         app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
 
     return app
