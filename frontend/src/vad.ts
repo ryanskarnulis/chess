@@ -77,6 +77,14 @@ export async function createVad(events: SpeechEvents): Promise<Vad | null> {
       redemptionMs: END_OF_SPEECH_MS,
       onSpeechStart: events.onSpeechStart,
       onSpeechEnd: events.onSpeechEnd,
+      ortConfig: (ort) => {
+        // iOS Safari dies allocating the threaded runtime's upfront wasm
+        // memory ("no available backend found … RangeError: Out of memory",
+        // seen live 2026-07-11). One thread is plenty for the ~2MB Silero
+        // model; keep the library's error-only log level.
+        ort.env.logLevel = 'error'
+        ort.env.wasm.numThreads = 1
+      },
     })
     try {
       // Healthy again: allow a future stale-build state to reload once more.
