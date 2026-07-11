@@ -42,6 +42,18 @@ describe('createVad', () => {
     expect(options.redemptionMs).toBeGreaterThanOrEqual(800)
   })
 
+  it('forces single-threaded ORT wasm (iOS dies allocating threaded memory)', async () => {
+    // Live iPhone failure (2026-07-11): "no available backend found.
+    // ERR: [wasm] RangeError: Out of memory" from initWasm — iOS Safari
+    // refuses the threaded runtime's upfront memory. One thread is plenty
+    // for the ~2MB Silero model.
+    await createVad({ onSpeechStart: vi.fn(), onSpeechEnd: vi.fn() })
+    const options = micVadNew.mock.calls[0][0]!
+    const fakeOrt = { env: { wasm: {} as { numThreads?: number } } }
+    options.ortConfig!(fakeOrt as never)
+    expect(fakeOrt.env.wasm.numThreads).toBe(1)
+  })
+
   it('exposes pause/resume/destroy on the underlying VAD', async () => {
     const vad = await createVad({ onSpeechStart: vi.fn(), onSpeechEnd: vi.fn() })
     vad!.pause()
