@@ -248,6 +248,22 @@ describe('MicButton (push-to-talk fallback)', () => {
     vi.mocked(createVad).mockResolvedValue(null)
   })
 
+  it('says why hands-free is unavailable while degrading', async () => {
+    // The reason must reach the screen: on a phone there is no console, and
+    // a silent fallback reads as "continuous voice is broken".
+    vi.mocked(createVad).mockImplementation(async (events) => {
+      events.onUnavailable?.('no AudioWorklet')
+      return null
+    })
+    render(<MicButton onTranscript={vi.fn()} disabled={false} />)
+    fireEvent.click(screen.getByRole('button', { name: /voice conversation/i }))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert').textContent).toMatch(/hands-free.*unavailable/i)
+    expect(screen.getByRole('alert').textContent).toMatch(/no AudioWorklet/)
+    // Still degrades: push-to-talk recording starts despite the notice.
+    await waitFor(() => expect(FakeMediaRecorder.instances).toHaveLength(1))
+  })
+
   it('renders nothing when the browser has no recording support', () => {
     vi.unstubAllGlobals()
     // No MediaRecorder / mediaDevices stubs: plain jsdom.

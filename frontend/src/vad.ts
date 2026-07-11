@@ -11,6 +11,12 @@ export interface SpeechEvents {
   onSpeechStart: () => void
   /** The user stopped: the full utterance as 16 kHz mono Float32 samples. */
   onSpeechEnd: (audio: Float32Array) => void
+  /**
+   * The VAD could not start and hands-free is off the table — the reason,
+   * for the UI. Phones have no console; a silent fallback to push-to-talk
+   * reads as "continuous voice is broken" with nothing to diagnose from.
+   */
+  onUnavailable?: (reason: string) => void
 }
 
 export interface Vad {
@@ -52,7 +58,9 @@ export async function createVad(events: SpeechEvents): Promise<Vad | null> {
       resume: () => void vad.start(),
       destroy: () => void vad.destroy(),
     }
-  } catch {
+  } catch (e) {
+    console.warn('hands-free VAD unavailable:', e)
+    events.onUnavailable?.(e instanceof Error ? e.message : String(e))
     return null
   }
 }

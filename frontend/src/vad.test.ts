@@ -57,4 +57,18 @@ describe('createVad', () => {
     const vad = await createVad({ onSpeechStart: vi.fn(), onSpeechEnd: vi.fn() })
     expect(vad).toBeNull()
   })
+
+  it('reports why the VAD is unavailable (phones have no console)', async () => {
+    // Silent degradation made the iPhone failure undiagnosable (2026-07-11):
+    // the mic quietly fell back to push-to-talk with no trace of the cause.
+    micVadNew.mockRejectedValue(new Error('no AudioWorklet'))
+    const onUnavailable = vi.fn()
+    const vad = await createVad({
+      onSpeechStart: vi.fn(),
+      onSpeechEnd: vi.fn(),
+      onUnavailable,
+    })
+    expect(vad).toBeNull()
+    expect(onUnavailable).toHaveBeenCalledWith('no AudioWorklet')
+  })
 })
