@@ -6,7 +6,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 The 2026-07-11 direction: one hand-dialed personality — **Glitch**, a gen-z Jarvis (fully casual, low-key troll, help stays real, swearing allowed) — instead of the selectable roster, plus a designed custom TTS voice ("laid-back young American, audible smirk") instead of stock Kokoro `af_heart`. Voice-option research (Kokoro blending / Chatterbox Turbo / Qwen3-TTS / NeuTTS Air, with the 12 GB VRAM constraint) is in Claude's project memory.
 
-- [ ] **Collapse personalities to Glitch**: remove the roster + `set_personality`, rewrite `personality.py` around the dialed-in Glitch prompt, update BRIEF/CLAUDE/tests (in progress)
 - [ ] **Verify Glitch live**: play a real game; check the troll tone lands, callbacks happen, and Gemma actually swears instead of softening — tune the prompt block from notes
 - [ ] **Custom voice — Kokoro blend**: add a Kokoro-FastAPI container (CPU), audition `am_*` voice blends against the voice spec, save the winning blend, point `CHESSAPP_TTS_*` at it
 - [ ] **Spike — Qwen3-TTS voice design** (only if the blend ceiling disappoints): trim shared llama-swap context to free ~2 GB VRAM, serve via vLLM-Omni, design the voice from the prose spec
