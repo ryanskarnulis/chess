@@ -10,6 +10,11 @@ dependencies = [
     "openai>=1.40",
     "python-multipart>=0.0.9",
     "uvicorn>=0.30",
+    # uvicorn's WebSocket support needs a ws library it doesn't require by
+    # default; without one in the image, /ws answers 404 and live board sync
+    # silently dies (TestClient never exercises this layer, so tests alone
+    # stay green).
+    "websockets>=13",
 ]
 
 [project.scripts]

@@ -172,3 +172,14 @@ def test_build_app_wires_live_hints_switching():
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
         hints_mode=True
     )
+
+
+def test_uvicorn_has_a_websocket_protocol_available():
+    # /ws works in pytest through the in-process TestClient, which never
+    # touches uvicorn's protocol layer — so CI stayed green while the Docker
+    # image served 404 on every WebSocket handshake (uvicorn without a ws
+    # library installed). Pin that the environment the app actually runs
+    # under can negotiate WebSockets.
+    from uvicorn.protocols.websockets.auto import AutoWebSocketsProtocol
+
+    assert AutoWebSocketsProtocol is not None
