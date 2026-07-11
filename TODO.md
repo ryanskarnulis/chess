@@ -7,8 +7,8 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 The 2026-07-11 direction: one hand-dialed personality — **Glitch**, a gen-z Jarvis (fully casual, low-key troll, help stays real, swearing allowed) — instead of the selectable roster, plus a designed custom TTS voice ("laid-back young American, audible smirk") instead of stock Kokoro `af_heart`. Voice-option research (Kokoro blending / Chatterbox Turbo / Qwen3-TTS / NeuTTS Air, with the 12 GB VRAM constraint) is in Claude's project memory.
 
 - [ ] **Watch — does Glitch actually swear?** Zero swears in the first two live games despite escalated authorization (#95). If real games stay PG, add a few-shot exchange to the tone block (one blunder → one sweary roast) — the next and probably last lever short of accepting PG-13.
-- [ ] **Custom voice — Kokoro blend**: add a Kokoro-FastAPI container (CPU), audition `am_*` voice blends against the voice spec, save the winning blend, point `CHESSAPP_TTS_*` at it
-- [ ] **Spike — Qwen3-TTS voice design** (only if the blend ceiling disappoints): trim shared llama-swap context to free ~2 GB VRAM, serve via vLLM-Omni, design the voice from the prose spec
+- [ ] **Pick Glitch's final voice by ear**: listen through the audition artifact (13 samples + voice strings; link in the #97 PR conversation), set the winner as `CHESSAPP_TTS_VOICE` in docker-compose.yml, then `docker compose up -d --build app` (rebuild also picks up the Glitch prompt). Default meanwhile: `am_fenrir(2)+am_michael(1)`.
+- [ ] **Spike — Qwen3-TTS voice design** (only if no Kokoro blend has enough smirk): trim shared llama-swap context to free ~2 GB VRAM, serve via vLLM-Omni, design the voice from the prose spec
 
 ## Agent reliability — finish a game by voice
 
