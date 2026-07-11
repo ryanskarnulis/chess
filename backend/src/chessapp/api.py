@@ -91,6 +91,7 @@ def _state_dict(session: GameSession) -> dict[str, Any]:
         "game_over": session.is_game_over(),
         "outcome": _outcome_dict(session),
         "history": session.move_history(),
+        "fens": session.position_fens(),
         "captured": session.captured_pieces(),
         "legal_moves": session.legal_moves(),
         "dests": session.legal_destinations(),
@@ -351,6 +352,33 @@ def create_app(
                 status_code=502, detail=f"speech service error: {exc}"
             ) from exc
         return Response(content=audio, media_type="audio/mpeg")
+
+    @app.get("/api/game/hint")
+    def get_hint() -> dict[str, Any]:
+        """Best move for the side to move, for the UI's hint arrow (trusted
+        path, same engine the `suggest_moves` analysis uses). Needs an engine
+        (503 without one); a finished or move-less position is a domain
+        failure (409). Read-only — nothing is broadcast."""
+        if ctx.engine is None:
+            raise HTTPException(status_code=503, detail="hint unavailable: no engine")
+        if ctx.session.is_game_over():
+            raise HTTPException(
+                status_code=409, detail="cannot suggest moves: game is over"
+            )
+        try:
+            candidates = ctx.engine.get_best_moves(ctx.session, n=1)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not candidates:
+            raise HTTPException(status_code=409, detail="no candidate moves")
+        best = candidates[0]
+        # uci[2:4] is the destination even for 5-char promotion UCIs.
+        return {
+            "uci": best.uci,
+            "san": best.san,
+            "from": best.uci[:2],
+            "to": best.uci[2:4],
+        }
 
     @app.get("/api/game/review")
     def get_review() -> dict[str, Any]:

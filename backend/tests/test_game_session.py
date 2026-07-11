@@ -265,3 +265,45 @@ def test_ongoing_game_has_no_outcome():
     session = GameSession()
     session.submit_move("e4")
     assert session.outcome() is None
+
+
+# --- position_fens: per-ply positions for history review -----------------
+
+
+START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+
+def test_position_fens_fresh_game():
+    session = GameSession()
+    assert session.position_fens() == [START_FEN]
+
+
+def test_position_fens_after_moves():
+    session = GameSession()
+    session.submit_move("e4")
+    session.submit_move("e5")
+    fens = session.position_fens()
+    assert len(fens) == 3
+    assert fens[0] == START_FEN
+    # python-chess omits the ep square when no en-passant capture is legal.
+    assert fens[1] == "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+    assert fens[-1] == session.fen()
+
+
+def test_position_fens_respects_undo():
+    session = GameSession()
+    session.submit_move("e4")
+    session.submit_move("e5")
+    session.undo(1)
+    fens = session.position_fens()
+    assert len(fens) == 2
+    assert fens[-1] == session.fen()
+
+
+def test_position_fens_from_custom_root():
+    fen = "4k3/8/8/8/8/8/8/4K2R w K - 0 1"
+    session = GameSession(fen=fen)
+    session.submit_move("Rh8+")
+    fens = session.position_fens()
+    assert fens[0] == fen
+    assert fens[-1] == session.fen()
