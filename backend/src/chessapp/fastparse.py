@@ -31,15 +31,26 @@ _PIECE_WORDS = {
     "king": chess.KING,
 }
 
+_PROMO_CLAUSE = (
+    r"(?:\s+promot(?:e|es|ing|ion)\s+to\s+(?:a\s+)?"
+    r"(?P<promo>queen|rook|bishop|knight|night))?"
+)
+
 # Anchored: the whole utterance must be the move phrase, so "can I play e4?"
 # never fires. "to" implies nothing about capturing (people say "queen to d5"
 # for captures too); takes/captures require one.
 _PHRASE = re.compile(
     r"^(?:(?P<piece>pawn|knight|night|bishop|rook|queen|king)\s+)?"
     r"(?:(?P<verb>to|takes|take|captures|capture)\s+)?(?:on\s+)?"
-    r"(?P<square>[a-h][1-8])"
-    r"(?:\s+promot(?:e|es|ing|ion)\s+to\s+(?:a\s+)?"
-    r"(?P<promo>queen|rook|bishop|knight|night))?$"
+    r"(?P<square>[a-h][1-8])" + _PROMO_CLAUSE + r"$"
+)
+
+# "d takes e5" — a pawn capture named by its source file, how players
+# pronounce dxe5 (SAN semantics: piece captures are named by the piece, so
+# the file form always means a pawn). "x"/"ex" cover STT's hearing of "dxe5".
+_FILE_CAPTURE = re.compile(
+    r"^(?P<file>[a-h])\s+(?:takes|take|captures|capture|x|ex)\s+(?:on\s+)?"
+    r"(?P<square>[a-h][1-8])" + _PROMO_CLAUSE + r"$"
 )
 
 _SIDE_WORD = r"king\s?side|queen\s?side|short|long"
@@ -65,6 +76,18 @@ def parse_move(text: str, fen: str) -> str | None:
     move = _notation_match(board, raw, lowered)
     if move is not None:
         return board.san(move)
+    file_capture = _FILE_CAPTURE.match(lowered)
+    if file_capture:
+        promo = file_capture.group("promo")
+        candidates = _constrained_moves(
+            board,
+            piece=chess.PAWN,
+            from_file=chess.FILE_NAMES.index(file_capture.group("file")),
+            target=chess.parse_square(file_capture.group("square")),
+            capture=True,
+            promotion=_PIECE_WORDS[promo] if promo else None,
+        )
+        return _single_san(board, candidates)
     phrase = _PHRASE.match(lowered)
     if phrase is None:
         return None
@@ -123,6 +146,7 @@ def _constrained_moves(
     target: chess.Square,
     capture: bool,
     promotion: chess.PieceType | None,
+    from_file: int | None = None,
 ) -> list[chess.Move]:
     """Every legal move satisfying all the phrase's constraints. No promotion
     constraint means promotion moves still match — so "pawn to e8" hits all
@@ -132,6 +156,8 @@ def _constrained_moves(
         if move.to_square != target:
             continue
         if piece is not None and board.piece_at(move.from_square).piece_type != piece:
+            continue
+        if from_file is not None and chess.square_file(move.from_square) != from_file:
             continue
         if capture and not board.is_capture(move):
             continue
