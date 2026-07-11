@@ -1,6 +1,15 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CommandBox } from './CommandBox'
+import { unlockAudio } from './tts'
+
+// Mobile browsers only allow playback primed inside a user gesture, so the
+// gesture handlers must call unlockAudio synchronously.
+vi.mock('./tts', () => ({ unlockAudio: vi.fn(), playText: vi.fn() }))
+
+beforeEach(() => {
+  vi.mocked(unlockAudio).mockClear()
+})
 
 function setup(overrides: Partial<React.ComponentProps<typeof CommandBox>> = {}) {
   const props = {
@@ -37,6 +46,20 @@ describe('CommandBox', () => {
     fireEvent.change(input, { target: { value: '  castle  ' } })
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
     expect(props.onSubmit).toHaveBeenCalledWith('castle')
+  })
+
+  it('unlocks audio playback inside the submit gesture', () => {
+    setup()
+    const input = screen.getByLabelText(/command/i)
+    fireEvent.change(input, { target: { value: 'play e4' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+    expect(unlockAudio).toHaveBeenCalled()
+  })
+
+  it('unlocks audio playback when voice output is toggled on', () => {
+    setup({ voiceOutput: false })
+    fireEvent.click(screen.getByRole('button', { name: /turn voice output on/i }))
+    expect(unlockAudio).toHaveBeenCalled()
   })
 
   it('displays the agent commentary', () => {
