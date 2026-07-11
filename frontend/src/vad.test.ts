@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createVad } from './vad'
+import { createVad, staleChunkReload } from './vad'
 import { MicVAD } from '@ricky0123/vad-web'
 
 // The real library spins up an AudioWorklet + WASM Silero model — none of
@@ -70,5 +70,38 @@ describe('createVad', () => {
     })
     expect(vad).toBeNull()
     expect(onUnavailable).toHaveBeenCalledWith('no AudioWorklet')
+  })
+})
+
+describe('staleChunkReload', () => {
+  // A rebuilt image renames every hashed chunk; a tab still running the old
+  // build 404s importing the lazy VAD chunk. That tab needs one reload to
+  // fetch the fresh index.html — this is how the 2026-07-11 iPhone lost
+  // continuous voice after a rebuild.
+  const storage = () => {
+    const map = new Map<string, string>()
+    return {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    } as Storage
+  }
+
+  it.each([
+    'Failed to fetch dynamically imported module: https://x/assets/dist-abc.js',
+    'Importing a module script failed.',
+    'error loading dynamically imported module',
+  ])('recognizes each browser wording: %s', (message) => {
+    expect(staleChunkReload(new TypeError(message), storage())).toBe(true)
+  })
+
+  it('reloads only once, so a genuinely missing chunk cannot loop', () => {
+    const s = storage()
+    expect(staleChunkReload(new TypeError('Importing a module script failed.'), s)).toBe(true)
+    expect(staleChunkReload(new TypeError('Importing a module script failed.'), s)).toBe(false)
+  })
+
+  it('never reloads for ordinary VAD failures', () => {
+    expect(staleChunkReload(new Error('no AudioWorklet'), storage())).toBe(false)
   })
 })
