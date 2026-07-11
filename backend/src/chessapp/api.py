@@ -121,6 +121,47 @@ def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
 
 
+# How many self-correction rounds a turn's failed tool calls get before the
+# pipeline gives up and reacts to the failures as they stand. Generalizes the
+# brain-internal schema-retry idea to domain errors, which only surface here —
+# after dispatch — so it lives in the pipeline and benefits any Brain.
+MAX_TOOL_RETRY_ROUNDS = 2
+
+
+def _failed_calls(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The tool results worth a self-correction round: dispatch/domain errors
+    (`ok: false`) and rejected moves (`legal: false`)."""
+    return [
+        r
+        for r in results
+        if r["result"].get("ok") is False or r["result"].get("legal") is False
+    ]
+
+
+def _retry_command(failures: list[dict[str, Any]], session: GameSession) -> str:
+    """The correction fed back to the brain: what failed and why, plus — when
+    a move was rejected — the legal moves to pick from. Plumbing, not
+    conversation: it is never recorded in the transcript."""
+    lines = []
+    move_rejected = False
+    for failure in failures:
+        result = failure["result"]
+        if result.get("legal") is False:
+            move_rejected = True
+            reason = result.get("reason") or "illegal move"
+            lines.append(f"{failure['name']}: rejected — {reason}")
+        else:
+            lines.append(f"{failure['name']}: {result.get('error', 'failed')}")
+    command = (
+        "Your tool call(s) failed: " + "; ".join(lines) + ". "
+        "Fix the problem and call the tool again, or answer the player "
+        "in words if you cannot."
+    )
+    if move_rejected:
+        command += " Legal moves: " + ", ".join(session.legal_moves())
+    return command
+
+
 class StateBroadcaster:
     """Fans the state document out to every connected board UI.
 
@@ -269,11 +310,15 @@ def create_app(
         Phase one (`get_agent_response`) turns the utterance into tool calls;
         the validated registry runs them, so brain mistakes (unknown tools,
         bad args, domain errors) come back as error results in `tool_results`,
-        never as HTTP failures or corrupted state. Phase two (`react`) reads
-        the resulting state and what changed — not the raw utterance — and
-        produces the commentary. When nothing was done (a question or a
-        clarifying reply) there is nothing to react to, so the direct answer
-        stands.
+        never as HTTP failures or corrupted state. Failed calls get a bounded
+        self-correction loop: the error (plus legal moves, for rejected
+        moves) goes back to the brain against the fresh state, up to
+        MAX_TOOL_RETRY_ROUNDS times — so one illegal-move guess doesn't end
+        the turn. Phase two (`react`) reads the resulting state and what
+        changed — not the raw utterance — and produces the commentary. When
+        nothing was done (a question or a clarifying reply) there is nothing
+        to react to, so the direct answer stands; a retry round that answers
+        in words instead of tools is treated the same way.
 
         Both phases see the transcript — prior turns' commands plus the
         commentary the user actually saw (a bounded window, final answers
@@ -294,8 +339,32 @@ def create_app(
             {"name": call.name, "result": registry.dispatch(call.name, call.args)}
             for call in response.tool_calls
         ]
+        direct_reply: str | None = None
+        failures = _failed_calls(tool_results)
+        for _ in range(MAX_TOOL_RETRY_ROUNDS):
+            if not failures:
+                break
+            retry = brain.get_agent_response(
+                _agent_state_dict(ctx.session, player_color),
+                _retry_command(failures, ctx.session),
+                transcript,
+            )
+            if not retry.tool_calls:
+                # The brain answered in words instead of retrying — a
+                # clarifying question or a concession. That is the final,
+                # user-facing reply; reacting to the failure would bury it.
+                direct_reply = retry.text
+                break
+            round_results = [
+                {"name": call.name, "result": registry.dispatch(call.name, call.args)}
+                for call in retry.tool_calls
+            ]
+            tool_results.extend(round_results)
+            failures = _failed_calls(round_results)
         agent_state = _agent_state_dict(ctx.session, player_color)
-        if tool_results:
+        if direct_reply is not None:
+            commentary = direct_reply
+        elif tool_results:
             commentary = brain.react(agent_state, tool_results, transcript)
         else:
             commentary = response.text
