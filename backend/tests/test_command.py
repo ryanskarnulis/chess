@@ -185,17 +185,20 @@ def test_multiple_tool_calls_run_in_order():
 
 
 def test_unknown_tool_from_brain_is_error_result_not_500():
+    # The failure earns a retry round; here the brain concedes in words.
     client, _ = make_client(
         AgentResponse(
             text="doing something odd",
             tool_calls=(ToolCall(name="launch_rocket", args={}),),
-        )
+        ),
+        AgentResponse(text="I can't do that."),
     )
     response = client.post("/api/command", json={"text": "do it"})
     assert response.status_code == 200
     result = response.json()["tool_results"][0]["result"]
     assert result["ok"] is False
     assert "unknown tool" in result["error"]
+    assert response.json()["commentary"] == "I can't do that."
 
 
 def test_invalid_args_from_brain_is_error_result_not_500():
@@ -203,7 +206,8 @@ def test_invalid_args_from_brain_is_error_result_not_500():
         AgentResponse(
             text="moving",
             tool_calls=(ToolCall(name="make_move", args={"move": 42}),),
-        )
+        ),
+        AgentResponse(text="Sorry, I fumbled that one."),
     )
     response = client.post("/api/command", json={"text": "play something"})
     assert response.status_code == 200

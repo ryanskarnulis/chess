@@ -104,10 +104,19 @@ def test_voice_output_by_speech_flips_the_speak_flag():
 
 def test_bad_setting_from_the_brain_is_data_not_an_error():
     # An out-of-enum personality is an error *result* the agent can react to,
-    # never an HTTP failure or a corrupted setting.
-    client, ctx = make_client(
-        ToolCall(name="set_personality", args={"personality": "chaos_gremlin"})
+    # never an HTTP failure or a corrupted setting. The failure earns a retry
+    # round; here the brain concedes in words.
+    ctx = ToolContext(session=GameSession())
+    brain = ScriptedBrain(
+        AgentResponse(
+            text="on it",
+            tool_calls=(
+                ToolCall(name="set_personality", args={"personality": "chaos_gremlin"}),
+            ),
+        ),
+        AgentResponse(text="I don't know that personality."),
     )
+    client = TestClient(create_app(ctx, brain=brain))
     body = command(client, "be a chaos gremlin")
     assert body["tool_results"][0]["result"]["ok"] is False
     assert ctx.settings.personality == "friendly_rival"
