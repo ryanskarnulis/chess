@@ -35,10 +35,13 @@ class Brain(Protocol):
         transcript: Sequence[dict[str, str]] = (),
     ) -> AgentResponse:
         """Phase one of the loop: turn the user's utterance into tool calls
-        (and/or a direct reply when nothing needs doing). `transcript` is the
-        prior conversation as chat messages (a `Transcript` window: user
-        commands + the commentary the user actually saw, final answers only)
-        so the agent can follow references to earlier turns."""
+        (and/or a direct reply when nothing needs doing). `board_state` is
+        the agent-facing view (fen, turn, player_color, in_check, SAN
+        history, captured, legal_moves, game_over/outcome — not the UI state
+        document). `transcript` is the prior conversation as chat messages
+        (a `Transcript` window: user commands + the commentary the user
+        actually saw, final answers only) so the agent can follow references
+        to earlier turns."""
         ...
 
     def react(
@@ -48,7 +51,8 @@ class Brain(Protocol):
         transcript: Sequence[dict[str, str]] = (),
     ) -> str:
         """Phase two: after the tool calls have run, produce the user-facing
-        commentary from the *new* game state and `changes` (each a
+        commentary from the *new* game state (the same agent-facing view as
+        phase one, rebuilt post-move) and `changes` (each a
         ``{"name", "result"}`` tool result). Deliberately given no access to
         the raw utterance — a future deterministic fast-parse path can drive
         phase one without an LLM while the reaction still reads live state.
