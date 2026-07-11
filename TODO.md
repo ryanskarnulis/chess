@@ -6,7 +6,6 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 From the 2026-07-10 agent deep dive: voice games die by attrition — an illegal-move guess ends the turn with no recovery, the brain's prompt is ~75% UI noise (`fens`/`dests`) that grows every ply, the system prompt gives zero speech→SAN guidance, and every plain move pays the full two-LLM-call round trip (~10–20s). Slices in priority order; the first three are small, independent, and low-risk.
 
-- [ ] **STT hardening**: pass a chess-vocabulary `prompt` to the whisper transcription call (`SpeechClient.transcribe`) to bias recognition; add a small deterministic transcript normalizer ("e 4" → "e4", "night" → "knight") before the text enters the command pipeline.
 - [ ] **Deterministic fast-parse path for plain moves** (the seam BRIEF reserves): parse unambiguous move utterances ("e4", "knight to f3", "castle kingside", "takes on d5") straight to `make_move` with no phase-1 LLM call; the agent still reacts from the new state (or a canned confirmation at verbosity=low). Anything ambiguous or non-move falls through to the agent unchanged — still one road in, one pipeline.
 - [ ] **Experiment — phase-1 sampling**: A/B a lower temperature (~0.2–0.6) for the tool-decision call only, keeping BRIEF sampling for commentary; record tool-call accuracy before changing any default.
 - [ ] **Experiment — skip react() for plain confirmed moves at verbosity=low**: halves LLM calls on the hot path; measure per-turn latency before/after and keep only if commentary quality holds.
