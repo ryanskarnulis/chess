@@ -164,6 +164,25 @@ def test_legal_moves_empty_when_game_over():
     assert session.legal_moves() == []
 
 
+# --- check ------------------------------------------------------------------
+
+
+def test_is_check_false_at_start():
+    assert GameSession().is_check() is False
+
+
+def test_is_check_true_when_side_to_move_is_in_check():
+    # Rook on e2 gives check down the open e-file.
+    session = GameSession(fen="4k3/8/8/8/8/8/4R3/4K3 b - - 0 1")
+    assert session.is_check() is True
+
+
+def test_is_check_clears_after_the_check_is_answered():
+    session = GameSession(fen="4k3/8/8/8/8/8/4R3/4K3 b - - 0 1")
+    assert session.submit_move("Kd8").legal
+    assert session.is_check() is False
+
+
 # --- legal destinations (board-UI move hints) -----------------------------
 
 

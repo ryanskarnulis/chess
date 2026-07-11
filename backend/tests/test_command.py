@@ -49,6 +49,48 @@ def test_brain_receives_board_state_and_command():
     assert board_state["turn"] == "white"
 
 
+def test_brain_view_is_agent_facing_not_the_ui_state():
+    """The brain reasons from a purpose-made view — board truth plus the
+    player's color and check status — never the UI state document, whose
+    per-ply `fens` and `dests` are prompt noise that grows every move."""
+    client, brain = make_client(AgentResponse(text="hello"))
+    client.post("/api/command", json={"text": "how does it look?"})
+    board_state, _ = brain.calls[0]
+    assert board_state["fen"] == START_FEN
+    assert board_state["turn"] == "white"
+    assert board_state["player_color"] == "white"
+    assert board_state["in_check"] is False
+    assert board_state["game_over"] is False
+    assert board_state["outcome"] is None
+    assert board_state["history"] == []
+    assert board_state["captured"] == {"white": [], "black": []}
+    assert "e4" in board_state["legal_moves"]
+    assert "fens" not in board_state
+    assert "dests" not in board_state
+
+
+def test_react_gets_the_same_agent_facing_view():
+    """Phase two reads the same slim view, rebuilt from the post-move state;
+    player_color is the side the command was issued for, so it survives the
+    move (and the engine's reply) unchanged."""
+    client, brain = make_client(
+        AgentResponse(
+            text="on it",
+            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
+        ),
+        reactions=("A fine start.",),
+    )
+    client.post("/api/command", json={"text": "play e4"})
+    react_state, _ = brain.react_calls[0]
+    assert react_state["player_color"] == "white"
+    assert react_state["turn"] == "black"
+    assert react_state["in_check"] is False
+    assert react_state["history"] == ["e4"]
+    assert "e5" in react_state["legal_moves"]
+    assert "fens" not in react_state
+    assert "dests" not in react_state
+
+
 def test_command_with_no_tool_calls_returns_commentary_only():
     client, _ = make_client(AgentResponse(text="Which knight did you mean?"))
     body = client.post("/api/command", json={"text": "move the knight"}).json()

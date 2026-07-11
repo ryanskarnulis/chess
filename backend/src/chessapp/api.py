@@ -98,6 +98,25 @@ def _state_dict(session: GameSession) -> dict[str, Any]:
     }
 
 
+def _agent_state_dict(session: GameSession, player_color: str) -> dict[str, Any]:
+    """The view the brain reasons from: board truth (fen, turn, check, SAN
+    history, captures, legal moves, outcome) plus which color the player is.
+    Deliberately not `_state_dict` — the UI document's per-ply `fens` and
+    `dests` are prompt noise that grows every move and never helps the agent.
+    """
+    return {
+        "fen": session.fen(),
+        "turn": session.turn,
+        "player_color": player_color,
+        "in_check": session.is_check(),
+        "game_over": session.is_game_over(),
+        "outcome": _outcome_dict(session),
+        "history": session.move_history(),
+        "captured": session.captured_pieces(),
+        "legal_moves": session.legal_moves(),
+    }
+
+
 def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
 
@@ -263,23 +282,32 @@ def create_app(
         """
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
-        before = _state_dict(ctx.session)
+        # The player is whoever's turn it is when the command arrives (the
+        # engine replies inside make_move, so it is never the engine's turn
+        # here). Captured once so react's view still names the right color
+        # when the player's own move flips the turn or ends the game.
+        player_color = ctx.session.turn
+        before = _agent_state_dict(ctx.session, player_color)
         transcript = ctx.transcript.window()
         response = brain.get_agent_response(before, request.text, transcript)
         tool_results = [
             {"name": call.name, "result": registry.dispatch(call.name, call.args)}
             for call in response.tool_calls
         ]
-        state = _state_dict(ctx.session)
+        agent_state = _agent_state_dict(ctx.session, player_color)
         if tool_results:
-            commentary = brain.react(state, tool_results, transcript)
+            commentary = brain.react(agent_state, tool_results, transcript)
         else:
             commentary = response.text
         # Record on the context, not a captured reference: resume_game may
         # have just swapped in the saved game's transcript, and this turn
         # belongs to that thread.
         ctx.transcript.record(request.text, commentary)
-        if state != before:
+        # The UI still gets its own full document; a mutation shows up in the
+        # agent view too (any board change moves the fen), so that comparison
+        # decides the broadcast.
+        state = _state_dict(ctx.session)
+        if agent_state != before:
             await broadcaster.broadcast(state)
         return {
             "commentary": commentary,

@@ -238,6 +238,10 @@ class GameSession:
         except ValueError:
             return None
 
+    def is_check(self) -> bool:
+        """Whether the side to move is in check."""
+        return self._board.is_check()
+
     def is_game_over(self) -> bool:
         return self._resigned is not None or self._board.is_game_over()
 
