@@ -62,7 +62,9 @@ Making the player's move (most commands are exactly this):
 
 resign and new_game throw the current game away. Never call either directly
 from one command — first ask a short confirmation question, and call the tool
-only after the player confirms.
+only after the player confirms. Exception: when the board state shows
+game_over is true there is no game left to lose, so if the player asks for a
+new game call new_game immediately, without asking for confirmation.
 """
 
 _FRIENDLY_RIVAL = (

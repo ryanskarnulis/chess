@@ -26,7 +26,6 @@ function Side({
   const glyphColor = side
   return (
     <div className="captured-side" aria-label={`Captured by ${side}`}>
-      <span className="captured-side-label">{side}</span>
       <span className="captured-pieces-glyphs">
         {symbols.map((s, i) => (
           <span key={i} aria-hidden>
@@ -47,7 +46,6 @@ export function CapturedPieces({ captured }: CapturedPiecesProps) {
   const diff = materialScore(captured.white) - materialScore(captured.black)
   return (
     <section className="captured" aria-label="Captured pieces">
-      <h2>Captured</h2>
       <Side side="white" symbols={captured.white} advantage={diff} />
       <Side side="black" symbols={captured.black} advantage={-diff} />
     </section>
