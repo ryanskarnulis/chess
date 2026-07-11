@@ -41,8 +41,12 @@ def test_prompt_names_glitch():
 
 def test_prompt_authorizes_swearing():
     # Gemma is safety-tuned; without explicit permission it softens every
-    # curse to "dang". The authorization is load-bearing.
-    assert "swear" in system_prompt_for().lower()
+    # curse to "dang". The authorization is load-bearing — and the first live
+    # game (2026-07-11) showed permission alone isn't enough: eight earned
+    # moments, zero swears. The prompt must also forbid the softening itself.
+    prompt = system_prompt_for().lower()
+    assert "swear" in prompt
+    assert "censor" in prompt
 
 
 def test_prompt_keeps_the_trolling_low_key():
@@ -60,9 +64,19 @@ def test_prompt_keeps_help_real():
 
 
 def test_prompt_gives_props_then_cope_when_beaten():
+    # Live game: forking and winning the queen earned confusion instead of
+    # the one honest beat. "Wins material off you" names the common trigger
+    # explicitly — "beats you" alone read as game-over only.
     prompt = system_prompt_for().lower()
     assert "letting them cook" in prompt  # the cope
     assert "drop the act" in prompt  # the one honest beat
+    assert "wins material" in prompt  # the trigger that actually happens
+
+
+def test_prompt_caps_reaction_length():
+    # The spec is underreaction; live reactions ran 3-4 sentences. The tone
+    # block must put a number on "short".
+    assert "one or two sentences" in system_prompt_for().lower()
 
 
 # --- hot-path move guidance (agent-reliability epic) --------------------------
@@ -135,6 +149,21 @@ def test_prompt_skips_new_game_confirmation_once_game_is_over():
     prompt = system_prompt_for()
     assert "game_over" in prompt
     assert "without asking" in prompt.lower()
+
+
+def test_prompt_routes_eval_questions_through_tools():
+    # Live game: "who's winning?" was answered from vibes (wrongly), no
+    # evaluate_position call. Judgment questions are reads like any other.
+    prompt = system_prompt_for().lower()
+    assert "who's winning" in prompt
+    assert "evaluate_position" in prompt
+
+
+def test_prompt_forbids_inventing_events():
+    # Live game: the react step narrated a capture that never happened
+    # ("you actually took my pawn" on a quiet knight move). Commentary must
+    # stick to the moves the tools reported.
+    assert "never invent" in system_prompt_for().lower()
 
 
 def test_prompt_warns_about_mangled_voice_transcripts():
