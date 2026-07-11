@@ -63,7 +63,7 @@ No manual testing has happened yet — everything below has only been exercised 
 
 ### Voice (STT/TTS)
 - [ ] Voice input: spoken moves transcribe and execute correctly (test noisy vs quiet room)
-- [ ] Hands-free conversation mode on a real phone (iOS Safari + Android Chrome): VAD endpointing feel (1s silence window), half-duplex (agent never hears its own TTS), autoplay unlock, exit-tap always reachable
+- [ ] Hands-free conversation mode on a real phone — **iOS Safari verified live 2026-07-11** (#103; after the stale-chunk and wasm-OOM fixes); still open: Android Chrome, and the finer feel checks on both (VAD endpointing 1s window, half-duplex, autoplay unlock, exit-tap always reachable)
 - [ ] STT latency (~2.5s known) is acceptable in the play loop
 - [ ] TTS output (`speak`) is intelligible, correct voice, reasonable latency
 - [ ] `set_voice_output` on/off actually mutes/unmutes TTS
