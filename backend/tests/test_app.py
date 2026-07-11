@@ -105,6 +105,24 @@ def test_build_app_serves_the_frontend_when_a_static_dir_is_configured(tmp_path)
     assert client.get("/api/state").status_code == 200
 
 
+def test_static_wasm_assets_get_the_wasm_mime_type(tmp_path):
+    # The hands-free VAD ships onnxruntime as WASM under /vad/. Browsers
+    # compile it with instantiateStreaming, which hard-fails unless the
+    # response is application/wasm — and Python's mimetypes table does not
+    # know .wasm on every platform, so the app must register it.
+    (tmp_path / "index.html").write_text("<html></html>")
+    vad = tmp_path / "vad"
+    vad.mkdir()
+    (vad / "ort-wasm-simd-threaded.wasm").write_bytes(b"\x00asm")
+
+    app = build_app(brain=ScriptedBrain(AgentResponse(text="hi")), static_dir=tmp_path)
+    client = TestClient(app)
+
+    asset = client.get("/vad/ort-wasm-simd-threaded.wasm")
+    assert asset.status_code == 200
+    assert asset.headers["content-type"] == "application/wasm"
+
+
 def test_build_app_without_a_static_dir_serves_no_frontend():
     app = build_app(brain=ScriptedBrain(AgentResponse(text="hi")))
     client = TestClient(app)

@@ -1,40 +1,157 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { transcribe } from './api'
-import { unlockAudio } from './tts'
+import { audioIdle, unlockAudio } from './tts'
+import { createVad, type Vad } from './vad'
+import { encodeWav } from './wav'
 
 export interface MicButtonProps {
   /** Receives the recognized text — the caller sends it down the same
-   * pipeline as a typed command. */
-  onTranscript: (text: string) => void
-  /** Recording is pointless while the agent is busy — lock the button. */
+   * pipeline as a typed command. Hands-free mode awaits the returned promise
+   * (the agent turn) before listening again. */
+  onTranscript: (text: string) => void | Promise<void>
+  /** Starting a conversation is pointless while the agent is busy — lock the
+   * button. An already-running conversation stays escapable. */
   disabled: boolean
 }
 
-type MicState = 'idle' | 'recording' | 'transcribing'
+type MicState =
+  // Hands-free conversation mode (the normal path).
+  | 'idle'
+  | 'starting' // VAD model loading after the tap
+  | 'listening' // waiting for speech
+  | 'capturing' // user is talking
+  | 'working' // transcribing / agent thinking / reply playing
+  // Push-to-talk fallback when the VAD can't load.
+  | 'recording'
+  | 'transcribing'
+
+const LABELS: Record<MicState, string> = {
+  idle: 'Start voice conversation',
+  starting: 'Stop listening',
+  listening: 'Stop listening',
+  capturing: 'Stop listening',
+  working: 'Stop listening',
+  recording: 'Stop recording',
+  transcribing: 'Transcribing',
+}
+
+const ICONS: Record<MicState, string> = {
+  idle: '🎤',
+  starting: '…',
+  listening: '👂',
+  capturing: '👂',
+  working: '…',
+  recording: '■',
+  transcribing: '…',
+}
 
 /**
- * Push-to-talk: click to record, click again to stop; the clip goes to the
- * backend for transcription and the text comes back through `onTranscript`.
- * Renders nothing in browsers without MediaRecorder/getUserMedia — voice is
- * an enhancement, the text box always works.
+ * Hands-free voice conversation: one tap opens a session where the VAD
+ * detects each utterance's end, the clip is transcribed and sent down the
+ * same pipeline as a typed command, and — once the agent's spoken reply has
+ * finished — the mic reopens for the next utterance. Half-duplex by
+ * construction: the mic is never open while the agent is thinking or
+ * talking, so the agent cannot hear itself. A second tap ends the session.
+ *
+ * When the VAD can't load, degrades to classic push-to-talk (tap to record,
+ * tap to send). Renders nothing in browsers without MediaRecorder /
+ * getUserMedia — voice is an enhancement, the text box always works.
  */
 export function MicButton({ onTranscript, disabled }: MicButtonProps) {
   const [micState, setMicState] = useState<MicState>('idle')
   const [error, setError] = useState<string | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
+  const vadRef = useRef<Vad | null>(null)
+  // Conversation sessions are numbered; async continuations belonging to an
+  // exited session must not touch state or reopen the mic.
+  const sessionRef = useRef(0)
+  // An utterance is already being processed — drop any VAD event that slips
+  // through before pause() takes effect.
+  const busyRef = useRef(false)
+
+  useEffect(
+    () => () => {
+      sessionRef.current++
+      vadRef.current?.destroy()
+    },
+    [],
+  )
 
   const supported =
     typeof MediaRecorder !== 'undefined' &&
     typeof navigator.mediaDevices?.getUserMedia === 'function'
   if (!supported) return null
 
-  async function start() {
+  function endConversation() {
+    sessionRef.current++
+    vadRef.current?.destroy()
+    vadRef.current = null
+    setMicState('idle')
+  }
+
+  async function handleUtterance(audio: Float32Array, session: number) {
+    if (busyRef.current) return
+    busyRef.current = true
+    try {
+      vadRef.current?.pause()
+      setMicState('working')
+      const text = await transcribe(encodeWav(audio), 'clip.wav')
+      if (sessionRef.current !== session) return
+      if (text === null) {
+        // The speech service is down; auto-resuming would hammer it forever.
+        endConversation()
+        setError('Voice input is unavailable.')
+        return
+      }
+      if (text.trim()) {
+        // The agent turn, then its spoken reply — only when both are done is
+        // it safe to listen again (half-duplex).
+        await onTranscript(text.trim())
+        await audioIdle()
+        if (sessionRef.current !== session) return
+      }
+      // Empty transcript: a VAD misfire, not worth nagging about.
+      vadRef.current?.resume()
+      setMicState('listening')
+    } finally {
+      busyRef.current = false
+    }
+  }
+
+  async function startConversation() {
+    const session = ++sessionRef.current
     setError(null)
+    setMicState('starting')
+    const vad = await createVad({
+      onSpeechStart: () => {
+        if (sessionRef.current === session && !busyRef.current) setMicState('capturing')
+      },
+      onSpeechEnd: (audio) => {
+        if (sessionRef.current === session) void handleUtterance(audio, session)
+      },
+    })
+    if (sessionRef.current !== session) {
+      // The user tapped out (or the component unmounted) while loading.
+      vad?.destroy()
+      return
+    }
+    if (!vad) {
+      // No worklet/WASM support or the mic was refused to the VAD — degrade
+      // to classic push-to-talk.
+      await startRecording()
+      return
+    }
+    vadRef.current = vad
+    setMicState('listening')
+  }
+
+  async function startRecording() {
     let stream: MediaStream
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch {
       setError('Microphone unavailable — check browser permissions.')
+      setMicState('idle')
       return
     }
     const recorder = new MediaRecorder(stream)
@@ -53,7 +170,7 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
       if (text === null) {
         setError('Voice input is unavailable.')
       } else if (text.trim()) {
-        onTranscript(text.trim())
+        void onTranscript(text.trim())
       } else {
         setError("Didn't catch that — try again.")
       }
@@ -67,8 +184,9 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
     // Mobile browsers only allow audio primed inside a user gesture; a mic
     // tap is the last gesture before the agent's spoken reply.
     unlockAudio()
-    if (micState === 'recording') recorderRef.current?.stop()
-    else if (micState === 'idle') void start()
+    if (micState === 'idle') void startConversation()
+    else if (micState === 'recording') recorderRef.current?.stop()
+    else if (micState !== 'transcribing') endConversation()
   }
 
   return (
@@ -76,12 +194,12 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
       <button
         type="button"
         className={`mic-button mic-${micState}`}
-        aria-label={micState === 'recording' ? 'Stop recording' : 'Start voice command'}
-        title={micState === 'recording' ? 'Stop recording' : 'Speak a command'}
+        aria-label={LABELS[micState]}
+        title={LABELS[micState]}
         onClick={toggle}
-        disabled={disabled || micState === 'transcribing'}
+        disabled={micState === 'transcribing' || (disabled && micState === 'idle')}
       >
-        {micState === 'recording' ? '■' : micState === 'transcribing' ? '…' : '🎤'}
+        {ICONS[micState]}
       </button>
       {error && (
         <p className="mic-error" role="alert">

@@ -17,6 +17,12 @@ let sharedAudio: HTMLAudioElement | null = null
 let unlocked = false
 /** Object URL of the clip currently loaded in the shared element. */
 let liveUrl: string | null = null
+/** The most recently requested playback, settled when it finishes (or fails,
+ * or is interrupted) — never rejected. */
+let currentPlayback: Promise<void> = Promise.resolve()
+/** Settles the promise of the clip currently in the element; called when a
+ * new clip interrupts it, because its own onended will never fire. */
+let settleInterrupted: (() => void) | null = null
 
 function element(): HTMLAudioElement {
   if (!sharedAudio) sharedAudio = new Audio()
@@ -42,7 +48,28 @@ export function unlockAudio(): void {
   )
 }
 
-export async function playText(text: string): Promise<void> {
+/**
+ * Resolves when the most recently requested clip has finished playing (or
+ * failed, or was interrupted). Resolves immediately when nothing is pending.
+ * The hands-free loop waits on this before reopening the mic, so the agent
+ * never listens to its own voice.
+ */
+export function audioIdle(): Promise<void> {
+  return currentPlayback
+}
+
+/**
+ * Fetch spoken audio for `text` and play it. Resolves once playback has
+ * *finished* — not merely started — so callers can sequence work after the
+ * reply has been heard. Never rejects.
+ */
+export function playText(text: string): Promise<void> {
+  const playback = speak(text)
+  currentPlayback = playback
+  return playback
+}
+
+async function speak(text: string): Promise<void> {
   const res = await fetch('/api/voice/speak', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -51,24 +78,27 @@ export async function playText(text: string): Promise<void> {
   if (!res.ok) return
   const url = URL.createObjectURL(await res.blob())
   const el = element()
-  // A new clip interrupts whatever was loaded; release the old URL now and
-  // guard onended so the stale clip can't revoke the live one.
+  // A new clip interrupts whatever was loaded: settle the old clip's promise
+  // (its onended will never fire now), release its URL, and guard the stale
+  // handlers so they can't revoke the live clip.
+  settleInterrupted?.()
   if (liveUrl) URL.revokeObjectURL(liveUrl)
   liveUrl = url
   el.src = url
-  el.onended = () => {
-    if (liveUrl === url) {
-      URL.revokeObjectURL(url)
-      liveUrl = null
+  await new Promise<void>((resolve) => {
+    settleInterrupted = resolve
+    const finish = () => {
+      if (liveUrl === url) {
+        URL.revokeObjectURL(url)
+        liveUrl = null
+      }
+      if (settleInterrupted === resolve) settleInterrupted = null
+      resolve()
     }
-  }
-  try {
-    await el.play()
-  } catch {
-    // Autoplay blocked (no unlocked element) or playback failed — don't leak.
-    if (liveUrl === url) {
-      URL.revokeObjectURL(url)
-      liveUrl = null
-    }
-  }
+    el.onended = finish
+    el.onerror = finish
+    // Autoplay blocked (no unlocked element) or playback failed — don't
+    // leak the URL, and settle so callers never hang.
+    el.play().then(undefined, finish)
+  })
 }

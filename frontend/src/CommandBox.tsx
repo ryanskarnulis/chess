@@ -3,8 +3,9 @@ import { MicButton } from './MicButton'
 import { unlockAudio } from './tts'
 
 export interface CommandBoxProps {
-  /** Send a (trimmed, non-empty) command to the agent. */
-  onSubmit: (text: string) => void
+  /** Send a (trimmed, non-empty) command to the agent. Hands-free voice
+   * awaits the returned promise before listening again. */
+  onSubmit: (text: string) => void | Promise<void>
   /** The agent's latest reply, shown below the input. */
   commentary: string | null
   /** A command is in flight — the input locks and a hint replaces the reply. */
@@ -40,7 +41,7 @@ export function CommandBox({
     // submit is the gesture that precedes the agent's spoken reply.
     unlockAudio()
     if (!trimmed || thinking) return
-    onSubmit(trimmed)
+    void onSubmit(trimmed)
     setText('')
   }
 

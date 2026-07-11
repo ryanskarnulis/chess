@@ -1,0 +1,58 @@
+// Voice activity detection for hands-free conversation mode: Silero VAD
+// running in an AudioWorklet + WASM, entirely on-device (the project's
+// local-only-voice decision bans cloud speech paths, not local models).
+//
+// This wrapper is the only place that knows the library; the component deals
+// in these three verbs and two callbacks, which also makes it mockable in
+// jsdom, where no audio machinery exists.
+
+export interface SpeechEvents {
+  /** The user started talking. */
+  onSpeechStart: () => void
+  /** The user stopped: the full utterance as 16 kHz mono Float32 samples. */
+  onSpeechEnd: (audio: Float32Array) => void
+}
+
+export interface Vad {
+  /** Stop feeding audio to the model (half-duplex: agent's turn). */
+  pause: () => void
+  /** Start listening again (user's turn). */
+  resume: () => void
+  /** Tear down the worklet and release the microphone. */
+  destroy: () => void
+}
+
+/**
+ * Silence that ends an utterance. Long enough for a mid-command think
+ * ("knight takes… e5"), short enough that sending doesn't feel laggy.
+ */
+export const END_OF_SPEECH_MS = 1000
+
+/**
+ * Build and start a microphone VAD, or return null when anything fails
+ * (no worklet support, model failed to load, mic denied) — the caller
+ * falls back to push-to-talk.
+ */
+export async function createVad(events: SpeechEvents): Promise<Vad | null> {
+  try {
+    // Lazy-loaded: the VAD + onnxruntime stack is heavy and only needed once
+    // the user actually taps the mic.
+    const { MicVAD } = await import('@ricky0123/vad-web')
+    const vad = await MicVAD.new({
+      // Local-first: model, worklet, and ORT WASM are copied to /vad/ at
+      // build time (vite-plugin-static-copy) — never fetched from a CDN.
+      baseAssetPath: '/vad/',
+      onnxWASMBasePath: '/vad/',
+      redemptionMs: END_OF_SPEECH_MS,
+      onSpeechStart: events.onSpeechStart,
+      onSpeechEnd: events.onSpeechEnd,
+    })
+    return {
+      pause: () => void vad.pause(),
+      resume: () => void vad.start(),
+      destroy: () => void vad.destroy(),
+    }
+  } catch {
+    return null
+  }
+}
