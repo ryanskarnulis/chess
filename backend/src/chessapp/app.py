@@ -89,19 +89,20 @@ def _engine_from_env() -> EnginePlayer | None:
 
 
 def _speech_from_env() -> SpeechClient | None:
-    """Voice is optional exactly like the brain: no CHESSAPP_SPEACHES_URL
-    means no speech client, and the voice endpoints answer 503."""
-    url = os.environ.get("CHESSAPP_SPEACHES_URL")
+    """Voice is optional exactly like the brain: no SPEECH_BASE_URL means no
+    speech client, and the voice endpoints answer 503. The env var names are
+    the fleet voice contract's (../agent-standard/voice.md)."""
+    url = os.environ.get("SPEECH_BASE_URL")
     if not url:
         return None
     return create_speech_client(
         base_url=url,
         # TTS on its own server (the custom-voice Kokoro container); unset
         # means the Speaches backend serves both, exactly as before.
-        tts_base_url=os.environ.get("CHESSAPP_TTS_URL"),
-        stt_model=os.environ.get("CHESSAPP_STT_MODEL", DEFAULT_STT_MODEL),
-        tts_model=os.environ.get("CHESSAPP_TTS_MODEL", DEFAULT_TTS_MODEL),
-        tts_voice=os.environ.get("CHESSAPP_TTS_VOICE", DEFAULT_TTS_VOICE),
+        tts_base_url=os.environ.get("TTS_BASE_URL"),
+        stt_model=os.environ.get("STT_MODEL", DEFAULT_STT_MODEL),
+        tts_model=os.environ.get("TTS_MODEL", DEFAULT_TTS_MODEL),
+        tts_voice=os.environ.get("TTS_VOICE", DEFAULT_TTS_VOICE),
     )
 
 

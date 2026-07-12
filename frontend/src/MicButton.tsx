@@ -1,3 +1,4 @@
+// canonical voice module (chess) — other apps vendor verbatim copies; see agent-standard/voice.md
 import { useEffect, useRef, useState } from 'react'
 import { transcribe } from './api'
 import { audioIdle, unlockAudio } from './tts'

@@ -2,6 +2,10 @@
 
 Completed tasks, newest first. Moved here from `TODO.md` with the completion date.
 
+## 2026-07-12
+
+- [x] **`voice.py` off the OpenAI SDK onto httpx** (#119, the chess slice of `../agent-standard/VOICE-PLAN.md` Phase 2): the voice layer now speaks the OpenAI audio wire over plain httpx like the brain's provider — multipart `POST /audio/transcriptions`, JSON `POST /audio/speech` → mp3 — with a Pydantic wire model and typed `SpeechRequestError`/`SpeechResponseError`, dropping the `openai` runtime dep entirely. Adopted the fleet voice contract's env var names (`SPEECH_BASE_URL`, `TTS_BASE_URL`, `TTS_MODEL`, `TTS_VOICE`, `STT_MODEL`) in compose/docs and marked the frontend voice modules (`vad.ts`, `wav.ts`, `tts.ts`, `MicButton.tsx`) canonical for fleet vendoring (header line; drift checked by `agent-standard/check-sync.sh`). Tests: SDK-shaped fakes → `httpx.MockTransport` server fake asserting on the actual wire, +4 typed-error tests. Backend 606, frontend 154, evals 5 passed / 1 xpassed.
+
 ## 2026-07-11
 
 - [x] **Post-game screen** (user-requested UI overhaul, slice 3/3): `PostGameModal` pops up at game over — verdict from the player's side ("You won"/"You lost"/"Draw"), humanized termination + result, New game (rolls a random side), Copy PGN (`GET /api/game/pgn` → clipboard, confirms in place), and Close to study the final board with a status-line "Results" chip to reopen. Hidden-not-unmounted on dismiss so a fetched review (a whole-game Stockfish run) survives reopening; a new game unmounts and resets it. Replaces the inline `ReviewPanel` rendering — review now lives inside the modal. (#116)

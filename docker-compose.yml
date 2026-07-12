@@ -47,13 +47,14 @@ services:
       # Voice seam: where the app proxies STT/TTS requests — the shared
       # workspace ../speech/ stack on the host. Unset to run voiceless — the
       # voice endpoints 503, gameplay is untouched.
-      CHESSAPP_SPEACHES_URL: http://host.docker.internal:8400/v1
+      # Env var names are the fleet voice contract's (agent-standard/voice.md).
+      SPEECH_BASE_URL: http://host.docker.internal:8400/v1
       # Glitch's custom voice: TTS goes to speech/'s Kokoro-FastAPI (a
       # designed blend — the fleet house voice); STT stays on Speaches.
-      # Unset CHESSAPP_TTS_URL to fall back to Speaches for both.
-      CHESSAPP_TTS_URL: http://host.docker.internal:8410/v1
-      CHESSAPP_TTS_MODEL: kokoro
-      CHESSAPP_TTS_VOICE: am_fenrir(2)+am_michael(1)
+      # Unset TTS_BASE_URL to fall back to Speaches for both.
+      TTS_BASE_URL: http://host.docker.internal:8410/v1
+      TTS_MODEL: kokoro
+      TTS_VOICE: am_fenrir(2)+am_michael(1)
       # Stockfish path + host/port are baked into the image ENV; saved games
       # persist to a named volume so they survive `compose down`.
       CHESSAPP_SAVE_DIR: /data/saves

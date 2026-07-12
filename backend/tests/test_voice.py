@@ -2,10 +2,15 @@
 
 The browser never talks to Speaches directly — it posts audio to the app,
 which forwards to the speech server and hands back plain text destined for
-the same command pipeline as typed input. The speech client is injected, so
-these tests run without a live Speaches (same pattern as the brain tests).
+the same command pipeline as typed input. The speech layer speaks the OpenAI
+audio wire format over plain httpx (per ../agent-standard/voice.md); tests
+inject an `httpx.MockTransport`, so no live speech server is ever required
+(same pattern as the provider tests).
 """
 
+import json
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,93 +24,129 @@ from chessapp.voice import (
     DEFAULT_TTS_VOICE,
     STT_PROMPT,
     SpeechClient,
+    SpeechRequestError,
+    SpeechResponseError,
     create_speech_client,
     normalize_transcript,
 )
 from fakes import ScriptedBrain
 
 
-class FakeTranscriptions:
-    def __init__(self, text="pawn to e4", error=None):
+class FakeSpeechServer:
+    """An OpenAI-audio-shaped server behind `httpx.MockTransport`.
+
+    Records every request so tests can assert on the wire: multipart fields
+    for /audio/transcriptions, the JSON body for /audio/speech.
+    """
+
+    def __init__(self, text="pawn to e4", audio=b"mp3-bytes", status=200, body=None):
         self.text = text
-        self.error = error
-        self.calls = []
-
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        if self.error is not None:
-            raise self.error
-
-        class Result:
-            text = self.text
-
-        return Result()
-
-
-class FakeSpeech:
-    def __init__(self, audio=b"mp3-bytes", error=None):
         self.audio = audio
-        self.error = error
-        self.calls = []
+        self.status = status
+        self.body = body  # overrides the transcription JSON body when set
+        self.requests: list[httpx.Request] = []
 
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        if self.error is not None:
-            raise self.error
+    def _handler(self, request: httpx.Request) -> httpx.Response:
+        request.read()
+        self.requests.append(request)
+        if self.status != 200:
+            return httpx.Response(self.status, text="upstream sad")
+        if request.url.path.endswith("/audio/transcriptions"):
+            body = self.body if self.body is not None else {"text": self.text}
+            return httpx.Response(200, json=body)
+        if request.url.path.endswith("/audio/speech"):
+            return httpx.Response(
+                200, content=self.audio, headers={"content-type": "audio/mpeg"}
+            )
+        return httpx.Response(404)
 
-        class Result:
-            content = self.audio
+    def client(self, base_url="http://speaches:8000/v1") -> httpx.Client:
+        return httpx.Client(
+            base_url=base_url, transport=httpx.MockTransport(self._handler)
+        )
 
-        return Result()
 
-
-class FakeSpeechBackend:
-    """Quacks like `OpenAI(...)` for the audio surface the voice layer uses."""
-
-    def __init__(self, text="pawn to e4", audio=b"mp3-bytes", error=None):
-        self.transcriptions = FakeTranscriptions(text=text, error=error)
-        self.speech = FakeSpeech(audio=audio, error=error)
-
-        class Audio:
-            pass
-
-        self.audio = Audio()
-        self.audio.transcriptions = self.transcriptions
-        self.audio.speech = self.speech
+def _multipart_body(request: httpx.Request) -> bytes:
+    return request.read()
 
 
 # --- SpeechClient unit -------------------------------------------------------
 
 
 def test_transcribe_forwards_audio_and_returns_text():
-    backend = FakeSpeechBackend(text="knight f3")
-    speech = SpeechClient(client=backend, stt_model="whisper-test")
+    server = FakeSpeechServer(text="knight f3")
+    speech = SpeechClient(client=server.client(), stt_model="whisper-test")
     text = speech.transcribe(b"opus-bytes", filename="clip.webm")
     assert text == "knight f3"
-    (call,) = backend.transcriptions.calls
-    assert call["model"] == "whisper-test"
-    assert call["file"] == ("clip.webm", b"opus-bytes")
+    (request,) = server.requests
+    assert request.url.path == "/v1/audio/transcriptions"
+    body = _multipart_body(request)
+    assert b'filename="clip.webm"' in body
+    assert b"opus-bytes" in body
+    assert b"whisper-test" in body
 
 
 def test_create_speech_client_uses_injected_client_and_default_model():
-    backend = FakeSpeechBackend()
-    speech = create_speech_client(base_url="http://speaches:8000/v1", client=backend)
-    assert speech.client is backend
+    server = FakeSpeechServer()
+    client = server.client()
+    speech = create_speech_client(base_url="http://speaches:8000/v1", client=client)
+    assert speech.client is client
     assert speech.stt_model == DEFAULT_STT_MODEL
     assert speech.tts_model == DEFAULT_TTS_MODEL
     assert speech.tts_voice == DEFAULT_TTS_VOICE
 
 
 def test_speak_forwards_text_and_returns_audio_bytes():
-    backend = FakeSpeechBackend(audio=b"kokoro-mp3")
-    speech = SpeechClient(client=backend, tts_model="tts-test", tts_voice="af_test")
+    server = FakeSpeechServer(audio=b"kokoro-mp3")
+    speech = SpeechClient(
+        client=server.client(), tts_model="tts-test", tts_voice="af_test"
+    )
     audio = speech.speak("Check!")
     assert audio == b"kokoro-mp3"
-    (call,) = backend.speech.calls
-    assert call["model"] == "tts-test"
-    assert call["voice"] == "af_test"
-    assert call["input"] == "Check!"
-    assert call["response_format"] == "mp3"
+    (request,) = server.requests
+    assert request.url.path == "/v1/audio/speech"
+    payload = json.loads(request.read())
+    assert payload == {
+        "model": "tts-test",
+        "voice": "af_test",
+        "input": "Check!",
+        "response_format": "mp3",
+    }
+
+
+# --- typed errors (standard SpeechClient contract) -----------------------------
+
+
+def test_transcribe_upstream_http_error_raises_request_error():
+    server = FakeSpeechServer(status=500)
+    speech = SpeechClient(client=server.client())
+    with pytest.raises(SpeechRequestError):
+        speech.transcribe(b"opus-bytes")
+
+
+def test_transcribe_unreachable_server_raises_request_error():
+    def refuse(request):
+        raise httpx.ConnectError("connection refused")
+
+    client = httpx.Client(
+        base_url="http://speaches:8000/v1", transport=httpx.MockTransport(refuse)
+    )
+    with pytest.raises(SpeechRequestError):
+        SpeechClient(client=client).transcribe(b"opus-bytes")
+
+
+def test_transcribe_malformed_body_raises_response_error():
+    server = FakeSpeechServer(body={"transcript": "wrong key"})
+    speech = SpeechClient(client=server.client())
+    with pytest.raises(SpeechResponseError):
+        speech.transcribe(b"opus-bytes")
+
+
+def test_speak_upstream_http_error_raises_request_error():
+    server = FakeSpeechServer(status=503)
+    speech = SpeechClient(client=server.client())
+    with pytest.raises(SpeechRequestError):
+        speech.speak("Check!")
 
 
 # --- split TTS backend (custom-voice epic) ------------------------------------
@@ -117,39 +158,41 @@ def test_speak_forwards_text_and_returns_audio_bytes():
 
 
 def test_speak_uses_the_dedicated_tts_client_when_given():
-    stt_backend = FakeSpeechBackend()
-    tts_backend = FakeSpeechBackend(audio=b"kokoro-blend-mp3")
-    speech = SpeechClient(client=stt_backend, tts_client=tts_backend)
+    stt_server = FakeSpeechServer()
+    tts_server = FakeSpeechServer(audio=b"kokoro-blend-mp3")
+    speech = SpeechClient(client=stt_server.client(), tts_client=tts_server.client())
     assert speech.speak("Check!") == b"kokoro-blend-mp3"
-    assert stt_backend.speech.calls == []
-    (call,) = tts_backend.speech.calls
-    assert call["input"] == "Check!"
+    assert stt_server.requests == []
+    (request,) = tts_server.requests
+    assert json.loads(request.read())["input"] == "Check!"
 
 
 def test_transcribe_ignores_the_tts_client():
-    stt_backend = FakeSpeechBackend(text="knight f3")
-    tts_backend = FakeSpeechBackend()
-    speech = SpeechClient(client=stt_backend, tts_client=tts_backend)
+    stt_server = FakeSpeechServer(text="knight f3")
+    tts_server = FakeSpeechServer()
+    speech = SpeechClient(client=stt_server.client(), tts_client=tts_server.client())
     assert speech.transcribe(b"opus-bytes") == "knight f3"
-    assert tts_backend.transcriptions.calls == []
+    assert tts_server.requests == []
 
 
 def test_create_speech_client_wires_an_injected_tts_client():
-    stt_backend = FakeSpeechBackend()
-    tts_backend = FakeSpeechBackend(audio=b"blend")
+    stt_server = FakeSpeechServer()
+    tts_server = FakeSpeechServer(audio=b"blend")
     speech = create_speech_client(
         base_url="http://speaches:8000/v1",
         tts_base_url="http://kokoro:8880/v1",
-        client=stt_backend,
-        tts_client=tts_backend,
+        client=stt_server.client(),
+        tts_client=tts_server.client("http://kokoro:8880/v1"),
     )
     assert speech.speak("hi") == b"blend"
-    assert stt_backend.speech.calls == []
+    assert stt_server.requests == []
 
 
 def test_create_speech_client_without_tts_base_url_uses_one_backend():
-    backend = FakeSpeechBackend(audio=b"one-backend")
-    speech = create_speech_client(base_url="http://speaches:8000/v1", client=backend)
+    server = FakeSpeechServer(audio=b"one-backend")
+    speech = create_speech_client(
+        base_url="http://speaches:8000/v1", client=server.client()
+    )
     assert speech.tts_client is None
     assert speech.speak("hi") == b"one-backend"
 
@@ -157,8 +200,8 @@ def test_create_speech_client_without_tts_base_url_uses_one_backend():
 def test_speech_from_env_builds_a_separate_tts_client(monkeypatch):
     from chessapp.app import _speech_from_env
 
-    monkeypatch.setenv("CHESSAPP_SPEACHES_URL", "http://speaches:8000/v1")
-    monkeypatch.setenv("CHESSAPP_TTS_URL", "http://kokoro:8880/v1")
+    monkeypatch.setenv("SPEECH_BASE_URL", "http://speaches:8000/v1")
+    monkeypatch.setenv("TTS_BASE_URL", "http://kokoro:8880/v1")
     speech = _speech_from_env()
     assert speech is not None
     assert speech.tts_client is not None
@@ -169,11 +212,18 @@ def test_speech_from_env_builds_a_separate_tts_client(monkeypatch):
 def test_speech_from_env_without_tts_url_stays_single_backend(monkeypatch):
     from chessapp.app import _speech_from_env
 
-    monkeypatch.setenv("CHESSAPP_SPEACHES_URL", "http://speaches:8000/v1")
-    monkeypatch.delenv("CHESSAPP_TTS_URL", raising=False)
+    monkeypatch.setenv("SPEECH_BASE_URL", "http://speaches:8000/v1")
+    monkeypatch.delenv("TTS_BASE_URL", raising=False)
     speech = _speech_from_env()
     assert speech is not None
     assert speech.tts_client is None
+
+
+def test_speech_from_env_without_base_url_is_none(monkeypatch):
+    from chessapp.app import _speech_from_env
+
+    monkeypatch.delenv("SPEECH_BASE_URL", raising=False)
+    assert _speech_from_env() is None
 
 
 # --- STT hardening (agent-reliability epic) -----------------------------------
@@ -185,11 +235,11 @@ def test_speech_from_env_without_tts_url_stays_single_backend(monkeypatch):
 
 
 def test_transcribe_biases_whisper_with_the_chess_vocabulary_prompt():
-    backend = FakeSpeechBackend()
-    speech = SpeechClient(client=backend)
+    server = FakeSpeechServer()
+    speech = SpeechClient(client=server.client())
     speech.transcribe(b"opus-bytes")
-    (call,) = backend.transcriptions.calls
-    assert call["prompt"] == STT_PROMPT
+    (request,) = server.requests
+    assert STT_PROMPT.encode() in _multipart_body(request)
 
 
 def test_stt_prompt_covers_the_chess_vocabulary():
@@ -244,8 +294,8 @@ def test_stt_prompt_shows_the_file_capture_form():
 
 
 def test_transcribe_returns_the_normalized_transcript():
-    backend = FakeSpeechBackend(text="night to f 3")
-    speech = SpeechClient(client=backend)
+    server = FakeSpeechServer(text="night to f 3")
+    speech = SpeechClient(client=server.client())
     assert speech.transcribe(b"opus-bytes") == "knight to f3"
 
 
@@ -262,23 +312,25 @@ def _client(ctx, speech=None):
 
 
 def test_transcribe_endpoint_returns_text(ctx):
-    backend = FakeSpeechBackend(text="castle kingside")
-    client = _client(ctx, speech=SpeechClient(client=backend))
+    server = FakeSpeechServer(text="castle kingside")
+    client = _client(ctx, speech=SpeechClient(client=server.client()))
     response = client.post(
         "/api/voice/transcribe",
         files={"audio": ("clip.webm", b"opus-bytes", "audio/webm")},
     )
     assert response.status_code == 200
     assert response.json() == {"text": "castle kingside"}
-    (call,) = backend.transcriptions.calls
-    assert call["file"] == ("clip.webm", b"opus-bytes")
+    (request,) = server.requests
+    body = _multipart_body(request)
+    assert b'filename="clip.webm"' in body
+    assert b"opus-bytes" in body
 
 
 def test_transcribe_endpoint_returns_repaired_text(ctx):
     # The text the browser feeds back into /api/command is the normalized
     # transcript, so voice slips are fixed before the pipeline ever sees them.
-    backend = FakeSpeechBackend(text="night to e 4")
-    client = _client(ctx, speech=SpeechClient(client=backend))
+    server = FakeSpeechServer(text="night to e 4")
+    client = _client(ctx, speech=SpeechClient(client=server.client()))
     response = client.post(
         "/api/voice/transcribe",
         files={"audio": ("clip.webm", b"opus-bytes", "audio/webm")},
@@ -296,8 +348,8 @@ def test_transcribe_without_speech_service_is_503(ctx):
 
 
 def test_transcribe_upstream_failure_is_502(ctx):
-    backend = FakeSpeechBackend(error=RuntimeError("speaches is down"))
-    client = _client(ctx, speech=SpeechClient(client=backend))
+    server = FakeSpeechServer(status=500)
+    client = _client(ctx, speech=SpeechClient(client=server.client()))
     response = client.post(
         "/api/voice/transcribe",
         files={"audio": ("clip.webm", b"opus-bytes", "audio/webm")},
@@ -306,8 +358,8 @@ def test_transcribe_upstream_failure_is_502(ctx):
 
 
 def test_speak_endpoint_returns_audio(ctx):
-    backend = FakeSpeechBackend(audio=b"kokoro-mp3")
-    client = _client(ctx, speech=SpeechClient(client=backend))
+    server = FakeSpeechServer(audio=b"kokoro-mp3")
+    client = _client(ctx, speech=SpeechClient(client=server.client()))
     response = client.post("/api/voice/speak", json={"text": "Check!"})
     assert response.status_code == 200
     assert response.content == b"kokoro-mp3"
@@ -322,14 +374,14 @@ def test_speak_without_speech_service_is_503(ctx):
 
 
 def test_speak_upstream_failure_is_502(ctx):
-    backend = FakeSpeechBackend(error=RuntimeError("speaches is down"))
-    client = _client(ctx, speech=SpeechClient(client=backend))
+    server = FakeSpeechServer(status=503)
+    client = _client(ctx, speech=SpeechClient(client=server.client()))
     response = client.post("/api/voice/speak", json={"text": "Check!"})
     assert response.status_code == 502
 
 
 def test_speak_rejects_blank_text(ctx):
-    client = _client(ctx, speech=SpeechClient(client=FakeSpeechBackend()))
+    client = _client(ctx, speech=SpeechClient(client=FakeSpeechServer().client()))
     response = client.post("/api/voice/speak", json={"text": "   "})
     assert response.status_code == 422
 
@@ -363,7 +415,7 @@ def test_command_response_says_no_speak_when_voice_output_off(ctx):
 
 
 def test_transcribe_never_touches_game_state(ctx):
-    client = _client(ctx, speech=SpeechClient(client=FakeSpeechBackend()))
+    client = _client(ctx, speech=SpeechClient(client=FakeSpeechServer().client()))
     before = ctx.session.fen()
     client.post(
         "/api/voice/transcribe",
