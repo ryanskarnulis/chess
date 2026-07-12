@@ -1,0 +1,334 @@
+[
+  {
+    "function": {
+      "description": "Current position: FEN, side to move, whether the game is over, and the outcome if it is.",
+      "name": "get_board_state",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "All legal moves in the current position, in SAN.",
+      "name": "get_legal_moves",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Moves played so far, in SAN, in order.",
+      "name": "get_move_history",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Piece symbols each color has captured so far, in capture order.",
+      "name": "get_captured_pieces",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Stockfish evaluation of the current position from White's point of view: centipawns, or mate-in-N.",
+      "name": "evaluate_position",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Top n candidate moves from Stockfish (MultiPV), best first, with SAN, UCI, and White-POV scores.",
+      "name": "get_best_moves",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "n": {
+            "description": "How many candidate moves to return.",
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Analyze the last move played: how it compares to Stockfish's best from the same position \u2014 centipawn loss, verdict (good/inaccuracy/mistake/blunder), and what was best. Use this to answer 'what was my mistake?' and to explain moves.",
+      "name": "analyze_last_move",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Review the whole game so far: every move classified (good/inaccuracy/mistake/blunder) with centipawn loss and the best alternative, plus per-color accuracy scores.",
+      "name": "review_game",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Submit the player's move in SAN (e.g. 'Nf3') or UCI (e.g. 'g1f3'). The engine decides legality: the result says legal or illegal. When the move is legal, the engine opponent replies immediately \u2014 the result's engine_move is its answer.",
+      "name": "make_move",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "move": {
+            "description": "SAN or UCI move.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "move"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Take back the last N half-moves (plies). Use plies=2 to undo both the player's move and the engine's reply.",
+      "name": "undo",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "plies": {
+            "description": "How many half-moves to take back.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Reset to the starting position and begin a new game.",
+      "name": "new_game",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Resign the game. Defaults to the side to move; pass a color to resign for that side.",
+      "name": "resign",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "enum": [
+              "white",
+              "black"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Save the current game under a name (default 'autosave').",
+      "name": "save_game",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Resume a previously saved game by name (default 'autosave').",
+      "name": "resume_game",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Export the game so far as PGN.",
+      "name": "export_pgn",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Set engine strength: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength), skill_level (0-20), or elo (1320-3190). Prefer tier unless the user asks for a specific number.",
+      "name": "set_difficulty",
+      "parameters": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "tier"
+            ]
+          },
+          {
+            "required": [
+              "skill_level"
+            ]
+          },
+          {
+            "required": [
+              "elo"
+            ]
+          }
+        ],
+        "properties": {
+          "elo": {
+            "maximum": 3190,
+            "minimum": 1320,
+            "type": "integer"
+          },
+          "skill_level": {
+            "maximum": 20,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tier": {
+            "enum": [
+              "beginner",
+              "casual",
+              "intermediate",
+              "advanced",
+              "maximum"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "How chatty the agent's commentary is.",
+      "name": "set_verbosity",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "verbosity": {
+            "enum": [
+              "low",
+              "normal",
+              "high"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "verbosity"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Turn move hints on or off.",
+      "name": "set_hints_mode",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Turn spoken (TTS) output on or off.",
+      "name": "set_voice_output",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  }
+]

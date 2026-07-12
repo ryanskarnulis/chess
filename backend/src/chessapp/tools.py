@@ -5,17 +5,29 @@ tool and passes args; `ToolRegistry.dispatch` validates the args against the
 tool's JSON schema and runs the handler. Bad tool names, malformed args, and
 domain errors (ValueError) all come back as `{"ok": False, "error": ...}` so
 the agent loop can feed the failure back to the model instead of crashing.
+
+Tools are registered with the `@registry.tool()` decorator: the name comes
+from the function's `__name__`, the description from its docstring, and the
+argument JSON Schema is derived from the typed signature via FastMCP's
+`func_metadata` (the workspace agent standard — see
+`../agent-standard/STANDARD.md` §1). No hand-written schemas, except the one
+documented `parameters=` escape hatch for `set_difficulty`, whose
+exactly-one-of `oneOf` cannot come from a plain signature.
 """
 
+import inspect
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import jsonschema
+from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+from pydantic import Field
 
-from chessapp.analysis import analyze_last_move, review_game
+from chessapp.analysis import analyze_last_move as _analyze_last_move
+from chessapp.analysis import review_game as _review_game
 from chessapp.conversation import Transcript
 from chessapp.engine import (
     DEFAULT_TIER,
@@ -32,8 +44,6 @@ GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
 # Save names become filenames: one path segment, no traversal.
 SAVE_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
-
-VERBOSITY_LEVELS = ("low", "normal", "high")
 
 
 @dataclass
@@ -60,6 +70,20 @@ class Tool:
     description: str
     parameters: dict[str, Any]  # JSON schema for the args object
     handler: Callable[..., dict[str, Any]]
+
+
+def _derive_schema(fn: Callable[..., Any]) -> dict[str, Any]:
+    """JSON Schema for `fn`'s arguments, from its typed signature.
+
+    FastMCP's `func_metadata` builds a Pydantic arg model from the signature;
+    its JSON Schema is the same one the MCP server would advertise. We add
+    `additionalProperties: false` — chess keeps closed argument schemas
+    (`dispatch` rejects extra args and Gemma is prompted against them), which
+    `func_metadata` does not emit on its own.
+    """
+    schema = func_metadata(fn).arg_model.model_json_schema(by_alias=True)
+    schema["additionalProperties"] = False
+    return schema
 
 
 @dataclass
@@ -90,6 +114,38 @@ class ToolRegistry:
         jsonschema.Draft202012Validator.check_schema(tool.parameters)
         self._tools[tool.name] = tool
 
+    def tool(
+        self, *, parameters: dict[str, Any] | None = None
+    ) -> Callable[[Callable[..., dict[str, Any]]], Callable[..., dict[str, Any]]]:
+        """Decorator that registers a handler as a tool.
+
+        Name comes from `__name__`, description from the docstring, and the
+        argument schema is derived from the typed signature — unless
+        `parameters=` is given (the documented escape hatch for schemas a
+        plain signature can't express, e.g. `set_difficulty`'s `oneOf`), in
+        which case that JSON Schema is used verbatim (still `check_schema`-d
+        at registration).
+        """
+
+        def decorator(
+            fn: Callable[..., dict[str, Any]],
+        ) -> Callable[..., dict[str, Any]]:
+            description = inspect.getdoc(fn)
+            if not description:
+                raise ValueError(f"tool {fn.__name__} must have a docstring")
+            schema = parameters if parameters is not None else _derive_schema(fn)
+            self.register(
+                Tool(
+                    name=fn.__name__,
+                    description=description,
+                    parameters=schema,
+                    handler=fn,
+                )
+            )
+            return fn
+
+        return decorator
+
     def definitions(self) -> list[dict[str, Any]]:
         """All tools as OpenAI-style function definitions."""
         return [
@@ -117,10 +173,6 @@ class ToolRegistry:
             return tool.handler(**args)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-
-
-def _no_args_schema() -> dict[str, Any]:
-    return {"type": "object", "properties": {}, "additionalProperties": False}
 
 
 def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
@@ -151,7 +203,10 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     final slice of the tool-layer epic."""
     registry = ToolRegistry()
 
+    @registry.tool()
     def get_board_state() -> dict[str, Any]:
+        """Current position: FEN, side to move, whether the game is over,
+        and the outcome if it is."""
         return {
             "ok": True,
             "fen": ctx.session.fen(),
@@ -160,17 +215,26 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "outcome": _outcome_dict(ctx.session),
         }
 
+    @registry.tool()
     def get_legal_moves() -> dict[str, Any]:
+        "All legal moves in the current position, in SAN."
         return {"ok": True, "moves": ctx.session.legal_moves()}
 
+    @registry.tool()
     def get_move_history() -> dict[str, Any]:
+        "Moves played so far, in SAN, in order."
         return {"ok": True, "moves": ctx.session.move_history()}
 
+    @registry.tool()
     def get_captured_pieces() -> dict[str, Any]:
+        "Piece symbols each color has captured so far, in capture order."
         captured = ctx.session.captured_pieces()
         return {"ok": True, "white": captured["white"], "black": captured["black"]}
 
+    @registry.tool()
     def evaluate_position() -> dict[str, Any]:
+        """Stockfish evaluation of the current position from White's point of
+        view: centipawns, or mate-in-N."""
         evaluation = _require_engine(ctx).evaluate_position(ctx.session)
         return {
             "ok": True,
@@ -178,7 +242,19 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "mate_in": evaluation.mate_in,
         }
 
-    def get_best_moves(n: int = 3) -> dict[str, Any]:
+    @registry.tool()
+    def get_best_moves(
+        n: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=GET_BEST_MOVES_MAX,
+                description="How many candidate moves to return.",
+            ),
+        ] = 3,
+    ) -> dict[str, Any]:
+        """Top n candidate moves from Stockfish (MultiPV), best first, with
+        SAN, UCI, and White-POV scores."""
         candidates = _require_engine(ctx).get_best_moves(ctx.session, n=n)
         return {
             "ok": True,
@@ -193,8 +269,13 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             ],
         }
 
-    def analyze_last_move_tool() -> dict[str, Any]:
-        analysis = analyze_last_move(_require_engine(ctx), ctx.session)
+    @registry.tool()
+    def analyze_last_move() -> dict[str, Any]:
+        """Analyze the last move played: how it compares to Stockfish's best
+        from the same position — centipawn loss, verdict
+        (good/inaccuracy/mistake/blunder), and what was best. Use this to
+        answer 'what was my mistake?' and to explain moves."""
+        analysis = _analyze_last_move(_require_engine(ctx), ctx.session)
         return {
             "ok": True,
             "played": analysis.played_san,
@@ -206,8 +287,12 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "color": analysis.color,
         }
 
-    def review_game_tool() -> dict[str, Any]:
-        review = review_game(_require_engine(ctx), ctx.session)
+    @registry.tool()
+    def review_game() -> dict[str, Any]:
+        """Review the whole game so far: every move classified
+        (good/inaccuracy/mistake/blunder) with centipawn loss and the best
+        alternative, plus per-color accuracy scores."""
+        review = _review_game(_require_engine(ctx), ctx.session)
         return {
             "ok": True,
             "moves": [
@@ -226,7 +311,14 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "counts": review.counts,
         }
 
-    def make_move(move: str) -> dict[str, Any]:
+    @registry.tool()
+    def make_move(
+        move: Annotated[str, Field(description="SAN or UCI move.")],
+    ) -> dict[str, Any]:
+        """Submit the player's move in SAN (e.g. 'Nf3') or UCI (e.g. 'g1f3').
+        The engine decides legality: the result says legal or illegal. When
+        the move is legal, the engine opponent replies immediately — the
+        result's engine_move is its answer."""
         result = ctx.session.submit_move(move)
         if not result.legal:
             return {"ok": True, "legal": False, "reason": result.reason}
@@ -248,7 +340,19 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "turn": ctx.session.turn,
         }
 
-    def undo(plies: int = 1) -> dict[str, Any]:
+    @registry.tool()
+    def undo(
+        plies: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=UNDO_PLIES_MAX,
+                description="How many half-moves to take back.",
+            ),
+        ] = 1,
+    ) -> dict[str, Any]:
+        """Take back the last N half-moves (plies). Use plies=2 to undo both
+        the player's move and the engine's reply."""
         result = ctx.session.undo(plies)
         if not result.ok:
             return {"ok": False, "error": result.reason}
@@ -259,11 +363,16 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "turn": ctx.session.turn,
         }
 
+    @registry.tool()
     def new_game() -> dict[str, Any]:
+        "Reset to the starting position and begin a new game."
         ctx.session.new_game()
         return {"ok": True, "fen": ctx.session.fen(), "turn": ctx.session.turn}
 
-    def resign(color: str | None = None) -> dict[str, Any]:
+    @registry.tool()
+    def resign(color: Literal["white", "black"] | None = None) -> dict[str, Any]:
+        """Resign the game. Defaults to the side to move; pass a color to
+        resign for that side."""
         outcome = ctx.session.resign(color)
         return {
             "ok": True,
@@ -274,10 +383,16 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             },
         }
 
+    @registry.tool()
     def export_pgn() -> dict[str, Any]:
+        "Export the game so far as PGN."
         return {"ok": True, "pgn": ctx.session.export_pgn()}
 
-    def save_game(name: str = "autosave") -> dict[str, Any]:
+    @registry.tool()
+    def save_game(
+        name: Annotated[str, Field(pattern=SAVE_NAME_PATTERN)] = "autosave",
+    ) -> dict[str, Any]:
+        "Save the current game under a name (default 'autosave')."
         # The transcript rides in the same file under a key GameSession
         # ignores, so game truth and conversation stay in one save and old
         # saves (no transcript key) remain loadable.
@@ -287,7 +402,11 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         path.write_text(json.dumps(data, indent=2))
         return {"ok": True, "name": name}
 
-    def resume_game(name: str = "autosave") -> dict[str, Any]:
+    @registry.tool()
+    def resume_game(
+        name: Annotated[str, Field(pattern=SAVE_NAME_PATTERN)] = "autosave",
+    ) -> dict[str, Any]:
+        "Resume a previously saved game by name (default 'autosave')."
         path = _save_path(ctx, name)
         if not path.exists():
             raise ValueError(f"no saved game named {name!r}")
@@ -330,288 +449,58 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             ctx.settings.skill_level = None
         return {"ok": True, "tier": tier, "skill_level": skill_level, "elo": elo}
 
-    def set_verbosity(verbosity: str) -> dict[str, Any]:
+    # Exactly-one-of tier/skill_level/elo is a JSON-Schema `oneOf`, which a
+    # plain signature can't express — the documented `parameters=` escape
+    # hatch. The dynamic description (strength bounds from engine constants)
+    # is likewise not a constant docstring, so it's set here.
+    set_difficulty.__doc__ = (
+        "Set engine strength: pass exactly one of tier (named level: "
+        "beginner ~500, casual ~1000, intermediate ~1500, advanced "
+        f"~2000, maximum = full strength), skill_level ({SKILL_MIN}-"
+        f"{SKILL_MAX}), or elo ({ELO_MIN}-{ELO_MAX}). Prefer tier "
+        "unless the user asks for a specific number."
+    )
+    registry.tool(
+        parameters={
+            "type": "object",
+            "properties": {
+                "tier": {"type": "string", "enum": list(DIFFICULTY_TIERS)},
+                "skill_level": {
+                    "type": "integer",
+                    "minimum": SKILL_MIN,
+                    "maximum": SKILL_MAX,
+                },
+                "elo": {
+                    "type": "integer",
+                    "minimum": ELO_MIN,
+                    "maximum": ELO_MAX,
+                },
+            },
+            "oneOf": [
+                {"required": ["tier"]},
+                {"required": ["skill_level"]},
+                {"required": ["elo"]},
+            ],
+            "additionalProperties": False,
+        }
+    )(set_difficulty)
+
+    @registry.tool()
+    def set_verbosity(verbosity: Literal["low", "normal", "high"]) -> dict[str, Any]:
+        "How chatty the agent's commentary is."
         ctx.settings.verbosity = verbosity
         return {"ok": True, "verbosity": verbosity}
 
+    @registry.tool()
     def set_hints_mode(enabled: bool) -> dict[str, Any]:
+        "Turn move hints on or off."
         ctx.settings.hints_mode = enabled
         return {"ok": True, "hints_mode": enabled}
 
+    @registry.tool()
     def set_voice_output(enabled: bool) -> dict[str, Any]:
+        "Turn spoken (TTS) output on or off."
         ctx.settings.voice_output = enabled
         return {"ok": True, "voice_output": enabled}
 
-    registry.register(
-        Tool(
-            name="get_board_state",
-            description=(
-                "Current position: FEN, side to move, whether the game is "
-                "over, and the outcome if it is."
-            ),
-            parameters=_no_args_schema(),
-            handler=get_board_state,
-        )
-    )
-    registry.register(
-        Tool(
-            name="get_legal_moves",
-            description="All legal moves in the current position, in SAN.",
-            parameters=_no_args_schema(),
-            handler=get_legal_moves,
-        )
-    )
-    registry.register(
-        Tool(
-            name="get_move_history",
-            description="Moves played so far, in SAN, in order.",
-            parameters=_no_args_schema(),
-            handler=get_move_history,
-        )
-    )
-    registry.register(
-        Tool(
-            name="get_captured_pieces",
-            description=(
-                "Piece symbols each color has captured so far, in capture order."
-            ),
-            parameters=_no_args_schema(),
-            handler=get_captured_pieces,
-        )
-    )
-    registry.register(
-        Tool(
-            name="evaluate_position",
-            description=(
-                "Stockfish evaluation of the current position from White's "
-                "point of view: centipawns, or mate-in-N."
-            ),
-            parameters=_no_args_schema(),
-            handler=evaluate_position,
-        )
-    )
-    registry.register(
-        Tool(
-            name="get_best_moves",
-            description=(
-                "Top n candidate moves from Stockfish (MultiPV), best first, "
-                "with SAN, UCI, and White-POV scores."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "n": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": GET_BEST_MOVES_MAX,
-                        "description": "How many candidate moves to return.",
-                    }
-                },
-                "additionalProperties": False,
-            },
-            handler=get_best_moves,
-        )
-    )
-    registry.register(
-        Tool(
-            name="analyze_last_move",
-            description=(
-                "Analyze the last move played: how it compares to Stockfish's "
-                "best from the same position — centipawn loss, verdict "
-                "(good/inaccuracy/mistake/blunder), and what was best. Use "
-                "this to answer 'what was my mistake?' and to explain moves."
-            ),
-            parameters=_no_args_schema(),
-            handler=analyze_last_move_tool,
-        )
-    )
-    registry.register(
-        Tool(
-            name="review_game",
-            description=(
-                "Review the whole game so far: every move classified "
-                "(good/inaccuracy/mistake/blunder) with centipawn loss and "
-                "the best alternative, plus per-color accuracy scores."
-            ),
-            parameters=_no_args_schema(),
-            handler=review_game_tool,
-        )
-    )
-    registry.register(
-        Tool(
-            name="make_move",
-            description=(
-                "Submit the player's move in SAN (e.g. 'Nf3') or UCI (e.g. "
-                "'g1f3'). The engine decides legality: the result says legal "
-                "or illegal. When the move is legal, the engine opponent "
-                "replies immediately — the result's engine_move is its answer."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "move": {"type": "string", "description": "SAN or UCI move."}
-                },
-                "required": ["move"],
-                "additionalProperties": False,
-            },
-            handler=make_move,
-        )
-    )
-    registry.register(
-        Tool(
-            name="undo",
-            description=(
-                "Take back the last N half-moves (plies). Use plies=2 to "
-                "undo both the player's move and the engine's reply."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "plies": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": UNDO_PLIES_MAX,
-                        "description": "How many half-moves to take back.",
-                    }
-                },
-                "additionalProperties": False,
-            },
-            handler=undo,
-        )
-    )
-    registry.register(
-        Tool(
-            name="new_game",
-            description="Reset to the starting position and begin a new game.",
-            parameters=_no_args_schema(),
-            handler=new_game,
-        )
-    )
-    registry.register(
-        Tool(
-            name="resign",
-            description=(
-                "Resign the game. Defaults to the side to move; pass a color "
-                "to resign for that side."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {"color": {"type": "string", "enum": ["white", "black"]}},
-                "additionalProperties": False,
-            },
-            handler=resign,
-        )
-    )
-    registry.register(
-        Tool(
-            name="save_game",
-            description="Save the current game under a name (default 'autosave').",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "pattern": SAVE_NAME_PATTERN}
-                },
-                "additionalProperties": False,
-            },
-            handler=save_game,
-        )
-    )
-    registry.register(
-        Tool(
-            name="resume_game",
-            description="Resume a previously saved game by name (default 'autosave').",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "pattern": SAVE_NAME_PATTERN}
-                },
-                "additionalProperties": False,
-            },
-            handler=resume_game,
-        )
-    )
-    registry.register(
-        Tool(
-            name="export_pgn",
-            description="Export the game so far as PGN.",
-            parameters=_no_args_schema(),
-            handler=export_pgn,
-        )
-    )
-    registry.register(
-        Tool(
-            name="set_difficulty",
-            description=(
-                "Set engine strength: pass exactly one of tier (named level: "
-                "beginner ~500, casual ~1000, intermediate ~1500, advanced "
-                f"~2000, maximum = full strength), skill_level ({SKILL_MIN}-"
-                f"{SKILL_MAX}), or elo ({ELO_MIN}-{ELO_MAX}). Prefer tier "
-                "unless the user asks for a specific number."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "tier": {"type": "string", "enum": list(DIFFICULTY_TIERS)},
-                    "skill_level": {
-                        "type": "integer",
-                        "minimum": SKILL_MIN,
-                        "maximum": SKILL_MAX,
-                    },
-                    "elo": {
-                        "type": "integer",
-                        "minimum": ELO_MIN,
-                        "maximum": ELO_MAX,
-                    },
-                },
-                "oneOf": [
-                    {"required": ["tier"]},
-                    {"required": ["skill_level"]},
-                    {"required": ["elo"]},
-                ],
-                "additionalProperties": False,
-            },
-            handler=set_difficulty,
-        )
-    )
-    registry.register(
-        Tool(
-            name="set_verbosity",
-            description="How chatty the agent's commentary is.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "verbosity": {"type": "string", "enum": list(VERBOSITY_LEVELS)}
-                },
-                "required": ["verbosity"],
-                "additionalProperties": False,
-            },
-            handler=set_verbosity,
-        )
-    )
-    registry.register(
-        Tool(
-            name="set_hints_mode",
-            description="Turn move hints on or off.",
-            parameters={
-                "type": "object",
-                "properties": {"enabled": {"type": "boolean"}},
-                "required": ["enabled"],
-                "additionalProperties": False,
-            },
-            handler=set_hints_mode,
-        )
-    )
-    registry.register(
-        Tool(
-            name="set_voice_output",
-            description="Turn spoken (TTS) output on or off.",
-            parameters={
-                "type": "object",
-                "properties": {"enabled": {"type": "boolean"}},
-                "required": ["enabled"],
-                "additionalProperties": False,
-            },
-            handler=set_voice_output,
-        )
-    )
     return registry
