@@ -75,9 +75,8 @@ No manual testing has happened yet — everything below has only been exercised 
 
 ## Agent-standard migration (Phase 2 epic)
 
-Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-3 (env-var rename, layered personality, tool registry) are done; remaining slices, low-risk first:
+Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-4 (env-var rename, layered personality, tool registry, MCP server) are done; remaining slices, low-risk first:
 
-- [ ] **MCP server + `.mcp.json`**: stand up an MCP server off the tool registry, giving chess Claude Code tooling parity with PCC.
 - [ ] **httpx `ChatProvider`**: replace the OpenAI SDK client with the httpx `ChatProvider`-style provider, keeping the `Brain` two-phase interface on top; fake-client tests move to the wire shape.
 - [ ] **Conversation persistence + delegate REST endpoint**: implement the §5 contract — a conversation wraps the single active game session (transcript + tool trajectory persisted); fast-path move parsing keeps working inside delegate calls.
 - [ ] **`agent:` block in `app.yaml`**.

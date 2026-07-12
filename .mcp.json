@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "chess": {
+      "command": "bash",
+      "args": [
+        "-c",
+        "cd backend && exec .venv/bin/python -m chessapp.mcp_server"
+      ]
+    }
+  }
+}
