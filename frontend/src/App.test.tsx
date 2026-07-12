@@ -64,28 +64,36 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('App layout switch', () => {
-  it('shows the stacked mobile layout on narrow viewports', async () => {
-    stubMatchMedia(true)
+describe('App layout', () => {
+  // One layout at every viewport: the stacked layout (agent bubble, board,
+  // move strip, bottom bar) is the app — there is no separate desktop tree.
+  it.each([
+    ['narrow viewports', true],
+    ['wide viewports', false],
+  ])('shows the single stacked layout on %s', async (_label, matches) => {
+    stubMatchMedia(matches)
     render(<App />)
     await waitFor(() =>
       expect(screen.getByRole('navigation', { name: /game controls/i })).toBeInTheDocument(),
     )
-    // Bottom bar replaces the desktop side panels.
     expect(screen.getByRole('button', { name: /hint/i })).toBeInTheDocument()
-    expect(screen.queryByRole('complementary')).not.toBeInTheDocument()
     // The agent bubble stages the commentary next to the spider mascot.
     expect(document.querySelector('.spider-icon')).toBeInTheDocument()
     expect(document.querySelector('.move-strip')).toBeInTheDocument()
+    // No desktop-only side panels anywhere.
+    expect(screen.queryByRole('complementary')).not.toBeInTheDocument()
   })
 
-  it('keeps the desktop layout on wide viewports', async () => {
+  it('opens the options sheet from the bottom bar', async () => {
     stubMatchMedia(false)
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('complementary')).toBeInTheDocument())
-    // No mobile chrome on desktop.
-    expect(screen.queryByRole('navigation', { name: /game controls/i })).not.toBeInTheDocument()
-    expect(document.querySelector('.spider-icon')).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByRole('navigation', { name: /game controls/i })).toBeInTheDocument(),
+    )
+    screen.getByRole('button', { name: /options/i }).click()
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: /options/i })).toBeInTheDocument(),
+    )
     expect(screen.getByRole('button', { name: /new game/i })).toBeInTheDocument()
   })
 })

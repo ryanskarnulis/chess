@@ -14,10 +14,10 @@ export interface OptionsSheetProps {
 }
 
 /**
- * Bottom sheet behind the mobile Options button: the lifecycle and settings
+ * Bottom sheet behind the Options button: the lifecycle and settings
  * controls that don't earn a spot in the bar (new game, difficulty, voice).
- * Same server-confirmed semantics as GameControls — the select never claims
- * a strength the engine isn't playing at.
+ * The difficulty select is server-confirmed — it never claims a strength
+ * the engine isn't playing at.
  */
 export function OptionsSheet({
   open,
