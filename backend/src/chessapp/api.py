@@ -17,6 +17,8 @@ object on the context.
 """
 
 import mimetypes
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,7 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from chessapp.agent_api import ConversationStore, build_agent_router
 from chessapp.analysis import review_game
 from chessapp.brain import Brain
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
@@ -179,6 +182,25 @@ def _retry_command(failures: list[dict[str, Any]], session: GameSession) -> str:
     return command
 
 
+@dataclass(frozen=True)
+class CommandOutcome:
+    """One command-pipeline run, shared by `/api/command` and the delegate
+    messages endpoint. `tool_results` is the `{"name", "result"}` list the
+    reaction saw and `/api/command` returns verbatim; `tool_args` holds each
+    dispatched call's arguments in the same order — the delegate endpoint needs
+    them to build its wire `tool_calls`, but `/api/command` never exposes them.
+    `stop_reason` is `completed`, or `correction_limit` when the domain-retry
+    loop exhausted its rounds with failures still unresolved (chess never emits
+    `max_iterations` — the two-phase brain has no iteration loop)."""
+
+    commentary: str
+    tool_results: list[dict[str, Any]]
+    tool_args: list[dict[str, Any]]
+    state: dict[str, Any]
+    changed: bool
+    stop_reason: str
+
+
 class StateBroadcaster:
     """Fans the state document out to every connected board UI.
 
@@ -214,6 +236,7 @@ def create_app(
     app = FastAPI(title="chessapp")
     broadcaster = StateBroadcaster()
     registry = build_registry(ctx)
+    store = ConversationStore()
 
     async def _broadcast_state() -> None:
         await broadcaster.broadcast(_state_dict(ctx.session))
@@ -319,10 +342,12 @@ def create_app(
             "elo": ctx.settings.elo,
         }
 
-    @app.post("/api/command")
-    async def command(request: CommandRequest) -> dict[str, Any]:
+    async def _run_command(
+        text: str, transcript: Sequence[dict[str, str]]
+    ) -> CommandOutcome:
         """The single pipeline: user string → brain → tool call(s) → engine
-        executes → agent reacts from the *new* state.
+        executes → agent reacts from the *new* state. Shared by `/api/command`
+        and the delegate messages endpoint against the one game session.
 
         Phase one (`get_agent_response`) turns the utterance into tool calls;
         the validated registry runs them, so brain mistakes (unknown tools,
@@ -337,10 +362,13 @@ def create_app(
         to react to, so the direct answer stands; a retry round that answers
         in words instead of tools is treated the same way.
 
-        Both phases see the transcript — prior turns' commands plus the
-        commentary the user actually saw (a bounded window, final answers
-        only) — and the turn is recorded once its commentary is settled, so
-        the agent can follow references to earlier conversation.
+        Both phases see the `transcript` the caller supplies (prior turns'
+        commands plus the commentary that was shown, a bounded window, final
+        answers only), so the agent can follow references to earlier turns —
+        but this is transcript-agnostic: it never reads or records either the
+        web panel's `ctx.transcript` or a delegate conversation, leaving that
+        to the caller. The board broadcast fires here on any board change, so
+        a conductor-played move shows up live on the web board too.
 
         The fast path (the seam BRIEF reserves): an utterance that is exactly
         one unambiguous legal move skips phase one and goes straight to
@@ -351,32 +379,39 @@ def create_app(
         the brain unchanged. No retry loop here: the parse matched a
         currently legal move, so the dispatch cannot be rejected.
         """
-        if brain is None:
-            raise HTTPException(status_code=503, detail="agent unavailable: no brain")
+        assert brain is not None  # both callers guard; documents the invariant
         # The player is whoever's turn it is when the command arrives (the
         # engine replies inside make_move, so it is never the engine's turn
         # here). Captured once so react's view still names the right color
         # when the player's own move flips the turn or ends the game.
         player_color = ctx.session.turn
         before = _agent_state_dict(ctx.session, player_color)
-        transcript = ctx.transcript.window()
         direct_reply: str | None = None
         pre_action_text = ""
-        fast_san = parse_move(request.text, ctx.session.fen())
+        # `tool_results` is the {"name", "result"} list react and the UI see;
+        # `tool_args` mirrors it with each call's arguments, for the delegate
+        # wire — kept parallel so the UI-facing shape stays untouched.
+        tool_results: list[dict[str, Any]] = []
+        tool_args: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        fast_san = parse_move(text, ctx.session.fen())
         if fast_san is not None:
-            tool_results = [
-                {
-                    "name": "make_move",
-                    "result": registry.dispatch("make_move", {"move": fast_san}),
-                }
-            ]
+            args = {"move": fast_san}
+            tool_results.append(
+                {"name": "make_move", "result": registry.dispatch("make_move", args)}
+            )
+            tool_args.append(args)
         else:
-            response = brain.get_agent_response(before, request.text, transcript)
+            response = brain.get_agent_response(before, text, transcript)
             pre_action_text = response.text
-            tool_results = [
-                {"name": call.name, "result": registry.dispatch(call.name, call.args)}
-                for call in response.tool_calls
-            ]
+            for call in response.tool_calls:
+                tool_results.append(
+                    {
+                        "name": call.name,
+                        "result": registry.dispatch(call.name, call.args),
+                    }
+                )
+                tool_args.append(call.args)
             failures = _failed_calls(tool_results)
             for _ in range(MAX_TOOL_RETRY_ROUNDS):
                 if not failures:
@@ -392,14 +427,12 @@ def create_app(
                     # user-facing reply; reacting to the failure would bury it.
                     direct_reply = retry.text
                     break
-                round_results = [
-                    {
-                        "name": call.name,
-                        "result": registry.dispatch(call.name, call.args),
-                    }
-                    for call in retry.tool_calls
-                ]
-                tool_results.extend(round_results)
+                round_results = []
+                for call in retry.tool_calls:
+                    result = registry.dispatch(call.name, call.args)
+                    round_results.append({"name": call.name, "result": result})
+                    tool_results.append({"name": call.name, "result": result})
+                    tool_args.append(call.args)
                 failures = _failed_calls(round_results)
         agent_state = _agent_state_dict(ctx.session, player_color)
         if direct_reply is not None:
@@ -410,25 +443,56 @@ def create_app(
             commentary = brain.react(agent_state, tool_results, transcript)
         else:
             commentary = pre_action_text
-        # Record on the context, not a captured reference: resume_game may
-        # have just swapped in the saved game's transcript, and this turn
-        # belongs to that thread.
-        ctx.transcript.record(request.text, commentary)
+        # Failures still unresolved after the retry budget → correction_limit;
+        # a wordy concession (direct_reply) is a normal completion.
+        stop_reason = (
+            "correction_limit" if direct_reply is None and failures else "completed"
+        )
         # The UI still gets its own full document; a mutation shows up in the
         # agent view too (any board change moves the fen), so that comparison
         # decides the broadcast.
         state = _state_dict(ctx.session)
-        if agent_state != before:
+        changed = agent_state != before
+        if changed:
             await broadcaster.broadcast(state)
+        return CommandOutcome(
+            commentary=commentary,
+            tool_results=tool_results,
+            tool_args=tool_args,
+            state=state,
+            changed=changed,
+            stop_reason=stop_reason,
+        )
+
+    @app.post("/api/command")
+    async def command(request: CommandRequest) -> dict[str, Any]:
+        """User string → brain → tool call(s) → new state, for the web panel.
+        A thin wrapper over `_run_command` that supplies the panel's own
+        transcript window and records the settled turn back onto it."""
+        if brain is None:
+            raise HTTPException(status_code=503, detail="agent unavailable: no brain")
+        transcript = ctx.transcript.window()
+        outcome = await _run_command(request.text, transcript)
+        # Record on the context, not a captured reference: resume_game may
+        # have just swapped in the saved game's transcript, and this turn
+        # belongs to that thread.
+        ctx.transcript.record(request.text, outcome.commentary)
         return {
-            "commentary": commentary,
-            "tool_results": tool_results,
-            "state": state,
+            "commentary": outcome.commentary,
+            "tool_results": outcome.tool_results,
+            "state": outcome.state,
             # Whether the client should voice the commentary (the user's
             # voice_output setting, agent-togglable via set_voice_output).
             # The server owns the decision; the client owns the playback.
             "speak": ctx.settings.voice_output,
         }
+
+    app.include_router(
+        build_agent_router(
+            store=store,
+            run_command=_run_command if brain is not None else None,
+        )
+    )
 
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
