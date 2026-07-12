@@ -8,7 +8,7 @@
 # Bundles Stockfish so a full deterministic game works with the LLM turned off:
 # the engine is a calculation tool driven in-process via python-chess UCI, not a
 # separate container. The llama-server "brain" *is* a separate container, reached
-# over the network (CHESSAPP_LLAMA_URL) — so nothing here needs the model.
+# over the network (LLAMACPP_BASE_URL) — so nothing here needs the model.
 
 # --- frontend stage: build the static UI bundle --------------------------------
 FROM node:24-slim AS frontend

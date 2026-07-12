@@ -35,8 +35,8 @@ from chessapp.voice import (
     create_speech_client,
 )
 
-DEFAULT_LLAMA_BASE_URL = "http://localhost:8080/v1"
-DEFAULT_MODEL = "gemma"
+DEFAULT_LLAMA_BASE_URL = "http://127.0.0.1:8200/v1"
+DEFAULT_MODEL = "gemma-4-12b"
 
 
 def build_app(
@@ -109,8 +109,8 @@ def build_app_from_env() -> FastAPI:
     save_dir_env = os.environ.get("CHESSAPP_SAVE_DIR")
     static_dir_env = os.environ.get("CHESSAPP_STATIC_DIR")
     return build_app(
-        llama_base_url=os.environ.get("CHESSAPP_LLAMA_URL", DEFAULT_LLAMA_BASE_URL),
-        model=os.environ.get("CHESSAPP_MODEL", DEFAULT_MODEL),
+        llama_base_url=os.environ.get("LLAMACPP_BASE_URL", DEFAULT_LLAMA_BASE_URL),
+        model=os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL),
         engine=_engine_from_env(),
         save_dir=Path(save_dir_env) if save_dir_env else None,
         speech=_speech_from_env(),

@@ -73,6 +73,18 @@ No manual testing has happened yet — everything below has only been exercised 
 
 - [ ] If repo goes public or account upgrades to Pro: enable branch protection (require `lint` + `test` checks) and native auto-merge
 
+## Agent-standard migration (Phase 2 epic)
+
+Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slice 1 (env-var rename) is done; remaining slices, low-risk first:
+
+- [ ] **Layered personality**: graduate `_GLITCH` into the canonical global personality file (Phase 0); chess vendors it back, keeps `_BASE` as its app base prompt, and moves chess-specific Glitch material into an app-flavor layer.
+- [ ] **Tool registry decorator migration**: migrate the hand-written JSON-schema `Tool` dataclasses to the decorator/FastMCP pattern; `definitions()` output stays schema-equivalent before/after.
+- [ ] **MCP server + `.mcp.json`**: stand up an MCP server off the tool registry, giving chess Claude Code tooling parity with PCC.
+- [ ] **httpx `ChatProvider`**: replace the OpenAI SDK client with the httpx `ChatProvider`-style provider, keeping the `Brain` two-phase interface on top; fake-client tests move to the wire shape.
+- [ ] **Conversation persistence + delegate REST endpoint**: implement the §5 contract — a conversation wraps the single active game session (transcript + tool trajectory persisted); fast-path move parsing keeps working inside delegate calls.
+- [ ] **`agent:` block in `app.yaml`**.
+- [ ] **Eval harness**: golden command→tool-call tasks (mirroring PCC's), gating future prompt/model changes.
+
 ## Backlog (no near-term timeline)
 
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
