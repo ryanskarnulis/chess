@@ -12,10 +12,9 @@ dependencies = [
     "mcp>=1.20.0",
     "fastapi>=0.115",
     # The LLM brain speaks the OpenAI chat wire to llama-server over plain
-    # httpx (chessapp.provider) — no SDK. `openai` stays a runtime dep for
-    # voice.py only (Speaches STT/TTS over the OpenAI audio API).
+    # httpx (chessapp.provider), and voice speaks the OpenAI audio wire the
+    # same way (chessapp.voice, per agent-standard/voice.md) — no SDK.
     "httpx>=0.27",
-    "openai>=1.40",
     "python-multipart>=0.0.9",
     "uvicorn>=0.30",
     # uvicorn's WebSocket support needs a ws library it doesn't require by

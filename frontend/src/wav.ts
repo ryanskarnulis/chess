@@ -1,3 +1,4 @@
+// canonical voice module (chess) — other apps vendor verbatim copies; see agent-standard/voice.md
 // The VAD emits raw Float32 samples (16 kHz mono, -1..1); the transcribe
 // endpoint wants a real audio container. 16-bit PCM WAV is the simplest
 // format every STT backend accepts.

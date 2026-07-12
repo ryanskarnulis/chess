@@ -44,7 +44,7 @@ if strict privacy is required").
   API — still local.
 - If 2.5s ever feels slow: `Systran/faster-distil-whisper-small.en` or
   `tiny.en` (roughly 2–4× faster, English-only) is a one-line
-  `CHESSAPP_STT_MODEL` change; or give Speaches the GPU tag on a box with
+  `STT_MODEL` change; or give Speaches the GPU tag on a box with
   spare VRAM. Both stay local; neither touches architecture.
 
 Web Speech *synthesis* (TTS) was considered too: it is on-device in most

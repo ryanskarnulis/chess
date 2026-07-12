@@ -6,9 +6,8 @@ The backlog, in priority order. One task = one vertical slice = one branch = one
 
 The next three slices, in order. This is a framing block over the sections below, not a rewrite — every item stays tracked in its own section:
 
-1. **[S] Ship Glitch's voice** — pick the final TTS voice by ear from the #97 audition artifact and resolve the swearing watch-item; closes the current-focus trio. Done when the winner is set as `CHESSAPP_TTS_VOICE`.
+1. **[S] Ship Glitch's voice** — pick the final TTS voice by ear from the #97 audition artifact and resolve the swearing watch-item; closes the current-focus trio. Done when the winner is set as `TTS_VOICE`.
 2. **[M] Structural fix for the destructive-op confirm gate** — a deterministic pipeline-owned "pending destructive op" state (bare "new game" → confirmation question → "yes" → `new_game`). Pre-step: measure `resign`'s adherence rate. Done when the `destructive_confirm` xfail flips to a hard assert.
-3. **[S] `voice.py` off the OpenAI SDK onto httpx** — drops the `openai` runtime dep entirely (promoted from the Backlog section).
 
 Stretch: start the Phase-4 manual walkthrough, prioritizing the #114–#116 UI items (single layout, random color + side switch, post-game screen) and Android Chrome hands-free.
 
@@ -17,7 +16,7 @@ Stretch: start the Phase-4 manual walkthrough, prioritizing the #114–#116 UI i
 The 2026-07-11 direction: one hand-dialed personality — **Glitch**, a gen-z Jarvis (fully casual, low-key troll, help stays real, swearing allowed) — instead of the selectable roster, plus a designed custom TTS voice ("laid-back young American, audible smirk") instead of stock Kokoro `af_heart`. Voice-option research (Kokoro blending / Chatterbox Turbo / Qwen3-TTS / NeuTTS Air, with the 12 GB VRAM constraint) is in Claude's project memory.
 
 - [ ] **Watch — does Glitch actually swear?** Zero swears in the first two live games despite escalated authorization (#95). If real games stay PG, add a few-shot exchange to the tone block (one blunder → one sweary roast) — the next and probably last lever short of accepting PG-13.
-- [ ] **Pick Glitch's final voice by ear**: listen through the audition artifact (13 samples + voice strings; link in the #97 PR conversation), set the winner as `CHESSAPP_TTS_VOICE` in docker-compose.yml, then `docker compose up -d --build app` (rebuild also picks up the Glitch prompt). Default meanwhile: `am_fenrir(2)+am_michael(1)`.
+- [ ] **Pick Glitch's final voice by ear**: listen through the audition artifact (13 samples + voice strings; link in the #97 PR conversation), set the winner as `TTS_VOICE` in docker-compose.yml, then `docker compose up -d --build app` (rebuild also picks up the Glitch prompt). Default meanwhile: `am_fenrir(2)+am_michael(1)`.
 - [ ] **Spike — Qwen3-TTS voice design** (only if no Kokoro blend has enough smirk): trim shared llama-swap context to free ~2 GB VRAM, serve via vLLM-Omni, design the voice from the prose spec
 
 ## Agent reliability — finish a game by voice
@@ -89,6 +88,5 @@ No systematic walkthrough has happened yet — most items below have only been e
 
 ## Backlog (no near-term timeline)
 
-- [ ] **`voice.py` still rides the OpenAI SDK** for Speaches STT/TTS (the OpenAI audio API); the LLM brain moved to plain httpx in Phase 2 slice 5 but voice was out of scope. Could move to httpx someday to drop the `openai` runtime dep entirely.
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
 - [ ] Physical board (Chessnut Move — blocked on hardware purchase): verify motorized actuation is programmatically controllable **before any design work**; until then, `control_physical_board` tool seam only
