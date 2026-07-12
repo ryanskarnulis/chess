@@ -211,6 +211,15 @@ export async function fetchReview(): Promise<GameReview | null> {
   return (await res.json()) as GameReview
 }
 
+/** Fetch the game so far as PGN, or null if the backend refused. Read-only —
+ * never touches board state. */
+export async function fetchPgn(): Promise<string | null> {
+  const res = await fetch('/api/game/pgn')
+  if (!res.ok) return null
+  const data = (await res.json()) as { pgn: string }
+  return data.pgn
+}
+
 /** URL of the backend's one-way state broadcast channel. */
 export function stateSocketUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'

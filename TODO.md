@@ -35,6 +35,8 @@ No manual testing has happened yet — everything below has only been exercised 
 - [ ] Special moves work end-to-end: castling (both sides), en passant, pawn promotion (incl. underpromotion)
 - [ ] Check, checkmate, stalemate, and draw conditions are detected and surfaced in the UI
 - [ ] Captured pieces display updates correctly
+- [ ] New game assigns a random side (board flips when playing black; engine opens); "Switch to …" offered until the first player move; undo takes back the full exchange and never the engine's lone opening move
+- [ ] One layout everywhere: the stacked (mobile-style) UI reads well on a desktop monitor too — column capped, bottom bar a centered cluster
 
 ### Text agent (tool boundary in real use)
 - [ ] Moves via free-form text ("knight to f3", "Nf3", "castle kingside") land as the intended move
@@ -52,8 +54,9 @@ No manual testing has happened yet — everything below has only been exercised 
 - [ ] Hints mode: hints appear when on, never when off
 - [ ] `evaluate_position` / "who's winning?" gives a coherent eval
 - [ ] Post-game `review_game`: move classifications and per-color accuracy look plausible against a known game
-- [ ] Review panel: after game over, "Review game" shows per-color accuracy, classification counts, and flagged moves with better alternatives; panel resets on new game
-- [ ] Review panel: "Review unavailable" (not a crash) when the engine is off, and the button allows a retry
+- [ ] Post-game screen: pops up at game over with the player-side verdict ("You won/lost", "Draw") and termination + result; Close leaves the final board inspectable and the status-line "Results" chip reopens it; everything resets on new game
+- [ ] Post-game screen: "Review game" shows per-color accuracy, classification counts, and flagged moves with better alternatives; a fetched review survives dismiss/reopen
+- [ ] Post-game screen: "Review unavailable" (not a crash) when the engine is off, and the button allows a retry; "Copy PGN" puts a loadable PGN on the clipboard
 - [ ] Analysis latency (thinking ON) is tolerable; whole-game review latency acceptable on a long game
 
 ### Personality & settings

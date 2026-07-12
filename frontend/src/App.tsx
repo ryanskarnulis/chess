@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AgentBubble } from './AgentBubble'
 import { Board } from './Board'
 import { BottomBar } from './BottomBar'
@@ -6,8 +6,8 @@ import { CapturedPieces } from './CapturedPieces'
 import { CommandBox } from './CommandBox'
 import { MoveStrip } from './MoveStrip'
 import { OptionsSheet } from './OptionsSheet'
+import { PostGameModal } from './PostGameModal'
 import { PromotionPicker } from './PromotionPicker'
-import { ReviewPanel } from './ReviewPanel'
 import { useGame } from './useGame'
 import './App.css'
 
@@ -39,6 +39,13 @@ function App() {
     requestHint,
   } = useGame()
   const [sheetOpen, setSheetOpen] = useState(false)
+  // The post-game screen shows whenever the game is over and the player
+  // hasn't waved it away; a new game (game_over back to false) re-arms it.
+  const [resultsDismissed, setResultsDismissed] = useState(false)
+  const gameOver = state?.game_over ?? false
+  useEffect(() => {
+    if (!gameOver) setResultsDismissed(false)
+  }, [gameOver])
 
   // The player "has moved" once history holds more than the engine's own
   // opening (one ply when the player has black, none otherwise). Until then
@@ -94,6 +101,15 @@ function App() {
             : reviewing
               ? 'Reviewing — press ▶ to return'
               : `${state.turn} to move`}
+          {state.game_over && (
+            <button
+              type="button"
+              className="status-results"
+              onClick={() => setResultsDismissed(false)}
+            >
+              Results
+            </button>
+          )}
         </p>
       )}
       {state && !state.game_over && !playerMoved && (
@@ -115,8 +131,18 @@ function App() {
             canBack={state.history.length > 0 && viewPly !== 0}
             canForward={reviewing}
           />
-          {/* Only after game over; unmounting on a new game resets it. */}
-          {state.game_over && <ReviewPanel />}
+          {/* Mounted for the whole post-game (hidden while dismissed) so a
+              fetched review survives reopening; a new game unmounts it and
+              resets the review. */}
+          {state.game_over && state.outcome && (
+            <PostGameModal
+              outcome={state.outcome}
+              playerColor={state.player_color}
+              open={!resultsDismissed}
+              onNewGame={newGame}
+              onClose={() => setResultsDismissed(true)}
+            />
+          )}
           <BottomBar
             onOptions={() => setSheetOpen(true)}
             onResign={resign}

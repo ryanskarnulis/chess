@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { GameState } from './api'
@@ -149,5 +149,41 @@ describe('player color', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /undo/i })).toBeDisabled(),
     )
+  })
+})
+
+describe('post-game screen', () => {
+  const overState = () =>
+    state({
+      game_over: true,
+      outcome: { termination: 'checkmate', winner: 'white', result: '1-0' },
+      history: ['e4', 'f6', 'd4', 'g5', 'Qh5#'],
+    })
+
+  it('pops up when the game is over', async () => {
+    served = overState()
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: /game over/i })).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/you won/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /review game/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /new game/i })).toBeInTheDocument()
+  })
+
+  it('dismisses to the final board and reopens from the results chip', async () => {
+    served = overState()
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: /game over/i })).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    // Hidden, not unmounted (a fetched review must survive reopening) —
+    // but gone from the accessibility tree either way.
+    expect(screen.queryByRole('dialog', { name: /game over/i })).not.toBeInTheDocument()
+    // Review lives in the modal now — nothing visible under the board.
+    expect(document.querySelector('.review-panel')).not.toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /results/i }))
+    expect(screen.getByRole('dialog', { name: /game over/i })).toBeInTheDocument()
   })
 })
