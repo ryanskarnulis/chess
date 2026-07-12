@@ -17,6 +17,7 @@ object on the context.
 """
 
 import mimetypes
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,8 +54,18 @@ class VoiceOutputRequest(BaseModel):
     enabled: bool
 
 
+class NewGameRequest(BaseModel):
+    """`color` is the side the player takes; `random` (the default) rolls."""
+
+    color: str = Field(default="random", pattern="^(white|black|random)$")
+
+
 class UndoRequest(BaseModel):
-    plies: int = Field(default=1, ge=1, le=UNDO_PLIES_MAX)
+    """None means "the player's takeback": vs the engine that's the full
+    exchange (their move plus the engine's reply), engine-free one ply —
+    the endpoint decides from the live context."""
+
+    plies: int | None = Field(default=None, ge=1, le=UNDO_PLIES_MAX)
 
 
 class ResignRequest(BaseModel):
@@ -93,6 +104,7 @@ def _state_dict(session: GameSession) -> dict[str, Any]:
     return {
         "fen": session.fen(),
         "turn": session.turn,
+        "player_color": session.player_color,
         "game_over": session.is_game_over(),
         "outcome": _outcome_dict(session),
         "history": session.move_history(),
@@ -274,14 +286,32 @@ def create_app(
         }
 
     @app.post("/api/game/new")
-    async def new_game() -> dict[str, Any]:
-        ctx.session.new_game()
+    async def new_game(request: NewGameRequest | None = None) -> dict[str, Any]:
+        color = request.color if request is not None else "random"
+        if color == "random":
+            color = random.choice(["white", "black"])
+        ctx.session.new_game(player_color=color)
+        # The engine owns the other side: when the player takes black it
+        # makes the opening move right away, same as its reply inside
+        # /api/game/move.
+        if color == "black" and ctx.engine is not None:
+            ctx.engine.play_move(ctx.session)
         await _broadcast_state()
         return {"state": _state_dict(ctx.session)}
 
     @app.post("/api/game/undo")
     async def undo(request: UndoRequest) -> dict[str, Any]:
-        result = ctx.session.undo(request.plies)
+        plies = request.plies
+        if plies is None:
+            # The player's takeback: vs the engine it is always the player's
+            # turn after an exchange, so pop their move and the engine's
+            # reply; when the game ended on the player's own move (no reply)
+            # or there is no engine, one ply. Never the engine's lone
+            # opening — that is not the player's to take back (409 below).
+            session = ctx.session
+            vs_engine = ctx.engine is not None
+            plies = 2 if vs_engine and session.turn == session.player_color else 1
+        result = ctx.session.undo(plies)
         if not result.ok:
             raise HTTPException(status_code=409, detail=result.reason)
         await _broadcast_state()

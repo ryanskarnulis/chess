@@ -13,6 +13,8 @@ export interface BoardProps {
   fen: string
   /** Side to move — only that colour's pieces are draggable. */
   turnColor?: 'white' | 'black'
+  /** Which side sits at the bottom of the board (the player's side). */
+  orientation?: 'white' | 'black'
   /** Legal destinations by origin square, from the backend (`{ e2: ['e3','e4'] }`). */
   dests?: Record<string, string[]>
   /** Fired when the user completes a move; args are origin/dest squares. */
@@ -47,6 +49,7 @@ function toDests(dests?: Record<string, string[]>): Map<Key, Key[]> {
 export function Board({
   fen,
   turnColor,
+  orientation = 'white',
   dests,
   onMove,
   viewOnly = false,
@@ -92,6 +95,7 @@ export function Board({
       fen,
       viewOnly,
       turnColor,
+      orientation,
       movable: {
         free: false,
         color: viewOnly ? undefined : turnColor,
@@ -101,7 +105,7 @@ export function Board({
         },
       },
     })
-  }, [fen, viewOnly, turnColor, dests, revision])
+  }, [fen, viewOnly, turnColor, orientation, dests, revision])
 
   // Shapes are pushed through their own API call: `set` merges config, but
   // setAutoShapes replaces the drawn set, which is what a hint needs.

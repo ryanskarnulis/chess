@@ -326,3 +326,38 @@ def test_position_fens_from_custom_root():
     fens = session.position_fens()
     assert fens[0] == fen
     assert fens[-1] == session.fen()
+
+
+# --- player color ---------------------------------------------------------
+
+
+def test_player_color_defaults_to_white():
+    assert GameSession().player_color == "white"
+
+
+def test_session_can_start_with_a_player_color():
+    assert GameSession(player_color="black").player_color == "black"
+
+
+def test_session_rejects_invalid_player_color():
+    with pytest.raises(ValueError):
+        GameSession(player_color="green")
+
+
+def test_new_game_can_reassign_player_color():
+    session = GameSession()
+    session.new_game(player_color="black")
+    assert session.player_color == "black"
+
+
+def test_new_game_keeps_player_color_when_not_given():
+    session = GameSession(player_color="black")
+    session.submit_move("e4")
+    session.new_game()
+    assert session.player_color == "black"
+
+
+def test_new_game_rejects_invalid_player_color():
+    session = GameSession()
+    with pytest.raises(ValueError):
+        session.new_game(player_color="green")

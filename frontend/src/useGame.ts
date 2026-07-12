@@ -39,8 +39,9 @@ export interface UseGame {
   completePromotion: (piece: PromotionPiece) => Promise<void>
   /** Abandon the held promotion and snap the pawn back. */
   cancelPromotion: () => void
-  /** Start a fresh game from the initial position. */
-  newGame: () => Promise<void>
+  /** Start a fresh game. `color` is the side the player takes; omitted,
+   * the backend rolls one at random. */
+  newGame: (color?: 'white' | 'black' | 'random') => Promise<void>
   /** Take back the last ply. No-op if there is nothing to undo. */
   undo: () => Promise<void>
   /** Resign the game (the side to move, unless the backend decides otherwise). */
@@ -190,13 +191,16 @@ export function useGame(): UseGame {
     setRevision((r) => r + 1)
   }, [])
 
-  const newGame = useCallback(async () => {
-    const next = await apiNewGame()
-    if (next) {
-      setMoveError(null)
-      apply(next)
-    }
-  }, [apply])
+  const newGame = useCallback(
+    async (color?: 'white' | 'black' | 'random') => {
+      const next = await apiNewGame(color)
+      if (next) {
+        setMoveError(null)
+        apply(next)
+      }
+    },
+    [apply],
+  )
 
   const undo = useCallback(async () => {
     const next = await apiUndo()

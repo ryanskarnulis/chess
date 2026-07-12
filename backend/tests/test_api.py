@@ -428,3 +428,93 @@ def test_hint_when_game_over_is_409(ctx):
 def test_hint_with_no_candidates_is_409(ctx):
     client = _hint_client(ctx)
     assert client.get("/api/game/hint").status_code == 409
+
+
+# --- player color ------------------------------------------------------------
+
+
+def test_state_includes_player_color(client):
+    assert client.get("/api/state").json()["player_color"] == "white"
+
+
+def test_new_game_accepts_an_explicit_color(client):
+    body = client.post("/api/game/new", json={"color": "black"}).json()
+    assert body["state"]["player_color"] == "black"
+
+
+def test_new_game_defaults_to_a_random_color(client, monkeypatch):
+    # The endpoint rolls; pin the roll so the test is deterministic.
+    monkeypatch.setattr("chessapp.api.random.choice", lambda options: "black")
+    body = client.post("/api/game/new").json()
+    assert body["state"]["player_color"] == "black"
+
+
+def test_new_game_with_invalid_color_is_422(client):
+    response = client.post("/api/game/new", json={"color": "green"})
+    assert response.status_code == 422
+
+
+def test_new_game_as_black_gets_the_engine_opening():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci="e2e4"))
+    client = TestClient(create_app(ctx))
+    body = client.post("/api/game/new", json={"color": "black"}).json()
+    state = body["state"]
+    assert state["player_color"] == "black"
+    assert state["history"] == ["e4"]
+    assert state["turn"] == "black"
+
+
+def test_new_game_as_white_gets_no_engine_opening():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci="e2e4"))
+    client = TestClient(create_app(ctx))
+    body = client.post("/api/game/new", json={"color": "white"}).json()
+    assert body["state"]["history"] == []
+    assert body["state"]["turn"] == "white"
+
+
+def test_new_game_as_black_without_engine_leaves_white_to_move(client):
+    # Engine-free sandbox: nobody owns white, so nothing moves.
+    body = client.post("/api/game/new", json={"color": "black"}).json()
+    assert body["state"]["player_color"] == "black"
+    assert body["state"]["history"] == []
+    assert body["state"]["turn"] == "white"
+
+
+# --- smart undo (vs engine, a takeback is the full exchange) -----------------
+
+
+def test_undo_default_takes_back_the_full_exchange_vs_engine():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    client = TestClient(create_app(ctx))
+    client.post("/api/game/move", json={"move": "e4"})  # engine replies e5
+    body = client.post("/api/game/undo", json={}).json()
+    assert body["undone"] == ["e5", "e4"]
+    assert body["state"]["fen"] == START_FEN
+
+
+def test_undo_explicit_plies_still_honored_vs_engine():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    client = TestClient(create_app(ctx))
+    client.post("/api/game/move", json={"move": "e4"})
+    body = client.post("/api/game/undo", json={"plies": 1}).json()
+    assert body["undone"] == ["e5"]
+
+
+def test_undo_default_as_black_with_only_the_engine_opening_is_409():
+    # The engine's own first move is not the player's to take back.
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci="e2e4"))
+    client = TestClient(create_app(ctx))
+    client.post("/api/game/new", json={"color": "black"})
+    response = client.post("/api/game/undo", json={})
+    assert response.status_code == 409
+
+
+def test_undo_default_is_one_ply_when_the_engine_did_not_reply():
+    # Player (white) mates: the game ends before any engine reply, so the
+    # default takeback is just the player's own move.
+    session = GameSession(fen="6k1/5ppp/8/8/8/8/8/4R2K w - - 0 1")
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    client = TestClient(create_app(ctx))
+    client.post("/api/game/move", json={"move": "Re8#"})
+    body = client.post("/api/game/undo", json={}).json()
+    assert body["undone"] == ["Re8#"]

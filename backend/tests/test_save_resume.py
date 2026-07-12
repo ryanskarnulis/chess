@@ -113,3 +113,26 @@ def test_saved_file_is_json(tmp_path):
 def test_load_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         GameSession.load(tmp_path / "nope.json")
+
+
+# --- player color ----------------------------------------------------------
+
+
+def test_player_color_round_trips():
+    session = GameSession(player_color="black")
+    restored = GameSession.from_dict(session.to_dict())
+    assert restored.player_color == "black"
+
+
+def test_save_without_player_color_defaults_to_white():
+    # Saves that predate the player-color field must stay loadable.
+    data = GameSession().to_dict()
+    data.pop("player_color", None)
+    assert GameSession.from_dict(data).player_color == "white"
+
+
+def test_invalid_player_color_in_save_is_rejected():
+    data = GameSession().to_dict()
+    data["player_color"] = "green"
+    with pytest.raises(ValueError):
+        GameSession.from_dict(data)

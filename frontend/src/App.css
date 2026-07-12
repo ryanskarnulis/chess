@@ -61,6 +61,32 @@
   box-shadow: 0 0 12px var(--glow-soft);
 }
 
+/* Pre-game side switch: shown until the player makes their first move. */
+.side-picker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
+.side-picker button {
+  padding: 0.35rem 0.8rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--silk-border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-transform: capitalize;
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+
+.side-picker button:hover {
+  border-color: var(--glow);
+  box-shadow: 0 0 12px var(--glow-soft);
+}
+
 .captured {
   display: flex;
   align-items: center;

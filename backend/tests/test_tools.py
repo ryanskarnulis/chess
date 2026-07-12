@@ -594,3 +594,26 @@ def test_analysis_on_finished_game_is_error_result(session, live_engine):
         result = registry.dispatch(name, {})
         assert result["ok"] is False
         assert "over" in result["error"]
+
+
+def test_new_game_plays_engine_opening_when_player_is_black():
+    # A voice/text "new game" while playing black must not leave the board
+    # stuck waiting for white: the engine opens, mirroring the UI path.
+    session = GameSession(player_color="black")
+    engine = FakeEngine(reply_uci="e2e4")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    result = registry.dispatch("new_game", {})
+    assert result["ok"] is True
+    assert result["engine_move"] == {"san": "e4", "uci": "e2e4"}
+    assert session.move_history() == ["e4"]
+    assert session.turn == "black"
+
+
+def test_new_game_as_white_has_no_engine_opening():
+    session = GameSession()
+    engine = FakeEngine(reply_uci="e2e4")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    result = registry.dispatch("new_game", {})
+    assert result["ok"] is True
+    assert result["engine_move"] is None
+    assert session.move_history() == []

@@ -7,10 +7,11 @@ vi.mock('./tts', () => ({ playText: vi.fn() }))
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 
-function state(): GameState {
+function state(overrides: Partial<GameState> = {}): GameState {
   return {
     fen: START_FEN,
     turn: 'white',
+    player_color: 'white',
     game_over: false,
     outcome: null,
     history: [],
@@ -18,6 +19,7 @@ function state(): GameState {
     captured: { white: [], black: [] },
     legal_moves: ['e4'],
     dests: { e2: ['e3', 'e4'] },
+    ...overrides,
   }
 }
 
@@ -41,25 +43,30 @@ function stubMatchMedia(matches: boolean) {
   )
 }
 
+// What /api/state serves; tests reassign to render App against a position.
+let served: GameState
+let fetchMock: ReturnType<typeof vi.fn>
+
 beforeEach(() => {
+  served = state()
   vi.stubGlobal('WebSocket', FakeWebSocket)
-  vi.stubGlobal(
-    'fetch',
-    vi.fn((url: string) => {
-      const path = String(url)
-      const body = path.includes('/api/settings')
-        ? {
-            verbosity: 'normal',
-            hints_mode: false,
-            voice_output: false,
-            tier: 'casual',
-            skill_level: null,
-            elo: null,
-          }
-        : state()
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) })
-    }),
-  )
+  fetchMock = vi.fn((url: string) => {
+    const path = String(url)
+    const body = path.includes('/api/settings')
+      ? {
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+        }
+      : path.includes('/api/game/')
+        ? { state: served }
+        : served
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) })
+  })
+  vi.stubGlobal('fetch', fetchMock)
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -95,5 +102,52 @@ describe('App layout', () => {
       expect(screen.getByRole('dialog', { name: /options/i })).toBeInTheDocument(),
     )
     expect(screen.getByRole('button', { name: /new game/i })).toBeInTheDocument()
+  })
+})
+
+describe('player color', () => {
+  it('orients the board for the player side', async () => {
+    served = state({ player_color: 'black', turn: 'black', history: ['e4'] })
+    const { container } = render(<App />)
+    await waitFor(() =>
+      expect(container.querySelector('.cg-wrap.orientation-black')).toBeInTheDocument(),
+    )
+  })
+
+  it('offers a side switch until the player has moved', async () => {
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /switch to black/i })).toBeInTheDocument(),
+    )
+    screen.getByRole('button', { name: /switch to black/i }).click()
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/game/new',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ color: 'black' }) }),
+      ),
+    )
+  })
+
+  it('keeps the switch while only the engine has moved', async () => {
+    served = state({ player_color: 'black', turn: 'black', history: ['e4'] })
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /switch to white/i })).toBeInTheDocument(),
+    )
+  })
+
+  it('withdraws the switch once the player has moved', async () => {
+    served = state({ history: ['e4', 'e5'] })
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.move-strip')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: /switch to/i })).not.toBeInTheDocument()
+  })
+
+  it('disables undo while only the engine has moved', async () => {
+    served = state({ player_color: 'black', turn: 'black', history: ['e4'] })
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /undo/i })).toBeDisabled(),
+    )
   })
 })

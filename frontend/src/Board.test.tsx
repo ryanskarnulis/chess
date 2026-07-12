@@ -24,6 +24,14 @@ describe('Board', () => {
     expect(container.querySelector('.cg-wrap')).not.toBeInTheDocument()
   })
 
+  it('orients the board for the given side', () => {
+    const { container, rerender } = render(<Board fen={START_FEN} orientation="black" />)
+    // Chessground stamps the orientation on its wrap element.
+    expect(container.querySelector('.cg-wrap.orientation-black')).toBeInTheDocument()
+    rerender(<Board fen={START_FEN} orientation="white" />)
+    expect(container.querySelector('.cg-wrap.orientation-white')).toBeInTheDocument()
+  })
+
   it('re-renders the position when the fen prop changes', () => {
     const { container, rerender } = render(<Board fen={START_FEN} />)
     expect(container.querySelectorAll('piece:not(.ghost)')).toHaveLength(32)

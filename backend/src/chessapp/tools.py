@@ -367,7 +367,19 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     def new_game() -> dict[str, Any]:
         "Reset to the starting position and begin a new game."
         ctx.session.new_game()
-        return {"ok": True, "fen": ctx.session.fen(), "turn": ctx.session.turn}
+        # Mirror the UI path: when the player has black, the engine owns
+        # white and makes the opening move — otherwise the fresh board would
+        # sit waiting for a move only the engine can make.
+        engine_move: dict[str, Any] | None = None
+        if ctx.session.player_color == "black" and ctx.engine is not None:
+            reply = ctx.engine.play_move(ctx.session)
+            engine_move = {"san": reply.san, "uci": reply.uci}
+        return {
+            "ok": True,
+            "engine_move": engine_move,
+            "fen": ctx.session.fen(),
+            "turn": ctx.session.turn,
+        }
 
     @registry.tool()
     def resign(color: Literal["white", "black"] | None = None) -> dict[str, Any]:
