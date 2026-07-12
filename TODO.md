@@ -17,6 +17,7 @@ From the 2026-07-10 agent deep dive: voice games die by attrition — an illegal
 - [ ] **Experiment — phase-1 sampling**: A/B a lower temperature (~0.2–0.6) for the tool-decision call only, keeping BRIEF sampling for commentary; record tool-call accuracy before changing any default.
 - [ ] **Experiment — skip react() for agent-parsed moves at verbosity=low**: the fast path already makes parser-hit moves zero-LLM at low verbosity (#83); this would extend the canned confirmation to plain moves only the agent could parse. Check real-game frequency of agent-path plain moves first — may no longer be worth it.
 - [ ] **Pending-proposal state for confirmations** (only if the dead-end recurs after #85): when the agent proposes a specific move and the player answers a bare "yes", only the #85 prompt rule guarantees the move gets played. A small pipeline-owned "pending proposed move" would make the confirmation itself deterministic ("yes" → make_move(pending)) — but it adds conversation state to the pipeline; hold unless live games show the prompt rule isn't enough.
+- [ ] **Destructive-op confirmation is unreliable at temp 1.0** (found by the eval harness, 2026-07-11): gemma-4-12b honors the "confirm before `new_game`/`resign`" prompt rule only ~50% of the time (measured across trivial and developed positions; `docs/agent-evals.md` finding, `destructive_confirm` xfail). The prompt carries the rule and `test_personality` pins it, but the model doesn't follow it reliably. Likely fix is structural, not prompt-only — a pipeline-owned "pending destructive op" (same shape as the pending-proposed-move item above): bare "new game" → confirmation question → "yes" → `new_game`. Confirm the same rate for `resign` before designing. Prompt was deliberately not changed in the eval slice (evals gate prompt changes). Flip the xfail to a hard assert once fixed.
 
 ## Phase 4 — Manual testing (walkthrough together, take notes)
 
@@ -72,12 +73,6 @@ No manual testing has happened yet — everything below has only been exercised 
 ## Infrastructure / process (ongoing)
 
 - [ ] If repo goes public or account upgrades to Pro: enable branch protection (require `lint` + `test` checks) and native auto-merge
-
-## Agent-standard migration (Phase 2 epic)
-
-Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-7 (env-var rename, layered personality, tool registry, MCP server, httpx provider, delegate REST endpoint, `agent:` manifest block) are done; remaining:
-
-- [ ] **Eval harness**: golden command→tool-call tasks (mirroring PCC's), gating future prompt/model changes.
 
 ## Backlog (no near-term timeline)
 
