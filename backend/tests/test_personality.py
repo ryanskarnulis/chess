@@ -10,6 +10,8 @@ explicit permission to swear (the serving model is safety-tuned and won't
 without it).
 """
 
+from pathlib import Path
+
 import pytest
 
 from chessapp.personality import SYSTEM_PROMPT, system_prompt_for
@@ -18,6 +20,49 @@ from chessapp.personality import SYSTEM_PROMPT, system_prompt_for
 def test_default_lookup_returns_the_glitch_prompt():
     assert system_prompt_for() == SYSTEM_PROMPT
     assert SYSTEM_PROMPT.strip()  # non-empty
+
+
+# --- layered composition (agent-standard Phase 2 slice 2) ---------------------
+#
+# The prompt is composed base -> global Glitch -> chess flavor -> dynamic
+# layers (agent-standard/STANDARD.md §5). The global layer is a vendored
+# verbatim copy of agent-standard/personality-global.md, never hand-edited
+# here; drift is caught by agent-standard/check-sync.sh.
+
+
+def test_vendored_global_personality_file_exists():
+    vendored = (
+        Path(__file__).parent.parent / "src" / "chessapp" / "personality-global.md"
+    )
+    assert vendored.is_file()
+    assert vendored.read_text(encoding="utf-8").startswith("<!-- vendored")
+
+
+def test_vendored_header_is_stripped_from_the_composed_prompt():
+    assert "<!-- vendored" not in SYSTEM_PROMPT
+
+
+def test_composed_prompt_contains_the_app_base_layer():
+    # Distinctive to chess's own base prompt, not the global personality.
+    assert "self-hosted chess app" in SYSTEM_PROMPT
+
+
+def test_composed_prompt_contains_the_global_personality_layer():
+    # Distinctive line from the canonical agent-standard/personality-global.md
+    # (generic house-wide Glitch tone, not chess-specific).
+    assert "Whatever app you're working in right now" in SYSTEM_PROMPT
+
+
+def test_composed_prompt_contains_the_chess_flavor_layer():
+    # Distinctive to chess's own flavor block, not the vendored global text.
+    assert "Trolling (occasional, earned" in SYSTEM_PROMPT
+
+
+def test_composition_order_is_base_then_global_then_flavor():
+    base_marker = SYSTEM_PROMPT.index("self-hosted chess app")
+    global_marker = SYSTEM_PROMPT.index("Whatever app you're working in right now")
+    flavor_marker = SYSTEM_PROMPT.index("Trolling (occasional, earned")
+    assert base_marker < global_marker < flavor_marker
 
 
 def test_prompt_encodes_the_behavioral_contract():
