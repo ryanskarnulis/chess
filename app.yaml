@@ -13,3 +13,14 @@ runtime:
   stop: docker compose down
   notes: "LLM brain is the shared ../llama-swap stack and optional: with it down the app runs engine-only."
 tags: [game, ai]
+# Delegate agent manifest (../agent-standard/app-yaml-agent-block.md) —
+# consumed by conductor to build this app's delegate tool; gen.py ignores it.
+agent:
+  description: "Plays chess: makes moves, analyzes positions, controls the game (new game, undo, resign, save/resume), and adjusts difficulty."
+  api: /api/agent
+  examples:
+    - "move my knight to f3"
+    - "how am I doing in this game?"
+    - "castle kingside"
+    - "set the chess difficulty to easy"
+    - "start a new chess game"

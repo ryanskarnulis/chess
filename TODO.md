@@ -75,9 +75,8 @@ No manual testing has happened yet — everything below has only been exercised 
 
 ## Agent-standard migration (Phase 2 epic)
 
-Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-6 (env-var rename, layered personality, tool registry, MCP server, httpx provider, delegate REST endpoint) are done; remaining slices, low-risk first:
+Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-7 (env-var rename, layered personality, tool registry, MCP server, httpx provider, delegate REST endpoint, `agent:` manifest block) are done; remaining:
 
-- [ ] **`agent:` block in `app.yaml`**.
 - [ ] **Eval harness**: golden command→tool-call tasks (mirroring PCC's), gating future prompt/model changes.
 
 ## Backlog (no near-term timeline)
