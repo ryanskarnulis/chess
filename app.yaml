@@ -2,7 +2,7 @@
 # Schema reference: ../gateway/README.md
 name: chess
 title: Chess
-description: Play against a tool-using AI agent — voice-first, with personalities.
+description: Play against a tool-using AI agent — voice-first, with a dialed-in personality (Glitch).
 icon: "♞"
 upstream: 127.0.0.1:8000
 health: /api/state
