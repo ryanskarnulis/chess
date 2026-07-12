@@ -6,6 +6,10 @@ requires-python = ">=3.12"
 dependencies = [
     "chess>=1.11",
     "jsonschema>=4",
+    # Tool argument schemas are derived from typed signatures via FastMCP's
+    # func_metadata (the workspace agent standard; see agent-standard/STANDARD.md
+    # §1). Pulls in pydantic, which fastapi already requires.
+    "mcp>=1.20.0",
     "fastapi>=0.115",
     "openai>=1.40",
     "python-multipart>=0.0.9",
