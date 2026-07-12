@@ -7,7 +7,7 @@ description: How to run and drive this app to verify frontend/backend changes en
 
 ## Handles
 
-- The full stack usually already runs in Docker: `chess-app-1` (app, http://localhost:8000), `chess-llama-1` (brain), `chess-speaches-1` (STT/TTS). Check with `docker ps`. The container serves the **last built image** — it will not reflect working-tree changes.
+- The full stack usually already runs in Docker: `chess-app-1` (app, http://localhost:8000) plus two external shared stacks — the brain (`../llama-swap/`, host :8200) and voice (`../speech/`: `speech-speaches-1` host :8400, `speech-kokoro-1` host :8410). Check with `docker ps`. The container serves the **last built image** — it will not reflect working-tree changes.
 - To drive working-tree frontend code: `cd frontend && npm run dev` (background) — Vite proxies `/api` and `/ws` to localhost:8000. **Check the log for the actual port**: it takes 5174+ if 5173 is busy.
 - Driving the shared backend touches the user's live game state — stick to read-only/chat commands unless the change needs moves.
 
