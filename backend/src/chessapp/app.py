@@ -26,6 +26,7 @@ from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
 from chessapp.personality import system_prompt_for
+from chessapp.provider import ChatProvider
 from chessapp.tools import ToolContext, build_registry
 from chessapp.voice import (
     DEFAULT_STT_MODEL,
@@ -46,7 +47,7 @@ def build_app(
     engine: EnginePlayer | None = None,
     save_dir: Path | None = None,
     brain: Brain | None = None,
-    openai_client: object | None = None,
+    provider: ChatProvider | None = None,
     speech: SpeechClient | None = None,
     static_dir: Path | None = None,
 ) -> FastAPI:
@@ -55,8 +56,8 @@ def build_app(
     Pass a `brain` to inject one (tests, or an alternate backend); otherwise a
     `LlamaBrain` is built against `llama_base_url`, wired to resolve its system
     prompt from `ctx.settings` on every command so `set_verbosity` and
-    `set_hints_mode` take effect live. `openai_client` injects a fake OpenAI
-    client into that default brain without a real llama-server.
+    `set_hints_mode` take effect live. `provider` injects a fake `ChatProvider`
+    into that default brain without a real llama-server.
     """
     ctx = ToolContext(session=GameSession(), engine=engine, save_dir=save_dir)
     if engine is not None:
@@ -77,7 +78,7 @@ def build_app(
                 ctx.settings.verbosity,
                 ctx.settings.hints_mode,
             ),
-            client=openai_client,
+            provider=provider,
         )
     return create_app(ctx, brain=brain, speech=speech, static_dir=static_dir)
 
