@@ -50,23 +50,43 @@ class Outcome:
     result: str
 
 
+def _validate_player_color(color: str) -> str:
+    if color not in _COLOR_NAMES.values():
+        raise ValueError(f"invalid player color: {color!r}")
+    return color
+
+
 class GameSession:
     """One chess game. Moves come in as SAN or UCI strings; the board decides."""
 
-    def __init__(self, fen: str | None = None):
+    def __init__(self, fen: str | None = None, player_color: str = "white"):
         self._board = chess.Board(fen) if fen is not None else chess.Board()
         self._resigned: chess.Color | None = None
+        self._player_color = _validate_player_color(player_color)
 
     @property
     def turn(self) -> str:
         return _COLOR_NAMES[self._board.turn]
 
+    @property
+    def player_color(self) -> str:
+        """Which side the human plays; the engine owns the other. Session
+        state (not board truth): it decides orientation and who the opening
+        move belongs to, never legality."""
+        return self._player_color
+
     def fen(self) -> str:
         return self._board.fen()
 
-    def new_game(self) -> None:
+    def new_game(self, player_color: str | None = None) -> None:
+        """Reset the board. `player_color` reassigns the human's side;
+        None keeps the current assignment."""
+        if player_color is not None:
+            player_color = _validate_player_color(player_color)
         self._board.reset()
         self._resigned = None
+        if player_color is not None:
+            self._player_color = player_color
 
     def resign(self, color: str | None = None) -> Outcome:
         """Record a resignation. Defaults to the side to move.
@@ -111,13 +131,15 @@ class GameSession:
         return str(game)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialized form: root FEN + UCI moves + resignation flag."""
+        """Serialized form: root FEN + UCI moves + resignation flag, plus the
+        player's color (additive — older readers ignore it)."""
         resigned = self._resigned
         return {
             "version": 1,
             "root_fen": self._board.root().fen(),
             "moves": [move.uci() for move in self._board.move_stack],
             "resigned": _COLOR_NAMES[resigned] if resigned is not None else None,
+            "player_color": self._player_color,
         }
 
     @classmethod
@@ -130,7 +152,12 @@ class GameSession:
         if missing:
             raise ValueError(f"save data missing keys: {sorted(missing)}")
 
-        session = cls(fen=data["root_fen"])
+        # Saves that predate the player-color field default to white — the
+        # implicit assignment those games were played under.
+        session = cls(
+            fen=data["root_fen"],
+            player_color=data.get("player_color", "white"),
+        )
         for uci in data["moves"]:
             result = session.submit_move(uci)
             if not result.legal:

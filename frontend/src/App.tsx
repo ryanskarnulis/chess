@@ -40,11 +40,20 @@ function App() {
   } = useGame()
   const [sheetOpen, setSheetOpen] = useState(false)
 
+  // The player "has moved" once history holds more than the engine's own
+  // opening (one ply when the player has black, none otherwise). Until then
+  // the side switch is offered and there is nothing of theirs to undo.
+  const playerMoved = state
+    ? state.history.length > (state.player_color === 'black' ? 1 : 0)
+    : false
+  const otherColor = state?.player_color === 'white' ? 'black' : 'white'
+
   const board = state && (
     <div className="board-wrap">
       <Board
         fen={displayFen ?? state.fen}
         turnColor={state.turn}
+        orientation={state.player_color}
         dests={reviewing ? {} : state.dests}
         onMove={play}
         viewOnly={state.game_over || reviewing}
@@ -87,6 +96,14 @@ function App() {
               : `${state.turn} to move`}
         </p>
       )}
+      {state && !state.game_over && !playerMoved && (
+        <div className="side-picker">
+          <span>Playing as {state.player_color}</span>
+          <button type="button" onClick={() => newGame(otherColor)}>
+            Switch to {otherColor}
+          </button>
+        </div>
+      )}
       {state && (
         <>
           <CapturedPieces captured={state.captured} />
@@ -107,7 +124,7 @@ function App() {
             onUndo={undo}
             resignDisabled={state.game_over}
             hintDisabled={state.game_over || reviewing}
-            undoDisabled={state.history.length === 0 || reviewing}
+            undoDisabled={!playerMoved || reviewing}
           />
           <OptionsSheet
             open={sheetOpen}

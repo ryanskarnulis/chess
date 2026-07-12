@@ -11,6 +11,9 @@ export interface Outcome {
 export interface GameState {
   fen: string
   turn: 'white' | 'black'
+  /** Which side the human plays; the engine owns the other. Drives board
+   * orientation and what a takeback means. */
+  player_color: 'white' | 'black'
   game_over: boolean
   outcome: Outcome | null
   history: string[]
@@ -61,12 +64,17 @@ async function postLifecycle(path: string, body: unknown = {}): Promise<GameStat
   return data.state
 }
 
-export function newGame(): Promise<GameState | null> {
-  return postLifecycle('/api/game/new')
+/** Start a fresh game. `color` is the side the player takes; omitted, the
+ * backend rolls one at random. When the player takes black the engine's
+ * opening move is already in the returned state. */
+export function newGame(color?: 'white' | 'black' | 'random'): Promise<GameState | null> {
+  return postLifecycle('/api/game/new', color ? { color } : {})
 }
 
-export function undo(plies = 1): Promise<GameState | null> {
-  return postLifecycle('/api/game/undo', { plies })
+/** Take back moves. Without `plies` the backend applies the player's
+ * takeback: the full exchange vs the engine, one ply engine-free. */
+export function undo(plies?: number): Promise<GameState | null> {
+  return postLifecycle('/api/game/undo', plies === undefined ? {} : { plies })
 }
 
 export function resign(color?: 'white' | 'black'): Promise<GameState | null> {

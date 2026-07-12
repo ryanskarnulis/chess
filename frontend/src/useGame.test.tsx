@@ -17,6 +17,7 @@ function state(overrides: Partial<GameState> = {}): GameState {
   return {
     fen: START_FEN,
     turn: 'white',
+    player_color: 'white',
     game_over: false,
     outcome: null,
     history: [],
@@ -227,9 +228,23 @@ describe('useGame', () => {
     await act(async () => {
       await result.current.undo()
     })
+    // No plies: the backend decides the player's takeback (full exchange
+    // vs the engine, one ply engine-free).
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/undo',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ plies: 1 }) }),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    )
+  })
+
+  it('starts a new game as a requested color', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    await act(async () => {
+      await result.current.newGame('black')
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/new',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ color: 'black' }) }),
     )
   })
 
