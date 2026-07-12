@@ -6,10 +6,19 @@ loop can be exercised deterministically without ever reaching a live model.
 `FakeEngine` is the canonical no-Stockfish engine double: it plays a scripted
 reply and records every strength setting and MultiPV request, so tests can
 pin that difficulty reaches the engine and that replies never take an
-analysis detour. Keep the doubles here — not copied into test files.
+analysis detour. `ScriptedProvider` is the canonical no-LLM `ChatProvider`
+double, one layer below `ScriptedBrain`: it returns scripted `ChatResult`s and
+records the `chat()` requests, so the real `LlamaBrain` orchestration (schema
+validation, correction retries, thinking toggles) can be exercised without a
+model. Keep the doubles here — not copied into test files.
 """
 
+from collections.abc import Sequence
+from typing import Any
+
 from chessapp.brain import AgentResponse
+from chessapp.provider import ChatResult
+from chessapp.provider import ToolCall as ProviderToolCall
 
 
 class FakeEngine:
@@ -77,3 +86,62 @@ class ScriptedBrain:
         self.react_calls.append((board_state, changes))
         self.react_transcripts.append(list(transcript))
         return self._reactions.pop(0) if self._reactions else "(reaction)"
+
+
+def text_turn(content: str | None, *, finish_reason: str = "stop") -> ChatResult:
+    """A plain-text `ChatResult` turn (no tool calls)."""
+    return ChatResult(
+        content=content, tool_calls=[], finish_reason=finish_reason, usage=None
+    )
+
+
+def tool_calls_turn(
+    *calls: tuple[str, dict[str, Any]], content: str | None = None
+) -> ChatResult:
+    """A `ChatResult` turn carrying tool calls, args already parsed to dicts
+    (the shape the provider hands the brain). Each `call` is `(name, args)`."""
+    return ChatResult(
+        content=content,
+        tool_calls=[
+            ProviderToolCall(id=f"call_{index}", name=name, arguments=args)
+            for index, (name, args) in enumerate(calls)
+        ],
+        finish_reason="tool_calls",
+        usage=None,
+    )
+
+
+class ScriptedProvider:
+    """`ChatProvider` double: records each `chat()` request, returns scripted
+    turns.
+
+    Given one turn it returns it for every call; given several it returns them
+    in order and repeats the last — so a retry loop can be scripted "bad then
+    good" (and a single bad turn repeated to exhaustion). A turn may be an
+    `Exception` to raise instead of return (e.g. `ToolCallArgumentsError`),
+    modelling a provider-level failure the brain must recover from.
+    """
+
+    def __init__(self, *turns: ChatResult | Exception) -> None:
+        self._turns = list(turns)
+        self.calls: list[dict[str, Any]] = []
+
+    def chat(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        tools: Sequence[dict[str, Any]] | None = None,
+        enable_thinking: bool = False,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "tools": list(tools) if tools is not None else None,
+                "enable_thinking": enable_thinking,
+            }
+        )
+        turn = self._turns[min(len(self.calls) - 1, len(self._turns) - 1)]
+        if isinstance(turn, Exception):
+            raise turn
+        return turn

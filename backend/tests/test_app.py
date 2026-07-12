@@ -6,11 +6,9 @@ settings land: `set_verbosity`/`set_hints_mode` record onto `ctx.settings`,
 and the brain resolves its system prompt from those settings per command, so
 a change takes effect on the next command.
 
-Exercised only through a fake OpenAI client that records request kwargs and
-returns scripted completions — never a live LLM.
+Exercised only through a `ScriptedProvider` that records the `chat()` requests
+and returns scripted `ChatResult`s — never a live LLM.
 """
-
-from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -24,40 +22,13 @@ from chessapp.app import (
 from chessapp.brain import AgentResponse
 from chessapp.engine import DEFAULT_TIER
 from chessapp.personality import system_prompt_for
-from fakes import FakeEngine, ScriptedBrain
-
-
-def _tool_call(name: str, arguments: str, call_id: str = "id0"):
-    return SimpleNamespace(
-        id=call_id,
-        type="function",
-        function=SimpleNamespace(name=name, arguments=arguments),
-    )
-
-
-def _completion(*, content=None, tool_calls=None):
-    message = SimpleNamespace(
-        role="assistant",
-        content=content,
-        tool_calls=tool_calls,
-        reasoning_content=None,
-    )
-    return SimpleNamespace(choices=[SimpleNamespace(index=0, message=message)])
-
-
-class FakeOpenAIClient:
-    """Records create() kwargs; returns scripted completions in sequence
-    (repeating the last), mirroring llama-server's response shape."""
-
-    def __init__(self, *completions):
-        self._completions = list(completions)
-        self.calls: list[dict] = []
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
-
-    def _create(self, **kwargs):
-        i = min(len(self.calls), len(self._completions) - 1)
-        self.calls.append(kwargs)
-        return self._completions[i]
+from fakes import (
+    FakeEngine,
+    ScriptedBrain,
+    ScriptedProvider,
+    text_turn,
+    tool_calls_turn,
+)
 
 
 def test_build_app_serves_state_from_a_fresh_game():
@@ -141,14 +112,13 @@ def test_build_app_wires_live_verbosity_switching():
     # brain gets on the *next* command — end to end, through the assembled app
     # (settings mutated by the tool, read by the brain), so voice commands
     # like "talk more/less" are real.
-    switch = _tool_call("set_verbosity", '{"verbosity":"low"}')
-    fake = FakeOpenAIClient(
+    fake = ScriptedProvider(
         # cmd 1, phase one: the verbosity switch.
-        _completion(tool_calls=[switch]),
+        tool_calls_turn(("set_verbosity", {"verbosity": "low"})),
         # cmd 1, phase two (react) + everything after: plain text, no tools.
-        _completion(content="ok"),
+        text_turn("ok"),
     )
-    client = TestClient(build_app(model="gemma", openai_client=fake))
+    client = TestClient(build_app(model="gemma", provider=fake))
 
     client.post("/api/command", json={"text": "talk less"})
     client.post("/api/command", json={"text": "hello"})
@@ -164,12 +134,11 @@ def test_build_app_wires_live_verbosity_switching():
 def test_build_app_wires_live_hints_switching():
     # "Give me hints": set_hints_mode must change the system prompt the brain
     # gets on the next command, same live-settings seam as verbosity.
-    switch = _tool_call("set_hints_mode", '{"enabled":true}')
-    fake = FakeOpenAIClient(
-        _completion(tool_calls=[switch]),
-        _completion(content="ok"),
+    fake = ScriptedProvider(
+        tool_calls_turn(("set_hints_mode", {"enabled": True})),
+        text_turn("ok"),
     )
-    client = TestClient(build_app(model="gemma", openai_client=fake))
+    client = TestClient(build_app(model="gemma", provider=fake))
 
     client.post("/api/command", json={"text": "give me hints"})
     client.post("/api/command", json={"text": "hello"})

@@ -75,14 +75,14 @@ No manual testing has happened yet — everything below has only been exercised 
 
 ## Agent-standard migration (Phase 2 epic)
 
-Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-4 (env-var rename, layered personality, tool registry, MCP server) are done; remaining slices, low-risk first:
+Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-5 (env-var rename, layered personality, tool registry, MCP server, httpx provider) are done; remaining slices, low-risk first:
 
-- [ ] **httpx `ChatProvider`**: replace the OpenAI SDK client with the httpx `ChatProvider`-style provider, keeping the `Brain` two-phase interface on top; fake-client tests move to the wire shape.
 - [ ] **Conversation persistence + delegate REST endpoint**: implement the §5 contract — a conversation wraps the single active game session (transcript + tool trajectory persisted); fast-path move parsing keeps working inside delegate calls.
 - [ ] **`agent:` block in `app.yaml`**.
 - [ ] **Eval harness**: golden command→tool-call tasks (mirroring PCC's), gating future prompt/model changes.
 
 ## Backlog (no near-term timeline)
 
+- [ ] **`voice.py` still rides the OpenAI SDK** for Speaches STT/TTS (the OpenAI audio API); the LLM brain moved to plain httpx in Phase 2 slice 5 but voice was out of scope. Could move to httpx someday to drop the `openai` runtime dep entirely.
 - [ ] GBNF grammar-constrained decoding fallback — **deferred, likely unneeded**: the live spike confirmed Gemma-4 (`UD-Q4_K_XL`) emits structured OpenAI tool calls natively. Revisit only if reliability degrades under load/longer prompts.
 - [ ] Physical board (Chessnut Move — blocked on hardware purchase): verify motorized actuation is programmatically controllable **before any design work**; until then, `control_physical_board` tool seam only
