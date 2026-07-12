@@ -2,6 +2,16 @@
 
 The backlog, in priority order. One task = one vertical slice = one branch = one PR (TDD: failing test first). When a task is finished and merged, move its line to `DONE.md` with the merge date. Re-plan freely between slices — this file is the living backlog, not a contract.
 
+## Next sprint (2026-07-12)
+
+The next three slices, in order. This is a framing block over the sections below, not a rewrite — every item stays tracked in its own section:
+
+1. **[S] Ship Glitch's voice** — pick the final TTS voice by ear from the #97 audition artifact and resolve the swearing watch-item; closes the current-focus trio. Done when the winner is set as `CHESSAPP_TTS_VOICE`.
+2. **[M] Structural fix for the destructive-op confirm gate** — a deterministic pipeline-owned "pending destructive op" state (bare "new game" → confirmation question → "yes" → `new_game`). Pre-step: measure `resign`'s adherence rate. Done when the `destructive_confirm` xfail flips to a hard assert.
+3. **[S] `voice.py` off the OpenAI SDK onto httpx** — drops the `openai` runtime dep entirely (promoted from the Backlog section).
+
+Stretch: start the Phase-4 manual walkthrough, prioritizing the #114–#116 UI items (single layout, random color + side switch, post-game screen) and Android Chrome hands-free.
+
 ## Personality & voice — Glitch (current focus)
 
 The 2026-07-11 direction: one hand-dialed personality — **Glitch**, a gen-z Jarvis (fully casual, low-key troll, help stays real, swearing allowed) — instead of the selectable roster, plus a designed custom TTS voice ("laid-back young American, audible smirk") instead of stock Kokoro `af_heart`. Voice-option research (Kokoro blending / Chatterbox Turbo / Qwen3-TTS / NeuTTS Air, with the 12 GB VRAM constraint) is in Claude's project memory.
@@ -21,10 +31,10 @@ From the 2026-07-10 agent deep dive: voice games die by attrition — an illegal
 
 ## Phase 4 — Manual testing (walkthrough together, take notes)
 
-No manual testing has happened yet — everything below has only been exercised by automated tests. Go through this list at the desk, note anything that feels wrong or needs to change, then turn the notes into new backlog items.
+No systematic walkthrough has happened yet — most items below have only been exercised by automated tests, though a few were spot-verified live (first real agent games #95/#104, iOS hands-free #103; noted inline where so). Go through this list at the desk, note anything that feels wrong or needs to change, then turn the notes into new backlog items.
 
 ### Setup / stack
-- [ ] `docker compose up` brings up all three containers (llama-server, Speaches, app) cleanly from cold
+- [ ] `docker compose up` brings up all three containers (app, Speaches, Kokoro) cleanly from cold — the LLM brain is the external `../llama-swap/` stack, exercised separately
 - [ ] App is reachable from another device on the home network (phone/laptop browser)
 - [ ] Basic gameplay works fully offline (network unplugged)
 - [ ] Full game against Stockfish with the LLM turned off (agent layer disabled)
@@ -75,7 +85,7 @@ No manual testing has happened yet — everything below has only been exercised 
 
 ## Infrastructure / process (ongoing)
 
-- [ ] If repo goes public or account upgrades to Pro: enable branch protection (require `lint` + `test` checks) and native auto-merge
+- [ ] If repo goes public or account upgrades to Pro: enable branch protection (require `lint` + `test` + `frontend` checks) and native auto-merge
 
 ## Backlog (no near-term timeline)
 

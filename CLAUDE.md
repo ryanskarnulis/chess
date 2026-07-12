@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Early scaffold. `BRIEF.md` is the full project brief — the chosen stack, licensing analysis, LLM serving details (model + quant), difficulty-tier design, and agent tool list all live there and are authoritative. The llama-server *flags* are owned by the shared workspace `../llama-swap/config.yaml` (one GPU server serves chess and project-command-center); change them there, not here. Read it before making design decisions; this file holds only the always-needed rules. Monorepo layout: Python backend lives in `backend/` (src-layout package `chessapp`); `frontend/` will be added in Phase 1.
+Feature-complete core (as of 2026-07-11): board + deterministic engine, voice (STT/TTS), the Glitch agent, analysis/whole-game review, and the workspace delegate API + eval harness. `BRIEF.md` is the full project brief — the chosen stack, licensing analysis, LLM serving details (model + quant), difficulty-tier design, and agent tool list all live there and are authoritative. The llama-server *flags* are owned by the shared workspace `../llama-swap/config.yaml` (one GPU server serves chess and project-command-center); change them there, not here. Read it before making design decisions; this file holds only the always-needed rules. Monorepo layout: Python backend lives in `backend/` (src-layout package `chessapp`); the React/Vite web UI lives in `frontend/`.
 
 ## Task Tracking
 
@@ -33,7 +33,7 @@ ruff format .                                        # auto-format
 
 - **Never commit or push directly to `main`.** For every change: create a branch (`feat/<slug>`, `fix/<slug>`, `chore/<slug>`, `docs/<slug>`), commit, push, and open a PR with `gh pr create`.
 - PRs are **squash-merged once CI is green**. GitHub's native auto-merge and branch protection are unavailable (private repo on the Free plan), so after opening a PR run `gh pr checks --watch` and, when green, `gh pr merge --squash`. Never merge with failing or pending checks.
-- CI (`.github/workflows/ci.yml`) runs ruff lint/format-check and pytest on every PR and push to main. Both jobs must pass; run them locally before pushing.
+- CI (`.github/workflows/ci.yml`) runs three jobs on every PR and push to main: `lint` (ruff check + format-check), `test` (pytest), and `frontend` (npm lint → build → test). All three must pass; run them locally before pushing.
 
 ## What This Is
 
@@ -54,7 +54,7 @@ Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a strin
 
 ## Binding Invariants (details in BRIEF.md)
 
-- **Swappable brain module:** all model-specific logic lives behind one interface — `get_agent_response(board_state, command) → {text, tool_calls}`. Nothing else in the app may know which model/backend is behind it.
+- **Swappable brain module:** all model-specific logic lives behind one interface — `get_agent_response(board_state, command, transcript) → {text, tool_calls}`. Nothing else in the app may know which model/backend is behind it.
 - **Agent tools are capabilities, not hardcoded behaviors** — the agent maps free-form commands to tools itself (no per-phrase branching); ambiguous input → clarifying question. The full tool list is in BRIEF.md; `control_physical_board` stays a future seam only.
 - **Personality is tone only:** it shapes commentary, never move choice, difficulty, or any other setting.
 - **Never leave an engine unconfigured:** a real default difficulty tier is applied at app assembly (Stockfish's own default is full strength).
