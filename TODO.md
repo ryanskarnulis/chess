@@ -75,9 +75,8 @@ No manual testing has happened yet — everything below has only been exercised 
 
 ## Agent-standard migration (Phase 2 epic)
 
-Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slice 1 (env-var rename) is done; remaining slices, low-risk first:
+Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-2 (env-var rename, layered personality) are done; remaining slices, low-risk first:
 
-- [ ] **Layered personality**: graduate `_GLITCH` into the canonical global personality file (Phase 0); chess vendors it back, keeps `_BASE` as its app base prompt, and moves chess-specific Glitch material into an app-flavor layer.
 - [ ] **Tool registry decorator migration**: migrate the hand-written JSON-schema `Tool` dataclasses to the decorator/FastMCP pattern; `definitions()` output stays schema-equivalent before/after.
 - [ ] **MCP server + `.mcp.json`**: stand up an MCP server off the tool registry, giving chess Claude Code tooling parity with PCC.
 - [ ] **httpx `ChatProvider`**: replace the OpenAI SDK client with the httpx `ChatProvider`-style provider, keeping the `Brain` two-phase interface on top; fake-client tests move to the wire shape.
