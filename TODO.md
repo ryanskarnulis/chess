@@ -75,9 +75,8 @@ No manual testing has happened yet — everything below has only been exercised 
 
 ## Agent-standard migration (Phase 2 epic)
 
-Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-5 (env-var rename, layered personality, tool registry, MCP server, httpx provider) are done; remaining slices, low-risk first:
+Tracked in `../agent-standard/AGENTS-MASTER-PLAN.md` §Phase 2 (chess migration epic). Slices 1-6 (env-var rename, layered personality, tool registry, MCP server, httpx provider, delegate REST endpoint) are done; remaining slices, low-risk first:
 
-- [ ] **Conversation persistence + delegate REST endpoint**: implement the §5 contract — a conversation wraps the single active game session (transcript + tool trajectory persisted); fast-path move parsing keeps working inside delegate calls.
 - [ ] **`agent:` block in `app.yaml`**.
 - [ ] **Eval harness**: golden command→tool-call tasks (mirroring PCC's), gating future prompt/model changes.
 
