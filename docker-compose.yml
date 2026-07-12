@@ -4,7 +4,7 @@
 #            and served at / (same origin as the API, so the UI's relative
 #            /api + /ws URLs need no proxy); Stockfish bundled in the image.
 #            Owns board truth + the deterministic engine; reaches the brain
-#            over the network at CHESSAPP_LLAMA_URL.
+#            over the network at LLAMACPP_BASE_URL.
 #   speaches — self-hosted STT+TTS (OpenAI-compatible). Optional: text/board
 #            play works with it down.
 #
@@ -38,8 +38,8 @@ services:
       # (port block 8200, see ../gateway/README.md). The model name must match
       # a ../llama-swap/config.yaml entry. Unset/override to run the LLM off —
       # /api/command 503s, gameplay is fine.
-      CHESSAPP_LLAMA_URL: http://host.docker.internal:8200/v1
-      CHESSAPP_MODEL: gemma-4-12b
+      LLAMACPP_BASE_URL: http://host.docker.internal:8200/v1
+      LLAMACPP_MODEL: gemma-4-12b
       # Voice seam: where the app proxies STT/TTS requests. Unset to run
       # voiceless — the voice endpoints 503, gameplay is untouched.
       CHESSAPP_SPEACHES_URL: http://speaches:8000/v1

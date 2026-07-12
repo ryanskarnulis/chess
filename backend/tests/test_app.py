@@ -14,7 +14,13 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from chessapp.app import build_app
+import chessapp.app
+from chessapp.app import (
+    DEFAULT_LLAMA_BASE_URL,
+    DEFAULT_MODEL,
+    build_app,
+    build_app_from_env,
+)
 from chessapp.brain import AgentResponse
 from chessapp.engine import DEFAULT_TIER
 from chessapp.personality import system_prompt_for
@@ -172,6 +178,48 @@ def test_build_app_wires_live_hints_switching():
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
         hints_mode=True
     )
+
+
+def test_build_app_from_env_honors_the_llamacpp_env_vars(monkeypatch):
+    # Workspace agent-standard env names (LLAMACPP_BASE_URL / LLAMACPP_MODEL,
+    # not the old CHESSAPP_LLAMA_URL / CHESSAPP_MODEL): build_app_from_env
+    # must read these and pass them straight through to the brain factory.
+    captured: dict[str, str] = {}
+
+    def fake_create_llama_brain(*, base_url, model, **kwargs):
+        captured["base_url"] = base_url
+        captured["model"] = model
+        return ScriptedBrain(AgentResponse(text="hi"))
+
+    monkeypatch.setattr(chessapp.app, "create_llama_brain", fake_create_llama_brain)
+    monkeypatch.setenv("LLAMACPP_BASE_URL", "http://llama-test:9999/v1")
+    monkeypatch.setenv("LLAMACPP_MODEL", "test-model")
+
+    build_app_from_env()
+
+    assert captured["base_url"] == "http://llama-test:9999/v1"
+    assert captured["model"] == "test-model"
+
+
+def test_build_app_from_env_defaults_match_the_agent_standard(monkeypatch):
+    # No env set: falls back to the workspace-standard llama-swap endpoint
+    # and model name (127.0.0.1:8200/v1, gemma-4-12b), not the old
+    # single-server localhost:8080 defaults.
+    captured: dict[str, str] = {}
+
+    def fake_create_llama_brain(*, base_url, model, **kwargs):
+        captured["base_url"] = base_url
+        captured["model"] = model
+        return ScriptedBrain(AgentResponse(text="hi"))
+
+    monkeypatch.setattr(chessapp.app, "create_llama_brain", fake_create_llama_brain)
+    monkeypatch.delenv("LLAMACPP_BASE_URL", raising=False)
+    monkeypatch.delenv("LLAMACPP_MODEL", raising=False)
+
+    build_app_from_env()
+
+    assert captured["base_url"] == DEFAULT_LLAMA_BASE_URL == "http://127.0.0.1:8200/v1"
+    assert captured["model"] == DEFAULT_MODEL == "gemma-4-12b"
 
 
 def test_uvicorn_has_a_websocket_protocol_available():
