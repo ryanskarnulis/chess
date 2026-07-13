@@ -23,6 +23,11 @@ asserts on the `MessageExchange` wire the endpoint returns:
   the web board renders): did the board change, or not?
 - **`stop_reason`** — `completed` vs a budget stop (`max_iterations` /
   `correction_limit`).
+- **cost** — how many times the *model* was called for one utterance, and
+  whether thinking was on for each turn. The live `LlamaCppProvider` is wrapped
+  in a `CountingProvider` (`tests/fakes.py`) — the one seam every round trip
+  passes through, since nothing in production counts them — so the round-trip
+  budget and the thinking policy are asserted, not just eyeballed.
 
 Assertions are behavioral, never exact call sequences: the model is sampled at
 temp 1.0 (see `../agent-standard/model-profile.md`), so goldens pin tool
@@ -69,8 +74,10 @@ a new model), re-record the table below in the same PR and say why.
 
 | Scenario | Utterance | Pins |
 | --- | --- | --- |
-| `plain_move` | "play e4" | Parser lets the verb-prefixed move through; exactly one **legal** `make_move`; board becomes `[e4, <engine reply>]`; `completed`. |
-| `judgment_question` | "how am I doing?" (4 plies in) | A judgment question routes through `evaluate_position`/`analyze_last_move` — never answered from vibes; **zero board mutations**; non-empty reply. |
+| `fast_path_low` | "e4" (verbosity=low) | The one scenario that *does* parse: the fast path dispatches the move and answers with a canned confirmation — **zero model calls**. |
+| `fast_path_normal` | "e4" (verbosity=normal) | Above verbosity=low the fast path still skips the loop and pays for commentary only: **exactly one** model call (`Brain.narrate`), thinking off. |
+| `plain_move` | "play e4" | Parser lets the verb-prefixed move through; exactly one **legal** `make_move`; board becomes `[e4, <engine reply>]`; `completed`. **2 model calls** (tool turn + closing turn), thinking off throughout. |
+| `judgment_question` | "how am I doing?" (4 plies in) | A judgment question routes through `evaluate_position`/`analyze_last_move` — never answered from vibes; **zero board mutations**; non-empty reply. Also the live thinking-policy pin: the tool-picking turn is thinking **off**, the turn that reasons about the result is thinking **on**. |
 | `ambiguous_move` | "move the rook" (both rook files open) | Genuine ambiguity → asks instead of guessing: **no legal `make_move`**, board unchanged, non-empty clarifying reply. |
 | `settings_by_speech` | "make it easier" | `set_difficulty` called successfully toward a **weaker** setting than the `casual` default; no board mutation. |
 | `honest_illegal` | "castle kingside" (illegal move 1) | No fabricated legal move; board unchanged. An attempted-and-rejected `make_move` (`legal:false`) is fine — only the board-didn't-change invariant is asserted, never wording. |
@@ -79,20 +86,34 @@ a new model), re-record the table below in the same PR and say why.
 ## Recorded baseline
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13,
-3 consecutive full suite runs — 5/5 real scenarios pass every run (15/15);
-`destructive_confirm` is xfail (see below).** Warm model. Re-recorded for the
-agent-loop rework (`feat/brain-tool-loop`): the two-phase respond/react flow
-became one bounded tool loop, so the numbers legitimately shifted — see the
-note below.
+3 consecutive full suite runs — 7/7 real scenarios pass every run (21/21);
+`destructive_confirm` is xfail (see below, and it XPASSed all three runs this
+session).** Warm model. Re-recorded with the model-call meter added
+(`test/loop-model-call-measurement`): the trajectory and latency numbers are
+flat against the loop-rework baseline, and the **model calls** column is new —
+it is the measurement TODO slice 2 asked for.
 
-| Scenario | Typical trajectory | Corrections seen | Warm time |
-| --- | --- | --- | --- |
-| `plain_move` | `make_move` | none | 0.8 s (first call ~6 s) |
-| `judgment_question` | `evaluate_position` | none | 1.9–5.4 s |
-| `ambiguous_move` | *(none — clarifying question)* | none | 0.7–0.9 s |
-| `settings_by_speech` | `set_difficulty` | none | 0.8 s |
-| `honest_illegal` | `make_move(illegal)` then a worded concession, **or** a concession outright | none (see note) | 0.5–0.8 s |
-| `destructive_confirm` | `new_game` (~2/3) / *(none, asks)* (~1/3) | — | 0.6–0.9 s |
+| Scenario | Typical trajectory | Model calls | Thinking | Corrections | Warm time |
+| --- | --- | --- | --- | --- | --- |
+| `fast_path_low` | `make_move` (no model) | **0** | — | none | 0.0 s |
+| `fast_path_normal` | `make_move` (no model) | **1** (narrate) | off | none | 0.8–0.9 s (first call ~5 s) |
+| `plain_move` | `make_move` | **2** | off, off | none | 1.7–2.1 s |
+| `judgment_question` | `evaluate_position` | **2** | **off, on** | none | 3.4–6.3 s |
+| `ambiguous_move` | *(none — clarifying question)* | **1** | off | none | 0.6–1.1 s |
+| `settings_by_speech` | `set_difficulty` | **2** | off, off | none | 0.7–0.8 s |
+| `honest_illegal` | `make_move(illegal)` then a worded concession, **or** a concession outright | **1–2** | off | none (see note) | 0.5–0.8 s |
+| `destructive_confirm` | *(none, asks)* — 3/3 this session | **1** | off | — | 0.6–0.9 s |
+
+**What the model-call column says.** The loop's floor for a tool-using
+utterance is **2** round trips — the turn that picks the tool, and the closing
+turn that reads its result and comments — and every scenario hits exactly that
+floor or less. Nothing needed a third turn, and nothing came near the
+`max_iterations=4` bound. Below the loop, the fast path is cheaper still: a
+plain move at verbosity=low is **zero-LLM** (canned confirmation), and one call
+above it (`narrate` only, no tool-decision turn). The `[eval]` lines print
+`model_calls=` and `thinking=[…]` per scenario, and the assertions are hard —
+a regression to the old two-call-plus-react shape would fail the suite, not just
+look slower in the log.
 
 **Why the numbers moved (2026-07-13).** The old flow answered an analysis ask
 with a *second, separate* call — a fresh react prompt carrying the tool result
@@ -110,8 +131,12 @@ Observations worth keeping:
 - **`judgment_question` is the slowest by design.** Thinking turns *ON* for the
   rest of the run once an analysis tool's result lands in context
   (`llama_brain.py` `_ANALYSIS_TOOLS`), so gemma emits a chain-of-thought before
-  commenting — ~12–22 s vs ~1–2 s for the thinking-off scenarios. Everything
-  else runs a fast tool-call turn (thinking off) plus the loop's closing turn.
+  commenting — **3.4–6.3 s vs ~0.5–2 s** for the thinking-off scenarios. It
+  still costs only the same 2 round trips as any other tool use; the extra time
+  is the reasoning turn, not an extra turn. The `thinking=[off,on]` flip is
+  asserted, so the policy can't silently regress to thinking-always-on (slow) or
+  thinking-never-on (which is what made `judgment_question` shallow before the
+  rule existed).
 - **`honest_illegal` self-corrects honestly.** Two variants seen across runs:
   the model either attempts `make_move("O-O")` (rejected `legal:false`) or
   first reads `get_legal_moves`; either way the rejection comes back as a tool
@@ -119,10 +144,12 @@ Observations worth keeping:
   **concedes in words** rather than faking one — `stop_reason` stays
   `completed`. No move is ever fabricated, board never changes. This is the
   illegal-move-recovery path working end-to-end.
-- **No cold load observed this session.** The model profile budgets ~100 s for
-  a cold llama-swap load; in practice gemma stayed warm on :8200 across the
-  runs (first call ~7 s). The 300 s provider read timeout + 310 s request
-  timeout cover a real cold load if one happens.
+- **Cold load is cheap in practice.** The model profile budgets ~100 s for a
+  cold llama-swap load. Measured here from a genuinely unloaded model
+  (`status: unloaded` on :8200), the first model call — `fast_path_normal`'s
+  narrate — took **~5 s** including the load; everything after ran warm. The
+  300 s provider read timeout + 310 s request timeout cover a slower load if
+  one happens.
 - **No schema self-corrections needed** on the passing scenarios — gemma
   emitted well-formed tool calls with correct argument names every run (chess's
   tool schemas are small and closed). Contrast PCC, where `create_task`
@@ -144,6 +171,13 @@ reliably. The scenario is left as a **non-strict `xfail`**: the invariant it
 asserts is correct, the suite stays green whether the model behaves (XPASS) or
 not (XFAIL), and the XPASS/XFAIL ratio is itself a signal to watch.
 
+**Watch (2026-07-13, measurement slice):** it XPASSed **3/3** runs — gemma asked
+for confirmation every time instead of resetting. That is a better rate than the
+~50% recorded above, but three samples against a ~50/50 coin proves nothing
+(p≈0.125 under the old rate), and nothing in the prompt or the loop changed to
+explain an improvement. Keep the xfail and keep watching; it is not evidence the
+gap is closed.
+
 Per the eval-gate discipline, the prompt was **not** changed in this slice
 (evals gate prompt changes; a fix belongs in its own change, re-run against
 this baseline). Tracked in `TODO.md`. The most robust fix is likely
@@ -157,13 +191,14 @@ Worth confirming the same ~50% rate for `resign` before designing the fix.
 
 Live delegate behavior observed through the REST seam conductor will use:
 
-- **Single-tool turns are the norm and fast** (~1 s warm): chess maps an
+- **Single-tool turns are the norm and fast** (~1–2 s warm): chess maps an
   utterance to one tool call and answers, with no multi-step tool chains on
   these asks (the loop *allows* them now — "play the best move" can chain
   `get_best_moves` → `make_move` — they just aren't needed for these). The
-  per-delegate latency budget for a chess call is ~1 s for
-  moves/settings/clarifications and **~2–5 s for analysis asks** ("how am I
+  per-delegate latency budget for a chess call is ~1–2 s for
+  moves/settings/clarifications and **~3–6 s for analysis asks** ("how am I
   doing?", "what was my mistake?"), which still carry a thinking-on turn.
+  Measured, not estimated — see the model-calls column in the baseline.
 - **Read-only asks reliably mutate nothing**, and illegal/ambiguous asks
   reliably leave the board untouched — chess is safe to delegate to without
   conductor needing to guard against spurious mutations.
