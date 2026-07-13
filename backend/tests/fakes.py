@@ -10,11 +10,15 @@ analysis detour. `ScriptedProvider` is the canonical no-LLM `ChatProvider`
 double, one layer below `ScriptedBrain`: it returns scripted `ChatResult`s and
 records the `chat()` requests, so the real `LlamaBrain` loop (tool messages,
 the iteration and correction budgets, thinking toggles) can be exercised
-without a model. Keep the doubles here — not copied into test files.
+without a model. `CountingProvider` is the odd one out — not a double at all
+but a decorator: it wraps a *real* provider and records each round trip, so the
+agent evals can assert how many times the live model was called and whether
+thinking was on. Keep the doubles here — not copied into test files.
 """
 
+import time
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from chessapp.api import create_app
@@ -186,3 +190,56 @@ class ScriptedProvider:
         if isinstance(turn, Exception):
             raise turn
         return turn
+
+
+@dataclass(frozen=True)
+class ModelCall:
+    """One model round trip as the harness sees it: was thinking on, how long."""
+
+    thinking: bool
+    seconds: float
+
+
+class CountingProvider:
+    """`ChatProvider` decorator that counts and times model round trips.
+
+    Unlike `ScriptedProvider`, which *replaces* the wire, this one *observes*
+    it: it delegates every `chat()` to a real inner provider and records what
+    went over. The agent evals wrap the live `LlamaCppProvider` in one, because
+    `ChatProvider` is the only seam every round trip passes through and nothing
+    in production counts them — that is how the evals can assert a fast-path
+    move costs zero model calls, a tool-using utterance costs the tool turn plus
+    the loop's closing turn, and thinking is off until an analysis result lands.
+
+    A raising round trip is still recorded: the model was called, and the loop
+    pays a correction for it.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.calls: list[ModelCall] = []
+
+    def reset(self) -> None:
+        """Drop the record — one eval scenario measures one utterance."""
+        self.calls.clear()
+
+    def chat(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        tools: Sequence[dict[str, Any]] | None = None,
+        enable_thinking: bool = False,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        started = time.monotonic()
+        try:
+            return self.inner.chat(
+                messages,
+                tools=tools,
+                enable_thinking=enable_thinking,
+                max_tokens=max_tokens,
+            )
+        finally:
+            self.calls.append(
+                ModelCall(thinking=enable_thinking, seconds=time.monotonic() - started)
+            )
