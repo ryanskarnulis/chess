@@ -108,15 +108,19 @@ def _build_eval_app(engine: EnginePlayer) -> tuple[TestClient, ToolContext]:
     # settings default so reported difficulty and real strength agree.
     if ctx.settings.tier is not None:
         engine.set_tier(ctx.settings.tier)
+    # One registry, exactly as build_app does: the brain's loop dispatches
+    # through the same registry the app runs the fast path through.
+    registry = build_registry(ctx)
     brain = create_llama_brain(
         base_url=LLAMACPP_BASE_URL,
         model=LLAMACPP_MODEL,
-        tool_definitions=build_registry(ctx).definitions(),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
         system_prompt_provider=lambda: system_prompt_for(
             ctx.settings.verbosity, ctx.settings.hints_mode
         ),
     )
-    client = TestClient(create_app(ctx, brain=brain))
+    client = TestClient(create_app(ctx, brain=brain, registry=registry))
     return client, ctx
 
 

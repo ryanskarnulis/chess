@@ -15,12 +15,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.agent_api import LOOP_ACTOR, reset_rate_limit
-from chessapp.api import MAX_TOOL_RETRY_ROUNDS, create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
 from chessapp.provider import ProviderRequestError
 from chessapp.tools import ToolContext
-from fakes import ScriptedBrain
+from fakes import ScriptedBrain, scripted_app
 
 
 @pytest.fixture(autouse=True)
@@ -30,18 +29,18 @@ def _reset_rate_limit():
     reset_rate_limit()
 
 
-def make_client(*responses, reactions=(), brain=None, verbosity="normal"):
-    brain = (
-        brain if brain is not None else ScriptedBrain(*responses, reactions=reactions)
-    )
+def make_client(*responses, narrations=(), brain=None, verbosity="normal"):
     ctx = ToolContext(session=GameSession())
     ctx.settings.verbosity = verbosity
-    return TestClient(create_app(ctx, brain=brain)), brain, ctx
+    if brain is None:
+        brain = ScriptedBrain(*responses, narrations=narrations)
+    app, brain = scripted_app(ctx, brain=brain)
+    return TestClient(app), brain, ctx
 
 
-def move(san):
+def move(san, text="on it"):
     return AgentResponse(
-        text="on it", tool_calls=(ToolCall(name="make_move", args={"move": san}),)
+        text=text, tool_calls=(ToolCall(name="make_move", args={"move": san}),)
     )
 
 
@@ -122,7 +121,7 @@ def test_missing_and_soft_deleted_threads_404_across_endpoints():
 
 
 def test_post_message_runs_pipeline_and_persists_the_exchange():
-    client, _, ctx = make_client(move("e4"), reactions=("Pawn to e4. Your move.",))
+    client, _, ctx = make_client(move("e4", text="Pawn to e4. Your move."))
     conversation_id = new_conversation(client)
 
     response = send(client, conversation_id, "open with the king's pawn")
@@ -167,9 +166,9 @@ def test_tool_calls_is_null_when_no_tools_ran():
 def test_ok_false_result_maps_to_error_not_result():
     client, _, _ = make_client(
         AgentResponse(
-            text="odd", tool_calls=(ToolCall(name="launch_rocket", args={}),)
-        ),
-        AgentResponse(text="I can't do that."),
+            text="I can't do that.",
+            tool_calls=(ToolCall(name="launch_rocket", args={}),),
+        )
     )
     conversation_id = new_conversation(client)
     assistant = send(client, conversation_id, "do a barrel roll").json()[
@@ -179,19 +178,23 @@ def test_ok_false_result_maps_to_error_not_result():
     assert call["tool"] == "launch_rocket"
     assert call["result"] is None
     assert "unknown tool" in call["error"]
-    # A wordy concession during the retry loop is a normal completion.
+    # The loop read the error, gave up on the tool, and answered in words.
     assert assistant["content"] == "I can't do that."
     assert assistant["stop_reason"] == "completed"
 
 
-def test_rejected_move_is_a_result_and_exhaustion_is_correction_limit():
+def test_rejected_move_is_a_result_and_a_budget_stop_is_reported():
     """A `legal: false` move rejection is a legitimate domain outcome — it
-    rides on `result`, never `error`. A retry loop that never resolves the
-    failures stops with `correction_limit`."""
+    rides on `result`, never `error`. And when the brain's loop gives up on its
+    own budget, that stop reason reaches the delegate wire verbatim."""
     client, _, ctx = make_client(
-        move("Nf6"),  # illegal for White from the start
-        *[move("Nf6") for _ in range(MAX_TOOL_RETRY_ROUNDS)],
-        reactions=("Couldn't make that one work.",),
+        AgentResponse(
+            text="",
+            tool_calls=tuple(
+                ToolCall(name="make_move", args={"move": "Nf6"}) for _ in range(3)
+            ),
+            stop_reason="max_iterations",
+        )
     )
     conversation_id = new_conversation(client)
     assistant = send(client, conversation_id, "knight to f6").json()[
@@ -199,10 +202,10 @@ def test_rejected_move_is_a_result_and_exhaustion_is_correction_limit():
     ]
 
     calls = assistant["tool_calls"]
-    assert len(calls) == 1 + MAX_TOOL_RETRY_ROUNDS
+    assert len(calls) == 3
     assert all(c["result"] is not None and c["error"] is None for c in calls)
-    assert assistant["content"] == "Couldn't make that one work."
-    assert assistant["stop_reason"] == "correction_limit"
+    assert assistant["content"]  # a budget stop still says something
+    assert assistant["stop_reason"] == "max_iterations"
     assert ctx.session.move_history() == []
 
 
@@ -222,11 +225,13 @@ def test_title_is_derived_from_the_first_user_message():
 
 def test_history_replays_text_turns_only_no_tool_payloads():
     """The second message's brain call sees only prior *text* turns — the
-    reaction the caller saw, never the persisted tool trajectory."""
+    commentary the caller saw, never the persisted tool trajectory."""
     brain = ScriptedBrain(
-        move("e4"),  # turn 1, phase one
-        AgentResponse(text="I opened with e4."),  # turn 2, phase one
-        reactions=("Pawn to e4.",),  # turn 1, react
+        AgentResponse(  # turn 1: the loop played e4 and commented
+            text="Pawn to e4.",
+            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
+        ),
+        AgentResponse(text="I opened with e4."),  # turn 2
     )
     client, _, _ = make_client(brain=brain)
     conversation_id = new_conversation(client)
@@ -243,20 +248,20 @@ def test_history_replays_text_turns_only_no_tool_payloads():
     assert all(set(turn) == {"role", "content"} for turn in replayed)
 
 
-def test_fast_path_move_skips_the_phase_one_brain_call():
-    # A ScriptedBrain with no scripted phase-one responses raises if consulted.
-    client, brain, ctx = make_client(reactions=("Classic opener.",))
+def test_fast_path_move_skips_the_brain_loop():
+    # A ScriptedBrain with no scripted responses raises if the loop is consulted.
+    client, brain, ctx = make_client(narrations=("Classic opener.",))
     conversation_id = new_conversation(client)
     assistant = send(client, conversation_id, "e4").json()["assistant_message"]
 
-    assert brain.calls == []  # phase one never consulted
+    assert brain.calls == []  # the loop never consulted
     assert assistant["content"] == "Classic opener."
     assert assistant["tool_calls"][0]["tool"] == "make_move"
     assert ctx.session.move_history() == ["e4"]
 
 
 def test_delegate_move_broadcasts_to_the_web_board():
-    client, _, _ = make_client(reactions=("ok",))
+    client, _, _ = make_client(narrations=("ok",))
     conversation_id = new_conversation(client)
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()  # connect snapshot
@@ -306,7 +311,7 @@ def test_missing_content_field_is_422():
 
 def test_post_message_is_rate_limited(monkeypatch):
     monkeypatch.setenv("CHESSAPP_AGENT_MESSAGES_PER_MIN", "1")
-    client, _, _ = make_client(reactions=("ok", "ok"))
+    client, _, _ = make_client(narrations=("ok", "ok"))
     conversation_id = new_conversation(client)
 
     assert send(client, conversation_id, "e4").status_code == 200
@@ -316,7 +321,7 @@ def test_post_message_is_rate_limited(monkeypatch):
 
 
 def test_recognized_actor_binds_the_conductor(caplog):
-    client, _, _ = make_client(reactions=("ok",))
+    client, _, _ = make_client(narrations=("ok",))
     conversation_id = new_conversation(client)
     with caplog.at_level(logging.INFO, logger="chessapp.agent_api"):
         send(
@@ -334,7 +339,7 @@ def test_recognized_actor_binds_the_conductor(caplog):
     ids=["absent", "unrecognized"],
 )
 def test_actor_falls_back_to_the_default_when_absent_or_unrecognized(caplog, headers):
-    client, _, _ = make_client(reactions=("ok",))
+    client, _, _ = make_client(narrations=("ok",))
     conversation_id = new_conversation(client)
     with caplog.at_level(logging.INFO, logger="chessapp.agent_api"):
         send(client, conversation_id, "e4", headers=headers)

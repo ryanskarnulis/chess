@@ -21,7 +21,8 @@ asserts on the `MessageExchange` wire the endpoint returns:
   rejected move is a `legal: false` *result*, never an `error`).
 - **board end-state** — read back through `GET /api/state` (the same document
   the web board renders): did the board change, or not?
-- **`stop_reason`** — `completed` vs `correction_limit`.
+- **`stop_reason`** — `completed` vs a budget stop (`max_iterations` /
+  `correction_limit`).
 
 Assertions are behavioral, never exact call sequences: the model is sampled at
 temp 1.0 (see `../agent-standard/model-profile.md`), so goldens pin tool
@@ -77,33 +78,47 @@ a new model), re-record the table below in the same PR and say why.
 
 ## Recorded baseline
 
-**gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-11,
+**gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13,
 3 consecutive full suite runs — 5/5 real scenarios pass every run (15/15);
-`destructive_confirm` is xfail (see below).** Warm model.
+`destructive_confirm` is xfail (see below).** Warm model. Re-recorded for the
+agent-loop rework (`feat/brain-tool-loop`): the two-phase respond/react flow
+became one bounded tool loop, so the numbers legitimately shifted — see the
+note below.
 
-| Scenario | Typical trajectory | Retries seen | Warm time |
+| Scenario | Typical trajectory | Corrections seen | Warm time |
 | --- | --- | --- | --- |
-| `plain_move` | `make_move` | none | 1.1–2.2 s (first call ~7 s) |
-| `judgment_question` | `evaluate_position` | none | 11.7–22.1 s |
-| `ambiguous_move` | *(none — clarifying question)* | none | 1.0–1.3 s |
-| `settings_by_speech` | `set_difficulty` | none | 1.1–1.2 s |
-| `honest_illegal` | `make_move(illegal)` **or** `get_legal_moves`, then a worded concession | self-corrects (see note) | 2.1–2.2 s |
-| `destructive_confirm` | `new_game` (~half) / *(none, asks)* (~half) | — | 0.7–2.1 s |
+| `plain_move` | `make_move` | none | 0.8 s (first call ~6 s) |
+| `judgment_question` | `evaluate_position` | none | 1.9–5.4 s |
+| `ambiguous_move` | *(none — clarifying question)* | none | 0.7–0.9 s |
+| `settings_by_speech` | `set_difficulty` | none | 0.8 s |
+| `honest_illegal` | `make_move(illegal)` then a worded concession, **or** a concession outright | none (see note) | 0.5–0.8 s |
+| `destructive_confirm` | `new_game` (~2/3) / *(none, asks)* (~1/3) | — | 0.6–0.9 s |
+
+**Why the numbers moved (2026-07-13).** The old flow answered an analysis ask
+with a *second, separate* call — a fresh react prompt carrying the tool result
+as JSON, with thinking ON, reasoning about the position from cold (11.7–22.1 s).
+The loop instead hands the model its own `evaluate_position` result as a
+`role: "tool"` message in the conversation it already has, and its next turn is
+the answer: same thinking policy, same routing through the tool, but far less to
+re-derive — **1.9–5.4 s, a 3–6× improvement on the worst latency in the suite.**
+Everything else is flat or slightly faster (one fewer prompt rebuild). Tool
+routing and board-mutation behavior are unchanged: every scenario still pins the
+same trajectory it did before.
 
 Observations worth keeping:
 
-- **`judgment_question` is the slowest by design.** The react phase turns
-  *thinking ON* when it reacts to an analysis tool's result (`llama_brain.py`
-  `_ANALYSIS_TOOLS`), so gemma emits a chain-of-thought before commenting —
-  ~12–22 s vs ~1–2 s for the thinking-off scenarios. Everything else runs a
-  single fast tool-decision call (thinking off) plus a short react.
+- **`judgment_question` is the slowest by design.** Thinking turns *ON* for the
+  rest of the run once an analysis tool's result lands in context
+  (`llama_brain.py` `_ANALYSIS_TOOLS`), so gemma emits a chain-of-thought before
+  commenting — ~12–22 s vs ~1–2 s for the thinking-off scenarios. Everything
+  else runs a fast tool-call turn (thinking off) plus the loop's closing turn.
 - **`honest_illegal` self-corrects honestly.** Two variants seen across runs:
   the model either attempts `make_move("O-O")` (rejected `legal:false`) or
-  first reads `get_legal_moves`; either way the pipeline's domain-retry loop
-  feeds the rejection back and the model **concedes in words** rather than
-  faking a move — `stop_reason` stays `completed` (a `correction_limit` would
-  mean it kept retrying illegally). No move is ever fabricated, board never
-  changes. This is the illegal-move-recovery path working end-to-end.
+  first reads `get_legal_moves`; either way the rejection comes back as a tool
+  result *inside the loop* and the model either corrects to a legal move or
+  **concedes in words** rather than faking one — `stop_reason` stays
+  `completed`. No move is ever fabricated, board never changes. This is the
+  illegal-move-recovery path working end-to-end.
 - **No cold load observed this session.** The model profile budgets ~100 s for
   a cold llama-swap load; in practice gemma stayed warm on :8200 across the
   runs (first call ~7 s). The 300 s provider read timeout + 310 s request
@@ -142,12 +157,13 @@ Worth confirming the same ~50% rate for `resign` before designing the fix.
 
 Live delegate behavior observed through the REST seam conductor will use:
 
-- **Single-tool turns are the norm and fast** (~1–2 s warm): chess maps an
-  utterance to one tool call and reacts, with no multi-step tool chains on
-  these asks. Conductor's per-delegate latency budget for a chess call is
-  ~1–2 s for moves/settings/clarifications, but **~12–22 s for analysis asks**
-  ("how am I doing?", "what was my mistake?") because of the thinking-on react
-  — size the pending/progress UI for that tail.
+- **Single-tool turns are the norm and fast** (~1 s warm): chess maps an
+  utterance to one tool call and answers, with no multi-step tool chains on
+  these asks (the loop *allows* them now — "play the best move" can chain
+  `get_best_moves` → `make_move` — they just aren't needed for these). The
+  per-delegate latency budget for a chess call is ~1 s for
+  moves/settings/clarifications and **~2–5 s for analysis asks** ("how am I
+  doing?", "what was my mistake?"), which still carry a thinking-on turn.
 - **Read-only asks reliably mutate nothing**, and illegal/ambiguous asks
   reliably leave the board untouched — chess is safe to delegate to without
   conductor needing to guard against spurious mutations.

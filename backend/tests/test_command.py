@@ -1,9 +1,13 @@
-"""Text command endpoint: user string in → brain → tool calls → new state.
+"""Text command endpoint: user string in → the brain's tool loop → new state.
 
-The brain is exercised only through its interface with a scripted fake —
-never a live LLM. The endpoint dispatches whatever tool calls the brain
-returns through the validated registry, so a misbehaving brain surfaces
-as error results, never as corrupted state or a 500.
+The pipeline's half of the game loop, not the loop itself (that is pinned in
+test_llama_brain.py). The brain is exercised only through its interface with a
+scripted fake — never a live LLM — but the tool calls it scripts run through the
+*real* registry against the real session, so a misbehaving brain surfaces as
+error results, never as corrupted state or a 500. What this file pins: the
+agent-facing view the brain is handed, that the commentary the user sees is the
+loop's own closing turn, the transcript, the broadcast, and the deterministic
+fast path.
 """
 
 from fastapi.testclient import TestClient
@@ -12,21 +16,22 @@ from chessapp.api import create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
-from fakes import FakeEngine, ScriptedBrain
+from fakes import FakeEngine, ScriptedBrain, scripted_app
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 
-def make_client(
-    *responses: AgentResponse,
-    reactions: tuple[str, ...] = (),
-    brain: ScriptedBrain | None = None,
-):
-    brain = (
-        brain if brain is not None else ScriptedBrain(*responses, reactions=reactions)
+def make_client(*responses: AgentResponse, brain: ScriptedBrain | None = None):
+    app, brain = scripted_app(
+        ToolContext(session=GameSession()), *responses, brain=brain
     )
-    ctx = ToolContext(session=GameSession())
-    return TestClient(create_app(ctx, brain=brain)), brain
+    return TestClient(app), brain
+
+
+def move(san: str, text: str = "on it") -> AgentResponse:
+    return AgentResponse(
+        text=text, tool_calls=(ToolCall(name="make_move", args={"move": san}),)
+    )
 
 
 def test_no_brain_is_503():
@@ -69,26 +74,17 @@ def test_brain_view_is_agent_facing_not_the_ui_state():
     assert "dests" not in board_state
 
 
-def test_react_gets_the_same_agent_facing_view():
-    """Phase two reads the same slim view, rebuilt from the post-move state;
-    player_color is the side the command was issued for, so it survives the
-    move (and the engine's reply) unchanged."""
-    client, brain = make_client(
-        AgentResponse(
-            text="on it",
-            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
-        ),
-        reactions=("A fine start.",),
-    )
-    client.post("/api/command", json={"text": "play e4"})
-    react_state, _ = brain.react_calls[0]
-    assert react_state["player_color"] == "white"
-    assert react_state["turn"] == "black"
-    assert react_state["in_check"] is False
-    assert react_state["history"] == ["e4"]
-    assert "e5" in react_state["legal_moves"]
-    assert "fens" not in react_state
-    assert "dests" not in react_state
+def test_one_brain_call_does_the_whole_turn():
+    """No phase two: the loop already ran the tools and produced the closing
+    comment, so the pipeline consults the brain exactly once."""
+    client, brain = make_client(move("e4", text="e4 — the classic King's pawn."))
+    body = client.post("/api/command", json={"text": "play e4"}).json()
+    assert len(brain.calls) == 1
+    assert body["commentary"] == "e4 — the classic King's pawn."
+    assert body["tool_results"][0]["name"] == "make_move"
+    assert body["tool_results"][0]["result"]["legal"] is True
+    assert body["state"]["history"] == ["e4"]
+    assert body["state"]["turn"] == "black"
 
 
 def test_command_with_no_tool_calls_returns_commentary_only():
@@ -99,73 +95,16 @@ def test_command_with_no_tool_calls_returns_commentary_only():
     assert body["state"]["fen"] == START_FEN
 
 
-def test_command_tool_calls_mutate_state_through_registry():
+def test_read_only_tool_results_reach_the_ui():
     client, _ = make_client(
         AgentResponse(
-            # Pre-action text: the model's utterance before the tool ran. When
-            # tools run the user-facing commentary comes from the reaction, not
-            # from this.
-            text="on it",
-            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
-        ),
-        reactions=("e4 — the classic King's pawn.",),
-    )
-    body = client.post("/api/command", json={"text": "play e4"}).json()
-    assert body["commentary"] == "e4 — the classic King's pawn."
-    assert body["tool_results"][0]["name"] == "make_move"
-    assert body["tool_results"][0]["result"]["legal"] is True
-    assert body["state"]["history"] == ["e4"]
-    assert body["state"]["turn"] == "black"
-
-
-def test_reaction_reads_new_state_and_changes_not_raw_utterance():
-    """The heart of the game loop: after tools run, the agent reacts from the
-    *new* game state plus what the tools returned — never from the raw
-    utterance. This keeps a future deterministic fast-parse path free to add."""
-    client, brain = make_client(
-        AgentResponse(
-            text="on it",
-            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
-        ),
-        reactions=("Nice opening.",),
-    )
-    body = client.post("/api/command", json={"text": "play e4"}).json()
-
-    assert body["commentary"] == "Nice opening."
-    assert len(brain.react_calls) == 1
-    react_state, react_changes = brain.react_calls[0]
-    # React sees the post-move board (Black to move, e4 played)...
-    assert react_state["history"] == ["e4"]
-    assert react_state["turn"] == "black"
-    # ...and the tool results (what changed), but not the raw command.
-    assert react_changes == body["tool_results"]
-    assert react_changes[0]["name"] == "make_move"
-
-
-def test_no_tool_calls_skips_reaction():
-    """A pure question / clarifying reply changes nothing, so there is nothing
-    to react to: the direct answer stands and react is never called."""
-    client, brain = make_client(AgentResponse(text="Which knight did you mean?"))
-    body = client.post("/api/command", json={"text": "move the knight"}).json()
-    assert body["commentary"] == "Which knight did you mean?"
-    assert brain.react_calls == []
-
-
-def test_reaction_runs_for_read_only_tools_and_grounds_the_answer():
-    """Even a read-only tool triggers the reaction: the answer the user sees is
-    grounded in the tool result, not in the model's pre-execution guess."""
-    client, brain = make_client(
-        AgentResponse(
-            text="let me check",
+            text="You have 20 legal moves.",
             tool_calls=(ToolCall(name="get_legal_moves", args={}),),
-        ),
-        reactions=("You have 20 legal moves.",),
+        )
     )
     body = client.post("/api/command", json={"text": "what are my options?"}).json()
     assert body["commentary"] == "You have 20 legal moves."
-    assert len(brain.react_calls) == 1
-    _, react_changes = brain.react_calls[0]
-    assert "e4" in react_changes[0]["result"]["moves"]
+    assert "e4" in body["tool_results"][0]["result"]["moves"]
 
 
 def test_multiple_tool_calls_run_in_order():
@@ -185,13 +124,11 @@ def test_multiple_tool_calls_run_in_order():
 
 
 def test_unknown_tool_from_brain_is_error_result_not_500():
-    # The failure earns a retry round; here the brain concedes in words.
     client, _ = make_client(
         AgentResponse(
-            text="doing something odd",
+            text="I can't do that.",
             tool_calls=(ToolCall(name="launch_rocket", args={}),),
-        ),
-        AgentResponse(text="I can't do that."),
+        )
     )
     response = client.post("/api/command", json={"text": "do it"})
     assert response.status_code == 200
@@ -204,28 +141,80 @@ def test_unknown_tool_from_brain_is_error_result_not_500():
 def test_invalid_args_from_brain_is_error_result_not_500():
     client, _ = make_client(
         AgentResponse(
-            text="moving",
+            text="Sorry, I fumbled that one.",
             tool_calls=(ToolCall(name="make_move", args={"move": 42}),),
-        ),
-        AgentResponse(text="Sorry, I fumbled that one."),
+        )
     )
     response = client.post("/api/command", json={"text": "play something"})
     assert response.status_code == 200
     assert response.json()["tool_results"][0]["result"]["ok"] is False
 
 
-def test_command_mutation_broadcasts_state_to_ws():
+def test_a_rejected_move_leaves_the_board_alone():
+    """An illegal move the loop could not recover from is still just data: the
+    result says `legal: false` and the board is untouched."""
+    client, _ = make_client(move("Nf6", text="That one's not legal for White."))
+    body = client.post("/api/command", json={"text": "knight to f6"}).json()
+    assert body["tool_results"][0]["result"]["legal"] is False
+    assert body["state"]["history"] == []
+
+
+def test_a_budget_stop_still_says_something():
+    """When the loop runs out of iterations or corrections it has no closing
+    turn, so the pipeline supplies a line rather than an empty bubble."""
     client, _ = make_client(
-        AgentResponse(
-            text="done",
-            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
-        )
+        AgentResponse(text="", stop_reason="max_iterations"),
     )
+    body = client.post("/api/command", json={"text": "play the best move"}).json()
+    assert body["commentary"]
+
+
+def test_command_mutation_broadcasts_state_to_ws():
+    client, _ = make_client(move("e4"))
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()  # connect snapshot
         client.post("/api/command", json={"text": "play e4"})
         message = ws.receive_json()
     assert message["state"]["history"] == ["e4"]
+
+
+def test_a_move_the_agent_corrected_its_way_to_still_broadcasts():
+    """The loop's self-correction is invisible to the pipeline — it sees only
+    the calls that ran — but the board change it produced must still reach the
+    UI. (Both calls come back in `tool_results`, rejection first.)"""
+    client, _ = make_client(
+        AgentResponse(
+            text="Meant Nf3.",
+            tool_calls=(
+                ToolCall(name="make_move", args={"move": "Nf6"}),  # rejected
+                ToolCall(name="make_move", args={"move": "Nf3"}),  # lands
+            ),
+        )
+    )
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        client.post("/api/command", json={"text": "knight to f6"})
+        message = ws.receive_json()
+    assert message["state"]["history"] == ["Nf3"]
+
+
+def test_read_only_command_does_not_broadcast():
+    client, _ = make_client(
+        AgentResponse(
+            text="You have 20 moves.",
+            tool_calls=(ToolCall(name="get_legal_moves", args={}),),
+        ),
+        move("e4", text="done"),
+    )
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        client.post("/api/command", json={"text": "what are my options?"})
+        client.post("/api/command", json={"text": "play e4"})
+        message = ws.receive_json()  # first broadcast is the move, not the read
+    assert message["state"]["history"] == ["e4"]
+
+
+# --- conversation transcript -------------------------------------------------
 
 
 def test_first_command_sees_empty_transcript():
@@ -249,20 +238,14 @@ def test_transcript_carries_prior_turns_to_the_brain():
     ]
 
 
-def test_reaction_commentary_is_what_the_transcript_records():
-    """When tools run, the user sees the reaction — so that, not the brain's
-    pre-action text, is what the next turn remembers. React itself also gets
-    the prior turns (not including the in-flight one)."""
+def test_the_transcript_records_the_users_words_and_the_closing_comment():
+    """What the next turn remembers is the conversation the user had — their own
+    words and the comment they saw — never the loop's internal tool traffic."""
     client, brain = make_client(
-        AgentResponse(
-            text="on it",
-            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
-        ),
+        move("e4", text="A bold king's pawn!"),
         AgentResponse(text="you did"),
-        reactions=("A bold king's pawn!",),
     )
     client.post("/api/command", json={"text": "play e4"})
-    assert brain.react_transcripts == [[]]
     client.post("/api/command", json={"text": "did I open well?"})
     assert brain.transcripts[1] == [
         {"role": "user", "content": "play e4"},
@@ -272,31 +255,33 @@ def test_reaction_commentary_is_what_the_transcript_records():
 
 # --- deterministic fast-parse path (the seam BRIEF reserves) ------------------
 #
-# An utterance that is exactly one unambiguous legal move skips the phase-one
-# LLM call and goes straight to make_move through the same registry — one road
-# in, one pipeline, minus a model round-trip. The agent still reacts from the
-# new state; at verbosity=low a canned confirmation stands in for the reaction
-# too, making a plain move a zero-LLM turn. Anything ambiguous or non-move
-# reaches the brain unchanged. A ScriptedBrain with no scripted responses
-# fails loudly (IndexError) if phase one is ever consulted.
+# An utterance that is exactly one unambiguous legal move skips the model
+# entirely and goes straight to make_move through the same registry — one road
+# in, one pipeline, minus the LLM. Because it never enters the loop there is no
+# closing turn to comment with, so `narrate` supplies one; at verbosity=low a
+# canned confirmation stands in for that too, making a plain move a zero-LLM
+# turn. Anything ambiguous or non-move reaches the brain unchanged. A
+# ScriptedBrain with no scripted responses fails loudly (IndexError) if the
+# loop is ever consulted.
 
 
 def make_fast_client(
     *responses: AgentResponse,
-    reactions: tuple[str, ...] = (),
+    narrations: tuple[str, ...] = (),
     verbosity: str = "normal",
     engine=None,
 ):
-    brain = ScriptedBrain(*responses, reactions=reactions)
     ctx = ToolContext(session=GameSession(), engine=engine)
     ctx.settings.verbosity = verbosity
-    return TestClient(create_app(ctx, brain=brain)), brain, ctx
+    brain = ScriptedBrain(*responses, narrations=narrations)
+    app, _ = scripted_app(ctx, brain=brain)
+    return TestClient(app), brain, ctx
 
 
-def test_plain_move_skips_the_phase_one_llm_call():
-    client, brain, _ = make_fast_client(reactions=("Pawn out.",))
+def test_plain_move_skips_the_llm_loop():
+    client, brain, _ = make_fast_client(narrations=("Pawn out.",))
     body = client.post("/api/command", json={"text": "e4"}).json()
-    assert brain.calls == []  # phase one never consulted
+    assert brain.calls == []  # the loop was never entered
     assert body["commentary"] == "Pawn out."
     assert body["tool_results"][0]["name"] == "make_move"
     assert body["tool_results"][0]["result"]["legal"] is True
@@ -310,20 +295,20 @@ def test_fast_path_covers_spoken_phrases():
     assert body["state"]["history"] == ["Nf3"]
 
 
-def test_fast_path_reacts_from_the_new_state():
-    client, brain, _ = make_fast_client(reactions=("Classic.",))
+def test_fast_path_narrates_from_the_new_state():
+    client, brain, _ = make_fast_client(narrations=("Classic.",))
     body = client.post("/api/command", json={"text": "e4"}).json()
-    react_state, react_changes = brain.react_calls[0]
-    assert react_state["history"] == ["e4"]
-    assert react_state["player_color"] == "white"
-    assert react_changes == body["tool_results"]
+    state, changes = brain.narrate_calls[0]
+    assert state["history"] == ["e4"]
+    assert state["player_color"] == "white"
+    assert changes == body["tool_results"]
 
 
 def test_low_verbosity_fast_move_is_a_zero_llm_turn():
     client, brain, _ = make_fast_client(verbosity="low")
     body = client.post("/api/command", json={"text": "e4"}).json()
     assert brain.calls == []
-    assert brain.react_calls == []
+    assert brain.narrate_calls == []
     assert body["commentary"] == "e4."
 
 
@@ -336,8 +321,8 @@ def test_low_verbosity_confirmation_includes_the_engine_reply():
 
 def test_low_verbosity_confirmation_reports_game_over():
     client, _, ctx = make_fast_client(verbosity="low")
-    for move in ("e4", "f6", "d3", "g5"):
-        ctx.session.submit_move(move)
+    for san in ("e4", "f6", "d3", "g5"):
+        ctx.session.submit_move(san)
     body = client.post("/api/command", json={"text": "queen to h5"}).json()
     assert body["commentary"] == "Qh5#. Game over: 1-0 (checkmate)."
 
@@ -351,7 +336,7 @@ def test_non_move_text_reaches_the_brain_unchanged():
 
 def test_illegal_move_text_reaches_the_brain_unchanged():
     # Nf6 is Black's move — nothing legal matches, so the utterance falls
-    # through to the agent (whose retry loop owns illegal-move recovery).
+    # through to the agent (whose loop owns illegal-move recovery).
     client, brain, _ = make_fast_client(AgentResponse(text="That's not legal."))
     client.post("/api/command", json={"text": "knight to f6"})
     assert [command for _, command in brain.calls] == ["knight to f6"]
@@ -359,7 +344,7 @@ def test_illegal_move_text_reaches_the_brain_unchanged():
 
 def test_fast_path_turn_is_recorded_in_the_transcript():
     client, brain, _ = make_fast_client(
-        AgentResponse(text="you did"), reactions=("Sharp.",)
+        AgentResponse(text="you did"), narrations=("Sharp.",)
     )
     client.post("/api/command", json={"text": "e4"})
     client.post("/api/command", json={"text": "did I open well?"})
@@ -370,28 +355,9 @@ def test_fast_path_turn_is_recorded_in_the_transcript():
 
 
 def test_fast_move_broadcasts_state_to_ws():
-    client, _, _ = make_fast_client(reactions=("ok",))
+    client, _, _ = make_fast_client(narrations=("ok",))
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()  # connect snapshot
         client.post("/api/command", json={"text": "e4"})
         message = ws.receive_json()
-    assert message["state"]["history"] == ["e4"]
-
-
-def test_read_only_command_does_not_broadcast():
-    client, _ = make_client(
-        AgentResponse(
-            text="You have 20 moves.",
-            tool_calls=(ToolCall(name="get_legal_moves", args={}),),
-        ),
-        AgentResponse(
-            text="done",
-            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
-        ),
-    )
-    with client.websocket_connect("/ws") as ws:
-        ws.receive_json()
-        client.post("/api/command", json={"text": "what are my options?"})
-        client.post("/api/command", json={"text": "play e4"})
-        message = ws.receive_json()  # first broadcast is the move, not the read
     assert message["state"]["history"] == ["e4"]
