@@ -37,6 +37,30 @@ jobs:
       - name: Run tests
         run: pytest --cov=chessapp --cov-report=term-missing
 
+  # Non-blocking vendored-file drift check (agent-standard master plan §11):
+  # clones the canonical agent-standard repo next to this checkout and runs
+  # check-sync.sh; drift surfaces as a warning annotation, never a failure.
+  # This checkout doubles as the canonical voice-module source, so only
+  # agent-standard is cloned. Runs on the homelab runner because the repo is
+  # private — the default GITHUB_TOKEN is single-repo, but the runner's gh
+  # credential helper can clone it.
+  sync-check:
+    runs-on: [self-hosted, homelab]
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - name: check-sync (warn only)
+        run: |
+          layout="$RUNNER_TEMP/check-sync"
+          rm -rf "$layout" && mkdir -p "$layout"
+          git clone --depth 1 https://github.com/ryanskarnulis/agent-standard "$layout/agent-standard"
+          cp -r "$GITHUB_WORKSPACE" "$layout/chess"
+          if ! "$layout/agent-standard/check-sync.sh"; then
+            echo "::warning title=Vendored-file drift::check-sync.sh found drift against the canonical files — re-copy per the re-vendor rule (see job log)."
+          fi
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
