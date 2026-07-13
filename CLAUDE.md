@@ -52,6 +52,10 @@ The agent is the **orchestrator and personality, NOT the referee**:
 
 Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a string → agent → tool call(s) → deterministic engine executes → state updates → agent reacts. One road in, one brain, no dual-path race conditions. The agent's reaction step reads from **current game state** ("new board + what changed"), not from the raw user utterance.
 
+## Entry Points
+
+The board UI (`/`), the delegate API (`/api/agent`, still served but no longer advertised in `app.yaml`), and the **conductor handoff deep link**: the fleet's conductor sends a user here with what they said (`/?intent=let's+play+chess+as+black`). `App.tsx` scrubs the param on mount and feeds the intent to `sendCommand` — the same pipeline as the command box, so a handoff opens the session already acting on it. It is one utterance in, nothing more: the intent is capped, and scrubbing the URL first means a reload never replays it. The `open:` block in `app.yaml` is what tells conductor this link exists (`../agent-standard/app-yaml-open-block.md`).
+
 ## Binding Invariants (details in BRIEF.md)
 
 - **Swappable brain module:** all model-specific logic lives behind one interface — `get_agent_response(board_state, command, transcript) → {text, tool_calls}`. Nothing else in the app may know which model/backend is behind it.

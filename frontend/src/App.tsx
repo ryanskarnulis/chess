@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AgentBubble } from './AgentBubble'
 import { Board } from './Board'
 import { BottomBar } from './BottomBar'
@@ -10,6 +10,10 @@ import { PostGameModal } from './PostGameModal'
 import { PromotionPicker } from './PromotionPicker'
 import { useGame } from './useGame'
 import './App.css'
+
+// A handed-off intent is one utterance, not an essay — anything longer is
+// junk (or someone poking at the URL), so it gets cut rather than sent.
+const MAX_INTENT_LENGTH = 500
 
 function App() {
   const {
@@ -39,6 +43,20 @@ function App() {
     requestHint,
   } = useGame()
   const [sheetOpen, setSheetOpen] = useState(false)
+  // The conductor hands off to chess by navigating here with what the user
+  // actually said (`/?intent=let's play chess as black`). Run it through the
+  // agent so the session opens already acting on it. Scrub the param first —
+  // a reload must not replay the command — and latch so StrictMode's second
+  // mount doesn't send it twice.
+  const intentSent = useRef(false)
+  useEffect(() => {
+    if (intentSent.current) return
+    const intent = new URLSearchParams(window.location.search).get('intent')?.trim() ?? ''
+    if (window.location.search) window.history.replaceState({}, '', window.location.pathname)
+    if (!intent) return
+    intentSent.current = true
+    void sendCommand(intent.slice(0, MAX_INTENT_LENGTH))
+  }, [sendCommand])
   // The post-game screen shows whenever the game is over and the player
   // hasn't waved it away; a new game (game_over back to false) re-arms it.
   const [resultsDismissed, setResultsDismissed] = useState(false)
