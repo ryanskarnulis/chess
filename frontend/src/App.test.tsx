@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
@@ -69,7 +70,57 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
 })
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  window.history.replaceState({}, '', '/')
+})
+
+// The conductor hands a user off to chess by navigating here with the thing
+// they actually said (`/?intent=…`); we run it through the agent so Glitch
+// opens the session already acting on it.
+describe('conductor handoff (?intent=)', () => {
+  const commandCalls = () =>
+    fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/command'))
+
+  it('runs the intent through the agent and scrubs it from the URL', async () => {
+    window.history.replaceState({}, '', '/?intent=play%20e4')
+    render(<App />)
+    await waitFor(() => expect(commandCalls()).toHaveLength(1))
+    expect(commandCalls()[0][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ text: 'play e4' }),
+    })
+    // Scrubbed, so a reload doesn't replay the command.
+    expect(window.location.search).toBe('')
+  })
+
+  it('fires exactly once under StrictMode double-mount', async () => {
+    window.history.replaceState({}, '', '/?intent=play%20e4')
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    )
+    await waitFor(() => expect(commandCalls()).toHaveLength(1))
+    // Give a second effect pass room to double-fire before asserting it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(commandCalls()).toHaveLength(1)
+  })
+
+  it('sends nothing when there is no intent', async () => {
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.move-strip')).toBeInTheDocument())
+    expect(commandCalls()).toHaveLength(0)
+  })
+
+  it('ignores a blank intent', async () => {
+    window.history.replaceState({}, '', '/?intent=%20%20')
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.move-strip')).toBeInTheDocument())
+    expect(commandCalls()).toHaveLength(0)
+    expect(window.location.search).toBe('')
+  })
+})
 
 describe('App layout', () => {
   // One layout at every viewport: the stacked layout (agent bubble, board,
