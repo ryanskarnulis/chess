@@ -1,24 +1,27 @@
 """Shared test doubles.
 
 `ScriptedBrain` is the one canonical no-LLM `Brain` for the whole suite: it
-pops canned responses in order and records what it was shown, so the agent
-loop can be exercised deterministically without ever reaching a live model.
+stands in for a finished agent loop, dispatching its scripted tool calls for
+real, so the *pipeline* can be exercised deterministically without a model.
 `FakeEngine` is the canonical no-Stockfish engine double: it plays a scripted
 reply and records every strength setting and MultiPV request, so tests can
 pin that difficulty reaches the engine and that replies never take an
 analysis detour. `ScriptedProvider` is the canonical no-LLM `ChatProvider`
 double, one layer below `ScriptedBrain`: it returns scripted `ChatResult`s and
-records the `chat()` requests, so the real `LlamaBrain` orchestration (schema
-validation, correction retries, thinking toggles) can be exercised without a
-model. Keep the doubles here — not copied into test files.
+records the `chat()` requests, so the real `LlamaBrain` loop (tool messages,
+the iteration and correction budgets, thinking toggles) can be exercised
+without a model. Keep the doubles here — not copied into test files.
 """
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
+from chessapp.api import create_app
 from chessapp.brain import AgentResponse
 from chessapp.provider import ChatResult
 from chessapp.provider import ToolCall as ProviderToolCall
+from chessapp.tools import build_registry
 
 
 class FakeEngine:
@@ -53,39 +56,77 @@ class FakeEngine:
 
 
 class ScriptedBrain:
-    """Scripted brain: pops canned responses in order, records prompts.
+    """Scripted brain: a *finished* agent loop, canned.
 
-    Phase one (`get_agent_response`) pops the next scripted `AgentResponse`;
-    under-scripting raises `IndexError` so a test that asks for more turns than
+    A real brain runs the loop itself — model turn, dispatch, feed the result
+    back, answer in words — and hands the pipeline one `AgentResponse` holding
+    everything that happened. `ScriptedBrain` skips the model half: each
+    scripted `AgentResponse` says which tool calls the loop "decided on" and
+    what it said afterwards, and `get_agent_response` runs those calls through
+    the real `dispatcher` (the registry) to fill in `tool_results`. So api-level
+    tests still exercise real dispatch and real state changes, without a model
+    and without re-testing the loop (that lives in `test_llama_brain.py`).
+
+    Under-scripting raises `IndexError` so a test that asks for more turns than
     it planned fails loudly instead of silently reusing stale output.
 
-    Phase two (`react`) — the game loop's react-from-new-state step — pops the
-    next scripted reaction text and records the new board plus what changed.
-    When no reaction is scripted it returns a placeholder, so tests that don't
-    assert on reaction text don't have to script one.
+    `narrate` — the fast path's commentary turn, the one commentary path
+    outside the loop — pops the next scripted narration and records the new
+    board plus what changed. When none is scripted it returns a placeholder, so
+    tests that don't assert on commentary don't have to script one.
     """
 
     def __init__(
-        self, *responses: AgentResponse, reactions: tuple[str, ...] = ()
+        self,
+        *responses: AgentResponse,
+        dispatcher=None,
+        narrations: tuple[str, ...] = (),
     ) -> None:
         self._responses = list(responses)
-        self._reactions = list(reactions)
+        self._narrations = list(narrations)
+        self.dispatcher = dispatcher
         self.calls: list[tuple[dict, str]] = []
-        self.react_calls: list[tuple[dict, list]] = []
+        self.narrate_calls: list[tuple[dict, list]] = []
         self.transcripts: list[list] = []
-        self.react_transcripts: list[list] = []
+        self.narrate_transcripts: list[list] = []
 
     def get_agent_response(
         self, board_state: dict, command: str, transcript=()
     ) -> AgentResponse:
         self.calls.append((board_state, command))
         self.transcripts.append(list(transcript))
-        return self._responses.pop(0)
+        scripted = self._responses.pop(0)
+        if not scripted.tool_calls or self.dispatcher is None:
+            return scripted
+        results = tuple(
+            {
+                "name": call.name,
+                "result": self.dispatcher.dispatch(call.name, call.args),
+            }
+            for call in scripted.tool_calls
+        )
+        return replace(scripted, tool_results=results)
 
-    def react(self, board_state: dict, changes: list, transcript=()) -> str:
-        self.react_calls.append((board_state, changes))
-        self.react_transcripts.append(list(transcript))
-        return self._reactions.pop(0) if self._reactions else "(reaction)"
+    def narrate(self, board_state: dict, changes: list, transcript=()) -> str:
+        self.narrate_calls.append((board_state, changes))
+        self.narrate_transcripts.append(list(transcript))
+        return self._narrations.pop(0) if self._narrations else "(commentary)"
+
+
+def scripted_app(ctx, *responses: AgentResponse, brain=None, **create_kwargs):
+    """`create_app` with a `ScriptedBrain` that dispatches through the app's own
+    registry — the one wiring every api-level test needs.
+
+    The brain and the app share a single registry, exactly as app assembly does,
+    so a scripted tool call really runs against the real `ToolContext` and its
+    result is real. Returns `(app, brain)`.
+    """
+    registry = build_registry(ctx)
+    if brain is None:
+        brain = ScriptedBrain(*responses, dispatcher=registry)
+    elif getattr(brain, "dispatcher", None) is None:
+        brain.dispatcher = registry
+    return create_app(ctx, brain=brain, registry=registry, **create_kwargs), brain
 
 
 def text_turn(content: str | None, *, finish_reason: str = "stop") -> ChatResult:

@@ -34,7 +34,7 @@ from chessapp.brain import Brain
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_move
 from chessapp.game import GameSession, MoveResult
-from chessapp.tools import UNDO_PLIES_MAX, ToolContext, build_registry
+from chessapp.tools import UNDO_PLIES_MAX, ToolContext, ToolRegistry, build_registry
 from chessapp.voice import SpeechClient
 
 
@@ -153,57 +153,23 @@ def _move_confirmation(result: dict[str, Any], session: GameSession) -> str:
     return " ".join(parts)
 
 
-# How many self-correction rounds a turn's failed tool calls get before the
-# pipeline gives up and reacts to the failures as they stand. Generalizes the
-# brain-internal schema-retry idea to domain errors, which only surface here —
-# after dispatch — so it lives in the pipeline and benefits any Brain.
-MAX_TOOL_RETRY_ROUNDS = 2
-
-
-def _failed_calls(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The tool results worth a self-correction round: dispatch/domain errors
-    (`ok: false`) and rejected moves (`legal: false`)."""
-    return [
-        r
-        for r in results
-        if r["result"].get("ok") is False or r["result"].get("legal") is False
-    ]
-
-
-def _retry_command(failures: list[dict[str, Any]], session: GameSession) -> str:
-    """The correction fed back to the brain: what failed and why, plus — when
-    a move was rejected — the legal moves to pick from. Plumbing, not
-    conversation: it is never recorded in the transcript."""
-    lines = []
-    move_rejected = False
-    for failure in failures:
-        result = failure["result"]
-        if result.get("legal") is False:
-            move_rejected = True
-            reason = result.get("reason") or "illegal move"
-            lines.append(f"{failure['name']}: rejected — {reason}")
-        else:
-            lines.append(f"{failure['name']}: {result.get('error', 'failed')}")
-    command = (
-        "Your tool call(s) failed: " + "; ".join(lines) + ". "
-        "Fix the problem and call the tool again, or answer the player "
-        "in words if you cannot."
-    )
-    if move_rejected:
-        command += " Legal moves: " + ", ".join(session.legal_moves())
-    return command
+# What the player hears when the brain's loop ran out of budget instead of
+# answering (`max_iterations` / `correction_limit`): those stops carry no
+# commentary, and an empty bubble would read as a crash.
+_STUCK_REPLY = "I lost the thread on that one — say it again?"
 
 
 @dataclass(frozen=True)
 class CommandOutcome:
     """One command-pipeline run, shared by `/api/command` and the delegate
-    messages endpoint. `tool_results` is the `{"name", "result"}` list the
-    reaction saw and `/api/command` returns verbatim; `tool_args` holds each
-    dispatched call's arguments in the same order — the delegate endpoint needs
-    them to build its wire `tool_calls`, but `/api/command` never exposes them.
-    `stop_reason` is `completed`, or `correction_limit` when the domain-retry
-    loop exhausted its rounds with failures still unresolved (chess never emits
-    `max_iterations` — the two-phase brain has no iteration loop)."""
+    messages endpoint. `tool_results` is the `{"name", "result"}` list of
+    everything the agent ran, which `/api/command` returns verbatim;
+    `tool_args` holds each call's arguments in the same order — the delegate
+    endpoint needs them to build its wire `tool_calls`, but `/api/command`
+    never exposes them. `stop_reason` is the brain loop's, in the fleet's
+    vocabulary: `completed` when the agent finished with an answer,
+    `max_iterations` or `correction_limit` when it ran out of budget first.
+    The fast path is always `completed` — it never reaches the model."""
 
     commentary: str
     tool_results: list[dict[str, Any]]
@@ -244,10 +210,15 @@ def create_app(
     brain: Brain | None = None,
     speech: SpeechClient | None = None,
     static_dir: Path | None = None,
+    registry: ToolRegistry | None = None,
 ) -> FastAPI:
+    """Pass the same `registry` the brain dispatches through (app assembly
+    does), so what the agent is offered is exactly what the app runs; omit it
+    and the app builds its own over the same `ctx`."""
     app = FastAPI(title="chessapp")
     broadcaster = StateBroadcaster()
-    registry = build_registry(ctx)
+    if registry is None:
+        registry = build_registry(ctx)
     store = ConversationStore()
 
     async def _broadcast_state() -> None:
@@ -375,24 +346,21 @@ def create_app(
     async def _run_command(
         text: str, transcript: Sequence[dict[str, str]]
     ) -> CommandOutcome:
-        """The single pipeline: user string → brain → tool call(s) → engine
-        executes → agent reacts from the *new* state. Shared by `/api/command`
-        and the delegate messages endpoint against the one game session.
+        """The single pipeline: user string → brain's tool loop → new state.
+        Shared by `/api/command` and the delegate messages endpoint against the
+        one game session.
 
-        Phase one (`get_agent_response`) turns the utterance into tool calls;
-        the validated registry runs them, so brain mistakes (unknown tools,
-        bad args, domain errors) come back as error results in `tool_results`,
-        never as HTTP failures or corrupted state. Failed calls get a bounded
-        self-correction loop: the error (plus legal moves, for rejected
-        moves) goes back to the brain against the fresh state, up to
-        MAX_TOOL_RETRY_ROUNDS times — so one illegal-move guess doesn't end
-        the turn. Phase two (`react`) reads the resulting state and what
-        changed — not the raw utterance — and produces the commentary. When
-        nothing was done (a question or a clarifying reply) there is nothing
-        to react to, so the direct answer stands; a retry round that answers
-        in words instead of tools is treated the same way.
+        One call into the brain does the whole turn. Inside it, the agent loop
+        runs the utterance to a conclusion — calling tools, reading each result
+        (through the validated registry, so a brain mistake comes back as error
+        *data*, never an HTTP failure or corrupted state), correcting itself,
+        and finally answering in words. That final tool-less turn is the
+        commentary, and it is the game loop's "react from the new board": it is
+        offered no tools, so it can only comment, never act on the utterance a
+        second time. The pipeline no longer decides anything about tools — it
+        hands the brain the board, takes back what happened, and broadcasts.
 
-        Both phases see the `transcript` the caller supplies (prior turns'
+        The brain sees the `transcript` the caller supplies (prior turns'
         commands plus the commentary that was shown, a bounded window, final
         answers only), so the agent can follow references to earlier turns —
         but this is transcript-agnostic: it never reads or records either the
@@ -401,83 +369,50 @@ def create_app(
         a conductor-played move shows up live on the web board too.
 
         The fast path (the seam BRIEF reserves): an utterance that is exactly
-        one unambiguous legal move skips phase one and goes straight to
-        make_move — through the same registry, so the road stays one road,
-        minus a model round-trip. The reaction still runs as usual; at
-        verbosity=low a canned confirmation stands in for it too, making a
-        plain move a zero-LLM turn. Anything ambiguous or non-move reaches
-        the brain unchanged. No retry loop here: the parse matched a
-        currently legal move, so the dispatch cannot be rejected.
+        one unambiguous legal move skips the brain entirely and goes straight
+        to make_move — through the same registry, so the road stays one road,
+        minus the model. At verbosity=low a canned confirmation stands in for
+        the commentary too, making a plain move a zero-LLM turn; otherwise the
+        brain still narrates the move that was made. Anything ambiguous or
+        non-move reaches the brain unchanged.
         """
         assert brain is not None  # both callers guard; documents the invariant
         # The player is whoever's turn it is when the command arrives (the
         # engine replies inside make_move, so it is never the engine's turn
-        # here). Captured once so react's view still names the right color
+        # here). Captured once so the agent's view still names the right color
         # when the player's own move flips the turn or ends the game.
         player_color = ctx.session.turn
         before = _agent_state_dict(ctx.session, player_color)
-        direct_reply: str | None = None
-        pre_action_text = ""
-        # `tool_results` is the {"name", "result"} list react and the UI see;
-        # `tool_args` mirrors it with each call's arguments, for the delegate
-        # wire — kept parallel so the UI-facing shape stays untouched.
+        # `tool_results` is the {"name", "result"} list the UI sees; `tool_args`
+        # mirrors it with each call's arguments, for the delegate wire — kept
+        # parallel so the UI-facing shape stays untouched.
         tool_results: list[dict[str, Any]] = []
         tool_args: list[dict[str, Any]] = []
-        failures: list[dict[str, Any]] = []
+        commentary = ""
+        stop_reason = "completed"
         fast_san = parse_move(text, ctx.session.fen())
         if fast_san is not None:
             args = {"move": fast_san}
-            tool_results.append(
-                {"name": "make_move", "result": registry.dispatch("make_move", args)}
-            )
+            result = registry.dispatch("make_move", args)
+            tool_results.append({"name": "make_move", "result": result})
             tool_args.append(args)
-        else:
-            response = brain.get_agent_response(before, text, transcript)
-            pre_action_text = response.text
-            for call in response.tool_calls:
-                tool_results.append(
-                    {
-                        "name": call.name,
-                        "result": registry.dispatch(call.name, call.args),
-                    }
-                )
-                tool_args.append(call.args)
-            failures = _failed_calls(tool_results)
-            for _ in range(MAX_TOOL_RETRY_ROUNDS):
-                if not failures:
-                    break
-                retry = brain.get_agent_response(
+            if ctx.settings.verbosity == "low":
+                commentary = _move_confirmation(result, ctx.session)
+            else:
+                commentary = brain.narrate(
                     _agent_state_dict(ctx.session, player_color),
-                    _retry_command(failures, ctx.session),
+                    tool_results,
                     transcript,
                 )
-                if not retry.tool_calls:
-                    # The brain answered in words instead of retrying — a
-                    # clarifying question or a concession. That is the final,
-                    # user-facing reply; reacting to the failure would bury it.
-                    direct_reply = retry.text
-                    break
-                round_results = []
-                for call in retry.tool_calls:
-                    result = registry.dispatch(call.name, call.args)
-                    round_results.append({"name": call.name, "result": result})
-                    tool_results.append({"name": call.name, "result": result})
-                    tool_args.append(call.args)
-                failures = _failed_calls(round_results)
-        agent_state = _agent_state_dict(ctx.session, player_color)
-        if direct_reply is not None:
-            commentary = direct_reply
-        elif fast_san is not None and ctx.settings.verbosity == "low":
-            commentary = _move_confirmation(tool_results[0]["result"], ctx.session)
-        elif tool_results:
-            commentary = brain.react(agent_state, tool_results, transcript)
         else:
-            commentary = pre_action_text
-        # Failures still unresolved after the retry budget → correction_limit;
-        # a wordy concession (direct_reply) is a normal completion.
-        stop_reason = (
-            "correction_limit" if direct_reply is None and failures else "completed"
-        )
+            response = brain.get_agent_response(before, text, transcript)
+            tool_results = list(response.tool_results)
+            tool_args = [call.args for call in response.tool_calls]
+            stop_reason = response.stop_reason
+            # A budget stop (max_iterations / correction_limit) carries no
+            # commentary: the loop never reached a text turn.
+            commentary = response.text or _STUCK_REPLY
+        agent_state = _agent_state_dict(ctx.session, player_color)
         # The UI still gets its own full document; a mutation shows up in the
         # agent view too (any board change moves the fen), so that comparison
         # decides the broadcast.

@@ -69,18 +69,25 @@ def build_app(
             engine.set_skill_level(ctx.settings.skill_level)
         elif ctx.settings.elo is not None:
             engine.set_elo(ctx.settings.elo)
+    # One registry for the whole app: the brain dispatches its tool calls
+    # through it and the pipeline runs the fast path through it, so the tools
+    # the agent is offered are exactly the tools that execute.
+    registry = build_registry(ctx)
     if brain is None:
         brain = create_llama_brain(
             base_url=llama_base_url,
             model=model,
-            tool_definitions=build_registry(ctx).definitions(),
+            dispatcher=registry,
+            tool_definitions=registry.definitions(),
             system_prompt_provider=lambda: system_prompt_for(
                 ctx.settings.verbosity,
                 ctx.settings.hints_mode,
             ),
             provider=provider,
         )
-    return create_app(ctx, brain=brain, speech=speech, static_dir=static_dir)
+    return create_app(
+        ctx, brain=brain, speech=speech, static_dir=static_dir, registry=registry
+    )
 
 
 def _engine_from_env() -> EnginePlayer | None:

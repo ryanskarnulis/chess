@@ -1,17 +1,21 @@
 """The canonical no-LLM brain double lives in one place (`tests/fakes.py`).
 
 `ScriptedBrain` is the sanctioned stand-in for a real `Brain` across the test
-suite — it never touches a live model. These tests pin its contract so the
-double stays trustworthy no matter which test file leans on it.
+suite — it never touches a live model. It stands in for a *finished* agent
+loop: the scripted tool calls are dispatched for real, and the scripted text is
+the loop's closing comment. These tests pin its contract so the double stays
+trustworthy no matter which test file leans on it.
 """
 
 import pytest
 
 from chessapp.brain import AgentResponse, ToolCall
+from chessapp.game import GameSession
+from chessapp.tools import ToolContext, build_registry
 from fakes import ScriptedBrain
 
 
-def test_pops_phase_one_responses_in_order():
+def test_pops_responses_in_order():
     brain = ScriptedBrain(
         AgentResponse(text="first"),
         AgentResponse(text="second"),
@@ -20,32 +24,49 @@ def test_pops_phase_one_responses_in_order():
     assert brain.get_agent_response({}, "b").text == "second"
 
 
-def test_records_phase_one_board_state_and_command():
+def test_records_board_state_and_command():
     brain = ScriptedBrain(AgentResponse(text="ok"))
     brain.get_agent_response({"turn": "white"}, "play e4")
     assert brain.calls == [({"turn": "white"}, "play e4")]
 
 
-def test_pops_scripted_reactions_in_order():
-    brain = ScriptedBrain(reactions=("one", "two"))
-    assert brain.react({}, []) == "one"
-    assert brain.react({}, []) == "two"
+def test_pops_scripted_narrations_in_order():
+    brain = ScriptedBrain(narrations=("one", "two"))
+    assert brain.narrate({}, []) == "one"
+    assert brain.narrate({}, []) == "two"
 
 
-def test_react_defaults_when_no_reaction_scripted():
-    # Tests that don't care about reaction text shouldn't have to script one.
+def test_narrate_defaults_when_none_scripted():
+    # Tests that don't care about the fast path's commentary needn't script it.
     brain = ScriptedBrain()
-    assert brain.react({}, []) == "(reaction)"
+    assert brain.narrate({}, []) == "(commentary)"
 
 
-def test_records_react_board_state_and_changes():
+def test_records_narrate_board_state_and_changes():
     brain = ScriptedBrain()
     changes = [{"name": "make_move", "result": {"legal": True}}]
-    brain.react({"turn": "black"}, changes)
-    assert brain.react_calls == [({"turn": "black"}, changes)]
+    brain.narrate({"turn": "black"}, changes)
+    assert brain.narrate_calls == [({"turn": "black"}, changes)]
 
 
-def test_under_scripted_phase_one_raises():
+def test_scripted_tool_calls_are_really_dispatched():
+    # The double fakes the model, never the tools: a scripted call runs through
+    # the real registry and its real result comes back in tool_results.
+    session = GameSession()
+    registry = build_registry(ToolContext(session=session))
+    brain = ScriptedBrain(
+        AgentResponse(
+            text="e4.", tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),)
+        ),
+        dispatcher=registry,
+    )
+    resp = brain.get_agent_response({}, "play e4")
+    assert resp.tool_results[0]["name"] == "make_move"
+    assert resp.tool_results[0]["result"]["legal"] is True
+    assert session.move_history() == ["e4"]
+
+
+def test_under_scripting_raises():
     # Calling more than was scripted is a test bug — surface it loudly rather
     # than returning a stale or silent placeholder.
     brain = ScriptedBrain(AgentResponse(text="only one"))

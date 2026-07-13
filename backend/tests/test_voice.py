@@ -29,7 +29,7 @@ from chessapp.voice import (
     create_speech_client,
     normalize_transcript,
 )
-from fakes import ScriptedBrain
+from fakes import ScriptedBrain, scripted_app
 
 
 class FakeSpeechServer:
@@ -390,7 +390,8 @@ def test_speak_rejects_blank_text(ctx):
 
 
 def _command_client(ctx, brain):
-    return TestClient(create_app(ctx, brain=brain))
+    app, _ = scripted_app(ctx, brain=brain)
+    return TestClient(app)
 
 
 def test_command_response_says_speak_when_voice_output_on(ctx):

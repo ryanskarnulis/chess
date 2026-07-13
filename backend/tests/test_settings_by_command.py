@@ -11,11 +11,10 @@ LLM would say.
 
 from fastapi.testclient import TestClient
 
-from chessapp.api import create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
-from fakes import ScriptedBrain
+from fakes import scripted_app
 
 
 class RecordingEngine:
@@ -32,13 +31,15 @@ class RecordingEngine:
         self.elos.append(elo)
 
 
+def make_client_for(ctx: ToolContext, *responses: AgentResponse):
+    app, brain = scripted_app(ctx, *responses)
+    return TestClient(app), brain
+
+
 def make_client(*tool_calls: ToolCall, engine=None):
     ctx = ToolContext(session=GameSession(), engine=engine)
-    brain = ScriptedBrain(
-        AgentResponse(text="on it", tool_calls=tool_calls),
-        reactions=("done",),
-    )
-    return TestClient(create_app(ctx, brain=brain)), ctx
+    client, _ = make_client_for(ctx, AgentResponse(text="done", tool_calls=tool_calls))
+    return client, ctx
 
 
 def command(client, text):
@@ -94,20 +95,18 @@ def test_voice_output_by_speech_flips_the_speak_flag():
 
 
 def test_bad_setting_from_the_brain_is_data_not_an_error():
-    # An out-of-enum verbosity is an error *result* the agent can react to,
-    # never an HTTP failure or a corrupted setting. The failure earns a retry
-    # round; here the brain concedes in words.
+    # An out-of-enum verbosity is an error *result* the loop reads and gives up
+    # on in words — never an HTTP failure or a corrupted setting.
     ctx = ToolContext(session=GameSession())
-    brain = ScriptedBrain(
+    client, _ = make_client_for(
+        ctx,
         AgentResponse(
-            text="on it",
+            text="I can't talk like that.",
             tool_calls=(
                 ToolCall(name="set_verbosity", args={"verbosity": "shouting"}),
             ),
         ),
-        AgentResponse(text="I can't talk like that."),
     )
-    client = TestClient(create_app(ctx, brain=brain))
     body = command(client, "start shouting")
     assert body["tool_results"][0]["result"]["ok"] is False
     assert ctx.settings.verbosity == "normal"

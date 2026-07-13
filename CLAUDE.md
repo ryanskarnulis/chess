@@ -50,7 +50,13 @@ The agent is the **orchestrator and personality, NOT the referee**:
 
 ## Game Loop
 
-Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a string → agent → tool call(s) → deterministic engine executes → state updates → agent reacts. One road in, one brain, no dual-path race conditions. The agent's reaction step reads from **current game state** ("new board + what changed"), not from the raw user utterance.
+Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a string → agent → tool call(s) → deterministic engine executes → results go **back to the agent** → it acts again or answers. One road in, one brain, no dual-path race conditions.
+
+The loop lives in the brain (`get_agent_response`), in the fleet's standard shape (`../agent-standard/STANDARD.md` §3): call the model with tools, append its turn, dispatch each call through the registry, append each result as a `role: "tool"` message, repeat. **The first turn that asks for no tools is the commentary** — it is produced from a context that ends in the new board and what changed, and it is offered no tools, so it cannot act on the utterance a second time. That is what the old "react from new state, never the raw utterance" rule was protecting, and the loop enforces it structurally rather than by withholding the utterance.
+
+Bounded by `max_iterations` (4) plus a separate, smaller correction budget for schema-level failures; `stop_reason` is `completed | max_iterations | correction_limit`. **Domain rejections are results, not corrections** — an illegal move comes back as a tool result the agent reads and corrects from, inside the same turn.
+
+The one commentary path outside the loop is the fast path: an utterance that is exactly one unambiguous legal move (`parse_move`) goes straight to `make_move` with no model call, so there is no closing turn to comment with — `Brain.narrate` supplies one (at verbosity=low a canned confirmation stands in for that too, making a plain move zero-LLM).
 
 ## Entry Points
 
