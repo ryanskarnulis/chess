@@ -759,18 +759,6 @@ def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "KNOWN BROKEN (trace review 2026-07-13, finding 1): analyze_last_move "
-        "takes no arguments and always analyzes the literal last ply — which on "
-        "the player's turn is always the ENGINE's reply. The tool cannot answer "
-        "its own docstring's question, so the model fabricates compliance: told "
-        "'I meant MY last move, the c3 one', it re-called the same no-arg tool "
-        "and reported the engine's move as if it were c3. Fix: default to the "
-        "last move by session.player_color."
-    ),
-)
 def test_eval_what_was_my_mistake_analyzes_the_players_move(
     engine: EnginePlayer,
 ) -> None:
@@ -780,7 +768,15 @@ def test_eval_what_was_my_mistake_analyzes_the_players_move(
     The player only ever asks this on their own turn — which is exactly when the
     last ply is the engine's. Setup leaves White (the player) having just hung a
     pawn with c3 and Black having taken it with Bxe4; the honest answer is about
-    c3."""
+    c3.
+
+    Was xfailed (trace review, finding 1): `analyze_last_move()` took no
+    arguments and always analyzed the literal last ply, so it could not answer
+    its own docstring's question and the model fabricated compliance — told "I
+    meant MY last move, the c3 one", it re-called the same no-arg tool and
+    reported the engine's move as if it were c3. The tool now defaults to
+    `session.player_color`, so the model no longer has to express something the
+    signature couldn't say."""
 
     def setup(app: EvalApp) -> None:
         # The exact game from the trace review: White hangs the e4 pawn with c3
