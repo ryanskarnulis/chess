@@ -152,6 +152,20 @@ def test_post_message_runs_pipeline_and_persists_the_exchange():
     assert [m["role"] for m in detail["messages"]] == ["user", "assistant"]
 
 
+def test_delegate_brain_is_told_which_saved_games_exist(tmp_path):
+    """Both seams build the brain's view from the same `_agent_state_dict`, and
+    they must not drift: the delegate wire is handed the saves on disk too."""
+    session = GameSession()
+    session.save(tmp_path / "scholars.json")
+    ctx = ToolContext(session=GameSession(), save_dir=tmp_path)
+    app, brain = scripted_app(ctx, AgentResponse(text="hi"))
+    client = TestClient(app)
+
+    send(client, new_conversation(client), "load up the game I saved as scholars")
+
+    assert brain.calls[0][0]["saved_games"] == ["scholars"]
+
+
 def test_tool_calls_is_null_when_no_tools_ran():
     client, _, _ = make_client(AgentResponse(text="Looks balanced to me."))
     conversation_id = new_conversation(client)

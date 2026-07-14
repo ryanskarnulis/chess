@@ -92,6 +92,67 @@ def test_player_color_is_the_sessions_not_whoever_is_to_move():
     assert board_state["turn"] == "white"  # board truth is still board truth
 
 
+def test_brain_is_told_which_saved_games_exist():
+    """Whether a save exists is a question the filesystem answers, so the brain
+    is told — it must never have to infer it from the conversation."""
+    client, brain = make_client(AgentResponse(text="hi"))
+    client.post("/api/command", json={"text": "how does it look?"})
+    assert brain.calls[0][0]["saved_games"] == []
+
+
+def test_saved_games_lists_what_is_on_disk(tmp_path):
+    session = GameSession()
+    session.save(tmp_path / "scholars.json")
+    app, brain = scripted_app(
+        ToolContext(session=GameSession(), save_dir=tmp_path), AgentResponse(text="hi")
+    )
+    TestClient(app).post("/api/command", json={"text": "load the game I saved"})
+    assert brain.calls[0][0]["saved_games"] == ["scholars"]
+
+
+def test_a_past_failure_in_the_transcript_cannot_suppress_the_fresh_fact(tmp_path):
+    """The self-poisoning bug (trace review 2026-07-13, finding 5). Live, one
+    prior assistant turn saying saving had failed made the model stop calling
+    `resume_game` entirely and invent a reason — "it hasn't been saved yet" —
+    about a file sitting on disk. The transcript carries only prose, and prose
+    was the model's only source of truth about saves.
+
+    It no longer is. Whatever the thread says happened, the state the brain is
+    handed still reports what is actually on disk, this turn."""
+    session = GameSession()
+    session.save(tmp_path / "scholars.json")
+    ctx = ToolContext(session=GameSession(), save_dir=tmp_path)
+    ctx.transcript.record(
+        "save this game as testgame and give me the pgn",
+        "I can't save the game right now because the save directory isn't set up.",
+    )
+    app, brain = scripted_app(ctx, AgentResponse(text="hi"))
+
+    TestClient(app).post("/api/command", json={"text": "load up the game I saved"})
+
+    assert brain.calls[0][0]["saved_games"] == ["scholars"]
+
+
+def test_saved_games_is_read_fresh_every_turn(tmp_path):
+    """Per turn, not cached at assembly: a game saved *during* this session is
+    there on the next one."""
+    app, brain = scripted_app(
+        ToolContext(session=GameSession(), save_dir=tmp_path),
+        AgentResponse(
+            text="saved",
+            tool_calls=(ToolCall(name="save_game", args={"name": "midgame"}),),
+        ),
+        AgentResponse(text="hi"),
+    )
+    client = TestClient(app)
+
+    client.post("/api/command", json={"text": "save this as midgame"})
+    assert brain.calls[0][0]["saved_games"] == []
+
+    client.post("/api/command", json={"text": "what have I got saved?"})
+    assert brain.calls[1][0]["saved_games"] == ["midgame"]
+
+
 def test_one_brain_call_does_the_whole_turn():
     """No phase two: the loop already ran the tools and produced the closing
     comment, so the pipeline consults the brain exactly once."""

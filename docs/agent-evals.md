@@ -143,44 +143,54 @@ Each probe runs under three conditions, so the transcript is the only variable:
 | `live_like` | the real 20-turn thread from the game that broke, at verbosity=low |
 | `poisoned` | `live_like` + the agent's own earlier turn saying the thing failed |
 
-**The suspicion was wrong, and the real cause is worse.**
+**The suspicion was wrong, and the real cause was worse.**
 
-| probe | fresh | live_like | poisoned |
-| --- | --- | --- | --- |
-| `long_resume` | 5/5 | 5/5 | **0/5** ✗ xfail |
-| `long_resign` | 5/5 | 5/5 | 5/5 |
-| `long_capture` | 5/5 | 5/5 | 5/5 |
+| probe | fresh | live_like | poisoned (before) | poisoned (after the fix) |
+| --- | --- | --- | --- | --- |
+| `long_resume` | 5/5 | 5/5 | **0/5** ✗ | **5/5** ✓ |
+| `long_resign` | 5/5 | 5/5 | 5/5 | 5/5 |
+| `long_capture` | 5/5 | 4/5 | — (no poison) | **4/5** ✓ |
 
 Transcript **length is not the cause** — 20 real turns changes nothing. What
-breaks `resume_game` is a *single prior assistant turn, in the model's own
+broke `resume_game` was a *single prior assistant turn, in the model's own
 transcript, in which it said saving failed* (the real one from the trace: "I can't
 save the game right now because the save directory isn't set up"). With that one
-line present it stops calling `resume_game` **entirely** — 0/5 — and confabulates
-a justification for a file that is sitting on disk:
+line present it stopped calling `resume_game` **entirely** — 0/5 — and confabulated
+a justification for a file that was sitting on disk:
 
 > "I can't load a game named 'scholars' because it hasn't been saved yet."
 > "I can't load that game because it doesn't exist in the system."
 
-This is **self-poisoning**: the model reads its own earlier failure as a fact
-about what the app can do, and never re-checks. It is a bug about *what the
-transcript carries*, not about any one tool — a failed tool result is app state
-that must be re-read, not a fact the model may keep quoting back to itself. The
-fix belongs in the loop / transcript layer, and it is the same family as
-everything else in the trace review: **the model deciding something deterministic
-state already knows.**
+That is **self-poisoning**: the model reads its own earlier failure as a fact
+about what the app can do, and never re-checks. It was never really a bug about
+any one tool — it is the house rule again, **the model deciding something
+deterministic state already knows.** Whether a saved game exists is a question the
+filesystem answers, and until now the app never answered it: the agent's own prose
+was the *only* thing in its context that claimed to know.
 
-`long_resign` and `long_capture` pass in all three conditions, so their live
-failures are **still unexplained** — not length, not a declined destructive op.
-They are hard asserts in all three conditions, so a recurrence fails here. The
-next hypothesis to test for the capture miss is the same self-poisoning, from the
-two "Illegal move." turns that were sitting in that thread.
+**The fix (2026-07-13):** `saved_games` is now in the board-state block the brain
+is handed every turn (`api._agent_state_dict`, read fresh via
+`tools.saved_game_names`), sitting next to `legal_moves`. Nothing is rewritten or
+dropped from the transcript — the stale sentence is still there, it just now has
+to argue with a fresh fact, and the fact wins: **0/5 → 5/5**. The deterministic
+guard is in `test_command.py` (`test_a_past_failure_in_the_transcript_cannot_
+suppress_the_fresh_fact`), because CI never runs this suite.
+
+**Negative result — the capture miss is _not_ self-poisoning.** `long_capture`'s
+`poisoned` condition was seeded with the two real "Illegal move." turns and still
+lands `Bxe6` (4–5/5, floor 80%). That closes the standing hypothesis, and it is
+the evidence the fix above rests on: `legal_moves` is *already* injected fresh
+every turn, and stale prose cannot argue it down. Fresh state beats stale prose.
+`long_resign` likewise passes in all three conditions. Both live failures are
+therefore **still unexplained** — not length, not a declined destructive op, not
+self-poisoning. They stay hard asserts, so a recurrence fails here.
 
 ## Recorded baseline
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13
-— 19/19 hard scenarios pass; 7 xfailed (known-broken, listed above).** Warm
-model. The 8 shape scenarios below are unchanged; the pass-rate and
-long-transcript scenarios are new, from the trace review.
+— 21/21 hard scenarios pass; 6 xfailed (known-broken, listed above).** Warm
+model. The self-poisoning fix retired one xfail (`long_resume[poisoned]`) and
+promoted it to a hard assert; the 8 shape scenarios below are unchanged.
 
 One harness bug was fixed in the same slice and it matters when reading any
 number here: `_build_eval_app` was offering the brain the **full** registry,
