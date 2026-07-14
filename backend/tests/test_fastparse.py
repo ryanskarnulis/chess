@@ -32,6 +32,15 @@ DXE5 = "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq e6 0 2"
 # A knight on d3 can take e5, but no pawn can: "d takes e5" names a pawn
 # capture (SAN dxe5 semantics), so nothing matches.
 KNIGHT_NOT_PAWN = "4k3/8/8/4p3/8/3N4/8/4K3 w - - 0 1"
+# From the trace review (1. e4 h6 2. d4 d6 3. e5 e6): the only legal captures
+# are Bxh6 and exd6 — one per piece kind, so "bishop takes" and "pawn takes"
+# each name exactly one move, while a bare "takes" is genuinely ambiguous.
+TWO_CAPTURES = "rnbqkbnr/ppp2pp1/3pp2p/4P3/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 0 4"
+# Bishops on c3 and g3 both take the e5 pawn: "bishop takes" is ambiguous.
+TWO_BISHOPS = "4k3/8/8/4p3/8/2B3B1/8/4K3 w - - 0 1"
+# exd6 en passant is the only legal capture — the victim pawn stands on d5,
+# not on the square the capturer lands on.
+EN_PASSANT = "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1"
 
 
 # --- notation: SAN and UCI, case- and suffix-forgiving ------------------------
@@ -114,6 +123,58 @@ def test_file_source_capture_phrases(text):
     # "d takes e5" is how players pronounce dxe5: a pawn capture named by
     # its source file.
     assert parse_move(text, DXE5) == "dxe5"
+
+
+@pytest.mark.parametrize(
+    ("text", "san"),
+    [
+        ("bishop takes", "Bxh6"),
+        ("pawn takes", "exd6"),
+        ("bishop captures", "Bxh6"),
+        ("bishop takes pawn", "Bxh6"),
+        ("bishop takes the pawn", "Bxh6"),
+        ("take the h6 pawn", "Bxh6"),
+        ("takes the pawn on h6", "Bxh6"),
+        ("bishop takes the pawn on h6", "Bxh6"),
+    ],
+)
+def test_capture_without_a_named_square(text, san):
+    # The player names the piece, the victim, or both, and never the square.
+    # When exactly one legal capture fits, the board knows the move — no model
+    # judgment is needed (trace review 2026-07-13, finding 3).
+    assert parse_move(text, TWO_CAPTURES) == san
+
+
+def test_bare_takes_needs_exactly_one_capture_on_the_board():
+    # Two captures exist here (Bxh6, exd6), so "takes" names neither.
+    assert parse_move("takes", TWO_CAPTURES) is None
+    assert parse_move("takes", CAPTURE) == "exd5"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "knight takes",  # no legal knight capture at all
+        "bishop takes queen",  # the bishop's only victim is a pawn
+        "rook takes the pawn on h6",  # no rook reaches h6
+        "can I take his bishop?",  # not purely a move
+    ],
+)
+def test_square_less_capture_falls_through_when_it_names_nothing(text):
+    assert parse_move(text, TWO_CAPTURES) is None
+
+
+def test_square_less_capture_stays_ambiguous_when_two_moves_fit():
+    # Both bishops take e5: the agent must ask, not the parser guess.
+    assert parse_move("bishop takes", TWO_BISHOPS) is None
+    assert parse_move("bishop takes pawn", TWO_BISHOPS) is None
+
+
+def test_en_passant_victim_stands_off_the_target_square():
+    # The captured pawn is on d5 while the capturer lands on d6, so naming the
+    # victim must still resolve.
+    assert parse_move("pawn takes pawn", EN_PASSANT) == "exd6"
+    assert parse_move("takes", EN_PASSANT) == "exd6"
 
 
 def test_file_source_capture_settles_the_bxc6_collision():

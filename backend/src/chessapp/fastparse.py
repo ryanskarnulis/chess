@@ -2,16 +2,19 @@
 
 Most commands in a game are just a move. `parse_move` maps an utterance that
 is *entirely* one unambiguous legal move — notation ("e4", "Nf3", "e2e4") or
-plain speech ("knight to f3", "takes on d5", "castle kingside") — to that
-move's SAN, so the command pipeline can skip the phase-one LLM call and go
-straight to make_move. It never guesses: the utterance must match exactly one
-currently legal move, or it returns None and the text falls through to the
-agent unchanged.
+plain speech ("knight to f3", "takes on d5", "bishop takes", "take the h6
+pawn", "castle kingside") — to that move's SAN, so the command pipeline can
+skip the phase-one LLM call and go straight to make_move. It never guesses: the
+utterance must match exactly one currently legal move, or it returns None and
+the text falls through to the agent unchanged.
 
 Pure function of (text, fen): legality and disambiguation come from the board
 itself (python-chess), never from pattern cleverness. A phrase becomes
-constraints — moving piece, target square, must-capture, promotion piece —
-and fires only when exactly one legal move satisfies them all; zero matches
+constraints — moving piece, target square, must-capture, captured piece,
+promotion piece — and fires only when exactly one legal move satisfies them
+all; a constraint the phrase omits is simply not applied, which is what lets a
+capture name no square at all ("bishop takes" is exactly one move when the
+bishop has exactly one capture). Zero matches
 (illegal), several (ambiguous: two knights reach f3, four promotions land on
 e8) and anything that isn't purely a move are all None. Illegal-move recovery
 and clarifying questions stay the agent's job.
@@ -114,6 +117,21 @@ _FILE_CAPTURE = re.compile(
     r"(?P<square>[a-h][1-8])" + _PROMO_CLAUSE + r"$"
 )
 
+_PIECE_WORD = r"pawn|knight|night|bishop|rook|queen|king"
+_CAPTURE_VERB = r"takes|take|captures|capture"
+
+# A capture that never names the target square: the player names the capturing
+# piece ("bishop takes"), the victim ("bishop takes pawn", "take the h6 pawn"),
+# or neither ("takes"). Each is a constraint set like any other phrase, so it
+# fires only when exactly one legal capture satisfies it — two bishops that can
+# both take stay ambiguous and fall through to the agent.
+_CAPTURE = re.compile(
+    rf"^(?:(?P<piece>{_PIECE_WORD})\s+)?(?:{_CAPTURE_VERB})"
+    rf"(?:\s+(?:the\s+|a\s+)?"
+    rf"(?:(?P<victim>{_PIECE_WORD})(?:\s+(?:on\s+)?(?P<square>[a-h][1-8]))?"
+    rf"|(?P<square_first>[a-h][1-8])\s+(?P<victim_last>{_PIECE_WORD})))?$"
+)
+
 _SIDE_WORD = r"king\s?side|queen\s?side|short|long"
 _CASTLE_WORD = r"(?:castles?|castling)"
 _CASTLE = re.compile(
@@ -150,15 +168,29 @@ def parse_move(text: str, fen: str) -> str | None:
         )
         return _single_san(board, candidates)
     phrase = _PHRASE.match(lowered)
-    if phrase is None:
+    if phrase is not None:
+        promo = phrase.group("promo")
+        piece = phrase.group("piece")
+        candidates = _constrained_moves(
+            board,
+            piece=_PIECE_WORDS[piece] if piece else None,
+            target=chess.parse_square(phrase.group("square")),
+            capture=phrase.group("verb") in ("takes", "take", "captures", "capture"),
+            promotion=_PIECE_WORDS[promo] if promo else None,
+        )
+        return _single_san(board, candidates)
+    capture = _CAPTURE.match(lowered)
+    if capture is None:
         return None
-    promo = phrase.group("promo")
+    victim = capture.group("victim") or capture.group("victim_last")
+    square = capture.group("square") or capture.group("square_first")
     candidates = _constrained_moves(
         board,
-        piece=_PIECE_WORDS[phrase.group("piece")] if phrase.group("piece") else None,
-        target=chess.parse_square(phrase.group("square")),
-        capture=phrase.group("verb") in ("takes", "take", "captures", "capture"),
-        promotion=_PIECE_WORDS[promo] if promo else None,
+        piece=_PIECE_WORDS[capture.group("piece")] if capture.group("piece") else None,
+        target=chess.parse_square(square) if square else None,
+        capture=True,
+        victim=_PIECE_WORDS[victim] if victim else None,
+        promotion=None,
     )
     return _single_san(board, candidates)
 
@@ -200,21 +232,36 @@ def _castling_moves(board: chess.Board, side: str | None) -> list[chess.Move]:
     ]
 
 
+def _victim_of(board: chess.Board, move: chess.Move) -> chess.PieceType | None:
+    """The piece type `move` captures, or None if it captures nothing. En
+    passant takes a pawn that isn't standing on the square the capturer lands
+    on, so the board can't be read there."""
+    if board.is_en_passant(move):
+        return chess.PAWN
+    return board.piece_type_at(move.to_square)
+
+
 def _constrained_moves(
     board: chess.Board,
     *,
     piece: chess.PieceType | None,
-    target: chess.Square,
+    target: chess.Square | None,
     capture: bool,
     promotion: chess.PieceType | None,
+    victim: chess.PieceType | None = None,
     from_file: int | None = None,
 ) -> list[chess.Move]:
-    """Every legal move satisfying all the phrase's constraints. No promotion
-    constraint means promotion moves still match — so "pawn to e8" hits all
-    four and stays ambiguous, which is the right question for the agent."""
+    """Every legal move satisfying all the phrase's constraints. Each constraint
+    left as None simply isn't applied — so "bishop takes" constrains the piece
+    and the capture and nothing else, and matches every capture that bishop can
+    make. No promotion constraint means promotion moves still match: "pawn to
+    e8" hits all four and stays ambiguous, which is the right question for the
+    agent."""
     matches = []
     for move in board.legal_moves:
-        if move.to_square != target:
+        if target is not None and move.to_square != target:
+            continue
+        if victim is not None and _victim_of(board, move) != victim:
             continue
         if piece is not None and board.piece_at(move.from_square).piece_type != piece:
             continue
