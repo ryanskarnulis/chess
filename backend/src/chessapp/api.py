@@ -41,6 +41,7 @@ from chessapp.tools import (
     ToolRegistry,
     build_registry,
     confirm_pending,
+    saved_game_names,
 )
 from chessapp.trace import (
     ROUTE_BRAIN,
@@ -131,16 +132,25 @@ def _state_dict(session: GameSession) -> dict[str, Any]:
     }
 
 
-def _agent_state_dict(session: GameSession) -> dict[str, Any]:
+def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     """The view the brain reasons from: board truth (fen, turn, check, SAN
-    history, captures, legal moves, outcome) plus which color the player is.
-    Deliberately not `_state_dict` — the UI document's per-ply `fens` and
-    `dests` are prompt noise that grows every move and never helps the agent.
+    history, captures, legal moves, outcome) plus which color the player is and
+    which games are saved. Deliberately not `_state_dict` — the UI document's
+    per-ply `fens` and `dests` are prompt noise that grows every move and never
+    helps the agent.
 
     `player_color` is read from the session, which owns it: whose *turn* it is
     is board truth and changes every ply, but which side the human plays is
     session state and doesn't.
+
+    `saved_games` is here for the same reason `legal_moves` is: it is a fact the
+    app holds and the model would otherwise have to infer. Without it, the only
+    thing in context claiming to know about saves was the agent's own past
+    prose — and one stale "saving isn't set up" turn was enough to make it deny
+    a save sitting on disk (the self-poisoning bug, trace review 2026-07-13).
+    Read fresh every turn, so a game saved this session is visible the next.
     """
+    session = ctx.session
     return {
         "fen": session.fen(),
         "turn": session.turn,
@@ -151,6 +161,7 @@ def _agent_state_dict(session: GameSession) -> dict[str, Any]:
         "history": session.move_history(),
         "captured": session.captured_pieces(),
         "legal_moves": session.legal_moves(),
+        "saved_games": saved_game_names(ctx),
     }
 
 
@@ -435,7 +446,7 @@ def create_app(
         non-move reaches the brain unchanged.
         """
         assert brain is not None  # both callers guard; documents the invariant
-        before = _agent_state_dict(ctx.session)
+        before = _agent_state_dict(ctx)
         # `tool_results` is the {"name", "result"} list the UI sees; `tool_args`
         # mirrors it with each call's arguments, for the delegate wire — kept
         # parallel so the UI-facing shape stays untouched.
@@ -463,9 +474,7 @@ def create_app(
                 commentary = (
                     _destructive_confirmation(name, result, ctx.session)
                     if ctx.settings.verbosity == "low"
-                    else brain.narrate(
-                        _agent_state_dict(ctx.session), tool_results, transcript
-                    )
+                    else brain.narrate(_agent_state_dict(ctx), tool_results, transcript)
                 )
             else:
                 # Declined: nothing ran, so there is nothing to narrate from.
@@ -480,7 +489,7 @@ def create_app(
                 commentary = _move_confirmation(result, ctx.session)
             else:
                 commentary = brain.narrate(
-                    _agent_state_dict(ctx.session),
+                    _agent_state_dict(ctx),
                     tool_results,
                     transcript,
                 )
@@ -493,7 +502,7 @@ def create_app(
             # A budget stop (max_iterations / correction_limit) carries no
             # commentary: the loop never reached a text turn.
             commentary = response.text or _STUCK_REPLY
-        agent_state = _agent_state_dict(ctx.session)
+        agent_state = _agent_state_dict(ctx)
         # The UI still gets its own full document; a mutation shows up in the
         # agent view too (any board change moves the fen), so that comparison
         # decides the broadcast.

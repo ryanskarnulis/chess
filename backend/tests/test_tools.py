@@ -21,6 +21,7 @@ from chessapp.tools import (
     ToolRegistry,
     build_registry,
     confirm_pending,
+    saved_game_names,
 )
 from fakes import FakeEngine
 
@@ -519,6 +520,37 @@ def test_resume_corrupt_save_is_error(tmp_path, session):
     registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
     result = registry.dispatch("resume_game", {"name": "bad"})
     assert result["ok"] is False
+
+
+# --- what saves exist, as deterministic state -------------------------------
+#
+# The agent must never have to *infer* whether a saved game exists: it is a
+# question the filesystem answers. `saved_game_names` is the one reader, and the
+# tool layer owns it because the tool layer owns the `{name}.json` convention.
+
+
+def test_saved_game_names_without_save_dir_is_empty(session):
+    assert saved_game_names(ToolContext(session=session)) == []
+
+
+def test_saved_game_names_with_missing_dir_is_empty(tmp_path, session):
+    ctx = ToolContext(session=session, save_dir=tmp_path / "not-created")
+    assert saved_game_names(ctx) == []
+
+
+def test_saved_game_names_lists_saves_sorted(tmp_path, session):
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    registry = build_registry(ctx)
+    registry.dispatch("save_game", {"name": "scholars"})
+    registry.dispatch("save_game", {"name": "blitz"})
+    assert saved_game_names(ctx) == ["blitz", "scholars"]
+
+
+def test_saved_game_names_ignores_non_saves(tmp_path, session):
+    (tmp_path / "notes.txt").write_text("not a save")
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    build_registry(ctx).dispatch("save_game", {"name": "real"})
+    assert saved_game_names(ctx) == ["real"]
 
 
 # --- settings tools ---------------------------------------------------------

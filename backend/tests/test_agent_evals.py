@@ -1196,20 +1196,13 @@ _DECLINE_TURNS = (
     ("scrap this, start over", "You sure want to scrap this game and start over, bro?"),
     ("no wait, don't", "Word. I'm holding off. What's the move?"),
 )
-
-
-_SELF_POISONING = pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "KNOWN BROKEN (trace review 2026-07-13, finding 5 — root cause found "
-        "here): one prior assistant turn saying a tool failed makes the model "
-        "stop calling that tool AT ALL. resume_game goes 5/5 → 0/5 with the real "
-        "save-failure turn in the transcript, and it invents a justification "
-        "('it hasn't been saved yet') while the save sits on disk. Length is not "
-        "the cause: live_like (20 turns) is 5/5. Fix is in what the transcript "
-        "carries — a failed tool result is app state the model must re-read, not "
-        "a fact about the world it can keep quoting back to itself."
-    ),
+# The two turns where the agent adjudicated legality in its head and refused with
+# zero tool calls (trace review, finding 4). Both are already in `_LIVE_TRANSCRIPT`
+# — replaying them here puts one *immediately* before the capture ask, which is the
+# sharper test of whether a stale refusal poisons the next move.
+_ILLEGAL_TURNS = (
+    ("castle", "Illegal move."),
+    ("run my queen out to h5", "Illegal move."),
 )
 
 
@@ -1224,20 +1217,7 @@ def _conditions(*poison: tuple[str, str]) -> list[Any]:
     ]
 
 
-def _conditions_with_poisoning_broken(*poison: tuple[str, str]) -> list[Any]:
-    """As `_conditions`, but the poisoned case is a known failure — xfailed on
-    that param alone, so the fresh and live_like controls stay hard asserts."""
-    fresh, live_like, poisoned = _conditions(*poison)
-    return [
-        fresh,
-        live_like,
-        pytest.param(*poisoned.values, id="poisoned", marks=_SELF_POISONING),
-    ]
-
-
-@pytest.mark.parametrize(
-    ("condition", "label"), _conditions_with_poisoning_broken(_SAVE_FAILED_TURN)
-)
+@pytest.mark.parametrize(("condition", "label"), _conditions(_SAVE_FAILED_TURN))
 def test_eval_long_transcript_resume_is_not_denied(
     engine: EnginePlayer,
     tmp_path: Any,
@@ -1248,15 +1228,18 @@ def test_eval_long_transcript_resume_is_not_denied(
     saved games" with zero tool calls — while `resume_game` was offered and the
     save was on disk.
 
-    **This is the scenario that found the cause.** fresh 5/5, live_like 5/5,
-    poisoned **0/5**: the difference is one prior assistant turn, in the model's
-    own transcript, in which it said saving failed. It then refuses to call
-    resume_game and confabulates a reason ("it hasn't been saved yet") about a
-    file that exists.
+    **This is the scenario that found the cause — self-poisoning.** It measured
+    fresh 5/5, live_like 5/5, poisoned **0/5**: the difference is one prior
+    assistant turn, in the model's own transcript, in which it said saving
+    failed. It then refused to call resume_game at all and confabulated a reason
+    ("it hasn't been saved yet") about a file that exists.
 
     The save in `setup` is real and on disk in every condition, so the only thing
     that changes across the three is what the model was told — by itself — one
-    turn earlier."""
+    turn earlier. And that was the whole bug: its own prose was the only thing in
+    context that claimed to know about saves. Now `saved_games` is in the state
+    block every turn (`api._agent_state_dict`), so a stale sentence is arguing
+    with a fresh fact — and the fact wins. Hard assert in all three conditions."""
 
     def setup(app: EvalApp) -> None:
         condition(app)
@@ -1330,7 +1313,7 @@ def test_eval_long_transcript_resign_never_pretends(
     )
 
 
-@pytest.mark.parametrize(("condition", "label"), _conditions())
+@pytest.mark.parametrize(("condition", "label"), _conditions(*_ILLEGAL_TURNS))
 def test_eval_long_transcript_capture_still_lands(
     engine: EnginePlayer, condition: Callable[[EvalApp], None], label: str
 ) -> None:
@@ -1339,12 +1322,13 @@ def test_eval_long_transcript_capture_still_lands(
     on a fresh conversation (5/5). Live, the equivalent ask got "Bxh6 is a solid
     choice" — agreement, and an unmoved board.
 
-    5/5 in all three conditions (this probe has no poison turns of its own, so
-    poisoned == live_like and it measures length alone). The live miss is
-    therefore **not** explained by transcript length either — the working theory
-    is now that it was the same self-poisoning, from the two "Illegal move."
-    turns sitting in that thread. That is a condition worth adding when someone
-    picks this up."""
+    Length is not the cause (live_like is 5/5). The `poisoned` condition here is
+    load-bearing beyond this one probe: `legal_moves` is **already** injected
+    fresh into the state block every turn, so if two stale "Illegal move."
+    refusals can talk the model out of a capture the board plainly lists, then
+    fresh state does not beat stale prose — and the state-injection fix for the
+    resume self-poisoning could not work either. It is a hard assert in all three
+    conditions."""
     assert parse_move("take the e6 pawn", _LIVE_FEN) is None
 
     result = _pass_rate(

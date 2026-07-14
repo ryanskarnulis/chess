@@ -280,6 +280,17 @@ def _save_path(ctx: ToolContext, name: str) -> Path:
     return ctx.save_dir / f"{name}.json"
 
 
+def saved_game_names(ctx: ToolContext) -> list[str]:
+    """The saves on disk right now. Lives here because this layer owns the
+    `{name}.json` convention (`_save_path`), and it is read fresh per turn —
+    `api._agent_state_dict` hands it to the brain so that whether a saved game
+    exists is deterministic state, never something the model has to infer from
+    what it said earlier."""
+    if ctx.save_dir is None or not ctx.save_dir.is_dir():
+        return []
+    return sorted(path.stem for path in ctx.save_dir.glob("*.json"))
+
+
 def build_registry(ctx: ToolContext) -> ToolRegistry:
     """All read and write tools bound to `ctx`. Settings tools join in the
     final slice of the tool-layer epic."""
