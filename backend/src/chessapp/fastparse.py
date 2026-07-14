@@ -25,6 +25,11 @@ pipeline needs: yes or no to a destructive-op confirmation question. Same rule
 anything carrying further intent ("yes, but undo first") falls through to the
 agent. It is deliberately the narrowest thing that works: it only runs while an
 op is armed, but a false positive throws a real game away.
+
+`parse_resign` is the third: the player conceding. Same rule again — the
+utterance must be *entirely* a resignation — but it can be more generous than
+`parse_confirmation`, because the route it feeds sends `resign` through the
+confirmation gate, so its worst mistake is a question.
 """
 
 import re
@@ -83,6 +88,68 @@ def parse_confirmation(text: str) -> bool | None:
     if normalized in _NEGATIONS:
         return False
     return None
+
+
+_RESIGNATIONS = frozenset(
+    {
+        "resign",
+        "i resign",
+        "im resigning",
+        "i am resigning",
+        "resign the game",
+        "i resign the game",
+        "i give up",
+        "i concede",
+        "i forfeit",
+        "i quit",
+        "i surrender",
+    }
+)
+
+# Clauses that carry no intent of their own — a resignation is still entirely a
+# resignation when it arrives behind one of these.
+_FILLERS = frozenset(
+    {
+        "you know what",
+        "ok",
+        "okay",
+        "alright",
+        "right",
+        "well",
+        "fine",
+        "yeah",
+        "man",
+        "damn",
+        "thats it",
+        "screw it",
+    }
+)
+
+_CLAUSE_SPLIT = re.compile(r"[.!?,;]+")
+
+
+def parse_resign(text: str) -> bool:
+    """True when the utterance is *entirely* the player conceding the game.
+
+    Resignation is not a judgment call — the utterance either says it or it
+    doesn't — so the pipeline settles it and the model never gets a vote. Live,
+    it got one and answered "Word. Game over." with no tool call on a live board.
+
+    Whole-clause match, never a substring: every clause must be a resignation or
+    a filler, so "you know what, i give up. i resign" fires and "i give up on
+    this bishop" does not. Unlike `parse_confirmation` this can afford to be a
+    little generous — the route it feeds dispatches `resign` through the same
+    confirmation gate the agent hits, so a false positive costs a question, not
+    a game.
+    """
+    normalized = text.lower().replace("'", "")
+    clauses = [" ".join(c.split()) for c in _CLAUSE_SPLIT.split(normalized)]
+    clauses = [c for c in clauses if c]
+    if not clauses:
+        return False
+    if not all(c in _RESIGNATIONS or c in _FILLERS for c in clauses):
+        return False
+    return any(c in _RESIGNATIONS for c in clauses)
 
 
 _PIECE_WORDS = {

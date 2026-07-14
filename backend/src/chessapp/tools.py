@@ -514,9 +514,14 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
 
     @registry.tool()
     def resign(color: Literal["white", "black"] | None = None) -> dict[str, Any]:
-        """Resign the game. Defaults to the side to move; pass a color to
+        """Resign the game. Defaults to the player's own side; pass a color to
         resign for that side."""
-        refusal = _gate("resign", {} if color is None else {"color": color})
+        # Whose resignation this is, is not a question for the model: an
+        # unqualified "I resign" is the player's, and the session knows which
+        # side that is. The old default — the side to move — was only
+        # coincidentally the player (trace review, finding 8).
+        color = color or ctx.session.player_color  # type: ignore[assignment]
+        refusal = _gate("resign", {"color": color})
         if refusal is not None:
             return refusal
         outcome = ctx.session.resign(color)

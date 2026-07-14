@@ -12,7 +12,7 @@ fast path.
 
 from fastapi.testclient import TestClient
 
-from chessapp.api import create_app
+from chessapp.api import UNTRUE_CLAIM_REPLY, create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
@@ -473,9 +473,10 @@ def developed(ctx: ToolContext) -> ToolContext:
     return ctx
 
 
-def make_developed_client(*responses: AgentResponse):
+def make_developed_client(*responses: AgentResponse, narrations: tuple[str, ...] = ()):
     ctx = developed(ToolContext(session=GameSession()))
-    app, brain = scripted_app(ctx, *responses)
+    brain = ScriptedBrain(*responses, narrations=narrations)
+    app, brain = scripted_app(ctx, brain=brain)
     return TestClient(app), brain, ctx
 
 
@@ -543,6 +544,109 @@ def test_a_later_yes_cannot_revive_a_declined_op():
 
     assert ctx.session.fen() == fen_before
     assert response["commentary"] == "yes to what?", "it reached the brain"
+
+
+# --- The honesty guard: the player is never told something that didn't happen.
+#
+# The deepest version of the house rule. The closing turn is produced from a
+# context ending in the new board and it still invents endings — "Word. Game
+# over." on a live board (trace review, finding 6). The board knows whether the
+# game ended, so the board, not the model, gets the last word on saying so.
+
+
+def test_commentary_may_not_announce_an_ending_that_never_happened():
+    client, _, ctx = make_developed_client(AgentResponse(text="Word. Game over."))
+
+    response = client.post("/api/command", json={"text": "i'm done with this"}).json()
+
+    assert not ctx.session.is_game_over(), "the board never ended the game"
+    assert "Game over" not in response["commentary"]
+    assert response["commentary"] == UNTRUE_CLAIM_REPLY
+
+
+def test_a_real_ending_is_narrated_as_it_stands():
+    """The guard checks the board, not the vocabulary: the same words are fine
+    when they are true."""
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"):
+        ctx.session.submit_move(san)
+    client = TestClient(
+        scripted_app(
+            ctx,
+            AgentResponse(
+                text="Checkmate. Game over.",
+                tool_calls=(ToolCall(name="make_move", args={"move": "Qxf7#"}),),
+            ),
+        )[0]
+    )
+
+    # Not a phrasing `parse_move` settles, so the brain's turn is the commentary.
+    response = client.post("/api/command", json={"text": "finish him"}).json()
+
+    assert ctx.session.is_game_over()
+    assert response["commentary"] == "Checkmate. Game over."
+
+
+def test_a_confirmed_resignation_may_say_the_game_is_over():
+    """A destructive op that really ran licenses the claim even though it is the
+    tool, not the board's checkmate detection, that ended things."""
+    client, _, ctx = make_developed_client(narrations=("Done. Game over.",))
+    client.post("/api/command", json={"text": "i resign"})
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.is_game_over()
+    assert response["commentary"] == "Done. Game over."
+
+
+# --- The resign route: the player conceding is not the model's call.
+#
+# Live, "you know what, I give up. I resign" got *"Word. Game over."* with zero
+# tool calls on a live board, and the eval measured the path as a coin flip
+# (docs/agent-evals.md). An explicit resignation is deterministic text, so the
+# pipeline settles it — through the same registry and the same gate, so the road
+# stays one road, minus the model.
+
+
+def test_an_explicit_resignation_calls_resign_without_the_model():
+    client, brain, ctx = make_developed_client()
+    fen_before = ctx.session.fen()
+
+    response = client.post(
+        "/api/command", json={"text": "you know what, I give up. I resign"}
+    ).json()
+
+    assert brain.calls == [], "the model does not get a vote on a resignation"
+    assert [r["name"] for r in response["tool_results"]] == ["resign"]
+    assert ctx.pending is not None and ctx.pending.name == "resign"
+    assert ctx.session.fen() == fen_before, "gated: it asks before it ends the game"
+    assert response["commentary"]
+
+
+def test_a_resignation_resigns_the_player_not_the_side_to_move():
+    """The player is black and it is white's move: the side to move is only
+    coincidentally the player (trace review, finding 8)."""
+    ctx = ToolContext(session=GameSession(player_color="black"))
+    ctx.session.submit_move("e4")
+    ctx.session.submit_move("e5")
+    ctx.session.submit_move("Nf3")
+    client = TestClient(scripted_app(ctx)[0])
+
+    client.post("/api/command", json={"text": "i resign"})
+    client.post("/api/command", json={"text": "yes"})
+
+    assert ctx.session.is_game_over()
+    assert ctx.session.outcome().winner == "white", "black (the player) resigned"
+
+
+def test_a_resignation_confirmed_by_yes_ends_the_game():
+    client, _, ctx = make_developed_client()
+    client.post("/api/command", json={"text": "i resign"})
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.is_game_over()
+    assert response["state"]["game_over"] is True
 
 
 def test_an_unrelated_command_drops_the_armed_op():

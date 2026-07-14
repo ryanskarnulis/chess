@@ -60,7 +60,9 @@ The loop lives in the brain (`get_agent_response`), in the fleet's standard shap
 
 Bounded by `max_iterations` (4) plus a separate, smaller correction budget for schema-level failures; `stop_reason` is `completed | max_iterations | correction_limit`. **Domain rejections are results, not corrections** — an illegal move comes back as a tool result the agent reads and corrects from, inside the same turn.
 
-The one commentary path outside the loop is the fast path: an utterance that is exactly one unambiguous legal move (`parse_move`) goes straight to `make_move` with no model call, so there is no closing turn to comment with — `Brain.narrate` supplies one (at verbosity=low a canned confirmation stands in for that too, making a plain move zero-LLM).
+The one commentary path outside the loop is the fast path: an utterance that is exactly one unambiguous legal move (`parse_move`) goes straight to `make_move` with no model call, so there is no closing turn to comment with — `Brain.narrate` supplies one (at verbosity=low a canned confirmation stands in for that too, making a plain move zero-LLM). An explicit resignation (`parse_resign`) is settled the same way — whether the player conceded is not a judgment call — and dispatches `resign` into the same confirmation gate, so a mis-parse costs a question, never a game.
+
+**Commentary may not announce what didn't happen.** Whatever route produced it, the pipeline checks the closing text against the board before the player sees it (`honesty.claims_destructive_outcome`): commentary asserting the game ended or restarted, when no destructive tool succeeded and the board is still live, is replaced with the truth and the turn is traced as `guarded`. The model may neither *do* a destructive op unasked (the gate) nor *say* it did (the guard); live, it did the latter — *"Word. Game over."* on a live board.
 
 ## Entry Points
 
