@@ -406,6 +406,18 @@ def test_low_verbosity_confirmation_reports_game_over():
     assert body["commentary"] == "Qh5#. Game over: 1-0 (checkmate)."
 
 
+def test_fast_path_covers_a_capture_that_names_no_square():
+    # "bishop takes" has exactly one legal referent here (Bxh6), so the board
+    # settles it and the model is never asked — the failure the trace review
+    # caught (finding 3) is now structurally impossible.
+    client, brain, ctx = make_fast_client()
+    for san in ("e4", "h6", "d4", "d6", "e5", "e6"):
+        ctx.session.submit_move(san)
+    body = client.post("/api/command", json={"text": "bishop takes"}).json()
+    assert brain.calls == []
+    assert body["state"]["history"][-1] == "Bxh6"
+
+
 def test_non_move_text_reaches_the_brain_unchanged():
     client, brain, _ = make_fast_client(AgentResponse(text="hi!"))
     body = client.post("/api/command", json={"text": "hello"}).json()

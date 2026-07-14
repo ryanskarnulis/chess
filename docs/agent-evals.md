@@ -111,18 +111,35 @@ instead of silently passing):
 
 | scenario | asserts | why it's xfailed |
 |---|---|---|
-| `capture_bare_bishop` / `capture_bare_pawn` | "bishop takes" → `Bxh6` | exactly one legal referent; the model asks a clarifying question anyway |
-| `capture_names_victim` | "bishop takes pawn" → `Bxh6` | same, plus invented geometry ("the one on f1 to take on h6" — it is the c1 bishop) |
 | `my_mistake_is_mine` | "what was my mistake?" analyzes the **player's** move | `analyze_last_move()` takes no args and always analyzes the *last ply* — on the player's turn that is always the engine's reply |
 | `play_as_black` | "let's play chess as black" → player is black, engine opened | `new_game()` takes no args; it cannot assign a side. **This is the conductor deep-link intent string** — the advertised handoff is broken end to end |
 | `hints_off_no_advice` | hints off → no move handed over | the model calls `get_best_moves` and names a move anyway |
 
-Two of these are the same bug the sprint premise named: **the tool cannot express
-what the player asked for, so the model fabricates compliance.** The fix for the
-capture family belongs in `fastparse` (when exactly one legal capture matches the
-named piece, the board already knows the move — no model call should decide it);
-the fix for the other two is a tool signature (`analyze_last_move(color=…)`
-defaulting to `session.player_color`, `new_game(player_color=…)`).
+Both tool-signature rows above are the bug the sprint premise named: **the tool
+cannot express what the player asked for, so the model fabricates compliance.**
+The fix is a tool signature (`analyze_last_move(color=…)` defaulting to
+`session.player_color`, `new_game(player_color=…)`).
+
+### The capture family is retired, not lost (2026-07-13)
+
+`capture_bare_bishop`, `capture_bare_pawn`, `capture_names_victim` and
+`capture_names_square` are **gone from the suite**, and their rows are gone from
+the baseline below. They were not dropped for flapping — they were *fixed at the
+root*. `fastparse.parse_move` now resolves any capture phrasing built on
+takes/captures, whether it names the piece ("bishop takes"), the victim ("bishop
+takes pawn") or the square ("take the h6 pawn"), whenever exactly one legal
+capture fits. The board settles it, the model is never called, and there is
+nothing left to sample: an eval that cannot reach the model is not an eval.
+`capture_names_square`'s 5/5 was deliberately given up along with the 0/5s — a
+deterministic pass beats a sampled one.
+
+That coverage now lives in `backend/tests/test_fastparse.py` (free, exhaustive,
+run on every commit), including the cases where the phrase fits *two* legal
+captures and must still fall through to the agent's clarifying question.
+
+One knock-on: `long_capture` said "take the e6 pawn", which the parser now
+swallows, so its utterance moved to **"grab the pawn on e6"** — an unfamiliar
+verb keeps the capture in the model's hands, which is the point of that probe.
 
 ## Self-poisoning: the transcript scenarios, and what they found
 
@@ -185,12 +202,36 @@ every turn, and stale prose cannot argue it down. Fresh state beats stale prose.
 therefore **still unexplained** — not length, not a declined destructive op, not
 self-poisoning. They stay hard asserts, so a recurrence fails here.
 
+**And on 2026-07-13 (capture slice) it recurred.** `long_resign[poisoned]` came
+back **2/5**, and 3/5 on a `main` re-run — so the resign path is a coin-flip, not
+the 5/5 the row above records, and the `poisoned` condition tips it. The agent
+says *"I'm calling that. Game over, bro."* with **zero tool calls** on a live
+board. Self-poisoning is still not the *cause* (fresh and live_like are 5/5, and
+poisoning only worsens odds), but the scenario did its job: the recurrence failed
+here instead of in a real game. See the baseline note below.
+
 ## Recorded baseline
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13
-— 21/21 hard scenarios pass; 6 xfailed (known-broken, listed above).** Warm
-model. The self-poisoning fix retired one xfail (`long_resume[poisoned]`) and
-promoted it to a hard assert; the 8 shape scenarios below are unchanged.
+(capture-phrasing slice) — 19/20 hard scenarios pass, 3 xfailed, and
+`long_resign[poisoned]` FAILS at 2/5.** Warm model. The capture family is retired
+(fixed in `fastparse`, see above), which is why four rows are gone from the table
+below and the xfail count dropped from 6 to 3; the 8 shape scenarios are
+unchanged.
+
+**`long_resign[poisoned]` is a real, pre-existing failure — not a regression from
+this slice.** Re-run on `main` with the capture change stashed it scores 3/5, so
+the parser change is not the cause. It is the live bug the scenario was built to
+catch, reappearing exactly as designed: the agent answers *"I'm calling that. Game
+over, bro."* / *"You're done. Resigning now."* with **zero tool calls** on a board
+that is still live. It was 5/5 across all three conditions when recorded, so the
+path is a coin-flip rather than dead, and the `poisoned` condition (a declined
+`new_game` earlier in the thread) makes it likelier. This is the "**narrates a
+state change it never made**" class from the trace review (finding 6) — the most
+dangerous one, because the player is *told* the thing happened. Tracked in
+`TODO.md`; it needs its own slice, and the honest read is that a prompt rule
+("never claim an op you didn't call") is exactly the kind of rule a 12B model
+follows about half the time — the fix probably has to be structural.
 
 One harness bug was fixed in the same slice and it matters when reading any
 number here: `_build_eval_app` was offering the brain the **full** registry,
@@ -203,10 +244,6 @@ full list and 0–3/5 under the real one.
 
 | Scenario | Utterance | Must land | Rate |
 | --- | --- | --- | --- |
-| `capture_bare_bishop` | "bishop takes" | `Bxh6` | **0/5** ✗ xfail |
-| `capture_bare_pawn` | "pawn takes" | `exd6` | **0/5** ✗ xfail |
-| `capture_names_victim` | "bishop takes pawn" | `Bxh6` | **0–3/5** ✗ xfail (unstable across runs) |
-| `capture_names_square` | "take the h6 pawn" | `Bxh6` | **5/5** ✓ |
 | `undo_and_replace` | "take that bishop move back and play d4 instead" | `undo` → `make_move(d4)` | **5/5** ✓ |
 | `my_mistake_is_mine` | "what was my mistake?" | analysis of **c3** (the player's) | **0/5** ✗ xfail — analyzes `Bxe4` (the engine's) every time |
 | `play_as_black` | "let's play chess as black" | player is black, engine opened | **0/5** ✗ xfail |

@@ -707,84 +707,16 @@ def _expect_san(expected: str) -> Callable[[EvalApp, dict[str, Any]], None]:
     return check
 
 
-# The capture-phrasing positions. Each is a real position from the trace review
-# with exactly one legal capture matching the named piece — so the *board*
-# already knows the answer and the model is only being asked to read it.
-#
-# Position (game 3, after 1. e4 h6 2. d4 d6 3. e5 e6): the only legal captures
-# are Bxh6 and exd6. "bishop takes" therefore has exactly one referent, and so
-# does "pawn takes".
-_CAPTURE_FEN = "rnbqkbnr/ppp2pp1/3pp2p/4P3/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 0 4"
-
-
-def _from_fen(fen: str) -> Callable[[EvalApp], None]:
-    def setup(app: EvalApp) -> None:
-        app.ctx.session = GameSession(fen=fen)
-
-    return setup
-
-
-# The fix for the broken three belongs in `fastparse`: when exactly one legal
-# capture matches the named piece, the board already knows the move and no model
-# call should be spent deciding it. Delete the xfail (and the `parse_move is
-# None` guard will then fail loudly, telling you to retire the scenario) when it
-# lands.
-_CAPTURE_IS_BROKEN = pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "KNOWN BROKEN (trace review 2026-07-13, finding 3): exactly one legal "
-        "referent, and the model asks a clarifying question, invents geometry, "
-        "or agrees the move is good and plays nothing."
-    ),
-)
-
-
-@pytest.mark.parametrize(
-    ("scenario", "utterance", "expected"),
-    [
-        pytest.param(
-            "capture_bare_bishop", "bishop takes", "Bxh6", marks=_CAPTURE_IS_BROKEN
-        ),
-        pytest.param(
-            "capture_bare_pawn", "pawn takes", "exd6", marks=_CAPTURE_IS_BROKEN
-        ),
-        pytest.param(
-            "capture_names_victim",
-            "bishop takes pawn",
-            "Bxh6",
-            marks=_CAPTURE_IS_BROKEN,
-        ),
-        # The one that holds up: naming the square carries it. Recorded 5/5 —
-        # a hard assert, so a prompt change that costs us this one fails here.
-        pytest.param("capture_names_square", "take the h6 pawn", "Bxh6"),
-    ],
-)
-def test_eval_capture_phrasing_lands_the_only_capture(
-    engine: EnginePlayer, scenario: str, utterance: str, expected: str
-) -> None:
-    """ "<piece> takes" with exactly one legal capture for that piece is not
-    ambiguous — it is a move the board can name on its own. Asserts the specific
-    SAN that must land.
-
-    In the trace review "queen takes" landed Qxf7# correctly while "bishop
-    takes" asked a clarifying question that *itself named h6*. That
-    inconsistency is the argument for making this deterministic: the model gets
-    it right often enough to look fine and wrong often enough to lose games."""
-    assert parse_move(utterance, _CAPTURE_FEN) is None, (
-        "if the parser learns this phrasing, delete the scenario — it is fixed"
-    )
-
-    result = _pass_rate(
-        engine,
-        scenario,
-        utterance,
-        _expect_san(expected),
-        setup=_from_fen(_CAPTURE_FEN),
-    )
-
-    assert result.rate >= 0.8, (
-        f"{scenario}: {expected} landed {result.passed}/{result.runs} times"
-    )
+# The capture-phrasing family (`capture_bare_bishop`, `capture_bare_pawn`,
+# `capture_names_victim`, `capture_names_square`) used to live here. It is gone
+# because the bug is gone: `fastparse.parse_move` now settles every capture
+# phrasing built on takes/captures — bare ("bishop takes"), victim-named
+# ("bishop takes pawn") or square-named ("take the h6 pawn") — whenever exactly
+# one legal capture fits, so the model is never asked and there is nothing left
+# to sample. The coverage moved to `tests/test_fastparse.py`, where it is free,
+# deterministic and always run. Two or more legal captures still fit the phrase?
+# Then it is genuinely ambiguous, `parse_move` returns None, and the agent asks —
+# which is what `move_ambiguous` already pins.
 
 
 def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
@@ -1318,9 +1250,14 @@ def test_eval_long_transcript_capture_still_lands(
     engine: EnginePlayer, condition: Callable[[EvalApp], None], label: str
 ) -> None:
     """Move correctness under a long thread. `Bxe6` is the only legal capture on
-    this board, and naming the square is the one capture phrasing that holds up
-    on a fresh conversation (5/5). Live, the equivalent ask got "Bxh6 is a solid
-    choice" — agreement, and an unmoved board.
+    this board. Live, the equivalent ask got "Bxh6 is a solid choice" —
+    agreement, and an unmoved board.
+
+    The utterance is "grab the pawn on e6" rather than "take the e6 pawn"
+    because `parse_move` now settles every phrasing built on takes/captures
+    (see `test_fastparse`), and this scenario must stay a *model* eval: an
+    unfamiliar verb keeps the capture in the model's hands, which is the whole
+    point of the probe.
 
     Length is not the cause (live_like is 5/5). The `poisoned` condition here is
     load-bearing beyond this one probe: `legal_moves` is **already** injected
@@ -1329,12 +1266,12 @@ def test_eval_long_transcript_capture_still_lands(
     fresh state does not beat stale prose — and the state-injection fix for the
     resume self-poisoning could not work either. It is a hard assert in all three
     conditions."""
-    assert parse_move("take the e6 pawn", _LIVE_FEN) is None
+    assert parse_move("grab the pawn on e6", _LIVE_FEN) is None
 
     result = _pass_rate(
         engine,
         f"long_capture[{label}]",
-        "take the e6 pawn",
+        "grab the pawn on e6",
         _expect_san("Bxe6"),
         setup=condition,
         runner=_run_panel,
