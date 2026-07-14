@@ -2,37 +2,27 @@
 
 The backlog, in priority order. One task = one vertical slice = one branch = one PR (TDD: failing test first). When a task is finished and merged, move its line to `DONE.md` with the merge date. Re-plan freely between slices — this file is the living backlog, not a contract.
 
-## Next sprint (2026-07-12)
+## Next sprint (2026-07-13)
 
-The next three slices, in order. This is a framing block over the sections below, not a rewrite — every item stays tracked in its own section:
+Personality & voice and the destructive-op confirm gate both closed on 2026-07-13 (see DONE.md). With Glitch shipped and the harness's last xfail gone, **the backlog holds no known correctness gaps** — the work is now verification.
 
-1. **[S] Ship Glitch's voice** — pick the final TTS voice by ear from the #97 audition artifact and resolve the swearing watch-item; closes the current-focus trio. Done when the winner is set as `TTS_VOICE`.
-2. **[M] Structural fix for the destructive-op confirm gate** — a deterministic pipeline-owned "pending destructive op" state (bare "new game" → confirmation question → "yes" → `new_game`). Pre-step: measure `resign`'s adherence rate. Done when the `destructive_confirm` xfail flips to a hard assert. The agent-loop rework it was blocked on has **landed** (see DONE.md, 2026-07-13), so design this against the single-loop pipeline in `_run_command`. Note the adherence rate is genuinely a coin flip: across the measurement slice's runs `new_game` asked first 3/3 times and then fired immediately on the next run.
+1. **[L] The Phase-4 manual walkthrough** — the big remaining unknown, and the whole sprint. Nothing below has been systematically exercised at the desk. Prioritize the #114–#116 UI items (single layout, random color + side switch, post-game screen) and Android Chrome hands-free. Take notes as you go and turn them into backlog items.
 
-Stretch: start the Phase-4 manual walkthrough, prioritizing the #114–#116 UI items (single layout, random color + side switch, post-game screen) and Android Chrome hands-free.
-
-## Personality & voice — Glitch (current focus)
-
-The 2026-07-11 direction: one hand-dialed personality — **Glitch**, a gen-z Jarvis (fully casual, low-key troll, help stays real, swearing allowed) — instead of the selectable roster, plus a designed custom TTS voice ("laid-back young American, audible smirk") instead of stock Kokoro `af_heart`. Voice-option research (Kokoro blending / Chatterbox Turbo / Qwen3-TTS / NeuTTS Air, with the 12 GB VRAM constraint) is in Claude's project memory.
-
-- [ ] **Watch — does Glitch actually swear?** Zero swears in the first two live games despite escalated authorization (#95). If real games stay PG, add a few-shot exchange to the tone block (one blunder → one sweary roast) — the next and probably last lever short of accepting PG-13.
-- [ ] **Pick Glitch's final voice by ear**: listen through the audition artifact (13 samples + voice strings; link in the #97 PR conversation), set the winner as `TTS_VOICE` in docker-compose.yml, then `docker compose up -d --build app` (rebuild also picks up the Glitch prompt). Default meanwhile: `am_fenrir(2)+am_michael(1)`.
-- [ ] **Spike — Qwen3-TTS voice design** (only if no Kokoro blend has enough smirk): trim shared llama-swap context to free ~2 GB VRAM, serve via vLLM-Omni, design the voice from the prose spec
+Worth doing early in the walkthrough: exercise the new confirmation gate by voice ("new game" → "yes" / "no"), since it changed how destructive ops feel in a live game and has only been proven by tests and one eval run.
 
 ## Agent reliability — finish a game by voice
 
 From the 2026-07-10 agent deep dive: voice games die by attrition — an illegal-move guess ends the turn with no recovery, the brain's prompt is ~75% UI noise (`fens`/`dests`) that grows every ply, the system prompt gives zero speech→SAN guidance, and every plain move pays the full two-LLM-call round trip (~10–20s). Slices in priority order; the first three are small, independent, and low-risk.
 
 - [ ] **Experiment — phase-1 sampling**: A/B a lower temperature (~0.2–0.6) for the tool-decision call only, keeping BRIEF sampling for commentary; record tool-call accuracy before changing any default.
-- [ ] **Pending-proposal state for confirmations** (only if the dead-end recurs after #85): when the agent proposes a specific move and the player answers a bare "yes", only the #85 prompt rule guarantees the move gets played. A small pipeline-owned "pending proposed move" would make the confirmation itself deterministic ("yes" → make_move(pending)) — but it adds conversation state to the pipeline; hold unless live games show the prompt rule isn't enough.
-- [ ] **Destructive-op confirmation is unreliable at temp 1.0** (found by the eval harness, 2026-07-11): gemma-4-12b honors the "confirm before `new_game`/`resign`" prompt rule only ~50% of the time (measured across trivial and developed positions; `docs/agent-evals.md` finding, `destructive_confirm` xfail). The prompt carries the rule and `test_personality` pins it, but the model doesn't follow it reliably. Likely fix is structural, not prompt-only — a pipeline-owned "pending destructive op" (same shape as the pending-proposed-move item above): bare "new game" → confirmation question → "yes" → `new_game`. Confirm the same rate for `resign` before designing. Prompt was deliberately not changed in the eval slice (evals gate prompt changes). Flip the xfail to a hard assert once fixed.
+- [ ] **Pending-proposal state for confirmations** (only if the dead-end recurs after #85): when the agent proposes a specific move and the player answers a bare "yes", only the #85 prompt rule guarantees the move gets played. A small pipeline-owned "pending proposed move" would make the confirmation itself deterministic ("yes" → make_move(pending)) — but it adds conversation state to the pipeline; hold unless live games show the prompt rule isn't enough. **The destructive-op gate (2026-07-13) now supplies the exact machinery** — `ToolContext.pending` + `parse_confirmation` — so this is a much smaller job than when it was written, and its "adds conversation state" objection is already paid for.
 
 ## Phase 4 — Manual testing (walkthrough together, take notes)
 
 No systematic walkthrough has happened yet — most items below have only been exercised by automated tests, though a few were spot-verified live (first real agent games #95/#104, iOS hands-free #103; noted inline where so). Go through this list at the desk, note anything that feels wrong or needs to change, then turn the notes into new backlog items.
 
 ### Setup / stack
-- [ ] `docker compose up` brings up all three containers (app, Speaches, Kokoro) cleanly from cold — the LLM brain is the external `../llama-swap/` stack, exercised separately
+- [ ] `docker compose up` brings the app up cleanly from cold against the two external stacks it depends on: voice (STT via Speaches + TTS via Kokoro-FastAPI, the shared `../speech/` stack) and the LLM brain (`../llama-swap/`). Both are exercised separately; `app` is the only service in this repo's compose file.
 - [ ] App is reachable from another device on the home network (phone/laptop browser)
 - [ ] Basic gameplay works fully offline (network unplugged)
 - [ ] Full game against Stockfish with the LLM turned off (agent layer disabled)

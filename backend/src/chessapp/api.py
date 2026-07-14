@@ -32,9 +32,15 @@ from chessapp.agent_api import ConversationStore, build_agent_router
 from chessapp.analysis import review_game
 from chessapp.brain import Brain
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
-from chessapp.fastparse import parse_move
+from chessapp.fastparse import parse_confirmation, parse_move
 from chessapp.game import GameSession, MoveResult
-from chessapp.tools import UNDO_PLIES_MAX, ToolContext, ToolRegistry, build_registry
+from chessapp.tools import (
+    UNDO_PLIES_MAX,
+    ToolContext,
+    ToolRegistry,
+    build_registry,
+    confirm_pending,
+)
 from chessapp.voice import SpeechClient
 
 
@@ -142,6 +148,24 @@ def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
 
 
+def _destructive_confirmation(
+    name: str, result: dict[str, Any], session: GameSession
+) -> str:
+    """Deterministic stand-in for the reaction after a confirmed new_game/resign
+    at verbosity=low — the twin of `_move_confirmation`, keeping a confirmed
+    destructive op a zero-LLM turn like a plain move is."""
+    if name == "resign":
+        outcome = result.get("outcome") or _outcome_dict(session)
+        if outcome:
+            return f"Game over: {outcome['result']} ({outcome['termination']})."
+        return "Game over."
+    parts = ["New game."]
+    engine_move = result.get("engine_move")
+    if engine_move:
+        parts.append(f"{engine_move['san']}.")
+    return " ".join(parts)
+
+
 def _move_confirmation(result: dict[str, Any], session: GameSession) -> str:
     """Deterministic stand-in for the reaction on the fast path at
     verbosity=low: the move, the engine's reply, and the outcome if the game
@@ -161,6 +185,7 @@ def _move_confirmation(result: dict[str, Any], session: GameSession) -> str:
 # answering (`max_iterations` / `correction_limit`): those stops carry no
 # commentary, and an empty bubble would read as a crash.
 _STUCK_REPLY = "I lost the thread on that one — say it again?"
+_DECLINED_REPLY = "Alright, keeping it. Your move."
 
 
 @dataclass(frozen=True)
@@ -389,8 +414,33 @@ def create_app(
         tool_args: list[dict[str, Any]] = []
         commentary = ""
         stop_reason = "completed"
-        fast_san = parse_move(text, ctx.session.fen())
-        if fast_san is not None:
+        # An armed destructive op (the tool gate refused new_game/resign last
+        # turn and asked). This turn is its answer — and the answer is ours, not
+        # the model's: a bare yes runs it with the gate open, a bare no drops it,
+        # and anything else is a new intent that disarms it on the way past. The
+        # op never survives the turn, so a stale "yes" can never revive it.
+        armed = ctx.pending
+        ctx.pending = None
+        answer = parse_confirmation(text) if armed is not None else None
+        if armed is not None and answer is not None:
+            if answer:
+                ctx.pending = armed  # confirm_pending consumes it
+                confirmed = confirm_pending(registry, ctx)
+                assert confirmed is not None
+                name, result = confirmed
+                tool_results.append({"name": name, "result": result})
+                tool_args.append(dict(armed.args))
+                commentary = (
+                    _destructive_confirmation(name, result, ctx.session)
+                    if ctx.settings.verbosity == "low"
+                    else brain.narrate(
+                        _agent_state_dict(ctx.session), tool_results, transcript
+                    )
+                )
+            else:
+                # Declined: nothing ran, so there is nothing to narrate from.
+                commentary = _DECLINED_REPLY
+        elif (fast_san := parse_move(text, ctx.session.fen())) is not None:
             args = {"move": fast_san}
             result = registry.dispatch("make_move", args)
             tool_results.append({"name": "make_move", "result": result})

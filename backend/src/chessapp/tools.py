@@ -86,6 +86,14 @@ def _derive_schema(fn: Callable[..., Any]) -> dict[str, Any]:
     return schema
 
 
+@dataclass(frozen=True)
+class PendingOp:
+    """A destructive call that was refused, held for the player to confirm."""
+
+    name: str
+    args: dict[str, Any]
+
+
 @dataclass
 class ToolContext:
     """What tools operate on. `engine` is optional: analysis tools report
@@ -95,13 +103,47 @@ class ToolContext:
     `transcript`), so the context — not any captured reference — is the
     source of truth. `transcript` is the conversation memory the agent loop
     reads and records; it rides inside save files so a resumed game keeps
-    its conversational thread."""
+    its conversational thread.
+
+    `pending` is the armed destructive op (see `DESTRUCTIVE_TOOLS`): set by the
+    gate when it refuses a call, consumed by the pipeline on the next user turn.
+    `_confirming` is the gate's only key, and it is deliberately not reachable
+    from a tool argument — `confirm_pending` is the sole thing that turns it on,
+    so nothing the model can emit opens the gate."""
 
     session: GameSession
     engine: EnginePlayer | None = None
     save_dir: Path | None = None
     settings: Settings = field(default_factory=Settings)
     transcript: Transcript = field(default_factory=Transcript)
+    pending: PendingOp | None = None
+    _confirming: bool = False
+
+
+# The two tools that throw a real game away.
+DESTRUCTIVE_TOOLS = ("new_game", "resign")
+
+
+def confirm_pending(
+    registry: "ToolRegistry", ctx: ToolContext
+) -> tuple[str, dict[str, Any]] | None:
+    """Run the armed destructive op, with the gate open. Returns
+    `(name, result)`, or None when nothing is armed.
+
+    The only way past `_gate`. The pipeline calls this — and only after the
+    player themselves answered yes on a *new* turn — which is what makes the
+    confirmation deterministic: by this point there is nothing left to decide,
+    so no model call stands between the yes and the reset.
+    """
+    pending = ctx.pending
+    if pending is None:
+        return None
+    ctx.pending = None
+    ctx._confirming = True
+    try:
+        return pending.name, registry.dispatch(pending.name, dict(pending.args))
+    finally:
+        ctx._confirming = False
 
 
 @dataclass
@@ -363,9 +405,44 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             "turn": ctx.session.turn,
         }
 
+    def _gate(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+        """Refuse an unconfirmed destructive call; arm it for the player's yes.
+
+        The prompt asks the agent to confirm before `new_game`/`resign`, but the
+        model honors that only about half the time (docs/agent-evals.md), so the
+        rule is enforced here, where the model has no say. A refusal is an
+        ordinary rejection *result* — the agent reads it and asks the player,
+        exactly as it reads an illegal move and corrects — so the gate needs no
+        special path through the loop.
+
+        Re-arming is not confirming: a second unconfirmed call inside the same
+        turn is refused again. Only `confirm_pending`, on a later user turn,
+        opens the gate.
+
+        The gate stands aside when there is no game to lose — it guards a game
+        in progress, not the idea of one. That is true once it is over, and
+        equally true before it has begun: making the player confirm a reset of
+        an untouched starting position is a question about nothing.
+        """
+        if ctx._confirming:
+            return None
+        if ctx.session.is_game_over() or not ctx.session.move_history():
+            return None
+        ctx.pending = PendingOp(name=name, args=dict(args))
+        return {
+            "ok": False,
+            "error": (
+                f"confirmation required: {name} would end the current game. "
+                "Ask the player to confirm; it runs when they say yes."
+            ),
+        }
+
     @registry.tool()
     def new_game() -> dict[str, Any]:
         "Reset to the starting position and begin a new game."
+        refusal = _gate("new_game", {})
+        if refusal is not None:
+            return refusal
         ctx.session.new_game()
         # Mirror the UI path: when the player has black, the engine owns
         # white and makes the opening move — otherwise the fresh board would
@@ -385,6 +462,9 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     def resign(color: Literal["white", "black"] | None = None) -> dict[str, Any]:
         """Resign the game. Defaults to the side to move; pass a color to
         resign for that side."""
+        refusal = _gate("resign", {} if color is None else {"color": color})
+        if refusal is not None:
+            return refusal
         outcome = ctx.session.resign(color)
         return {
             "ok": True,

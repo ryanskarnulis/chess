@@ -221,13 +221,21 @@ def test_prompt_requires_confirmation_before_destructive_tools():
     assert "confirm" in prompt.lower()
 
 
-def test_prompt_skips_new_game_confirmation_once_game_is_over():
-    # A finished game has nothing left to lose: "new game" after checkmate
-    # must start immediately, not trigger the destructive-tool confirmation
-    # question (seen live: agent asks "are you sure?" after the game ended).
-    prompt = system_prompt_for()
-    assert "game_over" in prompt
-    assert "without asking" in prompt.lower()
+def test_prompt_tells_the_agent_to_call_and_let_the_gate_confirm():
+    # The confirmation is no longer the model's to remember: the tool gate
+    # refuses an unconfirmed new_game/resign and the pipeline owns the answer
+    # (tools.py `_gate` / `confirm_pending`). The prompt's job is now only to
+    # keep the agent from fighting that — it must call the tool rather than ask
+    # first (nothing is armed if it never calls, so the player's "yes" would
+    # have nothing to confirm), and must not call again after a refusal.
+    #
+    # Whether a *finished* game skips the question — the live "are you sure?"
+    # after checkmate — is settled in the gate itself now, not here; see
+    # test_tools.py::test_new_game_after_game_over_needs_no_confirmation.
+    # Line-wrapped in the source, so match on the text, not its line breaks.
+    prompt = " ".join(system_prompt_for().lower().split())
+    assert "do not ask first" in prompt
+    assert "do not call the tool again" in prompt
 
 
 def test_prompt_routes_eval_questions_through_tools():
