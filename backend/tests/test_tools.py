@@ -14,6 +14,7 @@ import pytest
 from chessapp.engine import DEFAULT_TIER
 from chessapp.game import GameSession
 from chessapp.tools import (
+    BOARD_STATE_TOOLS,
     Settings,
     Tool,
     ToolContext,
@@ -64,6 +65,26 @@ def test_registry_lists_all_read_tools(registry):
         "evaluate_position",
         "get_best_moves",
     }
+
+
+def test_definitions_can_exclude_tools(registry):
+    """The brain is offered a subset; the registry still holds everything.
+
+    `BOARD_STATE_TOOLS` answer with strict subsets of the board state the brain
+    is handed in its prompt every turn, so offering them to the brain only buys
+    a wasted round trip out of a 4-iteration budget. Other callers (MCP, the
+    delegate wire) have no such injection, so the tools stay registered and
+    runnable — only the brain's *offer* narrows.
+    """
+    names = {
+        d["function"]["name"] for d in registry.definitions(exclude=BOARD_STATE_TOOLS)
+    }
+    assert not names & set(BOARD_STATE_TOOLS)
+    assert {"make_move", "undo", "evaluate_position"} <= names
+
+
+def test_excluded_tools_are_still_dispatchable(registry):
+    assert registry.dispatch("get_legal_moves", {})["ok"] is True
 
 
 def test_definitions_are_openai_style_and_json_serializable(registry):
@@ -307,6 +328,48 @@ def test_undo_two_plies_for_engine_pair(registry, session):
     assert result["ok"] is True
     assert result["undone"] == ["e5", "e4"]
     assert session.move_history() == []
+
+
+def test_undo_defaults_to_the_whole_exchange_vs_engine(session):
+    """A bare `undo()` vs the engine takes back the pair, not the lone reply.
+
+    The pairing rule is the REST endpoint's, and it belongs to the caller of
+    `GameSession.undo` — not to the model. Popping one ply here would leave the
+    player's move on the board with the engine to move and nothing to move it.
+    """
+    ctx = ToolContext(session=session, engine=FakeEngine(reply_uci="e7e5"))
+    registry = build_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})  # engine replies e5
+    result = registry.dispatch("undo", {})
+    assert result["ok"] is True
+    assert result["undone"] == ["e5", "e4"]
+    assert session.move_history() == []
+    assert session.turn == session.player_color
+
+
+def test_undo_defaults_to_one_ply_without_an_engine(registry, session):
+    registry.dispatch("make_move", {"move": "e4"})
+    assert registry.dispatch("undo", {})["undone"] == ["e4"]
+    assert session.move_history() == []
+
+
+def test_undo_default_never_takes_back_the_engines_lone_opening(session):
+    """Player is black: the engine's opening move is not theirs to take back."""
+    session.new_game(player_color="black")
+    ctx = ToolContext(session=session, engine=FakeEngine(reply_uci="e2e4"))
+    registry = build_registry(ctx)
+    ctx.engine.play_move(session)  # engine (white) opens
+    result = registry.dispatch("undo", {})
+    assert result["ok"] is False
+    assert session.move_history() == ["e4"]
+
+
+def test_undo_honors_an_explicit_ply_count(session):
+    ctx = ToolContext(session=session, engine=FakeEngine(reply_uci="e7e5"))
+    registry = build_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})
+    result = registry.dispatch("undo", {"plies": 1})
+    assert result["undone"] == ["e5"]
 
 
 def test_undo_with_nothing_to_undo_is_error(registry):

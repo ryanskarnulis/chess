@@ -22,6 +22,7 @@ from chessapp.app import (
 from chessapp.brain import AgentResponse
 from chessapp.engine import DEFAULT_TIER
 from chessapp.personality import system_prompt_for
+from chessapp.tools import BOARD_STATE_TOOLS
 from fakes import (
     FakeEngine,
     ScriptedBrain,
@@ -50,6 +51,19 @@ def test_build_app_applies_the_default_difficulty_to_the_engine():
     assert settings["tier"] == DEFAULT_TIER
     assert settings["skill_level"] is None
     assert settings["elo"] is None
+
+
+def test_the_brain_is_not_offered_the_redundant_read_tools():
+    """Every turn hands the brain the board state; the read tools only return
+    subsets of it. Offering them buys a wasted round trip out of a 4-iteration
+    budget, so assembly narrows what the brain sees — while the registry keeps
+    them for callers with no such injection (MCP, the delegate wire)."""
+    provider = ScriptedProvider(text_turn("hi"))
+    app = build_app(provider=provider)
+    TestClient(app).post("/api/command", json={"text": "how am I doing?"})
+    offered = {t["function"]["name"] for t in provider.calls[0]["tools"]}
+    assert not offered & set(BOARD_STATE_TOOLS)
+    assert {"make_move", "undo", "evaluate_position"} <= offered
 
 
 def test_build_app_runs_a_command_through_the_assembled_pipeline():

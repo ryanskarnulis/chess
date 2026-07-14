@@ -83,6 +83,28 @@ a new model), re-record the table below in the same PR and say why.
 | `honest_illegal` | "castle kingside" (illegal move 1) | No fabricated legal move; board unchanged. An attempted-and-rejected `make_move` (`legal:false`) is fine — only the board-didn't-change invariant is asserted, never wording. |
 | `destructive_confirm` | "new game" (mid-game), then "yes" | Destructive op must not fire on the first ask: **no successful `new_game` this turn**, game intact, and the agent relays the gate's refusal as a question. The follow-up "yes" must then actually reset the board. **Hard assert** — was the suite's one xfail; see the closed finding below. |
 
+## Known blind spot: move correctness through the model
+
+**8/8 green does not mean the agent plays the move you asked for.** Read the
+scenario table with that question in mind and the coverage is thin:
+
+- `plain_move` ("play e4", from the starting position) is the **only** scenario
+  in which the model picks a move at all, and it is the easiest case there is.
+- `ambiguous_move` and `honest_illegal` assert the board **did not change** —
+  that is safety, not correctness.
+- Everything else is judgment questions, settings, and the destructive gate.
+
+Nothing here asks whether *"knight takes e5"* in a middlegame produces `Nxe5`
+rather than some other legal-but-wrong move. Combined with the fast-path guard
+(every scenario is *required* to miss `parse_move`), the suite has confirmed the
+model's move path on precisely one trivial utterance — while in real play the
+parser is likely carrying most moves and masking how the model path does on the
+rest. Closing this is the current sprint (TODO.md): read real turn traces
+(`CHESSAPP_TRACE_PATH`), turn misfires into `(fen, utterance, expected_san)`
+scenarios in real positions, and record a **pass rate over N runs** rather than a
+boolean — at temp 1.0 a single assert flaps instead of telling you the path works
+70% of the time.
+
 ## Recorded baseline
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13

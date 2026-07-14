@@ -17,7 +17,7 @@ exactly-one-of `oneOf` cannot come from a plain signature.
 
 import inspect
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -123,6 +123,19 @@ class ToolContext:
 # The two tools that throw a real game away.
 DESTRUCTIVE_TOOLS = ("new_game", "resign")
 
+# Reads whose answers are strict subsets of the board state the brain is handed
+# in its prompt every single turn (`_agent_state_dict`). They stay registered —
+# callers with no such injection (the MCP server, the delegate wire) need them,
+# and `dispatch` runs them for anyone who asks — but app assembly does not
+# *offer* them to the brain: it cannot learn anything from a call it already has
+# the answer to, and the round trip costs a quarter of its iteration budget.
+BOARD_STATE_TOOLS = (
+    "get_board_state",
+    "get_legal_moves",
+    "get_move_history",
+    "get_captured_pieces",
+)
+
 
 def confirm_pending(
     registry: "ToolRegistry", ctx: ToolContext
@@ -188,8 +201,16 @@ class ToolRegistry:
 
         return decorator
 
-    def definitions(self) -> list[dict[str, Any]]:
-        """All tools as OpenAI-style function definitions."""
+    def definitions(self, exclude: Sequence[str] = ()) -> list[dict[str, Any]]:
+        """Tools as OpenAI-style function definitions, minus `exclude`.
+
+        Excluding narrows only what a caller is *offered*; `dispatch` still runs
+        every registered tool. That split is the point: the brain is handed the
+        board state each turn and so is not offered `BOARD_STATE_TOOLS`, while
+        the MCP server and the delegate wire — which inject nothing — still get
+        the full list.
+        """
+        excluded = set(exclude)
         return [
             {
                 "type": "function",
@@ -200,6 +221,7 @@ class ToolRegistry:
                 },
             }
             for tool in self._tools.values()
+            if tool.name not in excluded
         ]
 
     def dispatch(self, name: str, args: Any) -> dict[str, Any]:
@@ -232,6 +254,24 @@ def _require_engine(ctx: ToolContext) -> EnginePlayer:
     if ctx.engine is None:
         raise ValueError("engine unavailable: analysis tools need Stockfish")
     return ctx.engine
+
+
+def _takeback_plies(ctx: ToolContext) -> int:
+    """How many plies a player's takeback pops — the same rule the board UI's
+    undo button uses (`api.undo`), and deliberately not the model's to work out.
+
+    Vs the engine it is the player's turn after an exchange, so a takeback pops
+    their move *and* the engine's reply; popping one would leave their move on
+    the board with the engine to move and nothing to move it, which is what an
+    agent-driven undo used to do. One ply when the game ended on the player's
+    own move (no reply came) or there is no engine at all. Never the engine's
+    lone opening move: that is not the player's to take back, and asking for two
+    plies when only one has been played comes back as an ordinary error result.
+    """
+    vs_engine = ctx.engine is not None
+    if vs_engine and ctx.session.turn == ctx.session.player_color:
+        return 2
+    return 1
 
 
 def _save_path(ctx: ToolContext, name: str) -> Path:
@@ -385,17 +425,20 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     @registry.tool()
     def undo(
         plies: Annotated[
-            int,
+            int | None,
             Field(
                 ge=1,
                 le=UNDO_PLIES_MAX,
-                description="How many half-moves to take back.",
+                description=(
+                    "How many half-moves to take back. Omit for a normal "
+                    "takeback — the app works out the right number itself."
+                ),
             ),
-        ] = 1,
+        ] = None,
     ) -> dict[str, Any]:
-        """Take back the last N half-moves (plies). Use plies=2 to undo both
-        the player's move and the engine's reply."""
-        result = ctx.session.undo(plies)
+        """Take back the player's last move. Omit plies unless the player asked
+        for a specific number of half-moves."""
+        result = ctx.session.undo(_takeback_plies(ctx) if plies is None else plies)
         if not result.ok:
             return {"ok": False, "error": result.reason}
         return {

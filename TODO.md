@@ -2,13 +2,21 @@
 
 The backlog, in priority order. One task = one vertical slice = one branch = one PR (TDD: failing test first). When a task is finished and merged, move its line to `DONE.md` with the merge date. Re-plan freely between slices — this file is the living backlog, not a contract.
 
-## Next sprint (2026-07-13)
+## Next sprint (2026-07-13) — agent behavior: see it, then fix it
 
-Personality & voice and the destructive-op confirm gate both closed on 2026-07-13 (see DONE.md). With Glitch shipped and the harness's last xfail gone, **the backlog holds no known correctness gaps** — the work is now verification.
+**The current focus.** Live play does not match the green test suite: moves land wrong or not at all, and it was unclear whether anything beyond the deterministic fast path worked. First real finding, fixed in `fix/agent-determinism-and-tracing`: **the `undo` tool defaulted to one ply**, so an agent-driven takeback popped only the engine's reply and left the player's move on the board with the engine to move — while the board UI's undo button had the correct pairing rule all along.
 
-1. **[L] The Phase-4 manual walkthrough** — the big remaining unknown, and the whole sprint. Nothing below has been systematically exercised at the desk. Prioritize the #114–#116 UI items (single layout, random color + side switch, post-game screen) and Android Chrome hands-free. Take notes as you go and turn them into backlog items.
+That is the shape of the whole problem, and it is the *same* shape as the destructive-op gate we closed on 2026-07-13: **the app keeps asking a 12B model to decide things deterministic code already knows.** The suite stayed green because it pins the tool boundary, not live behavior — and the eval harness, for all its 8/8, contains exactly one scenario where the model picks a move at all ("play e4", from the starting position). Move correctness through the model is essentially unmeasured.
 
-Worth doing early in the walkthrough: exercise the new confirmation gate by voice ("new game" → "yes" / "no"), since it changed how destructive ops feel in a live game and has only been proven by tests and one eval run.
+So the sprint is: **make agent behavior observable, then iterate against a number.**
+
+1. **[M] Review real traces and grow the eval suite** — with turn tracing landed (`CHESSAPP_TRACE_PATH`, one JSONL row per turn: route taken, full tool trajectory with args and results, stop reason), play real games and read what actually happened. Every turn that misfired is a ready-made scenario: it carries its own `fen_before` and `utterance`. Turn them into a **move-correctness eval** — `(fen, utterance, expected_san)` in real mid-game positions, each verified to miss `parse_move` — asserting the specific SAN that landed. Record a **pass rate over N runs, not a boolean**: the model samples at temp 1.0, so a single assert flaps instead of telling you a path works 70% of the time. That number is what every prompt/loop change below gets judged against.
+2. **[S] Measure the fast-path split** — from the same traces: what fraction of real move utterances `parse_move` catches, and how the model path does on the rest. Settles how much of the app's apparent competence is the parser carrying it.
+3. **[S] Audit the remaining tools for the same bug class** — anything whose correct behavior is knowable from deterministic state but is currently left to the model's judgment (as `undo`'s ply count was). `resign`'s default color is the next suspect.
+4. **[M] Multi-tool turns: "undo that and play this instead"** — a single utterance asking for two actions. The loop already *allows* it (it dispatches every call in a model turn, and can chain across turns within `max_iterations=4`), so this may be a prompt/eval gap rather than a code one — **confirm which before writing code.** Needs an eval scenario asserting both tools ran, in order, with the right end position.
+5. **[M] Show tool calls live in the UI, like "thinking…"** — the player should see the agent's tools as it calls them (`undo` → `make_move`), not just the commentary after. Needs the tool trajectory streamed or polled during a turn rather than returned only in the final `/api/command` response; the trace record is already the right shape for it.
+
+**[L] The Phase-4 manual walkthrough** stays queued behind this — the walkthrough list below is still the plan, but debugging the agent is what real play keeps running into first. Worth exercising the confirmation gate by voice ("new game" → "yes" / "no") whenever the walkthrough happens, since it changed how destructive ops feel and has only been proven by tests and one eval run.
 
 ## Agent reliability — finish a game by voice
 
