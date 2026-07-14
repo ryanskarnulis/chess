@@ -1,10 +1,11 @@
 """Turn tracing: the record of what the agent actually did, per command.
 
-The pipeline picks one of three routes for an utterance (deterministic
-confirmation, deterministic fast path, or the brain's tool loop) and until now
-recorded *which* nowhere — so a turn that went wrong left nothing to review.
-Every turn writes one JSONL record: the utterance, the route, the whole tool
-trajectory (name, args, result) and the loop's stop reason.
+The pipeline picks one of four routes for an utterance (deterministic
+confirmation, deterministic fast path, deterministic resignation, or the brain's
+tool loop) and until now recorded *which* nowhere — so a turn that went wrong
+left nothing to review. Every turn writes one JSONL record: the utterance, the
+route, the whole tool trajectory (name, args, result), the loop's stop reason,
+and whether the honesty guard had to suppress the commentary.
 
 Tracing is diagnostics, never a dependency: a tracer that fails must not cost
 the player their turn.
@@ -81,6 +82,39 @@ def test_brain_turn_traces_the_whole_trajectory(trace_path):
     assert record["commentary"] == "done"
     assert [t["name"] for t in record["tools"]] == ["undo"]
     assert record["tools"][0]["args"] == {"plies": 2}
+
+
+def test_resign_turn_is_traced_as_its_own_route(trace_path):
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5", "Nf3", "Nc6"):
+        ctx.session.submit_move(san)
+    app, _ = scripted_app(ctx, tracer=JsonlTracer(trace_path))
+
+    TestClient(app).post("/api/command", json={"text": "i give up. i resign"})
+
+    (record,) = read_records(trace_path)
+    assert record["route"] == "resign"
+    assert [t["name"] for t in record["tools"]] == ["resign"]
+    assert record["changed"] is False, "gated: it asked, it did not end the game"
+
+
+def test_a_suppressed_claim_is_a_countable_event(trace_path):
+    """The guard swaps the lie for the truth, so the record keeps the *event*
+    (something tried to fake an ending) even though the lie itself is gone."""
+    client, _ = make_client(trace_path, AgentResponse(text="Word. Game over."))
+
+    client.post("/api/command", json={"text": "i'm bored of this"})
+
+    (record,) = read_records(trace_path)
+    assert record["guarded"] is True
+    assert "Game over" not in record["commentary"]
+
+
+def test_an_ordinary_turn_is_not_guarded(trace_path):
+    client, _ = make_client(trace_path)
+    client.post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["guarded"] is False
 
 
 def test_trace_records_a_budget_stop(trace_path):

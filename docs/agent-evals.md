@@ -37,7 +37,8 @@ temp 1.0 (see `../agent-standard/model-profile.md`), so goldens pin tool
 one legal move (`fastparse.parse_move`) with zero LLM calls. Every scenario
 asserts `parse_move(utterance, fen) is None` in its setup, so the eval stays a
 *model* eval even if the parser grows later (e.g. "play e4" falls through
-today; bare "e4" does not).
+today; bare "e4" does not). The same is now true of an explicit resignation
+(`fastparse.parse_resign`) — see the retirement note below.
 
 Scenarios are independent: a function-scoped fixture builds a fresh app + game
 + conversation each time; the Stockfish process is module-scoped (one engine
@@ -202,38 +203,59 @@ every turn, and stale prose cannot argue it down. Fresh state beats stale prose.
 therefore **still unexplained** — not length, not a declined destructive op, not
 self-poisoning. They stay hard asserts, so a recurrence fails here.
 
-**And on 2026-07-13 (capture slice) it recurred.** `long_resign[poisoned]` came
-back **2/5**, and 3/5 on a `main` re-run — so the resign path is a coin-flip, not
-the 5/5 the row above records, and the `poisoned` condition tips it. The agent
-says *"I'm calling that. Game over, bro."* with **zero tool calls** on a live
-board. Self-poisoning is still not the *cause* (fresh and live_like are 5/5, and
-poisoning only worsens odds), but the scenario did its job: the recurrence failed
-here instead of in a real game. See the baseline note below.
+**And on 2026-07-13 (capture slice) it recurred** — `long_resign[poisoned]` came
+back **2/5** (3/5 on a `main` re-run), the agent answering *"I'm calling that. Game
+over, bro."* with **zero tool calls** on a live board. That is now fixed, and not by
+asking the model more nicely: see the resign retirement below. Both live failures
+that opened this section are therefore closed — `resume_game`'s by a fresh fact in the
+prompt, `resign`'s by taking the decision off the model entirely.
+
+## The resign family is retired too (2026-07-13, resign slice)
+
+`resign_never_pretends` and all three `long_resign[*]` conditions still exist and still
+pass, but they no longer measure the model: **"I resign" never reaches it.** An explicit
+resignation is deterministic text — the utterance either concedes or it doesn't — so
+`fastparse.parse_resign` settles it and the pipeline dispatches `resign` itself, on its
+own fourth route (`trace.ROUTE_RESIGN`), with zero model calls. The call still goes
+through the registry, so the confirmation gate arms it and asks; a *mis*-parse therefore
+costs a question, never a game. That is what lets the parser be more generous here than
+`parse_confirmation` dares to be.
+
+This is the capture family's story again, one rung more dangerous: a path the model got
+right about half the time is now a path it is not on. The real coverage moved to
+`test_fastparse.py` (which phrasings are a resignation) and `test_command.py` (the route
+calls `resign`, the gate arms, "yes" ends the game) — free, exhaustive, every commit.
+The eval rows stay as a **tripwire on the route**, not on the model: if the parser ever
+stops catching "you know what, I give up. I resign", they go red.
+
+**The class is closed separately, and that is the part that generalizes.** The parser
+fixes *resign*; it does nothing about the rest of finding 6 (commentary announcing a
+checkmate that didn't happen after a quiet move). So the pipeline now also refuses to
+*say* what didn't happen: at the one point all four routes converge, commentary that
+asserts the game ended or restarted, when no destructive tool succeeded and the board is
+still live, is replaced with the truth and the turn is traced as `guarded`
+(`honesty.claims_destructive_outcome`, `test_honesty.py`). The gate stops the model
+*doing* a destructive op unasked; the guard stops it *claiming* one. Neither is a prompt
+rule, so neither is a coin flip.
 
 ## Recorded baseline
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13
-(capture-phrasing slice) — 19/20 hard scenarios pass, 3 xfailed, and
-`long_resign[poisoned]` FAILS at 2/5.** Warm model. The capture family is retired
-(fixed in `fastparse`, see above), which is why four rows are gone from the table
-below and the xfail count dropped from 6 to 3; the 8 shape scenarios are
-unchanged.
+(resign slice) — 20/20 hard scenarios pass, 3 xfailed, nothing red.** Warm model,
+2 m 36 s for the suite. The previous record's one failure, `long_resign[poisoned]`
+at 2/5, is **5/5** — and honestly so: it is now a zero-LLM route, so read it as a
+tripwire on the parser rather than a score for the model (see the retirement note
+above). The three xfails are unchanged and are the next two slices (`analyze_last_move`
+and `new_game` cannot express what the player asked for) plus the hints leak.
 
-**`long_resign[poisoned]` is a real, pre-existing failure — not a regression from
-this slice.** Re-run on `main` with the capture change stashed it scores 3/5, so
-the parser change is not the cause. It is the live bug the scenario was built to
-catch, reappearing exactly as designed: the agent answers *"I'm calling that. Game
-over, bro."* / *"You're done. Resigning now."* with **zero tool calls** on a board
-that is still live. It was 5/5 across all three conditions when recorded, so the
-path is a coin-flip rather than dead, and the `poisoned` condition (a declined
-`new_game` earlier in the thread) makes it likelier. This is the "**narrates a
-state change it never made**" class from the trace review (finding 6) — the most
-dangerous one, because the player is *told* the thing happened. Tracked in
-`TODO.md`; it needs its own slice, and the honest read is that a prompt rule
-("never claim an op you didn't call") is exactly the kind of rule a 12B model
-follows about half the time — the fix probably has to be structural.
+`long_capture` also came in at 5/5 in all three conditions this run (it has measured
+4–5/5 before; the floor is 80% and the scenario is unchanged), and the analysis
+scenario is slower on this run than last — `judgment_question` took 9.2 s against a
+recorded 3.4–6.3 s. Nothing in this slice touches that path; the
+GPU is shared with project-command-center, and the tripwire (15 s) is deliberately
+loose for exactly that reason.
 
-One harness bug was fixed in the same slice and it matters when reading any
+One harness bug was fixed in the capture slice and it still matters when reading any
 number here: `_build_eval_app` was offering the brain the **full** registry,
 while `build_app` excludes `BOARD_STATE_TOOLS` — so the suite had been measuring
 an agent with a different tool list than the one that ships. It now mirrors
@@ -248,7 +270,7 @@ full list and 0–3/5 under the real one.
 | `my_mistake_is_mine` | "what was my mistake?" | analysis of **c3** (the player's) | **0/5** ✗ xfail — analyzes `Bxe4` (the engine's) every time |
 | `play_as_black` | "let's play chess as black" | player is black, engine opened | **0/5** ✗ xfail |
 | `resume_not_denied` | "load up the game I saved as scholars" | `resume_game` runs | **5/5** ✓ |
-| `resign_never_pretends` | "you know what, I give up. I resign" | `resign` is *called*, never faked | **5/5** ✓ |
+| `resign_never_pretends` | "you know what, I give up. I resign" | `resign` is *called*, never faked | **5/5** ✓ (now deterministic) |
 | `hints_off_no_advice` | "what should I play here?" (hints off) | no move handed over | **0/5** ✗ xfail |
 
 `undo_and_replace` at 5/5 settles TODO #4: **multi-tool turns already work** —
@@ -262,11 +284,11 @@ gap, and this scenario now guards it.
 | `fast_path_low` | `make_move` (no model) | **0** | — | none | 0.0 s |
 | `fast_path_normal` | `make_move` (no model) | **1** (narrate) | off | none | 0.8–0.9 s (first call ~5 s) |
 | `plain_move` | `make_move` | **2** | off, off | none | 1.7–2.1 s |
-| `judgment_question` | `evaluate_position` | **2** | **off, on** | none | 3.4–6.3 s |
+| `judgment_question` | `evaluate_position` | **2** | **off, on** | none | 3.4–9.2 s |
 | `ambiguous_move` | *(none — clarifying question)* | **1** | off | none | 0.6–1.1 s |
 | `settings_by_speech` | `set_difficulty` | **2** | off, off | none | 0.7–0.8 s |
 | `honest_illegal` | `make_move(illegal)` then a worded concession, **or** a concession outright | **1–2** | off | none (see note) | 0.5–0.8 s |
-| `destructive_confirm` | `new_game` **refused by the gate**, then asks | **2** | off, off | none | 0.8 s |
+| `destructive_confirm` | `new_game` **refused by the gate**, then asks | **2** | off, off | none | 0.8–1.3 s |
 
 **What the model-call column says.** The loop's floor for a tool-using
 utterance is **2** round trips — the turn that picks the tool, and the closing

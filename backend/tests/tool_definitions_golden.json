@@ -155,7 +155,7 @@
   },
   {
     "function": {
-      "description": "Resign the game. Defaults to the side to move; pass a color to resign for that side.",
+      "description": "Resign the game. Defaults to the player's own side; pass a color to resign for that side.",
       "name": "resign",
       "parameters": {
         "additionalProperties": false,

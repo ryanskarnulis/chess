@@ -398,10 +398,15 @@ def test_new_game_resets(session):
     assert session.turn == "white"
 
 
-def test_resign_defaults_to_side_to_move(session):
+def test_resign_defaults_to_the_player_not_the_side_to_move(session):
+    """An unqualified "I resign" is the *player's* resignation, and the session
+    knows which side they are. The old default — the side to move — was only
+    coincidentally the player (trace review, finding 8): here the player is
+    white, it is black's move, and the game must still end 0-1."""
     ctx = ToolContext(session=session)
     registry = build_registry(ctx)
     registry.dispatch("make_move", {"move": "e4"})
+    assert session.turn == "black" and session.player_color == "white"
 
     registry.dispatch("resign", {})
     _, result = confirm_pending(registry, ctx)
@@ -409,8 +414,8 @@ def test_resign_defaults_to_side_to_move(session):
     assert result["ok"] is True
     assert result["outcome"] == {
         "termination": "resignation",
-        "winner": "white",
-        "result": "1-0",
+        "winner": "black",
+        "result": "0-1",
     }
     assert session.is_game_over()
 

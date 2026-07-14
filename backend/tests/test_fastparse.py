@@ -8,7 +8,7 @@ or non-move text falls through to the agent unchanged. Pure function of
 
 import pytest
 
-from chessapp.fastparse import parse_confirmation, parse_move
+from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 
 START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 # 1. e4 d5 — white to move; exd5 is the only capture on d5.
@@ -360,3 +360,61 @@ def test_negations(text):
 )
 def test_anything_else_falls_through(text):
     assert parse_confirmation(text) is None
+
+
+# --- parse_resign: the player conceding, settled by code rather than by the
+# model's mood. Live, "you know what, I give up. I resign" got *"Word. Game
+# over."* with zero tool calls on a live board (trace review, finding 6), and the
+# eval measured the path as a coin flip. Resignation is not a judgment call, so
+# the model no longer makes it.
+#
+# Every clause must be a resignation or a filler, so a resignation *inside* a
+# larger thought ("i give up on this bishop") never fires. A false positive is
+# cheap by construction — the route dispatches through the same gate as the
+# agent, so a mis-parse asks the player to confirm; it cannot throw a game away.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "resign",
+        "I resign",
+        "i resign.",
+        "I resign the game",
+        "i give up",
+        "  I GIVE UP!  ",
+        "i concede",
+        "i forfeit",
+        "i quit",
+        "i surrender",
+        "I'm resigning",
+        # The utterance from the trace: a discourse marker, then two clauses.
+        "you know what, I give up. I resign",
+        "ok, i resign",
+        "alright, that's it, i resign",
+    ],
+)
+def test_resignations(text):
+    assert parse_resign(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A resignation word inside a larger thought is not a resignation.
+        "i give up on this bishop",
+        "i resign myself to losing this pawn",
+        "should i resign?",
+        "i'm not going to resign",
+        "what happens if i resign",
+        "never resign a won game",
+        # Ordinary play must never be read as conceding.
+        "e4",
+        "new game",
+        "undo that",
+        "",
+        "   ",
+    ],
+)
+def test_not_a_resignation(text):
+    assert parse_resign(text) is False

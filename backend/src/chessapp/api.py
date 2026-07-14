@@ -33,9 +33,11 @@ from chessapp.agent_api import ConversationStore, build_agent_router
 from chessapp.analysis import review_game
 from chessapp.brain import Brain
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
-from chessapp.fastparse import parse_confirmation, parse_move
+from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
+from chessapp.honesty import claims_destructive_outcome
 from chessapp.tools import (
+    DESTRUCTIVE_TOOLS,
     UNDO_PLIES_MAX,
     ToolContext,
     ToolRegistry,
@@ -47,6 +49,7 @@ from chessapp.trace import (
     ROUTE_BRAIN,
     ROUTE_CONFIRMATION,
     ROUTE_FAST_PATH,
+    ROUTE_RESIGN,
     Tracer,
     turn_record,
 )
@@ -207,6 +210,30 @@ def _move_confirmation(result: dict[str, Any], session: GameSession) -> str:
 # commentary, and an empty bubble would read as a crash.
 _STUCK_REPLY = "I lost the thread on that one — say it again?"
 _DECLINED_REPLY = "Alright, keeping it. Your move."
+
+# What the player hears instead of a lie. The guard below catches commentary that
+# announces the game ended (or restarted) when the board says otherwise; rather
+# than emit it, the pipeline says what is actually true. Public so tests can pin
+# the substitution rather than a wording.
+UNTRUE_CLAIM_REPLY = (
+    "Scratch that — the game's still live, and I didn't actually do that. "
+    "Say it again if you meant it."
+)
+
+# The confirmation question for a resignation the pipeline itself dispatched.
+# Deterministic, like the gate it came from: the model is not consulted about a
+# resignation at any point, including how to ask about one.
+_RESIGN_CONFIRM = "That's the game if you mean it. Say yes and I'll resign for you."
+
+
+def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
+    """Did a destructive op actually run this turn? A gate refusal is `ok:
+    False`, so an armed-but-unconfirmed resign correctly counts as nothing
+    happening."""
+    return any(
+        r["name"] in DESTRUCTIVE_TOOLS and r["result"].get("ok") is True
+        for r in tool_results
+    )
 
 
 @dataclass(frozen=True)
@@ -493,6 +520,25 @@ def create_app(
                     tool_results,
                     transcript,
                 )
+        elif parse_resign(text):
+            # An explicit resignation is deterministic text, so the model gets no
+            # vote on whether it happened: live, it took one and answered "Word.
+            # Game over." with no tool call on a live board. The call still goes
+            # through the registry, so the gate arms it and the player's yes —
+            # not the agent's word — is what ends the game.
+            route = ROUTE_RESIGN
+            args = {"color": ctx.session.player_color}
+            result = registry.dispatch("resign", args)
+            tool_results.append({"name": "resign", "result": result})
+            tool_args.append(args)
+            if not result.get("ok"):
+                commentary = _RESIGN_CONFIRM  # the gate armed it; the answer is theirs
+            elif ctx.settings.verbosity == "low":
+                commentary = _destructive_confirmation("resign", result, ctx.session)
+            else:
+                commentary = brain.narrate(
+                    _agent_state_dict(ctx), tool_results, transcript
+                )
         else:
             route = ROUTE_BRAIN
             response = brain.get_agent_response(before, text, transcript)
@@ -502,6 +548,19 @@ def create_app(
             # A budget stop (max_iterations / correction_limit) carries no
             # commentary: the loop never reached a text turn.
             commentary = response.text or _STUCK_REPLY
+        # The honesty guard, at the one point every route converges: commentary
+        # that announces the game ended (or restarted) when nothing ended it is
+        # not shown to the player. The board and the tool results are the record
+        # of what happened; the model's prose is not, and live it has claimed
+        # resignations and checkmates that never occurred (trace review, finding
+        # 6). This is the same rule as the gate, applied one step later — the
+        # model may neither *do* a destructive op unasked nor *say* it did.
+        guarded = False
+        ended = ctx.session.is_game_over() or _destructive_succeeded(tool_results)
+        if not ended and claims_destructive_outcome(commentary):
+            logger.warning("commentary_claimed_untrue_outcome", extra={"text": text})
+            commentary = UNTRUE_CLAIM_REPLY
+            guarded = True
         agent_state = _agent_state_dict(ctx)
         # The UI still gets its own full document; a mutation shows up in the
         # agent view too (any board change moves the fen), so that comparison
@@ -520,6 +579,7 @@ def create_app(
             fen_after=agent_state["fen"],
             tool_calls=tool_args,
             tool_results=tool_results,
+            guarded=guarded,
         )
         return CommandOutcome(
             commentary=commentary,

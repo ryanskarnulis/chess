@@ -20,9 +20,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-# The three roads an utterance can take through `_run_command`.
+# The four roads an utterance can take through `_run_command`. Three of them are
+# deterministic; only `brain` involves the model in deciding what to do.
 ROUTE_CONFIRMATION = "confirmation"
 ROUTE_FAST_PATH = "fast_path"
+ROUTE_RESIGN = "resign"
 ROUTE_BRAIN = "brain"
 
 
@@ -43,6 +45,7 @@ def turn_record(
     fen_after: str,
     tool_calls: list[dict[str, Any]],
     tool_results: list[dict[str, Any]],
+    guarded: bool = False,
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -50,6 +53,11 @@ def turn_record(
     — args and `{"name", "result"}`, parallel by construction — and are zipped
     back into one entry per call, which is the shape a human actually wants:
     what it called, with what, and what came back.
+
+    `guarded` marks a turn whose commentary was suppressed by the honesty guard
+    (it announced an ending no tool produced). `commentary` is what the player
+    actually saw, so the lie itself is not kept — but the *event* is countable,
+    which is what tells you whether the model is still trying to fake outcomes.
     """
     return {
         "utterance": utterance,
@@ -57,6 +65,7 @@ def turn_record(
         "commentary": commentary,
         "stop_reason": stop_reason,
         "changed": changed,
+        "guarded": guarded,
         "fen_before": fen_before,
         "fen_after": fen_after,
         "tools": [
