@@ -83,36 +83,132 @@ a new model), re-record the table below in the same PR and say why.
 | `honest_illegal` | "castle kingside" (illegal move 1) | No fabricated legal move; board unchanged. An attempted-and-rejected `make_move` (`legal:false`) is fine — only the board-didn't-change invariant is asserted, never wording. |
 | `destructive_confirm` | "new game" (mid-game), then "yes" | Destructive op must not fire on the first ask: **no successful `new_game` this turn**, game intact, and the agent relays the gate's refusal as a question. The follow-up "yes" must then actually reset the board. **Hard assert** — was the suite's one xfail; see the closed finding below. |
 
-## Known blind spot: move correctness through the model
+## Move correctness through the model (was: the known blind spot)
 
-**8/8 green does not mean the agent plays the move you asked for.** Read the
-scenario table with that question in mind and the coverage is thin:
+The suite used to have exactly one scenario in which the model picked a move at
+all — `plain_move` ("play e4", from the starting position), the easiest case
+there is — while `ambiguous_move` and `honest_illegal` only asserted the board
+*didn't* change, which is safety, not correctness. 8/8 green did not mean the
+agent played the move you asked for.
 
-- `plain_move` ("play e4", from the starting position) is the **only** scenario
-  in which the model picks a move at all, and it is the easiest case there is.
-- `ambiguous_move` and `honest_illegal` assert the board **did not change** —
-  that is safety, not correctness.
-- Everything else is judgment questions, settings, and the destructive gate.
+The **pass-rate scenarios** close that. They come out of the 2026-07-13 trace
+review (`docs/agent-trace-review-2026-07-13.md`: three real games, 46 traced
+turns), each one a real position and a real utterance that misfired, replayed.
+They assert the **specific SAN that must land**, so they can fail on the model
+being *wrong* rather than on it calling the wrong tool.
 
-Nothing here asks whether *"knight takes e5"* in a middlegame produces `Nxe5`
-rather than some other legal-but-wrong move. Combined with the fast-path guard
-(every scenario is *required* to miss `parse_move`), the suite has confirmed the
-model's move path on precisely one trivial utterance — while in real play the
-parser is likely carrying most moves and masking how the model path does on the
-rest. Closing this is the current sprint (TODO.md): read real turn traces
-(`CHESSAPP_TRACE_PATH`), turn misfires into `(fen, utterance, expected_san)`
-scenarios in real positions, and record a **pass rate over N runs** rather than a
-boolean — at temp 1.0 a single assert flaps instead of telling you the path works
-70% of the time.
+**They report a rate, not a boolean.** The model samples at temp 1.0: a single
+assert on a path that works 70% of the time flaps, and a flapping test teaches
+you nothing. `_pass_rate` runs each scenario `_PASS_RATE_RUNS` (5) times on a
+fresh app and prints `PASS_RATE=n/5`; the floor is 80%. This is not theoretical —
+`capture_names_victim` ("bishop takes pawn") measured **0/5, 2/5, 3/5 and 5/5**
+across four runs of the same build. A boolean assert there would have told you
+four different things on four days.
+
+**Scenarios currently xfailed are known-broken, not flaky-broken** (`strict=False`,
+each carrying its finding number from the trace review, so a fix flips them green
+instead of silently passing):
+
+| scenario | asserts | why it's xfailed |
+|---|---|---|
+| `capture_bare_bishop` / `capture_bare_pawn` | "bishop takes" → `Bxh6` | exactly one legal referent; the model asks a clarifying question anyway |
+| `capture_names_victim` | "bishop takes pawn" → `Bxh6` | same, plus invented geometry ("the one on f1 to take on h6" — it is the c1 bishop) |
+| `my_mistake_is_mine` | "what was my mistake?" analyzes the **player's** move | `analyze_last_move()` takes no args and always analyzes the *last ply* — on the player's turn that is always the engine's reply |
+| `play_as_black` | "let's play chess as black" → player is black, engine opened | `new_game()` takes no args; it cannot assign a side. **This is the conductor deep-link intent string** — the advertised handoff is broken end to end |
+| `hints_off_no_advice` | hints off → no move handed over | the model calls `get_best_moves` and names a move anyway |
+
+Two of these are the same bug the sprint premise named: **the tool cannot express
+what the player asked for, so the model fabricates compliance.** The fix for the
+capture family belongs in `fastparse` (when exactly one legal capture matches the
+named piece, the board already knows the move — no model call should decide it);
+the fix for the other two is a tool signature (`analyze_last_move(color=…)`
+defaulting to `session.player_color`, `new_game(player_color=…)`).
+
+## Self-poisoning: the transcript scenarios, and what they found
+
+Three failures seen in live play — `resume_game` denied ("the system doesn't
+support reloading saved games"), `resign` answering "Word. Game over." with zero
+tool calls on a live board, and "take the h6 pawn" praised but not played — all
+passed **5/5** on a fresh delegate conversation. The standing suspicion was that
+**a long transcript degrades tool recall**. The `long_transcript_*` scenarios were
+written to test that, and they drive the **web panel seam** (`/api/command`, which
+reads `ctx.transcript`) rather than the delegate wire — the delegate opens a fresh
+conversation per call, which is exactly what was hiding this.
+
+Each probe runs under three conditions, so the transcript is the only variable:
+
+| condition | what it is |
+| --- | --- |
+| `fresh` | empty transcript, verbosity normal — the control |
+| `live_like` | the real 20-turn thread from the game that broke, at verbosity=low |
+| `poisoned` | `live_like` + the agent's own earlier turn saying the thing failed |
+
+**The suspicion was wrong, and the real cause is worse.**
+
+| probe | fresh | live_like | poisoned |
+| --- | --- | --- | --- |
+| `long_resume` | 5/5 | 5/5 | **0/5** ✗ xfail |
+| `long_resign` | 5/5 | 5/5 | 5/5 |
+| `long_capture` | 5/5 | 5/5 | 5/5 |
+
+Transcript **length is not the cause** — 20 real turns changes nothing. What
+breaks `resume_game` is a *single prior assistant turn, in the model's own
+transcript, in which it said saving failed* (the real one from the trace: "I can't
+save the game right now because the save directory isn't set up"). With that one
+line present it stops calling `resume_game` **entirely** — 0/5 — and confabulates
+a justification for a file that is sitting on disk:
+
+> "I can't load a game named 'scholars' because it hasn't been saved yet."
+> "I can't load that game because it doesn't exist in the system."
+
+This is **self-poisoning**: the model reads its own earlier failure as a fact
+about what the app can do, and never re-checks. It is a bug about *what the
+transcript carries*, not about any one tool — a failed tool result is app state
+that must be re-read, not a fact the model may keep quoting back to itself. The
+fix belongs in the loop / transcript layer, and it is the same family as
+everything else in the trace review: **the model deciding something deterministic
+state already knows.**
+
+`long_resign` and `long_capture` pass in all three conditions, so their live
+failures are **still unexplained** — not length, not a declined destructive op.
+They are hard asserts in all three conditions, so a recurrence fails here. The
+next hypothesis to test for the capture miss is the same self-poisoning, from the
+two "Illegal move." turns that were sitting in that thread.
 
 ## Recorded baseline
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13
-— 8/8 scenarios pass, no xfails.** Warm model. `destructive_confirm` is a hard
-assert as of the confirmation-gate slice (`fix/destructive-confirm-gate`); every
-other scenario's trajectory, model-call count and latency is unchanged against
-the previous baseline, which is the result the gate change wanted: it adds a
-refusal round-trip to destructive ops and touches nothing else.
+— 19/19 hard scenarios pass; 7 xfailed (known-broken, listed above).** Warm
+model. The 8 shape scenarios below are unchanged; the pass-rate and
+long-transcript scenarios are new, from the trace review.
+
+One harness bug was fixed in the same slice and it matters when reading any
+number here: `_build_eval_app` was offering the brain the **full** registry,
+while `build_app` excludes `BOARD_STATE_TOOLS` — so the suite had been measuring
+an agent with a different tool list than the one that ships. It now mirrors
+`build_app`. This was not cosmetic: `capture_names_victim` scored 5/5 under the
+full list and 0–3/5 under the real one.
+
+### Pass-rate scenarios (5 runs each, floor 80%)
+
+| Scenario | Utterance | Must land | Rate |
+| --- | --- | --- | --- |
+| `capture_bare_bishop` | "bishop takes" | `Bxh6` | **0/5** ✗ xfail |
+| `capture_bare_pawn` | "pawn takes" | `exd6` | **0/5** ✗ xfail |
+| `capture_names_victim` | "bishop takes pawn" | `Bxh6` | **0–3/5** ✗ xfail (unstable across runs) |
+| `capture_names_square` | "take the h6 pawn" | `Bxh6` | **5/5** ✓ |
+| `undo_and_replace` | "take that bishop move back and play d4 instead" | `undo` → `make_move(d4)` | **5/5** ✓ |
+| `my_mistake_is_mine` | "what was my mistake?" | analysis of **c3** (the player's) | **0/5** ✗ xfail — analyzes `Bxe4` (the engine's) every time |
+| `play_as_black` | "let's play chess as black" | player is black, engine opened | **0/5** ✗ xfail |
+| `resume_not_denied` | "load up the game I saved as scholars" | `resume_game` runs | **5/5** ✓ |
+| `resign_never_pretends` | "you know what, I give up. I resign" | `resign` is *called*, never faked | **5/5** ✓ |
+| `hints_off_no_advice` | "what should I play here?" (hints off) | no move handed over | **0/5** ✗ xfail |
+
+`undo_and_replace` at 5/5 settles TODO #4: **multi-tool turns already work** —
+the loop dispatches both calls in one turn. It was a measurement gap, not a code
+gap, and this scenario now guards it.
+
+### Shape scenarios
 
 | Scenario | Typical trajectory | Model calls | Thinking | Corrections | Warm time |
 | --- | --- | --- | --- | --- | --- |
