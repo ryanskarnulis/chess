@@ -363,12 +363,20 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         }
 
     @registry.tool()
-    def analyze_last_move() -> dict[str, Any]:
-        """Analyze the last move played: how it compares to Stockfish's best
-        from the same position — centipawn loss, verdict
-        (good/inaccuracy/mistake/blunder), and what was best. Use this to
-        answer 'what was my mistake?' and to explain moves."""
-        analysis = _analyze_last_move(_require_engine(ctx), ctx.session)
+    def analyze_last_move(
+        color: Literal["white", "black"] | None = None,
+    ) -> dict[str, Any]:
+        """Analyze a move: how it compares to Stockfish's best from the same
+        position — centipawn loss, verdict (good/inaccuracy/mistake/blunder),
+        and what was best. Defaults to the player's own last move, which is
+        what 'what was my mistake?' means; pass a color to analyze that side's
+        last move instead."""
+        # Which move "my mistake" refers to is not a question for the model.
+        # On the player's turn the last *ply* is always the engine's reply, so
+        # the old no-args default analyzed the opponent's move every time
+        # (trace review, finding 1). The session knows whose side is whose.
+        color = color or ctx.session.player_color  # type: ignore[assignment]
+        analysis = _analyze_last_move(_require_engine(ctx), ctx.session, color=color)
         return {
             "ok": True,
             "played": analysis.played_san,

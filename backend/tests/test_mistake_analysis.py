@@ -127,7 +127,11 @@ def test_tool_without_engine_is_an_error():
 
 @requires_stockfish
 def test_tool_reports_the_blunder(engine):
-    session = play(GameSession(), "e4", "e5", "Bc4", "Bc5", "Qh5", "Nf6")
+    # The blunder is black's, so the player is black: the tool's no-args
+    # default is the *player's* last move (see the color tests below).
+    session = play(
+        GameSession(player_color="black"), "e4", "e5", "Bc4", "Bc5", "Qh5", "Nf6"
+    )
     registry = build_registry(ToolContext(session=session, engine=engine))
     result = registry.dispatch("analyze_last_move", {})
     assert result["ok"] is True
@@ -143,3 +147,88 @@ def test_tool_with_no_moves_is_an_error(engine):
     registry = build_registry(ToolContext(session=GameSession(), engine=engine))
     result = registry.dispatch("analyze_last_move", {})
     assert result["ok"] is False
+
+
+# --- whose move is "the last move"? -----------------------------------------
+#
+# On the player's turn the last *ply* is always the engine's reply, so an
+# unqualified "what was my mistake?" analyzed the opponent's move every time
+# (trace review, finding 1). The color picks whose move is meant, and the
+# session — not the model — knows which side the player is.
+
+
+@requires_stockfish
+def test_color_selects_that_colors_last_move(engine):
+    # White's 5.Qh5 is the last white ply; black's 5...Nf6 is the last ply.
+    session = play(GameSession(), "e4", "e5", "Bc4", "Bc5", "Qh5", "Nf6")
+
+    assert analyze_last_move(engine, session, color="white").played_san == "Qh5"
+    assert analyze_last_move(engine, session, color="black").played_san == "Nf6"
+
+
+@requires_stockfish
+def test_no_color_still_means_the_last_ply(engine):
+    session = play(GameSession(), "e4", "e5", "Bc4", "Bc5", "Qh5", "Nf6")
+    assert analyze_last_move(engine, session).played_san == "Nf6"
+
+
+@requires_stockfish
+def test_a_color_that_has_not_moved_is_an_error(engine):
+    session = play(GameSession(), "e4")
+    with pytest.raises(ValueError):
+        analyze_last_move(engine, session, color="black")
+
+
+@requires_stockfish
+def test_tool_defaults_to_the_players_own_move(engine):
+    """The whole point: the player is white, it is the player's turn, and the
+    last ply on the board is black's. "What was my mistake?" must analyze
+    white's move — the one the player actually made."""
+    session = play(GameSession(), "e4", "e5", "Bc4", "Bc5", "Qh5", "Nf6")
+    assert session.player_color == "white"
+
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    result = registry.dispatch("analyze_last_move", {})
+
+    assert result["ok"] is True
+    assert result["played"] == "Qh5"
+    assert result["color"] == "white"
+
+
+@requires_stockfish
+def test_tool_default_follows_the_player_to_black(engine):
+    session = play(GameSession(player_color="black"), "e4", "e5", "Bc4", "Bc5")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+
+    result = registry.dispatch("analyze_last_move", {})
+
+    assert result["ok"] is True
+    assert result["played"] == "Bc5"
+    assert result["color"] == "black"
+
+
+@requires_stockfish
+def test_tool_color_overrides_the_default(engine):
+    """ "...and what about the engine's reply?" — the override exists so the
+    player can ask about the other side without the model guessing."""
+    session = play(GameSession(), "e4", "e5", "Bc4", "Bc5", "Qh5", "Nf6")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+
+    result = registry.dispatch("analyze_last_move", {"color": "black"})
+
+    assert result["ok"] is True
+    assert result["played"] == "Nf6"
+    assert result["classification"] == "blunder"
+
+
+@requires_stockfish
+def test_tool_when_the_player_has_not_moved_is_an_error(engine):
+    """The player is black and only the engine has moved: there is no move of
+    theirs to analyze, and the tool must say so rather than hand back white's."""
+    session = play(GameSession(player_color="black"), "e4")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+
+    result = registry.dispatch("analyze_last_move", {})
+
+    assert result["ok"] is False
+    assert "black" in result["error"]

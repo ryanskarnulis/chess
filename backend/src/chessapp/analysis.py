@@ -49,8 +49,11 @@ def classify_cp_loss(cp_loss: int) -> str:
     return "blunder"
 
 
-def analyze_last_move(engine: EnginePlayer, session: GameSession) -> MoveAnalysis:
-    """Analyze the last move played in `session`.
+def analyze_last_move(
+    engine: EnginePlayer, session: GameSession, color: str | None = None
+) -> MoveAnalysis:
+    """Analyze the last move played in `session` — or, with `color`, the last
+    move played *by that color*.
 
     The loss is measured mover-POV: (best candidate's score in the position
     before the move) minus (the position's score after the played move). A
@@ -58,14 +61,29 @@ def analyze_last_move(engine: EnginePlayer, session: GameSession) -> MoveAnalysi
     construction; a drawn end position scores as 0.
     """
     data = session.to_dict()
-    if not data["moves"]:
+    moves = data["moves"]
+    if not moves:
         raise ValueError("no moves to analyze yet")
 
     board = chess.Board(data["root_fen"])
-    for uci in data["moves"][:-1]:
+    movers = []
+    for uci in moves:
+        movers.append("white" if board.turn == chess.WHITE else "black")
         board.push(chess.Move.from_uci(uci))
-    played = chess.Move.from_uci(data["moves"][-1])
-    mover = "white" if board.turn == chess.WHITE else "black"
+
+    if color is None:
+        index = len(moves) - 1
+    else:
+        played_by = [i for i, mover in enumerate(movers) if mover == color]
+        if not played_by:
+            raise ValueError(f"no moves by {color} to analyze yet")
+        index = played_by[-1]
+
+    board = chess.Board(data["root_fen"])
+    for uci in moves[:index]:
+        board.push(chess.Move.from_uci(uci))
+    played = chess.Move.from_uci(moves[index])
+    mover = movers[index]
     played_san = board.san(played)
 
     before = GameSession(fen=board.fen())

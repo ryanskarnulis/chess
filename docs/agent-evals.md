@@ -112,14 +112,27 @@ instead of silently passing):
 
 | scenario | asserts | why it's xfailed |
 |---|---|---|
-| `my_mistake_is_mine` | "what was my mistake?" analyzes the **player's** move | `analyze_last_move()` takes no args and always analyzes the *last ply* — on the player's turn that is always the engine's reply |
 | `play_as_black` | "let's play chess as black" → player is black, engine opened | `new_game()` takes no args; it cannot assign a side. **This is the conductor deep-link intent string** — the advertised handoff is broken end to end |
 | `hints_off_no_advice` | hints off → no move handed over | the model calls `get_best_moves` and names a move anyway |
 
-Both tool-signature rows above are the bug the sprint premise named: **the tool
+The remaining tool-signature row is the bug the sprint premise named: **the tool
 cannot express what the player asked for, so the model fabricates compliance.**
-The fix is a tool signature (`analyze_last_move(color=…)` defaulting to
-`session.player_color`, `new_game(player_color=…)`).
+The fix is a tool signature (`new_game(player_color=…)`).
+
+### `my_mistake_is_mine` is closed (2026-07-13) — 0/5 → 5/5
+
+The first of the two signature bugs is fixed and its xfail is now a **hard
+assert**. `analyze_last_move(color=…)` defaults to `session.player_color`, so
+"what was my mistake?" analyzes the move the player actually made. The old
+no-arg tool always analyzed the literal last ply — which, on the player's turn,
+is *always* the engine's reply — so the tool could not answer its own
+docstring's question. The model's response to that was not to fail loudly: told
+"I meant MY last move, the c3 one", it re-called the same no-arg tool and
+reported the engine's `Bxe4` **as if it were c3**. That is the house rule's
+signature failure mode — an ask the tool cannot express becomes an ask the model
+fabricates compliance with — and it is fixed the way `resign`'s color was, in
+the signature rather than the prompt. The override (`color="black"`) exists so
+the player can ask about the *other* side without the model guessing which.
 
 ### The capture family is retired, not lost (2026-07-13)
 
@@ -241,19 +254,26 @@ rule, so neither is a coin flip.
 ## Recorded baseline
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13
-(resign slice) — 20/20 hard scenarios pass, 3 xfailed, nothing red.** Warm model,
-2 m 36 s for the suite. The previous record's one failure, `long_resign[poisoned]`
-at 2/5, is **5/5** — and honestly so: it is now a zero-LLM route, so read it as a
-tripwire on the parser rather than a score for the model (see the retirement note
-above). The three xfails are unchanged and are the next two slices (`analyze_last_move`
-and `new_game` cannot express what the player asked for) plus the hints leak.
+(analyze-my-move slice) — 21/21 hard scenarios pass, 2 xfailed.** `my_mistake_is_mine`
+is the new hard assert: **0/5 → 5/5**, the first of the two tool-signature xfails
+closed (see above). The two remaining xfails are `play_as_black` (the next slice)
+and the hints leak.
 
-`long_capture` also came in at 5/5 in all three conditions this run (it has measured
-4–5/5 before; the floor is 80% and the scenario is unchanged), and the analysis
-scenario is slower on this run than last — `judgment_question` took 9.2 s against a
-recorded 3.4–6.3 s. Nothing in this slice touches that path; the
-GPU is shared with project-command-center, and the tripwire (15 s) is deliberately
-loose for exactly that reason.
+**One caveat on this run, and it is not caused by this slice.**
+`long_capture[poisoned]` measured **3/5** on the first gate run and **4/5** on the
+second — straddling the 80% floor, so the gate went red once and green once on the
+same build. Checked against `main` at the same commit the slice branched from: **5/5,
+then 3/5**. So the flap is pre-existing sampling noise on a scenario whose true rate
+sits right at the floor, not a regression — but a gate that fails ~half the time on
+an unchanged path is a broken gate, and this scenario has form (the retired capture
+family measured 0/5, 2/5, 3/5 and 5/5 across four runs of one build). **Either the
+run count or the floor needs to move**; 5 runs cannot resolve a 60–100% band. Filed
+as a TODO rather than tuned silently here, because moving a floor to make a test
+green is exactly the move that hollows out a tripwire.
+
+`judgment_question`'s latency remains variable (9.2 s recorded last run); the GPU is
+shared with project-command-center and the tripwire (15 s) is deliberately loose for
+exactly that reason.
 
 One harness bug was fixed in the capture slice and it still matters when reading any
 number here: `_build_eval_app` was offering the brain the **full** registry,
@@ -267,7 +287,7 @@ full list and 0–3/5 under the real one.
 | Scenario | Utterance | Must land | Rate |
 | --- | --- | --- | --- |
 | `undo_and_replace` | "take that bishop move back and play d4 instead" | `undo` → `make_move(d4)` | **5/5** ✓ |
-| `my_mistake_is_mine` | "what was my mistake?" | analysis of **c3** (the player's) | **0/5** ✗ xfail — analyzes `Bxe4` (the engine's) every time |
+| `my_mistake_is_mine` | "what was my mistake?" | analysis of **c3** (the player's) | **5/5** ✓ (was 0/5 xfail) |
 | `play_as_black` | "let's play chess as black" | player is black, engine opened | **0/5** ✗ xfail |
 | `resume_not_denied` | "load up the game I saved as scholars" | `resume_game` runs | **5/5** ✓ |
 | `resign_never_pretends` | "you know what, I give up. I resign" | `resign` is *called*, never faked | **5/5** ✓ (now deterministic) |
