@@ -2,48 +2,12 @@
 
 The backlog, in priority order. One task = one vertical slice = one branch = one PR (TDD: failing test first). When a task is finished and merged, move its line to `DONE.md` with the merge date. Re-plan freely between slices — this file is the living backlog, not a contract.
 
-## Agent loop rework — one real tool loop (2026-07-13, top priority)
-
-From the 2026-07-13 loop review. Today's `_run_command` is **two phases, not a loop**: the brain is called once, its tool calls are dispatched, and `react()` comments on the results *with no tools offered*. The only path back to the model is failure (`_failed_calls`). Success is terminal — so the agent never sees a successful tool result while it still holds tools, and every multi-step intent is structurally impossible ("play the best move" needs `get_best_moves` → read → `make_move`; it can only guess blind). The four read/analysis tools exist to inform an action the agent cannot take.
-
-Two supporting defects, both fixed by the same change:
-
-- **Tool results never re-enter the conversation.** `ChatResult.to_message()` (`provider.py:123`) is dead code outside tests; there is no `role: "tool"` message anywhere. The retry path discards the assistant's own tool-call turn and re-prompts from scratch with a synthetic *user* message describing the failure (`_retry_command`), so the model never sees the `assistant(tool_calls)` → `tool(result)` structure it was trained on, and the prompt is rebuilt each round instead of grown (KV cache thrown away).
-- **Two nested retry loops.** The brain retries schema violations (`llama_brain.py:90`, `max_retries=2`) *inside* the pipeline's domain-failure retry (`api.py:446`, `MAX_TOOL_RETRY_ROUNDS=2`), composing multiplicatively: up to 9 completions plus `react` = **10 model round-trips worst case** on a local 12B.
-
-Target shape — one bounded loop in the brain, results fed back as real `tool` messages, the first assistant turn with no tool calls *being* the commentary:
-
-```
-messages = [system, *transcript, user(board + command)]
-for _ in range(MAX_ITERATIONS):        # ~4
-    result = provider.chat(messages, tools=...)
-    if not result.tool_calls:
-        return result.content          # the commentary — react() disappears
-    messages.append(result.to_message())
-    for call in result.tool_calls:
-        messages.append({"role": "tool", "tool_call_id": call.id,
-                         "content": json.dumps(registry.dispatch(call.name, call.args))})
-```
-
-Invariants hold: the registry still dispatches, so the agent still cannot touch the board directly; the fast path (`parse_move` → `make_move`, zero-LLM at verbosity=low) is untouched. Schema failures and illegal moves stop being special cases — both become just another tool-result message the model reads and corrects from, collapsing the two nested retry loops into the one iteration bound (plus the small wire-level correction budget noted in slice 1, per STANDARD.md §3).
-
-Slices, in order (TDD; the eval harness gates the merge — this is a loop change, so `docs/agent-evals.md` must not regress):
-
-1. ~~**[M] Brain owns a bounded tool loop** + **[M] pipeline: drop phase two and the domain-retry loop.**~~ **Landed together** (`feat/brain-tool-loop`) — moving dispatch into the brain made the pipeline's dispatch and domain-retry code dead on arrival, so the two slices were one change. `LlamaBrain.get_agent_response` is now the STANDARD.md §3 loop (`max_iterations=4`, separate `max_corrections=2`, `completed | max_iterations | correction_limit`); tool results go back as real `role: "tool"` messages on a growing prompt; domain rejections are results, schema failures are corrections. `react()`, `_failed_calls`, `_retry_command`, `MAX_TOOL_RETRY_ROUNDS` are gone.
-   - **The `react` question is settled:** the loop's closing tool-less turn *is* the commentary and cannot act (no tools on offer), which enforces the CLAUDE.md separation structurally. CLAUDE.md's Game Loop section is updated.
-   - **One thing survived:** the fast path never enters the loop, so it has no closing turn to comment with — `Brain.narrate` (react's body, scoped to that one caller) supplies it. At verbosity=low the canned confirmation still stands in, so a plain move stays zero-LLM.
-2. ~~**[S] Thinking policy for the loop — measure.**~~ **Landed** (`test/loop-model-call-measurement`). The rule was already implemented; what was missing was that *nothing counted model round-trips* — so the evals now wrap the live provider in a `CountingProvider` (`tests/fakes.py`) and assert on model calls and the thinking flag per turn, instead of only printing a duration. Measured, 3 runs: fast path is **0** model calls at verbosity=low and **1** (narrate) above it; every tool-using utterance costs exactly the loop's floor of **2** (tool turn + closing turn), never a third; `judgment_question` shows the `thinking=[off,on]` flip live. Analysis latency is **3.4–6.3 s** — the "12–22 s band" this task originally cited was stale prose from the *pre-loop* baseline (the loop rework itself had already cut it to 1.9–5.4 s); `docs/agent-evals.md` now carries one set of numbers.
-   - **Watch:** `destructive_confirm` XPASSed 3/3 runs (it asked first every time) against a recorded ~50% adherence rate. Three samples prove nothing and nothing changed to explain it — the xfail stays, but the structural fix below should re-measure before designing.
-3. **[S] Use the authoritative player color.** `player_color = ctx.session.turn` re-derives what `session.player_color` already holds; just read the field.
-
-Supersedes/absorbs, now landed: "Experiment — skip react() for agent-parsed moves at verbosity=low" (react is gone), and the retry half of "Agent reliability — finish a game by voice" (an illegal-move guess now self-corrects inside the loop instead of ending the turn).
-
 ## Next sprint (2026-07-12)
 
 The next three slices, in order. This is a framing block over the sections below, not a rewrite — every item stays tracked in its own section:
 
 1. **[S] Ship Glitch's voice** — pick the final TTS voice by ear from the #97 audition artifact and resolve the swearing watch-item; closes the current-focus trio. Done when the winner is set as `TTS_VOICE`.
-2. **[M] Structural fix for the destructive-op confirm gate** — a deterministic pipeline-owned "pending destructive op" state (bare "new game" → confirmation question → "yes" → `new_game`). Pre-step: measure `resign`'s adherence rate. Done when the `destructive_confirm` xfail flips to a hard assert. **Sequence after the agent-loop rework above** — this state lives in `_run_command`, which the rework rewrites; design it against the new single-loop pipeline, not the two-phase one.
+2. **[M] Structural fix for the destructive-op confirm gate** — a deterministic pipeline-owned "pending destructive op" state (bare "new game" → confirmation question → "yes" → `new_game`). Pre-step: measure `resign`'s adherence rate. Done when the `destructive_confirm` xfail flips to a hard assert. The agent-loop rework it was blocked on has **landed** (see DONE.md, 2026-07-13), so design this against the single-loop pipeline in `_run_command`. Note the adherence rate is genuinely a coin flip: across the measurement slice's runs `new_game` asked first 3/3 times and then fired immediately on the next run.
 
 Stretch: start the Phase-4 manual walkthrough, prioritizing the #114–#116 UI items (single layout, random color + side switch, post-game screen) and Android Chrome hands-free.
 
