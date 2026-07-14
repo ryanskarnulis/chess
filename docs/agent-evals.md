@@ -81,17 +81,16 @@ a new model), re-record the table below in the same PR and say why.
 | `ambiguous_move` | "move the rook" (both rook files open) | Genuine ambiguity → asks instead of guessing: **no legal `make_move`**, board unchanged, non-empty clarifying reply. |
 | `settings_by_speech` | "make it easier" | `set_difficulty` called successfully toward a **weaker** setting than the `casual` default; no board mutation. |
 | `honest_illegal` | "castle kingside" (illegal move 1) | No fabricated legal move; board unchanged. An attempted-and-rejected `make_move` (`legal:false`) is fine — only the board-didn't-change invariant is asserted, never wording. |
-| `destructive_confirm` | "new game" (mid-game) | Destructive op must ask a confirmation first: **no `new_game` this turn**, game intact. **XFAIL — real prompt-adherence gap, see below.** |
+| `destructive_confirm` | "new game" (mid-game), then "yes" | Destructive op must not fire on the first ask: **no successful `new_game` this turn**, game intact, and the agent relays the gate's refusal as a question. The follow-up "yes" must then actually reset the board. **Hard assert** — was the suite's one xfail; see the closed finding below. |
 
 ## Recorded baseline
 
-**gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13,
-3 consecutive full suite runs — 7/7 real scenarios pass every run (21/21);
-`destructive_confirm` is xfail (see below, and it XPASSed all three runs this
-session).** Warm model. Re-recorded with the model-call meter added
-(`test/loop-model-call-measurement`): the trajectory and latency numbers are
-flat against the loop-rework baseline, and the **model calls** column is new —
-it is the measurement TODO slice 2 asked for.
+**gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13
+— 8/8 scenarios pass, no xfails.** Warm model. `destructive_confirm` is a hard
+assert as of the confirmation-gate slice (`fix/destructive-confirm-gate`); every
+other scenario's trajectory, model-call count and latency is unchanged against
+the previous baseline, which is the result the gate change wanted: it adds a
+refusal round-trip to destructive ops and touches nothing else.
 
 | Scenario | Typical trajectory | Model calls | Thinking | Corrections | Warm time |
 | --- | --- | --- | --- | --- | --- |
@@ -102,7 +101,7 @@ it is the measurement TODO slice 2 asked for.
 | `ambiguous_move` | *(none — clarifying question)* | **1** | off | none | 0.6–1.1 s |
 | `settings_by_speech` | `set_difficulty` | **2** | off, off | none | 0.7–0.8 s |
 | `honest_illegal` | `make_move(illegal)` then a worded concession, **or** a concession outright | **1–2** | off | none (see note) | 0.5–0.8 s |
-| `destructive_confirm` | *(none, asks)* — 3/3 this session | **1** | off | — | 0.6–0.9 s |
+| `destructive_confirm` | `new_game` **refused by the gate**, then asks | **2** | off, off | none | 0.8 s |
 
 **What the model-call column says.** The loop's floor for a tool-using
 utterance is **2** round trips — the turn that picks the tool, and the closing
@@ -155,37 +154,46 @@ Observations worth keeping:
   tool schemas are small and closed). Contrast PCC, where `create_task`
   recurrently needs a `title`/`name` correction.
 
-## Finding: destructive-op confirmation is unreliable (`destructive_confirm` xfail)
+## Closed finding: destructive-op confirmation (was the harness's one xfail)
 
-**gemma-4-12b at temp 1.0 honors chess's "confirm before `new_game`/`resign`"
-rule only about half the time.** Measured ~50% across a 2-ply stub and a 10-ply
-developed, castled game — position depth did not move the rate (probes:
-5 fired `new_game` immediately / 4 asked first, across 9 runs). When it fires,
-it just complies with the destructive request and resets the board.
+**The gap:** gemma-4-12b at temp 1.0 honored chess's "confirm before
+`new_game`/`resign`" prompt rule only about half the time — ~50% across both a
+2-ply stub and a 10-ply developed, castled game (probes: 5 fired `new_game`
+immediately / 4 asked first, across 9 runs). Position depth didn't move the
+rate. A real prompt-adherence gap, not scenario flakiness: the prompt carried
+the rule and `test_personality` pinned that it did; the model just didn't follow
+it. The scenario sat as a non-strict `xfail`.
 
-This is a **real prompt-adherence gap, not scenario flakiness**. The prompt
-does carry the rule (`personality.py` `_BASE`: "Never call either directly from
-one command — first ask a short confirmation question…"), and `test_personality`
-pins that the instruction is present; the model simply doesn't follow it
-reliably. The scenario is left as a **non-strict `xfail`**: the invariant it
-asserts is correct, the suite stays green whether the model behaves (XPASS) or
-not (XFAIL), and the XPASS/XFAIL ratio is itself a signal to watch.
+**Fixed structurally, 2026-07-13, and the xfail is now a hard assert.** The rule
+is no longer the model's to honor. `tools.py` `_gate` refuses an unconfirmed
+`new_game`/`resign` — it does not mutate, it arms the op on the `ToolContext`
+and returns an ordinary rejection *result*, which the agent reads and asks from
+exactly as it reads an illegal move. `confirm_pending` is the only thing that
+opens the gate, and the pipeline calls it on a bare "yes" (`parse_confirmation`)
+with **no model call** — the same deterministic treatment the fast path gives a
+plain move. Three properties that make it hold rather than merely usually work:
 
-**Watch (2026-07-13, measurement slice):** it XPASSed **3/3** runs — gemma asked
-for confirmation every time instead of resetting. That is a better rate than the
-~50% recorded above, but three samples against a ~50/50 coin proves nothing
-(p≈0.125 under the old rate), and nothing in the prompt or the loop changed to
-explain an improvement. Keep the xfail and keep watching; it is not evidence the
-gap is closed.
+- **Confirmation is not a tool argument.** A `confirm` parameter would just move
+  the coin flip: the model could open its own gate. It lives on the context,
+  reachable only from the pipeline.
+- **Re-arming is not confirming.** A second unconfirmed call inside the same
+  turn is refused again, so an agent retrying in-loop cannot self-confirm. Only
+  a new *user* turn can.
+- **The op never survives its turn.** The pipeline consumes the armed op
+  whatever the answer is, so a stale "yes" three turns later can't reset a game.
 
-Per the eval-gate discipline, the prompt was **not** changed in this slice
-(evals gate prompt changes; a fix belongs in its own change, re-run against
-this baseline). Tracked in `TODO.md`. The most robust fix is likely
-**structural, not prompt-only**: a pipeline-owned "pending destructive op"
-state (the same shape as the already-backlogged pending-*move*-proposal idea)
-so a bare "new game" → confirmation question → "yes" → `new_game` is
-deterministic, the way the fast-path already makes plain moves deterministic.
-Worth confirming the same ~50% rate for `resign` before designing the fix.
+The prompt changed with it, and had to: it now tells the agent to **call** the
+tool and relay the refusal, where it used to say ask first and don't call. That
+inversion is load-bearing — under the old wording a compliant model never calls
+the tool, so nothing arms, so the player's "yes" has nothing to confirm and the
+brain would re-ask forever. The gate replaces the rule; it doesn't back it up.
+
+The `resign` adherence rate TODO wanted measured first was never worth
+measuring: the fix makes model adherence irrelevant for both tools, so the
+number would only have told us how bad a problem we'd already deleted.
+
+**No confirmation is asked when there is no game to lose** — game over, or not a
+single move played. The gate guards a game in progress, not the idea of one.
 
 ## Notes for Phase 3 (conductor)
 
@@ -202,9 +210,10 @@ Live delegate behavior observed through the REST seam conductor will use:
 - **Read-only asks reliably mutate nothing**, and illegal/ambiguous asks
   reliably leave the board untouched — chess is safe to delegate to without
   conductor needing to guard against spurious mutations.
-- **Destructive ops (`new_game`, `resign`) are not reliably confirmation-gated
-  at the model layer** (finding above). If conductor ever forwards a bare
-  "start a new chess game", it may reset chess's board without a confirmation
-  round-trip. Until the structural fix lands, conductor should treat chess's
-  destructive phrasings as needing its own confirmation, not assume the app
+- **Destructive ops (`new_game`, `resign`) are confirmation-gated in the app,
+  deterministically** (closed finding above) — conductor does **not** need to
+  add its own confirmation round-trip, and should not: a bare "start a new chess
+  game" forwarded mid-game comes back as chess's own confirmation question, and
+  the player's "yes" on the next turn is what resets the board. This reverses the
+  earlier guidance here, which told conductor to guard the phrasings itself
   agent will ask.

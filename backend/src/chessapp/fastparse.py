@@ -15,11 +15,72 @@ and fires only when exactly one legal move satisfies them all; zero matches
 (illegal), several (ambiguous: two knights reach f3, four promotions land on
 e8) and anything that isn't purely a move are all None. Illegal-move recovery
 and clarifying questions stay the agent's job.
+
+`parse_confirmation` is the same idea for the other deterministic answer the
+pipeline needs: yes or no to a destructive-op confirmation question. Same rule
+— it fires only on an utterance that is *entirely* a bare yes or no, and
+anything carrying further intent ("yes, but undo first") falls through to the
+agent. It is deliberately the narrowest thing that works: it only runs while an
+op is armed, but a false positive throws a real game away.
 """
 
 import re
 
 import chess
+
+_AFFIRMATIONS = frozenset(
+    {
+        "yes",
+        "yeah",
+        "yep",
+        "yup",
+        "y",
+        "sure",
+        "ok",
+        "okay",
+        "confirm",
+        "confirmed",
+        "do it",
+        "go ahead",
+        "yes please",
+        "please do",
+    }
+)
+
+_NEGATIONS = frozenset(
+    {
+        "no",
+        "nope",
+        "nah",
+        "n",
+        "cancel",
+        "stop",
+        "never mind",
+        "nevermind",
+        "no thanks",
+        "no thank you",
+        "forget it",
+    }
+)
+
+_PUNCTUATION = re.compile(r"[.!?,]+")
+
+
+def parse_confirmation(text: str) -> bool | None:
+    """True for a bare yes, False for a bare no, None for anything else.
+
+    Whole-utterance match, never a substring: "i don't know" is not a no and
+    "yes, but undo my last move first" is not a yes — both carry intent only
+    the agent can read, so both fall through.
+    """
+    normalized = _PUNCTUATION.sub("", text).strip().lower()
+    normalized = " ".join(normalized.split())
+    if normalized in _AFFIRMATIONS:
+        return True
+    if normalized in _NEGATIONS:
+        return False
+    return None
+
 
 _PIECE_WORDS = {
     "pawn": chess.PAWN,

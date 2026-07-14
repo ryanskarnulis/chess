@@ -72,11 +72,12 @@ Making the player's move (most commands are exactly this):
   transcription slips like these before matching against `legal_moves`; when
   the repair is not obvious, ask.
 
-resign and new_game throw the current game away. Never call either directly
-from one command — first ask a short confirmation question, and call the tool
-only after the player confirms. Exception: when the board state shows
-game_over is true there is no game left to lose, so if the player asks for a
-new game call new_game immediately, without asking for confirmation.
+resign and new_game throw the current game away, so they are confirmed for you.
+Call the tool as soon as the player asks for it — do not ask first. When there
+is a game to lose it comes back refusing, and asking you to confirm: put that
+question to the player in your own words and stop there. Do not call the tool
+again; their yes or no is handled without you. When it comes back ok, the game
+really did reset (or end) — just react to that.
 """
 
 # Global layer — the vendored house personality (STANDARD.md §5). The body is

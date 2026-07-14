@@ -8,7 +8,7 @@ or non-move text falls through to the agent unchanged. Pure function of
 
 import pytest
 
-from chessapp.fastparse import parse_move
+from chessapp.fastparse import parse_confirmation, parse_move
 
 START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 # 1. e4 d5 — white to move; exd5 is the only capture on d5.
@@ -231,3 +231,71 @@ def test_ambiguous_capture_phrase_falls_through():
 
 def test_game_over_position_parses_nothing():
     assert parse_move("e4", GAME_OVER) is None
+
+
+# --- parse_confirmation: the answer to a destructive-op confirmation question.
+# Deliberately narrow. It only ever runs when the pipeline is already holding an
+# armed op, but a false positive throws a game away, so anything that is not a
+# bare yes/no falls through to the brain rather than being guessed at.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "yes",
+        "Yes.",
+        "  yeah  ",
+        "yep",
+        "yup",
+        "sure",
+        "ok",
+        "okay",
+        "do it",
+        "go ahead",
+        "confirm",
+        "confirmed",
+        "yes please",
+        "please do",
+    ],
+)
+def test_affirmations(text):
+    assert parse_confirmation(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "no",
+        "No!",
+        "nope",
+        "nah",
+        "cancel",
+        "stop",
+        "never mind",
+        "nevermind",
+        "no thanks",
+        "forget it",
+    ],
+)
+def test_negations(text):
+    assert parse_confirmation(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "e4",
+        "new game",
+        "what's the position?",
+        "",
+        "   ",
+        # Not a bare yes: it carries a second intent the brain must read.
+        "yes, but undo my last move first",
+        "yes to a new game but keep the difficulty",
+        # Substrings must not trigger: "no" inside a word, "yes" inside a phrase.
+        "knight to f3",
+        "i don't know",
+    ],
+)
+def test_anything_else_falls_through(text):
+    assert parse_confirmation(text) is None

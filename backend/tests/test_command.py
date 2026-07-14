@@ -379,3 +379,104 @@ def test_fast_move_broadcasts_state_to_ws():
         client.post("/api/command", json={"text": "e4"})
         message = ws.receive_json()
     assert message["state"]["history"] == ["e4"]
+
+
+# --- The destructive-op confirmation gate, at the pipeline.
+#
+# The tool boundary refuses an unconfirmed new_game/resign and arms it (see
+# test_tools.py). The pipeline owns the other half: the *answer*. A bare "yes"
+# executes the armed op deterministically — no model call, because there is
+# nothing left to decide — and "no" drops it. Anything else is a new intent and
+# reaches the brain normally, taking the armed op down with it.
+
+
+def destructive(name: str, text: str = "you sure about that?") -> AgentResponse:
+    return AgentResponse(text=text, tool_calls=(ToolCall(name=name, args={}),))
+
+
+def developed(ctx: ToolContext) -> ToolContext:
+    for san in ("e4", "e5", "Nf3", "Nc6"):
+        ctx.session.submit_move(san)
+    return ctx
+
+
+def make_developed_client(*responses: AgentResponse):
+    ctx = developed(ToolContext(session=GameSession()))
+    app, brain = scripted_app(ctx, *responses)
+    return TestClient(app), brain, ctx
+
+
+def test_bare_new_game_asks_instead_of_resetting():
+    client, brain, ctx = make_developed_client(destructive("new_game"))
+    fen_before = ctx.session.fen()
+
+    response = client.post("/api/command", json={"text": "new game"}).json()
+
+    assert response["state"]["fen"] == fen_before, "board must not reset on the ask"
+    assert response["commentary"] == "you sure about that?"
+    assert ctx.pending is not None and ctx.pending.name == "new_game"
+    # The agent saw the refusal as a result and asked from it.
+    assert response["tool_results"][0]["result"]["ok"] is False
+
+
+def test_yes_executes_the_armed_op_with_no_model_call():
+    client, brain, ctx = make_developed_client(destructive("new_game"))
+    client.post("/api/command", json={"text": "new game"})
+    calls_after_ask = len(brain.calls)
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert response["state"]["fen"] == GameSession().fen(), "confirmed: reset"
+    assert len(brain.calls) == calls_after_ask, "a confirmation needs no model turn"
+    assert [r["name"] for r in response["tool_results"]] == ["new_game"]
+    assert response["tool_results"][0]["result"]["ok"] is True
+    assert ctx.pending is None
+
+
+def test_yes_confirms_a_resign_and_ends_the_game():
+    client, brain, ctx = make_developed_client(destructive("resign"))
+    client.post("/api/command", json={"text": "i resign"})
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.is_game_over()
+    assert response["state"]["game_over"] is True
+
+
+def test_no_drops_the_armed_op_and_the_game_stands():
+    client, brain, ctx = make_developed_client(destructive("new_game"))
+    client.post("/api/command", json={"text": "new game"})
+    fen_before = ctx.session.fen()
+
+    response = client.post("/api/command", json={"text": "no"}).json()
+
+    assert ctx.session.fen() == fen_before
+    assert ctx.pending is None, "declined: the op is gone, not still armed"
+    assert response["tool_results"] == []
+    assert response["commentary"]
+
+
+def test_a_later_yes_cannot_revive_a_declined_op():
+    """The gate must not leave a loaded gun lying around: once declined, a bare
+    "yes" is just an utterance for the brain, not a licence to reset."""
+    client, brain, ctx = make_developed_client(
+        destructive("new_game"), AgentResponse(text="yes to what?")
+    )
+    client.post("/api/command", json={"text": "new game"})
+    client.post("/api/command", json={"text": "no"})
+    fen_before = ctx.session.fen()
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.fen() == fen_before
+    assert response["commentary"] == "yes to what?", "it reached the brain"
+
+
+def test_an_unrelated_command_drops_the_armed_op():
+    client, brain, ctx = make_developed_client(destructive("new_game"))
+    client.post("/api/command", json={"text": "new game"})
+
+    client.post("/api/command", json={"text": "e5"})  # fast path: a plain move
+
+    assert ctx.pending is None, "changing the subject disarms the op"
+    assert ctx.session.fen() != GameSession().fen()

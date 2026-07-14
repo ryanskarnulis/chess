@@ -13,7 +13,14 @@ import pytest
 
 from chessapp.engine import DEFAULT_TIER
 from chessapp.game import GameSession
-from chessapp.tools import Settings, Tool, ToolContext, ToolRegistry, build_registry
+from chessapp.tools import (
+    Settings,
+    Tool,
+    ToolContext,
+    ToolRegistry,
+    build_registry,
+    confirm_pending,
+)
 from fakes import FakeEngine
 
 requires_stockfish = pytest.mark.skipif(
@@ -312,17 +319,29 @@ def test_undo_rejects_bad_plies(registry):
     assert registry.dispatch("undo", {"plies": "two"})["ok"] is False
 
 
-def test_new_game_resets(registry, session):
+def test_new_game_resets(session):
+    # A game is under way, so this goes through the gate: the call arms it, the
+    # confirmation runs it. (The refusal itself is pinned further down.)
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
     registry.dispatch("make_move", {"move": "e4"})
-    result = registry.dispatch("new_game", {})
+
+    registry.dispatch("new_game", {})
+    _, result = confirm_pending(registry, ctx)
+
     assert result["ok"] is True
     assert session.move_history() == []
     assert session.turn == "white"
 
 
-def test_resign_defaults_to_side_to_move(registry, session):
+def test_resign_defaults_to_side_to_move(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
     registry.dispatch("make_move", {"move": "e4"})
-    result = registry.dispatch("resign", {})
+
+    registry.dispatch("resign", {})
+    _, result = confirm_pending(registry, ctx)
+
     assert result["ok"] is True
     assert result["outcome"] == {
         "termination": "resignation",
@@ -617,3 +636,110 @@ def test_new_game_as_white_has_no_engine_opening():
     assert result["ok"] is True
     assert result["engine_move"] is None
     assert session.move_history() == []
+
+
+# --- The destructive-op confirmation gate.
+#
+# `new_game` and `resign` throw a real game away. The prompt asks the agent to
+# confirm first, but gemma-4-12b honors that only ~half the time (docs/agent-evals
+# .md), so the rule is enforced here instead: an unconfirmed call does not mutate,
+# it arms a pending op and comes back as a rejection *result* the agent reads and
+# asks from. The model cannot talk its way past this — confirmation is not a tool
+# argument (see test_confirmation_is_not_a_tool_argument), it is pipeline-owned.
+
+
+def played(session, *sans):
+    """Put a real game on the board — something that stands to be lost."""
+    for san in sans:
+        session.submit_move(san)
+    return session
+
+
+def test_unconfirmed_new_game_does_not_reset(session, registry):
+    played(session, "e4", "e5")
+    fen_before = session.fen()
+
+    result = registry.dispatch("new_game", {})
+
+    assert result["ok"] is False
+    assert "confirm" in result["error"].lower()
+    assert session.fen() == fen_before, "the board must not move on an unconfirmed call"
+
+
+def test_unconfirmed_resign_does_not_end_the_game(session, registry):
+    played(session, "e4", "e5")
+
+    result = registry.dispatch("resign", {})
+
+    assert result["ok"] is False
+    assert "confirm" in result["error"].lower()
+    assert not session.is_game_over()
+
+
+def test_unconfirmed_call_arms_the_pending_op(session):
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)
+    assert ctx.pending is None
+
+    registry.dispatch("resign", {"color": "white"})
+
+    assert ctx.pending is not None
+    assert ctx.pending.name == "resign"
+    assert ctx.pending.args == {"color": "white"}
+
+
+def test_confirm_pending_executes_the_armed_op(session):
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)
+    registry.dispatch("new_game", {})
+
+    name, result = confirm_pending(registry, ctx)
+
+    assert name == "new_game"
+    assert result["ok"] is True
+    assert ctx.session.fen() == GameSession().fen(), "confirmed: the board resets"
+    assert ctx.pending is None, "the op is spent"
+
+
+def test_confirm_pending_with_nothing_armed_is_a_no_op(session, registry):
+    ctx = ToolContext(session=session)
+    assert confirm_pending(build_registry(ctx), ctx) is None
+
+
+def test_confirmation_is_not_a_tool_argument(session, registry):
+    """The gate would be worthless if the model could open it: `confirm` is not
+    in either schema, and the schemas are closed, so a model that invents the
+    argument is rejected on args — the board still does not move."""
+    played(session, "e4", "e5")
+    fen_before = session.fen()
+
+    for name in ("new_game", "resign"):
+        result = registry.dispatch(name, {"confirm": True})
+        assert result["ok"] is False
+        assert "invalid args" in result["error"]
+        assert session.fen() == fen_before
+
+
+def test_a_second_unconfirmed_call_still_does_not_fire(session):
+    """The agent retrying inside one turn must not self-confirm: re-arming is
+    not confirming. Only the pipeline, on a new user turn, can open the gate."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)
+    fen_before = ctx.session.fen()
+
+    assert registry.dispatch("new_game", {})["ok"] is False
+    assert registry.dispatch("new_game", {})["ok"] is False
+
+    assert ctx.session.fen() == fen_before
+
+
+def test_new_game_after_game_over_needs_no_confirmation(session, registry):
+    """The standing exception: game_over means there is no game left to lose."""
+    # Fool's mate — game over, nothing to protect.
+    played(session, "f3", "e5", "g4", "Qh4")
+    assert session.is_game_over()
+
+    result = registry.dispatch("new_game", {})
+
+    assert result["ok"] is True
+    assert session.fen() == GameSession().fen()
