@@ -27,7 +27,8 @@ from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
 from chessapp.personality import system_prompt_for
 from chessapp.provider import ChatProvider
-from chessapp.tools import ToolContext, build_registry
+from chessapp.tools import BOARD_STATE_TOOLS, ToolContext, build_registry
+from chessapp.trace import JsonlTracer, Tracer
 from chessapp.voice import (
     DEFAULT_STT_MODEL,
     DEFAULT_TTS_MODEL,
@@ -50,6 +51,7 @@ def build_app(
     provider: ChatProvider | None = None,
     speech: SpeechClient | None = None,
     static_dir: Path | None = None,
+    tracer: Tracer | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -78,7 +80,12 @@ def build_app(
             base_url=llama_base_url,
             model=model,
             dispatcher=registry,
-            tool_definitions=registry.definitions(),
+            # The brain dispatches through the whole registry but is *offered*
+            # less: it gets the board state in its prompt every turn, so the
+            # tools that only read that state back can teach it nothing and
+            # would cost it a round trip out of four. Callers with no such
+            # injection (MCP, the delegate wire) still see the full list.
+            tool_definitions=registry.definitions(exclude=BOARD_STATE_TOOLS),
             system_prompt_provider=lambda: system_prompt_for(
                 ctx.settings.verbosity,
                 ctx.settings.hints_mode,
@@ -86,7 +93,12 @@ def build_app(
             provider=provider,
         )
     return create_app(
-        ctx, brain=brain, speech=speech, static_dir=static_dir, registry=registry
+        ctx,
+        brain=brain,
+        speech=speech,
+        static_dir=static_dir,
+        registry=registry,
+        tracer=tracer,
     )
 
 
@@ -113,6 +125,16 @@ def _speech_from_env() -> SpeechClient | None:
     )
 
 
+def _tracer_from_env() -> Tracer | None:
+    """Turn tracing on by pointing `CHESSAPP_TRACE_PATH` at a JSONL file.
+
+    Off by default: it is a review tool for a session you are debugging, not
+    something a normal game should be paying for or quietly accumulating.
+    """
+    path = os.environ.get("CHESSAPP_TRACE_PATH")
+    return JsonlTracer(Path(path)) if path else None
+
+
 def build_app_from_env() -> FastAPI:
     """`build_app` configured from environment variables (for `main`/ASGI)."""
     save_dir_env = os.environ.get("CHESSAPP_SAVE_DIR")
@@ -124,6 +146,7 @@ def build_app_from_env() -> FastAPI:
         save_dir=Path(save_dir_env) if save_dir_env else None,
         speech=_speech_from_env(),
         static_dir=Path(static_dir_env) if static_dir_env else None,
+        tracer=_tracer_from_env(),
     )
 
 

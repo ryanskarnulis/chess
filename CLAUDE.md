@@ -21,7 +21,11 @@ pytest                                               # run tests
 pytest tests/test_smoke.py -k <name>                 # single file / test
 ruff check . && ruff format --check .                # lint (what CI runs)
 ruff format .                                        # auto-format
+
+CHESSAPP_TRACE_PATH=/tmp/turns.jsonl chessapp        # trace every agent turn
 ```
+
+**Debugging agent behavior:** set `CHESSAPP_TRACE_PATH` and each command appends one JSONL record — the utterance, which of the three routes took it (`confirmation` / `fast_path` / `brain`), the full tool trajectory (name, args, result), the loop's `stop_reason`, and the FEN before/after. Off by default. It is the first thing to reach for when a turn misbehaves: the suite pins the tool boundary, not live behavior, so a trace is the only record of what actually happened. A traced misfire is also a ready-made eval scenario (it carries its own `fen_before` + `utterance`).
 
 ## Development Process (required)
 
@@ -66,6 +70,8 @@ The board UI (`/`), the delegate API (`/api/agent`, still served but no longer a
 
 - **Swappable brain module:** all model-specific logic lives behind one interface — `get_agent_response(board_state, command, transcript) → {text, tool_calls}`. Nothing else in the app may know which model/backend is behind it.
 - **Agent tools are capabilities, not hardcoded behaviors** — the agent maps free-form commands to tools itself (no per-phrase branching); ambiguous input → clarifying question. The full tool list is in BRIEF.md; `control_physical_board` stays a future seam only.
+- **Never make the model decide what deterministic state already knows.** A rule the prompt asks for is a rule the model follows ~half the time (the destructive-op gate's finding); a policy the code owns holds always. Undo's ply count and the confirm-before-`new_game` rule were both this bug. When a tool's correct behavior is derivable from the session, derive it — don't document it in the docstring and hope.
+- **The brain is offered fewer tools than the registry holds.** It gets the board state in its prompt every turn, so `BOARD_STATE_TOOLS` (the pure reads) are registered and dispatchable but not *offered* to it — a call it already has the answer to only burns a round trip out of `max_iterations`. Callers with no such injection (MCP, the delegate wire) still see the full list.
 - **Personality is tone only:** it shapes commentary, never move choice, difficulty, or any other setting.
 - **Never leave an engine unconfigured:** a real default difficulty tier is applied at app assembly (Stockfish's own default is full strength).
 - **Local-only voice by decision** — no browser Web Speech API path (see `docs/voice-fast-path-evaluation.md`).

@@ -16,6 +16,7 @@ Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
 """
 
+import logging
 import mimetypes
 import random
 from collections.abc import Sequence
@@ -41,7 +42,16 @@ from chessapp.tools import (
     build_registry,
     confirm_pending,
 )
+from chessapp.trace import (
+    ROUTE_BRAIN,
+    ROUTE_CONFIRMATION,
+    ROUTE_FAST_PATH,
+    Tracer,
+    turn_record,
+)
 from chessapp.voice import SpeechClient
+
+logger = logging.getLogger(__name__)
 
 
 class MoveRequest(BaseModel):
@@ -240,10 +250,14 @@ def create_app(
     speech: SpeechClient | None = None,
     static_dir: Path | None = None,
     registry: ToolRegistry | None = None,
+    tracer: Tracer | None = None,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
     does), so what the agent is offered is exactly what the app runs; omit it
-    and the app builds its own over the same `ctx`."""
+    and the app builds its own over the same `ctx`.
+
+    `tracer` records one JSONL row per command (route taken, tool trajectory,
+    stop reason) for review; omit it and nothing is traced."""
     app = FastAPI(title="chessapp")
     broadcaster = StateBroadcaster()
     if registry is None:
@@ -372,6 +386,21 @@ def create_app(
             "elo": ctx.settings.elo,
         }
 
+    def _trace_turn(**fields: Any) -> None:
+        """Record the finished turn, and never let that cost the player one.
+
+        A tracer is a diagnostic sink — a file that may be full, unwritable, or
+        on a disk that just went away. None of that is the game's problem, so a
+        failure here is logged and dropped rather than turned into a 500 on a
+        turn whose moves have already been played.
+        """
+        if tracer is None:
+            return
+        try:
+            tracer.record(turn_record(**fields))
+        except Exception:
+            logger.warning("trace_failed", exc_info=True)
+
     async def _run_command(
         text: str, transcript: Sequence[dict[str, str]]
     ) -> CommandOutcome:
@@ -422,6 +451,7 @@ def create_app(
         armed = ctx.pending
         ctx.pending = None
         answer = parse_confirmation(text) if armed is not None else None
+        route = ROUTE_CONFIRMATION
         if armed is not None and answer is not None:
             if answer:
                 ctx.pending = armed  # confirm_pending consumes it
@@ -441,6 +471,7 @@ def create_app(
                 # Declined: nothing ran, so there is nothing to narrate from.
                 commentary = _DECLINED_REPLY
         elif (fast_san := parse_move(text, ctx.session.fen())) is not None:
+            route = ROUTE_FAST_PATH
             args = {"move": fast_san}
             result = registry.dispatch("make_move", args)
             tool_results.append({"name": "make_move", "result": result})
@@ -454,6 +485,7 @@ def create_app(
                     transcript,
                 )
         else:
+            route = ROUTE_BRAIN
             response = brain.get_agent_response(before, text, transcript)
             tool_results = list(response.tool_results)
             tool_args = [call.args for call in response.tool_calls]
@@ -469,6 +501,17 @@ def create_app(
         changed = agent_state != before
         if changed:
             await broadcaster.broadcast(state)
+        _trace_turn(
+            utterance=text,
+            route=route,
+            commentary=commentary,
+            stop_reason=stop_reason,
+            changed=changed,
+            fen_before=before["fen"],
+            fen_after=agent_state["fen"],
+            tool_calls=tool_args,
+            tool_results=tool_results,
+        )
         return CommandOutcome(
             commentary=commentary,
             tool_results=tool_results,

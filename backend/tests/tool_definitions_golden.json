@@ -124,13 +124,13 @@
   },
   {
     "function": {
-      "description": "Take back the last N half-moves (plies). Use plies=2 to undo both the player's move and the engine's reply.",
+      "description": "Take back the player's last move. Omit plies unless the player asked for a specific number of half-moves.",
       "name": "undo",
       "parameters": {
         "additionalProperties": false,
         "properties": {
           "plies": {
-            "description": "How many half-moves to take back.",
+            "description": "How many half-moves to take back. Omit for a normal takeback — the app works out the right number itself.",
             "maximum": 100,
             "minimum": 1,
             "type": "integer"
