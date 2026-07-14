@@ -500,12 +500,20 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         }
 
     @registry.tool()
-    def new_game() -> dict[str, Any]:
-        "Reset to the starting position and begin a new game."
-        refusal = _gate("new_game", {})
+    def new_game(
+        player_color: Literal["white", "black"] | None = None,
+    ) -> dict[str, Any]:
+        """Reset to the starting position and begin a new game. Pass
+        `player_color` to put the player on that side ("let's play as black");
+        omitted, they keep the side they have."""
+        # The color rides along in the armed op, so the player's "yes" on the
+        # next turn confirms the game they actually asked for — a gate that
+        # dropped it would confirm "new game, I'll take black" into a game as
+        # white.
+        refusal = _gate("new_game", {"player_color": player_color})
         if refusal is not None:
             return refusal
-        ctx.session.new_game()
+        ctx.session.new_game(player_color)
         # Mirror the UI path: when the player has black, the engine owns
         # white and makes the opening move — otherwise the fresh board would
         # sit waiting for a move only the engine can make.

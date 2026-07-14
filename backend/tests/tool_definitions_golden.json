@@ -151,11 +151,19 @@
   },
   {
     "function": {
-      "description": "Reset to the starting position and begin a new game.",
+      "description": "Reset to the starting position and begin a new game. Pass `player_color` to put the player on that side (\"let's play as black\"); omitted, they keep the side they have.",
       "name": "new_game",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "player_color": {
+            "enum": [
+              "white",
+              "black"
+            ],
+            "type": "string"
+          }
+        },
         "type": "object"
       }
     },
