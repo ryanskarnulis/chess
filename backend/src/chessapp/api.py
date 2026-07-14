@@ -115,16 +115,20 @@ def _state_dict(session: GameSession) -> dict[str, Any]:
     }
 
 
-def _agent_state_dict(session: GameSession, player_color: str) -> dict[str, Any]:
+def _agent_state_dict(session: GameSession) -> dict[str, Any]:
     """The view the brain reasons from: board truth (fen, turn, check, SAN
     history, captures, legal moves, outcome) plus which color the player is.
     Deliberately not `_state_dict` — the UI document's per-ply `fens` and
     `dests` are prompt noise that grows every move and never helps the agent.
+
+    `player_color` is read from the session, which owns it: whose *turn* it is
+    is board truth and changes every ply, but which side the human plays is
+    session state and doesn't.
     """
     return {
         "fen": session.fen(),
         "turn": session.turn,
-        "player_color": player_color,
+        "player_color": session.player_color,
         "in_check": session.is_check(),
         "game_over": session.is_game_over(),
         "outcome": _outcome_dict(session),
@@ -377,12 +381,7 @@ def create_app(
         non-move reaches the brain unchanged.
         """
         assert brain is not None  # both callers guard; documents the invariant
-        # The player is whoever's turn it is when the command arrives (the
-        # engine replies inside make_move, so it is never the engine's turn
-        # here). Captured once so the agent's view still names the right color
-        # when the player's own move flips the turn or ends the game.
-        player_color = ctx.session.turn
-        before = _agent_state_dict(ctx.session, player_color)
+        before = _agent_state_dict(ctx.session)
         # `tool_results` is the {"name", "result"} list the UI sees; `tool_args`
         # mirrors it with each call's arguments, for the delegate wire — kept
         # parallel so the UI-facing shape stays untouched.
@@ -400,7 +399,7 @@ def create_app(
                 commentary = _move_confirmation(result, ctx.session)
             else:
                 commentary = brain.narrate(
-                    _agent_state_dict(ctx.session, player_color),
+                    _agent_state_dict(ctx.session),
                     tool_results,
                     transcript,
                 )
@@ -412,7 +411,7 @@ def create_app(
             # A budget stop (max_iterations / correction_limit) carries no
             # commentary: the loop never reached a text turn.
             commentary = response.text or _STUCK_REPLY
-        agent_state = _agent_state_dict(ctx.session, player_color)
+        agent_state = _agent_state_dict(ctx.session)
         # The UI still gets its own full document; a mutation shows up in the
         # agent view too (any board change moves the fen), so that comparison
         # decides the broadcast.

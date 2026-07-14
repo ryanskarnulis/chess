@@ -74,6 +74,24 @@ def test_brain_view_is_agent_facing_not_the_ui_state():
     assert "dests" not in board_state
 
 
+def test_player_color_is_the_sessions_not_whoever_is_to_move():
+    """The player's color is session state the session already owns — it must
+    not be re-derived from whose turn it is. A command can legitimately arrive
+    on the engine's turn (asking a question while the engine thinks, or any
+    command in an engine-less session where the player has both sides), and
+    `turn` names the wrong side there."""
+    session = GameSession(player_color="black")  # engine is white, and moves first
+    assert session.turn == "white"  # not the player's turn
+    app, brain = scripted_app(ToolContext(session=session), AgentResponse(text="hi"))
+    client = TestClient(app)
+
+    client.post("/api/command", json={"text": "how does it look?"})
+
+    board_state, _ = brain.calls[0]
+    assert board_state["player_color"] == "black"
+    assert board_state["turn"] == "white"  # board truth is still board truth
+
+
 def test_one_brain_call_does_the_whole_turn():
     """No phase two: the loop already ran the tools and produced the closing
     comment, so the pipeline consults the brain exactly once."""
