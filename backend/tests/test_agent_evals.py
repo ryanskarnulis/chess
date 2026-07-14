@@ -815,21 +815,15 @@ def test_eval_what_was_my_mistake_analyzes_the_players_move(
     )
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "KNOWN BROKEN (trace review 2026-07-13, finding 2): new_game() takes no "
-        "arguments, so the agent has no way to assign the player's side — and "
-        "this utterance is the exact intent string CLAUDE.md advertises in the "
-        "conductor handoff deep link (/?intent=let's+play+chess+as+black), so "
-        "the advertised handoff is broken end to end. Fix: "
-        "new_game(player_color=None)."
-    ),
-)
 def test_eval_play_as_black_actually_assigns_black(engine: EnginePlayer) -> None:
     """The conductor deep link's own intent string. The player asked for black:
     they must *get* black, and the engine — now owning white — must open, so the
-    board isn't left waiting on a move only it can make."""
+    board isn't left waiting on a move only it can make.
+
+    Was xfailed (trace review, finding 2): `new_game()` took no arguments, so
+    the agent had no way to assign a side and the advertised handoff
+    (/?intent=let's+play+chess+as+black) was broken end to end. The tool now
+    takes `player_color`."""
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         assert app.ctx.session.player_color == "black", (

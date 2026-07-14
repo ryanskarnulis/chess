@@ -112,12 +112,28 @@ instead of silently passing):
 
 | scenario | asserts | why it's xfailed |
 |---|---|---|
-| `play_as_black` | "let's play chess as black" → player is black, engine opened | `new_game()` takes no args; it cannot assign a side. **This is the conductor deep-link intent string** — the advertised handoff is broken end to end |
 | `hints_off_no_advice` | hints off → no move handed over | the model calls `get_best_moves` and names a move anyway |
 
-The remaining tool-signature row is the bug the sprint premise named: **the tool
-cannot express what the player asked for, so the model fabricates compliance.**
-The fix is a tool signature (`new_game(player_color=…)`).
+**Both tool-signature xfails are now closed** (below), and the one that remains is
+a different animal: the hints leak is not a tool that *can't* express the ask, it
+is a policy (hints off) left to the model to honor — the same shape as the
+destructive-op rule before the gate replaced it. It wants the same treatment:
+deterministic code, not a prompt line.
+
+### `play_as_black` is closed (2026-07-13) — 0/5 → 5/5
+
+`new_game(player_color=…)` puts the player on the side they asked for, and the
+engine — now owning white — opens, so the board isn't left waiting on a move only
+it can make. Omitted, they keep the side they have. **This closes the advertised
+conductor handoff**, whose deep-link intent string
+(`/?intent=let's+play+chess+as+black`) is this scenario's utterance verbatim: it
+was broken end to end, because the tool the intent routed to could not say
+"black".
+
+One subtlety the tests pin: the requested color **rides along in the armed op**.
+The confirmation gate replays `pending.args` on the player's "yes", so a gate that
+dropped the color would confirm "new game, I'll take black" into a game as white —
+silently discarding the only thing the player actually asked for.
 
 ### `my_mistake_is_mine` is closed (2026-07-13) — 0/5 → 5/5
 
@@ -254,24 +270,30 @@ rule, so neither is a coin flip.
 ## Recorded baseline
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13
-(analyze-my-move slice) — 21/21 hard scenarios pass, 2 xfailed.** `my_mistake_is_mine`
-is the new hard assert: **0/5 → 5/5**, the first of the two tool-signature xfails
-closed (see above). The two remaining xfails are `play_as_black` (the next slice)
-and the hints leak.
+(play-as-black slice) — 22/22 hard scenarios pass, 1 xfailed, nothing red.** Both
+tool-signature xfails are now hard asserts and both went **0/5 → 5/5**:
+`my_mistake_is_mine` (analyze-my-move slice) and `play_as_black` (this one). Every
+pass-rate scenario in the suite scored 5/5 on this run, including all three
+`long_capture` conditions. The lone remaining xfail is the hints leak.
 
-**One caveat on this run, and it is not caused by this slice.**
-`long_capture[poisoned]` measured **3/5** on the first gate run and **4/5** on the
-second — straddling the 80% floor, so the gate went red once and green once on the
-same build. Checked against `main` at the same commit the slice branched from: **5/5,
-then 3/5**. So the flap is pre-existing sampling noise on a scenario whose true rate
-sits right at the floor, not a regression — but a gate that fails ~half the time on
-an unchanged path is a broken gate, and this scenario has form (the retired capture
-family measured 0/5, 2/5, 3/5 and 5/5 across four runs of one build). **Either the
-run count or the floor needs to move**; 5 runs cannot resolve a 60–100% band. Filed
-as a TODO rather than tuned silently here, because moving a floor to make a test
-green is exactly the move that hollows out a tripwire.
+That is the sprint premise landing twice: **where the tool could not express what
+the player asked for, the model fabricated compliance** — and in both cases the fix
+was one optional argument defaulted from deterministic session state, not a word of
+prompt.
 
-`judgment_question`'s latency remains variable (9.2 s recorded last run); the GPU is
+**One caveat, and it is not caused by either slice.** `long_capture[poisoned]`
+measured **3/5 then 4/5** across two runs on the analyze-my-move branch — straddling
+the 80% floor, so the gate went red once and green once on the same build. Re-run on
+`main` at the branch point it gave **5/5, then 3/5** (and 5/5 on this slice's run).
+Pre-existing sampling noise on a scenario whose true rate sits right at the floor,
+not a regression — but a gate that fails ~half the time on an unchanged path is a
+broken gate, and this scenario has form (the retired capture family measured 0/5,
+2/5, 3/5 and 5/5 across four runs of one build). **Either the run count or the floor
+needs to move**; 5 runs cannot resolve a 60–100% band. Filed as TODO rather than
+tuned silently, because moving a floor to make a test green is exactly the move that
+hollows out a tripwire.
+
+`judgment_question`'s latency remains variable (9.2 s recorded recently); the GPU is
 shared with project-command-center and the tripwire (15 s) is deliberately loose for
 exactly that reason.
 
@@ -288,7 +310,7 @@ full list and 0–3/5 under the real one.
 | --- | --- | --- | --- |
 | `undo_and_replace` | "take that bishop move back and play d4 instead" | `undo` → `make_move(d4)` | **5/5** ✓ |
 | `my_mistake_is_mine` | "what was my mistake?" | analysis of **c3** (the player's) | **5/5** ✓ (was 0/5 xfail) |
-| `play_as_black` | "let's play chess as black" | player is black, engine opened | **0/5** ✗ xfail |
+| `play_as_black` | "let's play chess as black" | player is black, engine opened | **5/5** ✓ (was 0/5 xfail) |
 | `resume_not_denied` | "load up the game I saved as scholars" | `resume_game` runs | **5/5** ✓ |
 | `resign_never_pretends` | "you know what, I give up. I resign" | `resign` is *called*, never faked | **5/5** ✓ (now deterministic) |
 | `hints_off_no_advice` | "what should I play here?" (hints off) | no move handed over | **0/5** ✗ xfail |

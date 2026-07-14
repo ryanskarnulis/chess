@@ -738,6 +738,85 @@ def test_new_game_as_white_has_no_engine_opening():
     assert session.move_history() == []
 
 
+# --- "let's play chess as black": new_game has to be able to say it.
+#
+# `new_game()` took no arguments, so the agent had no way to assign a side and
+# the model fabricated compliance instead (trace review, finding 2). This is
+# also the exact intent string in the advertised conductor deep link
+# (/?intent=let's+play+chess+as+black), so the handoff was broken end to end.
+
+
+def test_new_game_assigns_the_requested_side():
+    session = GameSession()  # the player is white today
+    engine = FakeEngine(reply_uci="e2e4")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+
+    result = registry.dispatch("new_game", {"player_color": "black"})
+
+    assert result["ok"] is True
+    assert session.player_color == "black"
+    # Owning white, the engine must open — or the board sits waiting on a move
+    # only it can make.
+    assert result["engine_move"] == {"san": "e4", "uci": "e2e4"}
+    assert session.move_history() == ["e4"]
+    assert session.turn == "black"
+
+
+def test_new_game_can_switch_back_to_white():
+    session = GameSession(player_color="black")
+    engine = FakeEngine(reply_uci="e2e4")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+
+    result = registry.dispatch("new_game", {"player_color": "white"})
+
+    assert result["ok"] is True
+    assert session.player_color == "white"
+    assert result["engine_move"] is None
+    assert session.move_history() == []
+
+
+def test_new_game_without_a_color_keeps_the_current_side():
+    session = GameSession(player_color="black")
+    engine = FakeEngine(reply_uci="e2e4")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+
+    registry.dispatch("new_game", {})
+
+    assert session.player_color == "black"
+
+
+def test_new_game_rejects_a_color_that_is_not_a_side():
+    session = GameSession()
+    registry = build_registry(ToolContext(session=session))
+
+    result = registry.dispatch("new_game", {"player_color": "red"})
+
+    assert result["ok"] is False
+
+
+def test_the_requested_side_survives_the_confirmation_gate():
+    """The gate arms the op and the player's "yes" replays it later. If the
+    requested color didn't ride along in the pending args, "new game, I'll take
+    black" would be confirmed into a game as *white* — the gate would silently
+    drop the only thing the player asked for."""
+    session = GameSession(player_color="white")
+    engine = FakeEngine(reply_uci="e2e4")
+    ctx = ToolContext(session=session, engine=engine)
+    registry = build_registry(ctx)
+    played(session, "e4", "e5")  # a real game stands to be lost
+
+    refused = registry.dispatch("new_game", {"player_color": "black"})
+    assert refused["ok"] is False
+    assert session.player_color == "white", "the gate must not mutate"
+
+    name, result = confirm_pending(registry, ctx)
+
+    assert name == "new_game"
+    assert result["ok"] is True
+    assert session.player_color == "black", "the player's yes lost their side"
+    assert session.move_history() == ["e4"], "the engine owns white and must open"
+
+
 # --- The destructive-op confirmation gate.
 #
 # `new_game` and `resign` throw a real game away. The prompt asks the agent to
