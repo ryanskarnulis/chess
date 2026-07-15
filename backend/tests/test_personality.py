@@ -55,13 +55,13 @@ def test_composed_prompt_contains_the_global_personality_layer():
 
 def test_composed_prompt_contains_the_chess_flavor_layer():
     # Distinctive to chess's own flavor block, not the vendored global text.
-    assert "Trolling (occasional, earned" in SYSTEM_PROMPT
+    assert "salty-but-obvious line of cope" in SYSTEM_PROMPT
 
 
 def test_composition_order_is_base_then_global_then_flavor():
     base_marker = SYSTEM_PROMPT.index("self-hosted chess app")
     global_marker = SYSTEM_PROMPT.index("Whatever app you're working in right now")
-    flavor_marker = SYSTEM_PROMPT.index("Trolling (occasional, earned")
+    flavor_marker = SYSTEM_PROMPT.index("salty-but-obvious line of cope")
     assert base_marker < global_marker < flavor_marker
 
 
@@ -104,7 +104,7 @@ def test_prompt_makes_trolling_occasional_not_constant():
     # Ryan's live feedback (2026-07-11): "the personality is still weird…
     # more chill". The troll-move list read as a bit to perform every turn;
     # the default turn is now quiet.
-    assert "most turns: no troll" in system_prompt_for().lower()
+    assert "mostly you just play" in system_prompt_for().lower()
 
 
 def test_prompt_carries_ryans_lexicon():
@@ -141,12 +141,13 @@ def test_prompt_keeps_help_real():
 
 def test_prompt_gives_props_then_cope_when_beaten():
     # Live game: forking and winning the queen earned confusion instead of
-    # the one honest beat. "Wins material off you" names the common trigger
-    # explicitly — "beats you" alone read as game-over only.
+    # the one honest beat. The condensed flavor keeps all three beats without
+    # the scripted lines: props (the honest beat), cope, and "material" named
+    # as a trigger ("beats you" alone read as game-over only).
     prompt = system_prompt_for().lower()
-    assert "letting them cook" in prompt  # the cope
-    assert "drop the act" in prompt  # the one honest beat
-    assert "wins material" in prompt  # the trigger that actually happens
+    assert "props" in prompt  # the one honest beat
+    assert "cope" in prompt  # the cope
+    assert "material" in prompt  # the trigger that actually happens
 
 
 def test_prompt_caps_reaction_length():
@@ -158,92 +159,12 @@ def test_prompt_caps_reaction_length():
     assert "two sentences is the ceiling" in prompt
 
 
-# --- hot-path move guidance (agent-reliability epic) --------------------------
-#
-# Voice games die when a spoken move doesn't land as a tool call. The base
-# prompt must teach the speech→make_move mapping, anchor move strings to the
-# provided legal_moves, explain the one-call-per-turn contract, and make
-# destructive tools require confirmation. Pinned as data: substantive tokens,
-# not exact wording.
-
-
-def test_prompt_has_speech_to_tool_examples():
-    prompt = system_prompt_for()
-    # Few-shot mapping from spoken phrasing to make_move strings, including
-    # castling and promotion syntax.
-    assert "make_move" in prompt
-    assert "pawn to e4" in prompt.lower()
-    assert '"e4"' in prompt
-    assert "O-O" in prompt
-    assert "=Q" in prompt
-
-
-def test_prompt_anchors_moves_to_provided_legal_moves():
-    # The move string must come from the board state's legal_moves list,
-    # never be invented.
-    assert "legal_moves" in system_prompt_for()
-
-
-def test_prompt_states_the_player_color_is_provided():
-    assert "player_color" in system_prompt_for()
-
-
-def test_prompt_explains_one_move_per_turn_and_engine_reply():
-    prompt = system_prompt_for().lower()
-    # One make_move per player turn; the engine answers inside the same call,
-    # so the agent must never move for the engine's side.
-    assert "once per player turn" in prompt
-    assert "engine" in prompt
-    assert "never" in prompt
-
-
-def test_prompt_teaches_the_file_capture_form():
-    # "d takes e5" is how players pronounce dxe5; without the example the
-    # model has rejected the spoken form while offering the SAN back.
-    prompt = system_prompt_for()
-    assert "d takes e5" in prompt.lower()
-    assert '"dxe5"' in prompt
-
-
-def test_prompt_requires_acting_on_an_accepted_proposal():
-    # Propose a move → player says yes → the agent must CALL make_move, not
-    # announce the move in words (seen live: "moving forward with dxe5",
-    # no tool call, no move).
-    prompt = system_prompt_for().lower()
-    assert "accept" in prompt
-    assert "announc" in prompt
-
-
-def test_prompt_requires_confirmation_before_destructive_tools():
-    prompt = system_prompt_for()
-    assert "resign" in prompt
-    assert "new_game" in prompt
-    assert "confirm" in prompt.lower()
-
-
-def test_prompt_tells_the_agent_to_call_and_let_the_gate_confirm():
-    # The confirmation is no longer the model's to remember: the tool gate
-    # refuses an unconfirmed new_game/resign and the pipeline owns the answer
-    # (tools.py `_gate` / `confirm_pending`). The prompt's job is now only to
-    # keep the agent from fighting that — it must call the tool rather than ask
-    # first (nothing is armed if it never calls, so the player's "yes" would
-    # have nothing to confirm), and must not call again after a refusal.
-    #
-    # Whether a *finished* game skips the question — the live "are you sure?"
-    # after checkmate — is settled in the gate itself now, not here; see
-    # test_tools.py::test_new_game_after_game_over_needs_no_confirmation.
-    # Line-wrapped in the source, so match on the text, not its line breaks.
-    prompt = " ".join(system_prompt_for().lower().split())
-    assert "do not ask first" in prompt
-    assert "do not call the tool again" in prompt
-
-
-def test_prompt_routes_eval_questions_through_tools():
-    # Live game: "who's winning?" was answered from vibes (wrongly), no
-    # evaluate_position call. Judgment questions are reads like any other.
-    prompt = system_prompt_for().lower()
-    assert "who's winning" in prompt
-    assert "evaluate_position" in prompt
+# Hot-path move guidance and the destructive-op confirm dance used to live in
+# the base prompt; they now live on the tools themselves — make_move,
+# new_game, resign, evaluate_position, analyze_last_move — and are tested in
+# test_tools.py against the tool descriptions the model actually reads (a rule
+# belongs with the capability it governs). The base prompt keeps only the
+# non-negotiable contract below.
 
 
 def test_prompt_forbids_inventing_events():
@@ -251,15 +172,6 @@ def test_prompt_forbids_inventing_events():
     # ("you actually took my pawn" on a quiet knight move). Commentary must
     # stick to the moves the tools reported.
     assert "never invent" in system_prompt_for().lower()
-
-
-def test_prompt_warns_about_mangled_voice_transcripts():
-    prompt = system_prompt_for().lower()
-    # Transcribed speech arrives mangled ("e 4", "night to f3"); the agent
-    # should repair obvious slips instead of failing the move.
-    assert "transcri" in prompt  # transcript / transcribed / transcription
-    assert '"e 4"' in prompt
-    assert "night" in prompt
 
 
 # --- verbosity ("talk more / talk less") -------------------------------------

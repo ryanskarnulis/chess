@@ -101,6 +101,78 @@ def test_definitions_are_openai_style_and_json_serializable(registry):
         assert fn["parameters"]["additionalProperties"] is False
 
 
+# --- guidance carried on the tool descriptions ------------------------------
+#
+# A rule the model must follow belongs with the capability it governs, not in a
+# distant system-prompt block (a prompt rule is honored ~half the time — the
+# gate finding). These pin the hot-path move guidance and the destructive-op
+# dance where the model actually reads them: the tool descriptions. Pinned as
+# substantive tokens, not exact wording.
+
+
+def _description(registry, name: str) -> str:
+    for d in registry.definitions():
+        if d["function"]["name"] == name:
+            return d["function"]["description"]
+    raise AssertionError(f"tool {name!r} not registered")
+
+
+def test_make_move_anchors_moves_to_provided_legal_moves(registry):
+    # The move string must come from the board state's legal_moves list, never
+    # be invented — and what reaches the model is looser than notation, so the
+    # description carries descriptive examples ("queen's bishop pawn" → c3).
+    desc = _description(registry, "make_move")
+    assert "legal_moves" in desc
+    assert "never invent" in desc.lower()
+    assert "queen's bishop pawn" in desc  # a descriptive example, from real traces
+
+
+def test_make_move_explains_one_move_per_turn_and_engine_reply(registry):
+    # One make_move per player turn; the engine answers inside the same call,
+    # so the agent must never move for the engine's side.
+    desc = _description(registry, "make_move").lower()
+    assert "once per player turn" in desc
+    assert "engine" in desc
+    assert "never" in desc
+
+
+def test_make_move_requires_acting_on_an_accepted_proposal(registry):
+    # Propose a move → player says yes → CALL make_move, don't announce it in
+    # words (seen live: "moving forward with dxe5", no tool call, no move).
+    desc = _description(registry, "make_move").lower()
+    assert "accept" in desc
+    assert "announc" in desc
+
+
+def test_make_move_warns_about_mangled_voice_transcripts(registry):
+    # Transcribed speech arrives mangled ("e 4"); repair obvious slips before
+    # matching, rather than failing the move.
+    desc = _description(registry, "make_move").lower()
+    assert "voice" in desc
+    assert '"e 4"' in desc
+
+
+def test_evaluate_position_routes_who_is_winning(registry):
+    # Live game: "who's winning?" was answered from vibes (wrongly), no tool
+    # call. The judgment question is a read like any other.
+    desc = _description(registry, "evaluate_position").lower()
+    assert "who's winning" in desc
+
+
+def test_analyze_last_move_routes_how_good_was_that_move(registry):
+    desc = _description(registry, "analyze_last_move").lower()
+    assert "how good was that move" in desc or "what was my mistake" in desc
+
+
+def test_destructive_tools_carry_the_call_then_relay_dance(registry):
+    # The gate owns the confirmation (tools.py `_gate`); the tool's job is only
+    # to tell the model not to pre-ask, and to relay the refusal when it comes.
+    for name in ("new_game", "resign"):
+        desc = _description(registry, name).lower()
+        assert "confirm" in desc
+        assert "relay" in desc
+
+
 def test_register_duplicate_name_raises():
     registry = ToolRegistry()
     tool = Tool(
