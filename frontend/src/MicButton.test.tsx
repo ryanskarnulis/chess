@@ -22,6 +22,7 @@ class FakeMediaRecorder {
   ondataavailable: ((e: { data: Blob }) => void) | null = null
   onstop: (() => void) | null = null
   started = false
+  state: 'inactive' | 'recording' = 'inactive'
 
   stream: unknown
 
@@ -32,9 +33,11 @@ class FakeMediaRecorder {
 
   start() {
     this.started = true
+    this.state = 'recording'
   }
 
   stop() {
+    this.state = 'inactive'
     this.ondataavailable?.({ data: new Blob(['opus'], { type: 'audio/webm' }) })
     this.onstop?.()
   }
@@ -316,5 +319,59 @@ describe('MicButton (push-to-talk fallback)', () => {
   it('is disabled while the agent is busy', () => {
     render(<MicButton onTranscript={vi.fn()} disabled={true} />)
     expect(screen.getByRole('button', { name: /voice conversation/i })).toBeDisabled()
+  })
+
+  it('releases the microphone when unmounted mid-recording', async () => {
+    // Nothing else ever stops these tracks: navigating away used to leave the
+    // browser's mic indicator lit for the life of the page.
+    const onTranscript = vi.fn()
+    const { unmount } = render(<MicButton onTranscript={onTranscript} disabled={false} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /voice conversation/i }))
+    await waitFor(() => expect(FakeMediaRecorder.instances).toHaveLength(1))
+
+    unmount()
+    expect(fakeTrack.stop).toHaveBeenCalled()
+    // Teardown is not a clip worth transcribing.
+    expect(onTranscript).not.toHaveBeenCalled()
+  })
+
+  it('does not start recording when the user taps stop during the permission prompt', async () => {
+    let grant!: (stream: unknown) => void
+    getUserMedia.mockReturnValue(
+      new Promise((resolve) => {
+        grant = resolve
+      }),
+    )
+    render(<MicButton onTranscript={vi.fn()} disabled={false} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /voice conversation/i }))
+    // Still awaiting the prompt — the button offers the way out.
+    fireEvent.click(await screen.findByRole('button', { name: /stop listening/i }))
+    await act(async () => grant(fakeStream))
+
+    expect(FakeMediaRecorder.instances).toHaveLength(0)
+    // A grant that arrives after the exit is released, not orphaned.
+    expect(fakeTrack.stop).toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /voice conversation/i })).toBeInTheDocument()
+  })
+
+  it('does not start recording when unmounted during the permission prompt', async () => {
+    let grant!: (stream: unknown) => void
+    getUserMedia.mockReturnValue(
+      new Promise((resolve) => {
+        grant = resolve
+      }),
+    )
+    const { unmount } = render(<MicButton onTranscript={vi.fn()} disabled={false} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /voice conversation/i }))
+    await screen.findByRole('button', { name: /stop listening/i })
+    unmount()
+    await act(async () => grant(fakeStream))
+
+    // Worst case of all: recording on a dead component, no button left to stop it.
+    expect(FakeMediaRecorder.instances).toHaveLength(0)
+    expect(fakeTrack.stop).toHaveBeenCalled()
   })
 })
