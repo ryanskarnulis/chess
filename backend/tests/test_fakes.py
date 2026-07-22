@@ -32,14 +32,14 @@ def test_records_board_state_and_command():
 
 def test_pops_scripted_narrations_in_order():
     brain = ScriptedBrain(narrations=("one", "two"))
-    assert brain.narrate({}, []) == "one"
-    assert brain.narrate({}, []) == "two"
+    assert brain.narrate({}, []).text == "one"
+    assert brain.narrate({}, []).text == "two"
 
 
 def test_narrate_defaults_when_none_scripted():
     # Tests that don't care about the fast path's commentary needn't script it.
     brain = ScriptedBrain()
-    assert brain.narrate({}, []) == "(commentary)"
+    assert brain.narrate({}, []).text == "(commentary)"
 
 
 def test_records_narrate_board_state_and_changes():

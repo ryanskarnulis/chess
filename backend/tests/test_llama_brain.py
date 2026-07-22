@@ -19,7 +19,7 @@ from chessapp.brain import AgentResponse
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain, create_llama_brain
 from chessapp.personality import system_prompt_for
-from chessapp.provider import ToolCallArgumentsError
+from chessapp.provider import ToolCallArgumentsError, Usage
 from chessapp.tools import ToolContext, build_registry
 from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
 
@@ -373,6 +373,52 @@ def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
     assert len(resp.tool_results) == 3  # everything it did is still reported
 
 
+# --- cost accounting: model calls and tokens per turn ----------------------
+
+
+def test_a_run_sums_tokens_and_counts_its_model_calls():
+    # Two round trips — a tool call then the closing comment. The turn's cost is
+    # their sum, and the call count is what every context cut is measured against.
+    brain, _ = make_brain(
+        tool_calls_turn(
+            ("make_move", {"move": "e4"}),
+            usage=Usage(prompt_tokens=7, completion_tokens=3),
+        ),
+        text_turn("e4 it is.", usage=Usage(prompt_tokens=5, completion_tokens=2)),
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert resp.model_calls == 2
+    assert resp.prompt_tokens == 12
+    assert resp.completion_tokens == 5
+
+
+def test_missing_usage_counts_the_call_but_adds_no_tokens():
+    # llama-server may omit usage; a call with none still happened.
+    brain, _ = make_brain(text_turn("hi", usage=None))
+    resp = brain.get_agent_response(board_state={}, command="hi")
+    assert resp.model_calls == 1
+    assert resp.prompt_tokens == 0
+    assert resp.completion_tokens == 0
+
+
+def test_a_raised_round_trip_still_counts_as_a_call():
+    # The provider raised before returning a result (unparseable args), but the
+    # model was still called and the loop paid for it — the count must reflect
+    # that, matching the eval harness's CountingProvider.
+    brain, _ = make_brain(
+        _bad_json_call(),
+        tool_calls_turn(
+            ("make_move", {"move": "e2e4"}),
+            usage=Usage(prompt_tokens=4, completion_tokens=1),
+        ),
+        text_turn("e4.", usage=Usage(prompt_tokens=6, completion_tokens=2)),
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert resp.model_calls == 3  # the raised call, the good call, the comment
+    assert resp.prompt_tokens == 10  # only the two that returned usage
+    assert resp.completion_tokens == 3
+
+
 # --- thinking mode: OFF for speed, ON once analysis lands ------------------
 
 
@@ -463,14 +509,26 @@ def test_the_transcript_survives_a_correction():
 
 def test_narrate_returns_commentary_from_the_new_state():
     brain, provider = make_brain(text_turn("Nice, e4! The classic."))
-    text = brain.narrate(
+    narration = brain.narrate(
         board_state={"fen": "8/8/8/8", "turn": "black"},
         changes=[{"name": "make_move", "result": {"legal": True, "san": "e4"}}],
     )
-    assert text == "Nice, e4! The classic."
+    assert narration.text == "Nice, e4! The classic."
     blob = " ".join(m["content"] for m in provider.calls[0]["messages"])
     assert "8/8/8/8" in blob  # new board reached the model
     assert "e4" in blob  # what changed reached the model
+
+
+def test_narrate_reports_its_one_model_call_and_tokens():
+    # The fast path's stand-in for the closing turn is exactly one round trip;
+    # its cost has to reach the trace like the loop's does.
+    brain, _ = make_brain(
+        text_turn("e4!", usage=Usage(prompt_tokens=9, completion_tokens=4))
+    )
+    narration = brain.narrate(board_state={}, changes=[])
+    assert narration.model_calls == 1
+    assert narration.prompt_tokens == 9
+    assert narration.completion_tokens == 4
 
 
 def test_narrate_sends_no_tools():
@@ -493,7 +551,7 @@ def test_narrate_includes_the_transcript():
 
 def test_narrate_null_content_becomes_empty_string():
     brain, _ = make_brain(text_turn(None))
-    assert brain.narrate(board_state={}, changes=[]) == ""
+    assert brain.narrate(board_state={}, changes=[]).text == ""
 
 
 # --- factory wires the system prompt ---------------------------------------

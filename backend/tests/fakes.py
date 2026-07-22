@@ -22,8 +22,8 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from chessapp.api import create_app
-from chessapp.brain import AgentResponse
-from chessapp.provider import ChatResult
+from chessapp.brain import AgentResponse, Narration
+from chessapp.provider import ChatResult, Usage
 from chessapp.provider import ToolCall as ProviderToolCall
 from chessapp.tools import build_registry
 
@@ -84,7 +84,7 @@ class ScriptedBrain:
         self,
         *responses: AgentResponse,
         dispatcher=None,
-        narrations: tuple[str, ...] = (),
+        narrations: tuple[str | Narration, ...] = (),
     ) -> None:
         self._responses = list(responses)
         self._narrations = list(narrations)
@@ -111,10 +111,13 @@ class ScriptedBrain:
         )
         return replace(scripted, tool_results=results)
 
-    def narrate(self, board_state: dict, changes: list, transcript=()) -> str:
+    def narrate(self, board_state: dict, changes: list, transcript=()) -> Narration:
         self.narrate_calls.append((board_state, changes))
         self.narrate_transcripts.append(list(transcript))
-        return self._narrations.pop(0) if self._narrations else "(commentary)"
+        scripted = self._narrations.pop(0) if self._narrations else "(commentary)"
+        # A bare string is the common case (a test that only cares about the
+        # words); a full `Narration` lets a test script the cost fields too.
+        return scripted if isinstance(scripted, Narration) else Narration(text=scripted)
 
 
 def scripted_app(ctx, *responses: AgentResponse, brain=None, **create_kwargs):
@@ -133,18 +136,27 @@ def scripted_app(ctx, *responses: AgentResponse, brain=None, **create_kwargs):
     return create_app(ctx, brain=brain, registry=registry, **create_kwargs), brain
 
 
-def text_turn(content: str | None, *, finish_reason: str = "stop") -> ChatResult:
-    """A plain-text `ChatResult` turn (no tool calls)."""
+def text_turn(
+    content: str | None,
+    *,
+    finish_reason: str = "stop",
+    usage: Usage | None = None,
+) -> ChatResult:
+    """A plain-text `ChatResult` turn (no tool calls). `usage` scripts the token
+    counts a real llama-server would return, for tests that assert on cost."""
     return ChatResult(
-        content=content, tool_calls=[], finish_reason=finish_reason, usage=None
+        content=content, tool_calls=[], finish_reason=finish_reason, usage=usage
     )
 
 
 def tool_calls_turn(
-    *calls: tuple[str, dict[str, Any]], content: str | None = None
+    *calls: tuple[str, dict[str, Any]],
+    content: str | None = None,
+    usage: Usage | None = None,
 ) -> ChatResult:
     """A `ChatResult` turn carrying tool calls, args already parsed to dicts
-    (the shape the provider hands the brain). Each `call` is `(name, args)`."""
+    (the shape the provider hands the brain). Each `call` is `(name, args)`.
+    `usage` scripts the token counts, for tests that assert on cost."""
     return ChatResult(
         content=content,
         tool_calls=[
@@ -152,7 +164,7 @@ def tool_calls_turn(
             for index, (name, args) in enumerate(calls)
         ],
         finish_reason="tool_calls",
-        usage=None,
+        usage=usage,
     )
 
 

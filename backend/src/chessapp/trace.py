@@ -46,6 +46,9 @@ def turn_record(
     tool_calls: list[dict[str, Any]],
     tool_results: list[dict[str, Any]],
     guarded: bool = False,
+    model_calls: int = 0,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -58,6 +61,12 @@ def turn_record(
     (it announced an ending no tool produced). `commentary` is what the player
     actually saw, so the lie itself is not kept — but the *event* is countable,
     which is what tells you whether the model is still trying to fake outcomes.
+
+    `model_calls`/`prompt_tokens`/`completion_tokens` are the turn's total cost
+    at the provider boundary — how many times the model was called and the tokens
+    summed across those calls. They default to 0 so a deterministic route (a
+    canned confirmation, a declined op) records a real, readable zero rather than
+    a gap. This is the number every context-shrinking cut is measured against.
     """
     return {
         "utterance": utterance,
@@ -66,6 +75,9 @@ def turn_record(
         "stop_reason": stop_reason,
         "changed": changed,
         "guarded": guarded,
+        "model_calls": model_calls,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
         "fen_before": fen_before,
         "fen_after": fen_after,
         "tools": [

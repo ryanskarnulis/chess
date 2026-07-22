@@ -16,11 +16,11 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.brain import AgentResponse, ToolCall
+from chessapp.brain import AgentResponse, Narration, ToolCall
 from chessapp.game import GameSession
-from chessapp.tools import ToolContext
-from chessapp.trace import JsonlTracer
-from fakes import FakeEngine, scripted_app
+from chessapp.tools import Settings, ToolContext
+from chessapp.trace import JsonlTracer, turn_record
+from fakes import FakeEngine, ScriptedBrain, scripted_app
 
 
 def read_records(path):
@@ -48,6 +48,38 @@ def test_jsonl_tracer_appends_one_line_per_record(trace_path):
     records = read_records(trace_path)
     assert [r["utterance"] for r in records] == ["e4", "undo"]
     assert all(r["ts"] for r in records)  # stamped by the tracer
+
+
+def _record_fields(**overrides):
+    fields = {
+        "utterance": "e4",
+        "route": "brain",
+        "commentary": "done",
+        "stop_reason": "completed",
+        "changed": True,
+        "fen_before": "before",
+        "fen_after": "after",
+        "tool_calls": [],
+        "tool_results": [],
+    }
+    fields.update(overrides)
+    return turn_record(**fields)
+
+
+def test_turn_record_carries_model_cost_when_given():
+    record = _record_fields(model_calls=3, prompt_tokens=2841, completion_tokens=96)
+    assert record["model_calls"] == 3
+    assert record["prompt_tokens"] == 2841
+    assert record["completion_tokens"] == 96
+
+
+def test_turn_record_model_cost_defaults_to_zero():
+    """A route that made no model call (a canned confirmation) still records a
+    cost — zero — so a reader never has to distinguish 'free' from 'unrecorded'."""
+    record = _record_fields()
+    assert record["model_calls"] == 0
+    assert record["prompt_tokens"] == 0
+    assert record["completion_tokens"] == 0
 
 
 # --- what a turn records ----------------------------------------------------
@@ -82,6 +114,53 @@ def test_brain_turn_traces_the_whole_trajectory(trace_path):
     assert record["commentary"] == "done"
     assert [t["name"] for t in record["tools"]] == ["undo"]
     assert record["tools"][0]["args"] == {"plies": 2}
+
+
+def test_brain_turn_records_its_model_cost(trace_path):
+    """The number every context-shrinking cut is measured against: what the
+    turn cost at the provider boundary reaches the trace off the AgentResponse."""
+    response = AgentResponse(
+        text="done",
+        model_calls=3,
+        prompt_tokens=2841,
+        completion_tokens=96,
+    )
+    client, _ = make_client(trace_path, response)
+    client.post("/api/command", json={"text": "what should I do?"})
+    (record,) = read_records(trace_path)
+    assert record["model_calls"] == 3
+    assert record["prompt_tokens"] == 2841
+    assert record["completion_tokens"] == 96
+
+
+def test_fast_path_records_the_narration_call(trace_path):
+    """A fast-path move above verbosity=low narrates — one model call — and that
+    single call's cost is what the record must show."""
+    ctx = ToolContext(session=GameSession())
+    brain = ScriptedBrain(
+        dispatcher=None,
+        narrations=(Narration(text="e4!", prompt_tokens=40, completion_tokens=6),),
+    )
+    app, _ = scripted_app(ctx, brain=brain, tracer=JsonlTracer(trace_path))
+    TestClient(app).post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["route"] == "fast_path"
+    assert record["model_calls"] == 1
+    assert record["prompt_tokens"] == 40
+    assert record["completion_tokens"] == 6
+
+
+def test_a_canned_low_verbosity_move_records_zero_cost(trace_path):
+    """At verbosity=low a plain move is zero-LLM; the record says so with a real
+    zero, not a gap — 'free' is distinguishable from 'unrecorded'."""
+    ctx = ToolContext(session=GameSession(), settings=Settings(verbosity="low"))
+    app, _ = scripted_app(ctx, tracer=JsonlTracer(trace_path))
+    TestClient(app).post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["route"] == "fast_path"
+    assert record["model_calls"] == 0
+    assert record["prompt_tokens"] == 0
+    assert record["completion_tokens"] == 0
 
 
 def test_resign_turn_is_traced_as_its_own_route(trace_path):

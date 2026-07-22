@@ -53,18 +53,48 @@ class AgentResponse:
     tool_calls: tuple[ToolCall, ...] = ()
     tool_results: tuple[dict[str, Any], ...] = ()
     stop_reason: str = "completed"
+    # The run's cost at the provider boundary: how many times the model was
+    # called and the tokens summed across those calls. Plain ints — the seam
+    # stays model-agnostic, so the provider's `Usage` type never crosses it.
+    model_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class Narration:
+    """One commentary turn made outside the loop (the fast path's stand-in for
+    the closing turn). `text` is what the player sees; the cost fields mirror
+    `AgentResponse`'s so a narrated turn reaches the trace with the same
+    accounting a looped one does. It is always exactly one model call."""
+
+    text: str
+    model_calls: int = 1
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 @dataclass
 class _RunState:
-    """The loop's accumulator: what has been called and what came back."""
+    """The loop's accumulator: what has been called, what came back, what it cost."""
 
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
+    model_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
     def record(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
         self.tool_calls.append(ToolCall(name=name, args=args))
         self.tool_results.append({"name": name, "result": result})
+
+    def count_call(self, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+        """Tally one model round trip and its tokens. Called for every trip —
+        including one that raised before returning a result (it still cost a
+        call), which lands here with zeros."""
+        self.model_calls += 1
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
 
     def response(self, text: str, stop_reason: str) -> AgentResponse:
         return AgentResponse(
@@ -72,6 +102,9 @@ class _RunState:
             tool_calls=tuple(self.tool_calls),
             tool_results=tuple(self.tool_results),
             stop_reason=stop_reason,
+            model_calls=self.model_calls,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
         )
 
 
@@ -100,7 +133,7 @@ class Brain(Protocol):
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
         transcript: Sequence[dict[str, str]] = (),
-    ) -> str:
+    ) -> Narration:
         """Commentary on a move the loop did not make: the deterministic fast
         path (`parse_move` → `make_move`) skips the model entirely, so there is
         no tool-less turn to take the commentary from. This is that turn on its
