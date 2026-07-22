@@ -44,7 +44,7 @@ def test_vendored_header_is_stripped_from_the_composed_prompt():
 
 def test_composed_prompt_contains_the_app_base_layer():
     # Distinctive to chess's own base prompt, not the global personality.
-    assert "self-hosted chess app" in SYSTEM_PROMPT
+    assert "You are not the referee" in SYSTEM_PROMPT
 
 
 def test_composed_prompt_contains_the_global_personality_layer():
@@ -59,7 +59,7 @@ def test_composed_prompt_contains_the_chess_flavor_layer():
 
 
 def test_composition_order_is_base_then_global_then_flavor():
-    base_marker = SYSTEM_PROMPT.index("self-hosted chess app")
+    base_marker = SYSTEM_PROMPT.index("You are not the referee")
     global_marker = SYSTEM_PROMPT.index("Whatever app you're working in right now")
     flavor_marker = SYSTEM_PROMPT.index("salty-but-obvious line of cope")
     assert base_marker < global_marker < flavor_marker
