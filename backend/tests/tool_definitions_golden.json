@@ -132,7 +132,7 @@
   },
   {
     "function": {
-      "description": "Take back the player's last move. Omit plies unless the player asked for a specific number of half-moves.",
+      "description": "Take back the player's last move.",
       "name": "undo",
       "parameters": {
         "additionalProperties": false,
