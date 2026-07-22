@@ -72,57 +72,16 @@ class Tool:
     handler: Callable[..., dict[str, Any]]
 
 
-_NULL_SCHEMA = {"type": "null"}
-
-
-def _clean_schema(node: Any) -> Any:
-    """Strip the pydantic advisory noise that teaches the model nothing.
-
-    On a 12B quant every token of the tool schema competes with the tool
-    contract for attention, so the schema should carry constraints, not
-    bookkeeping. Three things go, none of them semantic (audit finding 5):
-
-    - `title`: Pydantic names every arg model and property
-      (`"analyze_last_moveArguments"`); advisory, never constrains validation.
-    - `default`: jsonschema does not inject defaults, and the handler's own
-      signature default is what actually applies — so the accepted-argument set
-      is identical with or without it. Where the value matters (`save_game`'s
-      'autosave') the description already says so.
-    - `anyOf: [X, {"type": "null"}]`: Pydantic's shape for an optional typed
-      param. Omission from `required` already expresses optionality, so this
-      collapses to plain `X` (keeping any sibling keys like `description`).
-
-    Mirrors the normalization the schema golden test used to apply on both
-    sides — now the schema reaches the wire already clean.
-    """
-    if isinstance(node, dict):
-        cleaned = {
-            k: _clean_schema(v)
-            for k, v in node.items()
-            if k not in ("title", "default")
-        }
-        any_of = cleaned.get("anyOf")
-        if isinstance(any_of, list) and len(any_of) == 2 and _NULL_SCHEMA in any_of:
-            other = next(branch for branch in any_of if branch != _NULL_SCHEMA)
-            merged = {k: v for k, v in cleaned.items() if k != "anyOf"}
-            merged.update(other)
-            return merged
-        return cleaned
-    if isinstance(node, list):
-        return [_clean_schema(item) for item in node]
-    return node
-
-
 def _derive_schema(fn: Callable[..., Any]) -> dict[str, Any]:
     """JSON Schema for `fn`'s arguments, from its typed signature.
 
     FastMCP's `func_metadata` builds a Pydantic arg model from the signature;
-    its JSON Schema is the same one the MCP server would advertise. We strip its
-    advisory noise (`_clean_schema`) and add `additionalProperties: false` —
-    chess keeps closed argument schemas (`dispatch` rejects extra args and Gemma
-    is prompted against them), which `func_metadata` does not emit on its own.
+    its JSON Schema is the same one the MCP server would advertise. We add
+    `additionalProperties: false` — chess keeps closed argument schemas
+    (`dispatch` rejects extra args and Gemma is prompted against them), which
+    `func_metadata` does not emit on its own.
     """
-    schema = _clean_schema(func_metadata(fn).arg_model.model_json_schema(by_alias=True))
+    schema = func_metadata(fn).arg_model.model_json_schema(by_alias=True)
     schema["additionalProperties"] = False
     return schema
 
@@ -510,7 +469,8 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Take back the player's last move."""
+        """Take back the player's last move. Omit plies unless the player asked
+        for a specific number of half-moves."""
         result = ctx.session.undo(_takeback_plies(ctx) if plies is None else plies)
         if not result.ok:
             return {"ok": False, "error": result.reason}
@@ -567,11 +527,8 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         # The color rides along in the armed op, so the player's "yes" on the
         # next turn confirms the game they actually asked for — a gate that
         # dropped it would confirm "new game, I'll take black" into a game as
-        # white. Omit it when unspecified: `confirm_pending` replays these args
-        # through arg validation, and a bare "new game" arms exactly what was
-        # called (`{}`, "keep my side"), not a defaulted `player_color: null`.
-        gate_args = {} if player_color is None else {"player_color": player_color}
-        refusal = _gate("new_game", gate_args)
+        # white.
+        refusal = _gate("new_game", {"player_color": player_color})
         if refusal is not None:
             return refusal
         ctx.session.new_game(player_color)

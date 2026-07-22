@@ -7,14 +7,12 @@ plan requires `definitions()` output to stay schema-equivalent across that
 migration — pinned here against a golden fixture dumped from the pre-migration
 code (`tests/tool_definitions_golden.json`).
 
-The pydantic advisory noise the schema used to be compared *modulo* — `title`,
-`default`, and the `anyOf: [X, null]` optional-union — is now stripped in
-production by `tools._clean_schema` (audit finding 5), so the emitted schema
-already matches the clean pre-migration golden directly. `test_definitions_
-carry_no_pydantic_noise` pins that; here the only remaining normalization is
-whitespace runs in each `description` (`_canonical_description`) — a wrapped
-docstring joins lines with newlines where the old hand-written string joined
-with spaces, which is cosmetically identical to the model.
+Equivalence is compared modulo four harmless, documented normalizations:
+Pydantic's advisory `title` and `default` keys and the nullable-union form it
+emits for an optional typed param (all in `_normalize`), plus whitespace runs
+in each tool's `description` (in `_canonical_description`) — a wrapped docstring
+joins lines with newlines where the old hand-written string joined with spaces,
+which is cosmetically identical to the model.
 """
 
 import json
@@ -33,6 +31,35 @@ GOLDEN = Path(__file__).parent / "tool_definitions_golden.json"
 _NULL = {"type": "null"}
 
 
+def _normalize(node: Any) -> Any:
+    """Collapse schema-equivalent representations to one canonical form.
+
+    - Drop `title`: Pydantic names every model and field; it is advisory and
+      never constrains validation.
+    - Drop `default`: advisory only — jsonschema validation does not inject
+      defaults and the handler's own signature default is unchanged, so the
+      accepted-argument set is identical with or without it.
+    - Unwrap `{"anyOf": [S, {"type": "null"}]}` (Pydantic's shape for an
+      optional typed param) to S. The golden expresses the same optionality
+      by omitting the key from `required`; both forms accept omission and
+      constrain a present value identically.
+    """
+    if isinstance(node, dict):
+        cleaned = {
+            k: _normalize(v) for k, v in node.items() if k not in ("title", "default")
+        }
+        any_of = cleaned.get("anyOf")
+        if isinstance(any_of, list) and len(any_of) == 2 and _NULL in any_of:
+            other = next(branch for branch in any_of if branch != _NULL)
+            merged = {k: v for k, v in cleaned.items() if k != "anyOf"}
+            merged.update(other)
+            return merged
+        return cleaned
+    if isinstance(node, list):
+        return [_normalize(x) for x in node]
+    return node
+
+
 def _canonical_description(definition: dict[str, Any]) -> dict[str, Any]:
     """Collapse whitespace runs in the tool description (docstring wrapping is
     cosmetic; the model sees the same text)."""
@@ -42,7 +69,10 @@ def _canonical_description(definition: dict[str, Any]) -> dict[str, Any]:
 
 
 def _by_name(definitions: list[dict[str, Any]]) -> dict[str, Any]:
-    return {d["function"]["name"]: _canonical_description(d) for d in definitions}
+    return {
+        d["function"]["name"]: _canonical_description(_normalize(d))
+        for d in definitions
+    }
 
 
 def test_definitions_match_golden():
@@ -58,33 +88,6 @@ def test_definitions_match_golden():
     assert live_by_name.keys() == golden_by_name.keys()
     for name in golden_by_name:
         assert live_by_name[name] == golden_by_name[name], f"schema drift in {name}"
-
-
-def test_definitions_carry_no_pydantic_noise():
-    """The emitted schemas carry none of the pydantic advisory noise that
-    teaches the model nothing — no `title`, no `default` (jsonschema never
-    injects it; the handler's own signature default is what applies, and where
-    it matters the description says so), and no `anyOf: [X, {type: null}]`
-    optional-union (omission from `required` already expresses optionality).
-    This is the raw guard finding 5 added: the schema reaches the wire already
-    clean, not merely clean *modulo* `_normalize`."""
-    live = build_registry(ToolContext(session=GameSession())).definitions()
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            assert "title" not in node, node
-            assert "default" not in node, node
-            any_of = node.get("anyOf")
-            if isinstance(any_of, list):
-                assert _NULL not in any_of, node
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    for definition in live:
-        walk(definition)
 
 
 def test_set_difficulty_keeps_oneof_via_override():
