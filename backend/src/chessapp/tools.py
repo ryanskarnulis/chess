@@ -418,22 +418,15 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     def make_move(
         move: Annotated[str, Field(description="SAN or UCI move.")],
     ) -> dict[str, Any]:
-        """Submit the player's move. Translate what they said into the matching
-        entry in the board state's `legal_moves` list and pass exactly that
-        string (SAN like 'Nf3' or UCI like 'g1f3'). Crisp notation is already
-        resolved before you see it, so what reaches you is looser: "push the
-        queen's bishop pawn one square" → 'c3', "the bishop that eyes f7" →
-        'Bc4', "queen's knight to d2" → 'Nbd2'. Repair obvious voice slips
-        first ("e 4" → 'e4', "rook to a one" → 'a1'). If nothing in
-        `legal_moves` matches, the move is illegal or you misheard — say so or
-        ask; never invent a string that is not in the list.
+        """Submit the player's move: a string copied from the board state's
+        `legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to
+        the matching entry ("push the queen's bishop pawn one square" → 'c3')
+        and fix voice slips ("e 4" → 'e4'); never invent a string that isn't in
+        `legal_moves`.
 
-        Call this at most once per player turn: the engine plays its reply
-        inside the same call (the result's engine_move), so never call it again
-        for the engine's side or to answer the reply yourself. If you proposed a
-        move and the player accepts ("yes", "go ahead"), call it now —
-        announcing a move in words is not making it. The engine decides
-        legality: the result says legal or illegal."""
+        Call this at most once per player turn — the engine plays its reply
+        inside the same call. If you proposed a move and the player accepts
+        ("yes"), call it now; announcing a move in words is not making it."""
         result = ctx.session.submit_move(move)
         if not result.legal:
             return {"ok": True, "legal": False, "reason": result.reason}
