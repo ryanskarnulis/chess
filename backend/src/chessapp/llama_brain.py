@@ -51,13 +51,14 @@ from typing import Any
 
 import jsonschema
 
-from chessapp.brain import AgentResponse, ToolDispatcher, _RunState
+from chessapp.brain import AgentResponse, Narration, ToolDispatcher, _RunState
 from chessapp.personality import system_prompt_for
 from chessapp.provider import (
     ChatProvider,
     ChatResult,
     LlamaCppProvider,
     ToolCallArgumentsError,
+    Usage,
 )
 from chessapp.provider import ToolCall as ProviderToolCall
 
@@ -117,6 +118,9 @@ class LlamaBrain:
             try:
                 result = self._complete(messages, thinking=self._thinking(run))
             except ToolCallArgumentsError as exc:
+                # The model was still called and the loop pays for it, so the
+                # round trip counts (with no tokens — nothing came back to read).
+                run.count_call()
                 # Nothing to attach a tool result to (see module docstring):
                 # correct with a user-role message and drop the unusable turn.
                 corrections += 1
@@ -124,6 +128,7 @@ class LlamaBrain:
                     return run.response("", "correction_limit")
                 messages.append({"role": "user", "content": _wire_correction(exc)})
                 continue
+            run.count_call(*_usage_ints(result.usage))
 
             if not result.tool_calls:
                 # A text turn ends the run: it is the commentary, and it was
@@ -149,7 +154,7 @@ class LlamaBrain:
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
         transcript: Sequence[dict[str, str]] = (),
-    ) -> str:
+    ) -> Narration:
         # The fast path's stand-in for the loop's closing turn: it reads the new
         # board and what changed, never the raw utterance, and is offered no
         # tools — so it can only comment, exactly like the turn it replaces.
@@ -168,7 +173,13 @@ class LlamaBrain:
         result = self.provider.chat(
             messages, tools=None, enable_thinking=self.enable_thinking
         )
-        return result.content or ""
+        prompt_tokens, completion_tokens = _usage_ints(result.usage)
+        return Narration(
+            text=result.content or "",
+            model_calls=1,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
 
     def _dispatch(self, call: ProviderToolCall) -> tuple[dict[str, Any], bool]:
         """Run one tool call; return its result and whether it failed at the
@@ -227,6 +238,15 @@ class LlamaBrain:
             *transcript,
             {"role": "user", "content": user},
         ]
+
+
+def _usage_ints(usage: Usage | None) -> tuple[int, int]:
+    """`(prompt_tokens, completion_tokens)` from a completion's usage, or
+    `(0, 0)` when llama-server omitted it — a missing count is not a failure,
+    it just adds nothing to the turn's total."""
+    if usage is None:
+        return 0, 0
+    return usage.prompt_tokens, usage.completion_tokens
 
 
 def _tool_message(call_id: str, payload: dict[str, Any]) -> dict[str, Any]:

@@ -327,7 +327,8 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     @registry.tool()
     def evaluate_position() -> dict[str, Any]:
         """Stockfish evaluation of the current position from White's point of
-        view: centipawns, or mate-in-N."""
+        view: centipawns, or mate-in-N. This is how you answer "who's winning?"
+        — from the result, never from a guess."""
         evaluation = _require_engine(ctx).evaluate_position(ctx.session)
         return {
             "ok": True,
@@ -368,9 +369,10 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     ) -> dict[str, Any]:
         """Analyze a move: how it compares to Stockfish's best from the same
         position — centipawn loss, verdict (good/inaccuracy/mistake/blunder),
-        and what was best. Defaults to the player's own last move, which is
-        what 'what was my mistake?' means; pass a color to analyze that side's
-        last move instead."""
+        and what was best. This is how you answer "how good was that move?" or
+        "what was my mistake?" — from the result, never from a guess. Defaults
+        to the player's own last move (what 'my mistake' means); pass a color to
+        analyze that side's last move instead."""
         # Which move "my mistake" refers to is not a question for the model.
         # On the player's turn the last *ply* is always the engine's reply, so
         # the old no-args default analyzed the opponent's move every time
@@ -416,10 +418,22 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     def make_move(
         move: Annotated[str, Field(description="SAN or UCI move.")],
     ) -> dict[str, Any]:
-        """Submit the player's move in SAN (e.g. 'Nf3') or UCI (e.g. 'g1f3').
-        The engine decides legality: the result says legal or illegal. When
-        the move is legal, the engine opponent replies immediately — the
-        result's engine_move is its answer."""
+        """Submit the player's move. Translate what they said into the matching
+        entry in the board state's `legal_moves` list and pass exactly that
+        string (SAN like 'Nf3' or UCI like 'g1f3'). Crisp notation is already
+        resolved before you see it, so what reaches you is looser: "push the
+        queen's bishop pawn one square" → 'c3', "the bishop that eyes f7" →
+        'Bc4', "queen's knight to d2" → 'Nbd2'. Repair obvious voice slips
+        first ("e 4" → 'e4', "rook to a one" → 'a1'). If nothing in
+        `legal_moves` matches, the move is illegal or you misheard — say so or
+        ask; never invent a string that is not in the list.
+
+        Call this at most once per player turn: the engine plays its reply
+        inside the same call (the result's engine_move), so never call it again
+        for the engine's side or to answer the reply yourself. If you proposed a
+        move and the player accepts ("yes", "go ahead"), call it now —
+        announcing a move in words is not making it. The engine decides
+        legality: the result says legal or illegal."""
         result = ctx.session.submit_move(move)
         if not result.legal:
             return {"ok": True, "legal": False, "reason": result.reason}
@@ -505,7 +519,11 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     ) -> dict[str, Any]:
         """Reset to the starting position and begin a new game. Pass
         `player_color` to put the player on that side ("let's play as black");
-        omitted, they keep the side they have."""
+        omitted, they keep the side they have. Call this as soon as the player
+        asks — do not ask them to confirm first. If a game is in progress the
+        result comes back refusing and asking you to confirm; relay that to the
+        player in your own words and stop, do not call again. When it returns
+        ok, the game really did reset."""
         # The color rides along in the armed op, so the player's "yes" on the
         # next turn confirms the game they actually asked for — a gate that
         # dropped it would confirm "new game, I'll take black" into a game as
@@ -531,7 +549,10 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
     @registry.tool()
     def resign(color: Literal["white", "black"] | None = None) -> dict[str, Any]:
         """Resign the game. Defaults to the player's own side; pass a color to
-        resign for that side."""
+        resign for that side. Call this as soon as the player concedes — do not
+        ask them to confirm first. If a game is in progress the result comes
+        back refusing and asking you to confirm; relay that to the player and
+        stop, do not call again. When it returns ok, the game really did end."""
         # Whose resignation this is, is not a question for the model: an
         # unqualified "I resign" is the player's, and the session knows which
         # side that is. The old default — the side to move — was only

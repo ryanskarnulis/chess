@@ -481,6 +481,13 @@ def create_app(
         tool_args: list[dict[str, Any]] = []
         commentary = ""
         stop_reason = "completed"
+        # The turn's cost at the provider boundary, summed across whatever model
+        # calls the chosen route made. The deterministic branches (a canned
+        # confirmation, a declined op) leave these at zero — a real, readable
+        # zero, which is what tells a later cut it changed nothing here.
+        model_calls = 0
+        prompt_tokens = 0
+        completion_tokens = 0
         # An armed destructive op (the tool gate refused new_game/resign last
         # turn and asked). This turn is its answer — and the answer is ours, not
         # the model's: a bare yes runs it with the gate open, a bare no drops it,
@@ -498,11 +505,16 @@ def create_app(
                 name, result = confirmed
                 tool_results.append({"name": name, "result": result})
                 tool_args.append(dict(armed.args))
-                commentary = (
-                    _destructive_confirmation(name, result, ctx.session)
-                    if ctx.settings.verbosity == "low"
-                    else brain.narrate(_agent_state_dict(ctx), tool_results, transcript)
-                )
+                if ctx.settings.verbosity == "low":
+                    commentary = _destructive_confirmation(name, result, ctx.session)
+                else:
+                    narration = brain.narrate(
+                        _agent_state_dict(ctx), tool_results, transcript
+                    )
+                    commentary = narration.text
+                    model_calls = narration.model_calls
+                    prompt_tokens = narration.prompt_tokens
+                    completion_tokens = narration.completion_tokens
             else:
                 # Declined: nothing ran, so there is nothing to narrate from.
                 commentary = _DECLINED_REPLY
@@ -515,11 +527,15 @@ def create_app(
             if ctx.settings.verbosity == "low":
                 commentary = _move_confirmation(result, ctx.session)
             else:
-                commentary = brain.narrate(
+                narration = brain.narrate(
                     _agent_state_dict(ctx),
                     tool_results,
                     transcript,
                 )
+                commentary = narration.text
+                model_calls = narration.model_calls
+                prompt_tokens = narration.prompt_tokens
+                completion_tokens = narration.completion_tokens
         elif parse_resign(text):
             # An explicit resignation is deterministic text, so the model gets no
             # vote on whether it happened: live, it took one and answered "Word.
@@ -536,15 +552,22 @@ def create_app(
             elif ctx.settings.verbosity == "low":
                 commentary = _destructive_confirmation("resign", result, ctx.session)
             else:
-                commentary = brain.narrate(
+                narration = brain.narrate(
                     _agent_state_dict(ctx), tool_results, transcript
                 )
+                commentary = narration.text
+                model_calls = narration.model_calls
+                prompt_tokens = narration.prompt_tokens
+                completion_tokens = narration.completion_tokens
         else:
             route = ROUTE_BRAIN
             response = brain.get_agent_response(before, text, transcript)
             tool_results = list(response.tool_results)
             tool_args = [call.args for call in response.tool_calls]
             stop_reason = response.stop_reason
+            model_calls = response.model_calls
+            prompt_tokens = response.prompt_tokens
+            completion_tokens = response.completion_tokens
             # A budget stop (max_iterations / correction_limit) carries no
             # commentary: the loop never reached a text turn.
             commentary = response.text or _STUCK_REPLY
@@ -580,6 +603,9 @@ def create_app(
             tool_calls=tool_args,
             tool_results=tool_results,
             guarded=guarded,
+            model_calls=model_calls,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
         return CommandOutcome(
             commentary=commentary,

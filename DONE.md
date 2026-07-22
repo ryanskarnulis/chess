@@ -2,6 +2,10 @@
 
 Completed tasks, newest first. Moved here from `TODO.md` with the completion date.
 
+## 2026-07-14
+
+**Sprint closed — "agent behavior: see it, then fix it" (opened 2026-07-13).** The premise held: live play didn't match the green suite because the suite pinned the tool boundary, not behavior. Turn tracing (`CHESSAPP_TRACE_PATH`) made turns readable, real games surfaced the bugs, and every one was the same shape — the app asking a 12B to decide what deterministic code already knows. Shipped (all logged in detail below and under 2026-07-13): the color-aware `undo` (#115) that opened the sprint, then the four tool-signature fixes (`undo` ply count, `resign` color #132, `analyze_last_move` color #133, `new_game` side #134), the capture-phrase parser (#131), the self-poisoning fix (#130), the resign route + honesty guard (#132), and the eval harness's real-trace scenarios with pass-rate-over-N measurement (#129). Move correctness through the model went from essentially unmeasured to gated on a number. Three threads carry into the 2026-07-14 context sprint rather than closing here: the eval-gate floor flakiness, live tool-call UI, and hints-off policy (now audit finding 9).
+
 ## 2026-07-13
 
 **`new_game` can now assign a side — and the advertised conductor handoff works end to end (trace review finding 2, `play_as_black` 0/5 → 5/5, xfail → hard assert).** `new_game()` took no arguments, so "let's play chess as black" was a thing the tool could not say — and that is the *exact* intent string in the deep link `app.yaml` advertises to conductor (`/?intent=let's+play+chess+as+black`), so the handoff was broken at the one seam it existed for. `new_game(player_color=…)` now puts the player on the side they asked for and the engine, owning white, opens; omitted, they keep the side they have. The subtle part is the gate: the requested color rides along in the armed op, because the confirmation gate replays `pending.args` on the player's "yes" — a gate that dropped it would confirm "new game, I'll take black" into a game as *white*, silently discarding the only thing the player asked for.
