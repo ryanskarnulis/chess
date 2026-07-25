@@ -30,6 +30,7 @@ function App() {
     setDifficulty,
     tier,
     commentary,
+    agentAvailable,
     agentThinking,
     sendCommand,
     voiceOutput,
@@ -104,7 +105,17 @@ function App() {
         voiceOutput={voiceOutput}
         onToggleVoice={setVoiceOutput}
         showCommentary={false}
+        disabled={agentAvailable === false}
       />
+      {/* Direct mode, said out loud (audit item 1): with no brain configured
+          the game is fully playable against Stockfish and the agent simply
+          isn't there — a deliberate mode, not a silent bypass the player
+          discovers when their words go nowhere. */}
+      {agentAvailable === false && (
+        <p className="direct-mode" role="status">
+          Direct mode — Stockfish only, no agent
+        </p>
+      )}
       <AgentBubble commentary={commentary} thinking={agentThinking} />
       {board ?? <p className="status">Connecting…</p>}
       {moveError && (

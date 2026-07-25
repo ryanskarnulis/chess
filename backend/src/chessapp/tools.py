@@ -284,6 +284,18 @@ def _takeback_plies(ctx: ToolContext) -> int:
     return 1
 
 
+def _player_has_moved(ctx: ToolContext) -> bool:
+    """Whether any move on the board is the *player's* — the destructive-op
+    gate's notion of a game worth guarding, derived the same way the takeback
+    rule and the UI derive whose plies are whose. Vs the engine as black the
+    engine owns the first ply, so a lone opening move is not player investment;
+    engine-free, every move was played by the player's own hand."""
+    plies = len(ctx.session.move_history())
+    if ctx.engine is not None and ctx.session.player_color == "black":
+        return plies >= 2
+    return plies >= 1
+
+
 def _save_path(ctx: ToolContext, name: str) -> Path:
     if ctx.save_dir is None:
         raise ValueError("saving unavailable: no save directory configured")
@@ -561,14 +573,20 @@ def build_registry(
         turn is refused again. Only `confirm_pending`, on a later user turn,
         opens the gate.
 
-        The gate stands aside when there is no game to lose — it guards a game
-        in progress, not the idea of one. That is true once it is over, and
-        equally true before it has begun: making the player confirm a reset of
-        an untouched starting position is a question about nothing.
+        The gate stands aside when there is no game to lose — it guards the
+        *player's* investment, not the idea of a game. That is true once it is
+        over, and equally true before the player has moved: an untouched
+        starting position is nothing to confirm, and so is a board holding only
+        the engine's opening move ("switch to white" right after the engine
+        opened must not cost a question about a game the player never joined).
+        Which plies are the player's is derived, not judged: vs the engine as
+        black the engine owns the first ply, so one move on the board is still
+        no investment; engine-free, every move was played by the player's own
+        hand.
         """
         if ctx._confirming:
             return None
-        if ctx.session.is_game_over() or not ctx.session.move_history():
+        if ctx.session.is_game_over() or not _player_has_moved(ctx):
             return None
         ctx.pending = PendingOp(name=name, args=dict(args))
         return {

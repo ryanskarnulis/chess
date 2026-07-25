@@ -117,9 +117,14 @@ _BOARD_TOOLS = frozenset({"make_move", "undo", "new_game", "resign", "resume_gam
 # in docs/agent-evals.md, which a human reads. These only catch a *regression*
 # of the kind the loop rework was meant to prevent (an analysis ask reasoning
 # from cold again), and they are deliberately loose — the GPU is shared with
-# project-command-center via llama-swap, so a tight bound would flake. Recorded
-# warm: analysis 1.9–5.4 s, everything else 0.5–0.9 s.
-_ANALYSIS_CEILING_S = 15.0
+# project-command-center via llama-swap, so a tight bound would flake.
+# Re-recorded 2026-07-25 for the planner/narrator split: the one thinking turn
+# now runs on the personality-rich narrator prompt, and its reasoning length is
+# sampling-dependent — measured warm across the split's runs: 3.4–18 s, with no
+# competing GPU traffic on the slow ones. The old 15 s ceiling was calibrated
+# for compact-context reasoning and flapped on an unchanged path, which is a
+# broken gate, not a safety margin. Everything thinking-off: 0.5–0.9 s.
+_ANALYSIS_CEILING_S = 30.0
 _THINKING_OFF_CEILING_S = 8.0
 
 

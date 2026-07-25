@@ -34,6 +34,12 @@ export interface MoveResponse {
   engine_move: { legal: boolean; san: string | null; uci: string | null } | null
   /** The authoritative state after the attempt — unchanged if the move was illegal. */
   state: GameState
+  /** Glitch's reaction to the dragged move — agent mode only. Absent in direct
+   * mode (no brain configured), where a drag is a purely deterministic move. */
+  commentary?: string
+  /** Whether the client should voice that commentary (the user's voice_output
+   * setting; the server decides, the client plays). Agent mode only. */
+  speak?: boolean
 }
 
 export async function fetchState(): Promise<GameState> {
@@ -64,11 +70,66 @@ async function postLifecycle(path: string, body: unknown = {}): Promise<GameStat
   return data.state
 }
 
+/** A destructive op the backend's confirmation gate armed instead of running:
+ * `detail` is the question to put to the player, `op` names what is armed
+ * (`new_game` / `resign`). The same gate a spoken "new game" hits — and the
+ * same one armed op, so either surface can answer it. */
+export interface ConfirmQuestion {
+  detail: string
+  op: string
+}
+
+/** One gated lifecycle call: the new state when the op ran, or the gate's
+ * question when it wants an answer first. Both null means the backend refused
+ * for some other reason and nothing should move. */
+export interface LifecycleOutcome {
+  state: GameState | null
+  question: ConfirmQuestion | null
+}
+
+/**
+ * POST a lifecycle mutation that the destructive-op gate guards. A 409 carrying
+ * `confirm: true` is a question, not a failure — the board is untouched and the
+ * op is armed until `confirmDestructive` answers it.
+ */
+async function postGated(path: string, body: unknown = {}): Promise<LifecycleOutcome> {
+  const res = await fetch(path, { ...JSON_POST, body: JSON.stringify(body) })
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as {
+      detail?: string
+      confirm?: boolean
+      op?: string
+    }
+    if (res.status === 409 && data.confirm) {
+      return { state: null, question: { detail: data.detail ?? '', op: data.op ?? '' } }
+    }
+    return { state: null, question: null }
+  }
+  const data = (await res.json()) as { state: GameState }
+  return { state: data.state, question: null }
+}
+
 /** Start a fresh game. `color` is the side the player takes; omitted, the
  * backend rolls one at random. When the player takes black the engine's
- * opening move is already in the returned state. */
-export function newGame(color?: 'white' | 'black' | 'random'): Promise<GameState | null> {
-  return postLifecycle('/api/game/new', color ? { color } : {})
+ * opening move is already in the returned state. Mid-game the gate asks first:
+ * the outcome carries its question instead of a state. */
+export function newGame(color?: 'white' | 'black' | 'random'): Promise<LifecycleOutcome> {
+  return postGated('/api/game/new', color ? { color } : {})
+}
+
+/**
+ * Answer the armed destructive op: true runs it, false drops it. Returns the
+ * authoritative state either way (unchanged on a cancel), or null if there was
+ * nothing armed. Whichever way it is answered, nothing stays armed.
+ */
+export async function confirmDestructive(confirm: boolean): Promise<GameState | null> {
+  const res = await fetch('/api/game/confirm', {
+    ...JSON_POST,
+    body: JSON.stringify({ confirm }),
+  })
+  if (!res.ok) return null
+  const data = (await res.json()) as { state: GameState }
+  return data.state
 }
 
 /** Take back moves. Without `plies` the backend applies the player's
@@ -77,8 +138,10 @@ export function undo(plies?: number): Promise<GameState | null> {
   return postLifecycle('/api/game/undo', plies === undefined ? {} : { plies })
 }
 
-export function resign(color?: 'white' | 'black'): Promise<GameState | null> {
-  return postLifecycle('/api/game/resign', color ? { color } : {})
+/** Resign. Gated like `newGame`: mid-game the outcome carries the gate's
+ * question and the game only ends once it is answered. */
+export function resign(color?: 'white' | 'black'): Promise<LifecycleOutcome> {
+  return postGated('/api/game/resign', color ? { color } : {})
 }
 
 export interface DifficultyResponse {
@@ -130,6 +193,10 @@ export interface Settings {
   tier: string | null
   skill_level: number | null
   elo: number | null
+  /** Whether a brain is configured at all. False is *direct mode* — Stockfish
+   * only — which the UI shows as a state rather than letting the player find
+   * out from a 503 on the command box. */
+  agent_available?: boolean
 }
 
 /** Fetch the agent-adjustable settings (the same truth the tools mutate). */

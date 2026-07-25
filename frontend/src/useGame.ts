@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  confirmDestructive as apiConfirmDestructive,
   fetchHint,
   fetchSettings,
   fetchState,
@@ -11,7 +12,9 @@ import {
   stateSocketUrl,
   submitMove,
   undo as apiUndo,
+  type ConfirmQuestion,
   type GameState,
+  type LifecycleOutcome,
 } from './api'
 import { isPromotion, type PromotionPiece } from './promotion'
 import { playText } from './tts'
@@ -51,8 +54,14 @@ export interface UseGame {
   /** Server-confirmed difficulty tier; null until settings load (or when the
    * strength was last set outside the tiers, e.g. by raw skill/elo). */
   tier: string | null
-  /** The agent's latest commentary, or null before the first command. */
+  /** The agent's latest commentary, or null before the first command — a
+   * dragged move in agent mode sets it too, from the reaction the backend
+   * returned with the move. */
   commentary: string | null
+  /** Whether a brain is configured; null until settings load. False is direct
+   * mode: Stockfish only, and the command box is a designed dead state rather
+   * than a 503 waiting to happen. */
+  agentAvailable: boolean | null
   /** True while a command is in flight with the agent. */
   agentThinking: boolean
   /** Send a free-form command to the agent. */
@@ -98,6 +107,7 @@ export function useGame(): UseGame {
   )
   const [commentary, setCommentary] = useState<string | null>(null)
   const [agentThinking, setAgentThinking] = useState(false)
+  const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
   const [voiceOutput, setVoiceOutputState] = useState<boolean | null>(null)
   const [tier, setTierState] = useState<string | null>(null)
   const [viewPly, setViewPly] = useState<number | null>(null)
@@ -135,6 +145,9 @@ export function useGame(): UseGame {
       if (live) {
         setVoiceOutputState(s.voice_output)
         setTierState(s.tier)
+        // Undefined (an older backend) stays null: unknown is not direct mode,
+        // and the indicator only claims what the server actually said.
+        setAgentAvailable(s.agent_available ?? null)
       }
     })
     const socket = new WebSocket(stateSocketUrl())
@@ -155,6 +168,16 @@ export function useGame(): UseGame {
       // Authoritative in both cases: the new position on success, or the
       // unchanged one on rejection (which snaps the illegal move back).
       apply(result.state)
+      // In agent mode the drag went through the same beats a typed move does,
+      // so it comes back with Glitch's reaction to it — staged and voiced
+      // exactly like a command's, because it is the same kind of turn. Direct
+      // mode sends no commentary at all, which leaves the bubble alone.
+      if (result.commentary) {
+        setCommentary(result.commentary)
+        // Fire-and-forget: the words are already on screen and a playback
+        // failure must never touch the game.
+        if (result.speak) void playText(result.commentary)
+      }
     },
     [apply],
   )
@@ -191,15 +214,44 @@ export function useGame(): UseGame {
     setRevision((r) => r + 1)
   }, [])
 
-  const newGame = useCallback(
-    async (color?: 'white' | 'black' | 'random') => {
-      const next = await apiNewGame(color)
-      if (next) {
+  /**
+   * Settle a gated destructive op: put the gate's question to the player and
+   * send their answer back to the *same* armed op the spoken path uses. A
+   * cancel disarms it and leaves the board where it is; only a confirmed op
+   * moves anything. `window.confirm` because the app has no dialog primitive
+   * for a plain yes/no (the modals it does have are screens, not questions).
+   */
+  const answerGate = useCallback(
+    async (question: ConfirmQuestion) => {
+      const yes = window.confirm(question.detail)
+      const next = await apiConfirmDestructive(yes)
+      if (yes && next) {
         setMoveError(null)
         apply(next)
       }
     },
     [apply],
+  )
+
+  /** Apply a gated lifecycle outcome: the new state if the op ran, otherwise
+   * the question it is waiting on. */
+  const settle = useCallback(
+    async (outcome: LifecycleOutcome) => {
+      if (outcome.state) {
+        setMoveError(null)
+        apply(outcome.state)
+      } else if (outcome.question) {
+        await answerGate(outcome.question)
+      }
+    },
+    [apply, answerGate],
+  )
+
+  const newGame = useCallback(
+    async (color?: 'white' | 'black' | 'random') => {
+      await settle(await apiNewGame(color))
+    },
+    [settle],
   )
 
   const undo = useCallback(async () => {
@@ -212,9 +264,8 @@ export function useGame(): UseGame {
   }, [apply])
 
   const resign = useCallback(async () => {
-    const next = await apiResign()
-    if (next) apply(next)
-  }, [apply])
+    await settle(await apiResign())
+  }, [settle])
 
   const setDifficulty = useCallback(async (nextTier: string) => {
     // Difficulty is a settings change, not a board mutation — no state to
@@ -297,6 +348,7 @@ export function useGame(): UseGame {
     setDifficulty,
     tier,
     commentary,
+    agentAvailable,
     agentThinking,
     sendCommand,
     voiceOutput,

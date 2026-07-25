@@ -205,7 +205,8 @@ describe('useGame', () => {
   it('starts a new game and clears any move feedback', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
-    // Return a fresh start position from the new-game endpoint.
+    // Return a fresh start position from the new-game endpoint (the gate stood
+    // aside: 200 with a state, no question to ask).
     fetchMock.mockImplementation((url: string) => {
       if (String(url).includes('/api/game/new'))
         return jsonResponse({ state: state({ history: [] }) })
@@ -407,6 +408,178 @@ describe('useGame', () => {
     expect(result.current.state?.fen).toBe(START_FEN)
     expect(result.current.revision).toBe(revisionBefore)
     expect(result.current.agentThinking).toBe(false)
+  })
+
+  // --- agent mode on the board: a drag is a turn -------------------------
+  //
+  // In agent mode the move endpoint runs the same beats a typed move does, so
+  // the response carries Glitch's reaction to the drag (and whether to voice
+  // it). Direct mode sends neither key, and the bubble is left alone.
+
+  it('stages and voices the reaction to a dragged move', async () => {
+    const { playText } = await import('./tts')
+    vi.mocked(playText).mockClear()
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    moveResponse = {
+      ...moveResponse,
+      commentary: 'Bold opener.\n\ne5.',
+      speak: true,
+    }
+    await act(async () => {
+      await result.current.play('e2', 'e4')
+    })
+    expect(result.current.commentary).toBe('Bold opener.\n\ne5.')
+    expect(playText).toHaveBeenCalledWith('Bold opener.\n\ne5.')
+  })
+
+  it('shows a dragged move reaction without speaking it when voice is off', async () => {
+    const { playText } = await import('./tts')
+    vi.mocked(playText).mockClear()
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    moveResponse = { ...moveResponse, commentary: 'Quiet one.', speak: false }
+    await act(async () => {
+      await result.current.play('e2', 'e4')
+    })
+    expect(result.current.commentary).toBe('Quiet one.')
+    expect(playText).not.toHaveBeenCalled()
+  })
+
+  it('leaves the bubble alone for a direct-mode drag', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    // Direct mode: no commentary key at all on the move response.
+    await act(async () => {
+      await result.current.play('e2', 'e4')
+    })
+    expect(result.current.commentary).toBeNull()
+  })
+
+  it('reports direct mode from the settings document', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/settings'))
+        return jsonResponse({
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+          agent_available: false,
+        })
+      return jsonResponse(state())
+    })
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.agentAvailable).toBe(false))
+  })
+
+  // --- the destructive-op gate, from the buttons -------------------------
+  //
+  // Mid-game the backend arms the op and answers 409 with its question rather
+  // than throwing the game away; the hook puts that question to the player and
+  // sends the answer back to the same armed op a spoken "yes" would answer.
+
+  function gated(op: string, detail: string) {
+    return (url: string) => {
+      const path = String(url)
+      if (path.includes('/api/game/confirm'))
+        return jsonResponse({ op, confirmed: true, state: state({ history: [] }) })
+      if (path.includes(`/api/game/${op === 'new_game' ? 'new' : 'resign'}`))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ detail, confirm: true, op }),
+        })
+      return jsonResponse(state())
+    }
+  }
+
+  it('asks before a gated new game, then confirms it', async () => {
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation(gated('new_game', 'Start a new one?'))
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: reviewableState() })
+    })
+
+    await act(async () => {
+      await result.current.newGame()
+    })
+
+    expect(confirmSpy).toHaveBeenCalledWith('Start a new one?')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/confirm',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ confirm: true }) }),
+    )
+    expect(result.current.state?.history).toEqual([])
+  })
+
+  it('cancels a gated new game and leaves the board where it was', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: reviewableState() })
+    })
+    fetchMock.mockImplementation(gated('new_game', 'Start a new one?'))
+    const revisionBefore = result.current.revision
+
+    await act(async () => {
+      await result.current.newGame()
+    })
+
+    // The cancel still goes to the server — it is what disarms the op — but
+    // nothing on the board moves.
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/confirm',
+      expect.objectContaining({ body: JSON.stringify({ confirm: false }) }),
+    )
+    expect(result.current.state?.history).toEqual(['e4', 'e5'])
+    expect(result.current.revision).toBe(revisionBefore)
+  })
+
+  it('asks before a gated resignation, then confirms it', async () => {
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      const path = String(url)
+      if (path.includes('/api/game/confirm'))
+        return jsonResponse({
+          op: 'resign',
+          confirmed: true,
+          state: state({ game_over: true }),
+        })
+      if (path.includes('/api/game/resign'))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ detail: 'Resign?', confirm: true, op: 'resign' }),
+        })
+      return jsonResponse(state())
+    })
+
+    await act(async () => {
+      await result.current.resign()
+    })
+
+    expect(confirmSpy).toHaveBeenCalledWith('Resign?')
+    expect(result.current.state?.game_over).toBe(true)
+  })
+
+  it('does not ask when the gate stood aside', async () => {
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    await act(async () => {
+      await result.current.newGame('black')
+    })
+    expect(confirmSpy).not.toHaveBeenCalled()
   })
 
   // --- history review: browse past positions without undoing ------------

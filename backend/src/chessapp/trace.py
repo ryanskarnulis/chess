@@ -26,6 +26,11 @@ ROUTE_CONFIRMATION = "confirmation"
 ROUTE_FAST_PATH = "fast_path"
 ROUTE_RESIGN = "resign"
 ROUTE_BRAIN = "brain"
+# …and the fifth road, which is not an utterance at all: a move dragged on the
+# board in agent mode. It runs the same beats the fast path runs, so it is traced
+# like a turn — with the structured move (`e2e4`) standing in for the utterance
+# it never had, which is exactly the distinction a reader wants to make.
+ROUTE_BOARD = "board"
 
 
 class Tracer(Protocol):

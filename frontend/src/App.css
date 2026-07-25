@@ -342,6 +342,20 @@
   font-weight: 600;
 }
 
+/* Direct mode: no brain configured, Stockfish only. A quiet standing label —
+   the mode is deliberate, so it reads as information and not as an error. */
+.direct-mode {
+  margin: 0;
+  align-self: center;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--silk-border);
+  border-radius: 999px;
+  background: var(--surface-veil);
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+}
+
 /* Free-text command box for the agent + its commentary. */
 .command-box {
   width: 100%;
