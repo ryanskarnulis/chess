@@ -118,6 +118,11 @@ def _description(registry, name: str) -> str:
     raise AssertionError(f"tool {name!r} not registered")
 
 
+def _flat(description: str) -> str:
+    """One line, for asserting on a sentence the docstring's wrapping breaks."""
+    return " ".join(description.split())
+
+
 def test_make_move_anchors_moves_to_provided_legal_moves(registry):
     # The move string must come from the board state's legal_moves list, never
     # be invented — and what reaches the model is looser than notation, so the
@@ -128,13 +133,23 @@ def test_make_move_anchors_moves_to_provided_legal_moves(registry):
     assert "queen's bishop pawn" in desc  # a descriptive example, from real traces
 
 
-def test_make_move_explains_one_move_per_turn_and_engine_reply(registry):
-    # One make_move per player turn; the engine answers inside the same call,
-    # so the agent must never move for the engine's side.
-    desc = _description(registry, "make_move").lower()
-    assert "once per player turn" in desc
-    assert "engine" in desc
-    assert "never" in desc
+def test_make_move_leaves_the_mutation_limit_to_code(session):
+    """The once-per-turn rule is the phase machine's — a second player move
+    mid-turn is refused — so it is not *also* prose. A rule code owns does not
+    live in the prompt (the house rule), and a page of tone competes with the
+    tool decision for a 12B's attention. What stays is what the model cannot
+    derive: that the engine answers on its own, and that a proposal the player
+    accepted has to be *called*."""
+    ctx = ToolContext(session=session)
+    atomic = _flat(_description(build_registry(ctx), "make_move"))
+    split = _flat(_description(build_registry(ctx, atomic_exchange=False), "make_move"))
+
+    for desc in (atomic, split):
+        assert "once per player turn" not in desc.lower()
+        assert "announcing a move in words is not making it" in desc
+        assert "the player accepts" in desc
+    assert "The engine plays its reply inside the same call" in atomic
+    assert "The engine answers as soon as your move lands" in split
 
 
 def test_make_move_requires_acting_on_an_accepted_proposal(registry):
@@ -1169,3 +1184,94 @@ def test_new_game_after_game_over_needs_no_confirmation(session, registry):
 
     assert result["ok"] is True
     assert session.fen() == GameSession().fen()
+
+
+# --- The destructive-op budget: one per command.
+#
+# The gate guards the *player's* investment, so it stands aside when there is
+# none — on a finished game, and on a board nobody has moved yet. That left a
+# hole one command wide: a planner could reset a finished game and then resign
+# the fresh board it had just created, both ops past the gate, both inside one
+# user interaction. Nothing code-owned said "one destructive op per command", so
+# now the coordinator does (audit item 6). A window is open below because the
+# pipeline is the only surface that chains dispatches; the last test here is the
+# other shape, and it is deliberately unconstrained.
+
+
+def finished(session):
+    """Fool's mate: a game that is over, so the gate stands aside."""
+    return played(session, "f3", "e5", "g4", "Qh4")
+
+
+def _windowed_registry(ctx: ToolContext):
+    """A registry over a coordinator with a command window open — the pipeline's
+    shape, which is the only one that can spend a budget twice."""
+    coordinator = TurnCoordinator(ctx)
+    coordinator.begin_command()
+    return build_registry(ctx, coordinator), coordinator
+
+
+def test_only_one_new_game_runs_per_command():
+    ctx = ToolContext(session=finished(GameSession()))
+    registry, _ = _windowed_registry(ctx)
+
+    assert registry.dispatch("new_game", {})["ok"] is True
+    refused = registry.dispatch("new_game", {"player_color": "black"})
+
+    assert refused["ok"] is False
+    assert "one per turn" in refused["error"]
+    # The color is the tell: a second reset that ran would have switched sides.
+    assert ctx.session.player_color == "white", "the refused reset must not have run"
+    assert ctx.session.move_history() == []
+
+
+def test_a_resign_after_a_new_game_is_refused_in_the_same_command():
+    """The exact live hole: the fresh board `new_game` just made has no player
+    move on it, so the gate would wave the resignation straight through and the
+    new game would die the moment it was born."""
+    ctx = ToolContext(session=finished(GameSession()))
+    registry, _ = _windowed_registry(ctx)
+    assert registry.dispatch("new_game", {})["ok"] is True
+
+    refused = registry.dispatch("resign", {})
+
+    assert refused["ok"] is False
+    assert "one per turn" in refused["error"]
+    assert not ctx.session.is_game_over(), "the fresh game is still live"
+    assert ctx.pending is None, "a budget refusal never arms the gate"
+
+
+def test_a_gate_refusal_does_not_burn_the_budget():
+    """Check then record: the budget pays for an op that *ran*. A refused one
+    left the board alone, so the player's yes on the next turn — or the model's
+    corrected call — must still find the budget there."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry, coordinator = _windowed_registry(ctx)
+
+    refused = registry.dispatch("new_game", {})
+
+    assert refused["ok"] is False and ctx.pending is not None
+    coordinator.require_destructive_budget()  # must not raise
+
+
+def test_a_failed_destructive_op_does_not_burn_the_budget():
+    """Same rule one layer down: `resign` on a finished game raises, so nothing
+    was thrown away and nothing was spent."""
+    ctx = ToolContext(session=finished(GameSession()))
+    registry, coordinator = _windowed_registry(ctx)
+
+    assert registry.dispatch("resign", {})["ok"] is False
+
+    coordinator.require_destructive_budget()  # must not raise
+
+
+def test_a_windowless_registry_is_unconstrained():
+    """MCP's shape (`build_registry` with no coordinator of its own, nothing
+    opening a window): one dispatch per call by construction, so a client may
+    start as many games across a session as it likes."""
+    ctx = ToolContext(session=GameSession())
+    registry = build_registry(ctx)
+
+    assert registry.dispatch("new_game", {"player_color": "black"})["ok"] is True
+    assert registry.dispatch("new_game", {"player_color": "white"})["ok"] is True
+    assert ctx.session.player_color == "white"

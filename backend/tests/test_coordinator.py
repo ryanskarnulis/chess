@@ -383,6 +383,69 @@ def test_abandon_turn_between_turns_changes_nothing(coordinator):
     assert coordinator.turn_id == 1
 
 
+# --- the command window: one destructive op per user interaction -------------
+#
+# The phases already spend a turn's move budget: one player move, one engine
+# reply, and a second of either is refused. The destructive ops have no such
+# home, because they *end* the turn they run in — so the budget for them is
+# scoped to the command instead, one user interaction wide. Only the pipeline
+# opens a window, because only the pipeline can chain several dispatches inside
+# one interaction (the brain loop). Everything else — the board buttons, the
+# confirm endpoint, MCP — is one dispatch per interaction by construction and
+# stays unconstrained.
+
+
+def test_the_destructive_budget_allows_one_op_per_command(coordinator):
+    coordinator.begin_command()
+    coordinator.require_destructive_budget()  # nothing spent yet
+
+    coordinator.record_destructive_op()
+
+    with pytest.raises(TurnStateError) as excinfo:
+        coordinator.require_destructive_budget()
+    # The message is read by the model, so it has to say what to do instead.
+    assert "one per turn" in str(excinfo.value)
+
+
+def test_the_budget_is_not_enforced_outside_a_command_window(coordinator):
+    """A surface that dispatches once per interaction cannot spend a budget
+    twice, so it is never asked to hold one — MCP included, where a client may
+    legitimately start game after game across a session."""
+    coordinator.record_destructive_op()
+    coordinator.require_destructive_budget()
+
+    coordinator.begin_command()
+    coordinator.record_destructive_op()
+    coordinator.end_command()
+
+    coordinator.require_destructive_budget()
+    coordinator.record_destructive_op()
+    coordinator.require_destructive_budget()
+
+
+def test_a_new_command_window_starts_with_a_fresh_budget(coordinator):
+    coordinator.begin_command()
+    coordinator.record_destructive_op()
+
+    coordinator.begin_command()
+
+    coordinator.require_destructive_budget()
+
+
+def test_the_spent_budget_survives_abandoning_the_turn(coordinator):
+    """The load-bearing one. `new_game` and `resign` abandon the open turn as
+    part of doing their work, so a budget the phase machine owned would reset
+    itself on the way out and enforce nothing. The window is command state, not
+    turn state."""
+    coordinator.begin_command()
+    coordinator.record_destructive_op()
+
+    coordinator.abandon_turn()
+
+    with pytest.raises(TurnStateError):
+        coordinator.require_destructive_budget()
+
+
 # --- play_exchange: the whole sequence, atomically ---------------------------
 
 

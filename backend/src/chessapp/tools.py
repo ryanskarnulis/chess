@@ -318,7 +318,9 @@ def saved_game_names(ctx: ToolContext) -> list[str]:
 # is the only caller-visible difference: in one mode the reply has already been
 # played when the result comes back, in the other it lands a moment later.
 # Either way it is automatic and none of the model's business, and neither
-# variant offers it anything to do about it. Written out as constants (rather
+# variant offers it anything to do about it. Neither says how *many* times to
+# call it, either: the phase machine refuses a second player move mid-turn, and a
+# rule code owns does not also live in the prompt. Written out as constants (rather
 # than one template) so the atomic text stays byte-for-byte what the schema
 # golden recorded; the wrapping is `inspect.getdoc`'s.
 _MAKE_MOVE_HOW = """Submit the player's move: a string copied from the board state's
@@ -328,16 +330,15 @@ and fix voice slips ("e 4" → 'e4'); never invent a string that isn't in
 `legal_moves`."""
 
 _MAKE_MOVE_ATOMIC_TAIL = (
-    "Call this at most once per player turn — the engine plays its reply\n"
-    "inside the same call. If you proposed a move and the player accepts\n"
-    '("yes"), call it now; announcing a move in words is not making it.'
+    "The engine plays its reply inside the same call. If you proposed a\n"
+    'move and the player accepts ("yes"), call it now; announcing a move\n'
+    "in words is not making it."
 )
 
 _MAKE_MOVE_SPLIT_TAIL = (
-    "Call this at most once per player turn — the engine answers as soon as\n"
-    "your move lands, without being asked. If you proposed a move and the\n"
-    'player accepts ("yes"), call it now; announcing a move in words is not\n'
-    "making it."
+    "The engine answers as soon as your move lands, without being asked.\n"
+    'If you proposed a move and the player accepts ("yes"), call it now;\n'
+    "announcing a move in words is not making it."
 )
 
 
@@ -608,6 +609,10 @@ def build_registry(
         result comes back refusing and asking you to confirm; relay that to the
         player in your own words and stop, do not call again. When it returns
         ok, the game really did reset."""
+        # The budget is checked before the gate, so a refused-for-budget call
+        # neither arms an op nor overwrites one that is already armed: it did
+        # not happen, and the player is owed no question about it.
+        coordinator.require_destructive_budget()
         # The color rides along in the armed op, so the player's "yes" on the
         # next turn confirms the game they actually asked for — a gate that
         # dropped it would confirm "new game, I'll take black" into a game as
@@ -617,6 +622,10 @@ def build_registry(
             return refusal
         coordinator.abandon_turn()  # the old turn is about a board that is gone
         ctx.session.new_game(player_color)
+        # The reset *is* the destructive act, so the budget is spent here rather
+        # than after the opening move: by this point the old game is gone whatever
+        # else happens.
+        coordinator.record_destructive_op()
         # When the player has black the engine owns white and makes the opening
         # move — otherwise the fresh board would sit waiting for a move only the
         # engine can make. The coordinator owns that call (and the condition):
@@ -640,11 +649,17 @@ def build_registry(
         # side that is. The old default — the side to move — was only
         # coincidentally the player (trace review, finding 8).
         color = color or ctx.session.player_color  # type: ignore[assignment]
+        # Before the gate, as in `new_game`: a call the budget refuses arms
+        # nothing. The gap this closes is exactly a resignation reaching a board
+        # a `new_game` in the same command has just made — no player move on it,
+        # so the gate would wave it straight through.
+        coordinator.require_destructive_budget()
         refusal = _gate("resign", {"color": color})
         if refusal is not None:
             return refusal
         coordinator.abandon_turn()  # no reply is owed on a game that just ended
         outcome = ctx.session.resign(color)
+        coordinator.record_destructive_op()
         return {
             "ok": True,
             "outcome": {

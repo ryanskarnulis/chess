@@ -724,6 +724,64 @@ def test_a_later_yes_cannot_revive_a_declined_op():
     assert response["commentary"] == "yes to what?", "it reached the brain"
 
 
+# --- One destructive op per command (audit item 6).
+#
+# The gate stands aside when there is nothing to lose, which is right — and left
+# a hole the width of one command: the brain loop is the one surface that can
+# chain several dispatches inside a single user interaction, so it could reset a
+# finished game and then resign the fresh board, both past the gate. The
+# coordinator now holds a command-scoped budget the pipeline opens and closes.
+
+
+def finished(ctx: ToolContext) -> ToolContext:
+    """Fool's mate: the game is over, so the gate has nothing to guard."""
+    for san in ("f3", "e5", "g4", "Qh4"):
+        ctx.session.submit_move(san)
+    return ctx
+
+
+def test_only_the_first_destructive_op_in_a_command_runs():
+    ctx = finished(ToolContext(session=GameSession()))
+    twice = AgentResponse(
+        text="board's fresh",
+        tool_calls=(
+            ToolCall(name="new_game", args={}),
+            ToolCall(name="new_game", args={"player_color": "black"}),
+        ),
+    )
+    app, _ = scripted_app(ctx, twice)
+    client = TestClient(app)
+
+    response = client.post("/api/command", json={"text": "new game"}).json()
+
+    results = [r["result"] for r in response["tool_results"]]
+    assert results[0]["ok"] is True
+    # The refusal is ordinary result data, on the same road as an illegal move:
+    # the loop reads it and reports what happened rather than crashing.
+    assert results[1]["ok"] is False
+    assert "one per turn" in results[1]["error"]
+    assert ctx.session.player_color == "white", "the second reset never ran"
+    assert ctx.session.move_history() == []
+    assert not ctx.session.is_game_over(), "one live fresh game came out of it"
+
+
+def test_the_command_window_closes_so_the_buttons_still_work():
+    """The window is the pipeline's, and it must not outlive the command: a
+    button press is its own interaction and spends its own budget."""
+    ctx = finished(ToolContext(session=GameSession()))
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(text="fresh", tool_calls=(ToolCall(name="new_game", args={}),)),
+    )
+    client = TestClient(app)
+    client.post("/api/command", json={"text": "new game"})  # spends the budget
+
+    response = client.post("/api/game/new", json={"color": "black"})
+
+    assert response.status_code == 200
+    assert ctx.session.player_color == "black"
+
+
 # --- The honesty guard: the player is never told something that didn't happen.
 #
 # The deepest version of the house rule. The closing turn is produced from a
