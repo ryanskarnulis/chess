@@ -237,8 +237,9 @@ class CountingProvider:
     went over. The agent evals wrap the live `LlamaCppProvider` in one, because
     `ChatProvider` is the only seam every round trip passes through and nothing
     in production counts them — that is how the evals can assert a fast-path
-    move costs zero model calls, a tool-using utterance costs the tool turn plus
-    the loop's closing turn, and thinking is off until an analysis result lands.
+    move costs zero model calls, a tool-using utterance costs the planner's tool
+    turn plus its handoff note plus the narrator's reply, and thinking is off
+    until an analysis result lands.
 
     A raising round trip is still recorded: the model was called, and the loop
     pays a correction for it.
