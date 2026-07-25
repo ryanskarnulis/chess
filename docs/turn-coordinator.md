@@ -138,6 +138,14 @@ announcing it (`api._reply_announcement`). No second narration: the reaction has
 already been paid for, and a model turn per engine move is precisely the latency
 this beat is not allowed to add.
 
+One honest gap: nothing calls `begin_observation()` yet, so `agent_observing` is
+still a phase the app never enters. Neither route can bracket its own narration
+from the pipeline — on the fast path it would be a one-line half-measure, and on
+the brain route the reaction happens *inside* `get_agent_response`, which holds no
+coordinator by design. Making the phase real is the live-progress slice's job
+(audit item 19), and it needs a seam for the brain to report through; the collect
+already accepts either phase, so nothing else has to change when it lands.
+
 It is a phase rather than a callback because the reaction has to be **optional by
 construction**. `collect_engine_reply` is legal from `player_move_applied` *and*
 from `agent_observing`, so skipping the model — verbosity low, no brain
