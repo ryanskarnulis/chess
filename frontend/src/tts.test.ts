@@ -144,6 +144,44 @@ describe('playText', () => {
     expect(audioInstances).toHaveLength(0)
   })
 
+  it('resolves rather than rejecting when the request fails outright', async () => {
+    // playText documents that it never rejects. A transport failure (offline,
+    // DNS, aborted connection) must settle exactly like a 503 does.
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))))
+    await expect(playText('Check!')).resolves.toBeUndefined()
+    expect(audioInstances).toHaveLength(0)
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('resolves when the response body cannot be read', async () => {
+    const { playText } = await loadTts()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        blob: () => Promise.reject(new Error('body stream errored')),
+      })),
+    )
+    await expect(playText('Check!')).resolves.toBeUndefined()
+    expect(audioInstances).toHaveLength(0)
+  })
+
+  it('does not disturb the live clip when a later request fails', async () => {
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const first = playText('Check!')
+    await playbackStarted()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))))
+    await playText('Mate!')
+    // The failed request loaded nothing, so it must neither interrupt the
+    // playing clip nor revoke the URL still attached to the element.
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:fake-url')
+    audioInstances[0].onended?.()
+    await first
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:fake-url')
+  })
+
   it('survives a blocked autoplay without leaking the URL', async () => {
     const { playText } = await loadTts()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
@@ -156,6 +194,15 @@ describe('playText', () => {
 describe('audioIdle', () => {
   it('resolves immediately when nothing was ever played', async () => {
     const { audioIdle } = await loadTts()
+    await expect(audioIdle()).resolves.toBeUndefined()
+  })
+
+  it('resolves after a failed request instead of rejecting', async () => {
+    // A rejected currentPlayback would poison audioIdle(), leaving hands-free
+    // voice stuck with the VAD paused and the mic never reopened.
+    const { playText, audioIdle } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))))
+    await playText('Check!')
     await expect(audioIdle()).resolves.toBeUndefined()
   })
 

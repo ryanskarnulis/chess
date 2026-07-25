@@ -71,13 +71,21 @@ export function playText(text: string): Promise<void> {
 }
 
 async function speak(text: string): Promise<void> {
-  const res = await fetch('/api/voice/speak', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!res.ok) return
-  const url = URL.createObjectURL(await res.blob())
+  // Voice out is best-effort: a transport failure (offline, DNS, aborted
+  // connection) or an unreadable body must settle exactly like a 503 does, or
+  // the hands-free loop awaiting audioIdle() never reopens the mic.
+  let url: string
+  try {
+    const res = await fetch('/api/voice/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+    if (!res.ok) return
+    url = URL.createObjectURL(await res.blob())
+  } catch {
+    return
+  }
   const el = element()
   // A new clip interrupts whatever was loaded: settle the old clip's promise
   // (its onended will never fire now), release its URL, and guard the stale
