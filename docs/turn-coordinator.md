@@ -93,9 +93,7 @@ move, which is precisely what this module exists to prevent.
 move — the audit's item 5. In this slice the slot exists and nothing fills it:
 `play_exchange` skips straight to the reply, so a plain move costs exactly what
 it cost before. Slice 3 fills it, and slice 2's narrator is the voice that speaks
-in it (`docs/planner-narrator.md`: a persona-prompted, tool-free model call over
-verified results — which is exactly what an observation beat needs, and why it
-cannot reorder or skip anything).
+in it.
 
 It is a phase rather than a callback because the reaction has to be **optional by
 construction**. `engine_reply` is legal from `player_move_applied` *and* from
