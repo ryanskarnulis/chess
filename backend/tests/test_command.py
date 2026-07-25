@@ -13,12 +13,14 @@ fast path.
 from fastapi.testclient import TestClient
 
 from chessapp.api import (
+    MOVE_ADVICE_REPLY,
     PROVIDER_LOST_RETRY,
     PROVIDER_LOST_TURN_STANDS,
     UNTRUE_CLAIM_REPLY,
     create_app,
 )
 from chessapp.brain import AgentResponse, ToolCall
+from chessapp.engine import CandidateMove
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
 from chessapp.tools import ToolContext
@@ -838,6 +840,69 @@ def test_a_confirmed_resignation_may_say_the_game_is_over():
 
     assert ctx.session.is_game_over()
     assert response["commentary"] == "Done. Game over."
+
+
+# --- The advice guard: hints off means no move is handed over.
+#
+# Audit item 11's second half. The capability cut (get_best_moves withheld from
+# the offer) killed the tool half of the leak, but the model still invents a
+# move from its own head — measured live at 2/5–3/5 after the cut. Same shape
+# as the honesty guard: the board knows what is playable and the settings know
+# whether help was wanted, so the code, not the prompt, gets the last word.
+
+
+def test_hints_off_commentary_may_not_hand_over_a_move():
+    ctx = ToolContext(session=GameSession())
+    app, _ = scripted_app(ctx, AgentResponse(text="Easy: play Nf3 and thank me later."))
+    client = TestClient(app)
+
+    response = client.post("/api/command", json={"text": "what should I play?"}).json()
+
+    assert ctx.settings.hints_mode is False  # the default
+    assert "Nf3" not in response["commentary"]
+    assert response["commentary"] == MOVE_ADVICE_REPLY
+
+
+def test_hints_on_lets_advice_through():
+    ctx = ToolContext(session=GameSession())
+    ctx.settings.hints_mode = True
+    app, _ = scripted_app(ctx, AgentResponse(text="Play Nf3."))
+    client = TestClient(app)
+
+    response = client.post("/api/command", json={"text": "what should I play?"}).json()
+
+    assert response["commentary"] == "Play Nf3."
+
+
+def test_hints_off_analysis_the_player_asked_for_keeps_its_moves():
+    """The guard checks evidence, not vocabulary: a move a successful analysis
+    tool reported this turn is a verified fact the commentary may repeat —
+    "what was my mistake?" works with hints off, and its answer names moves."""
+    ctx = ToolContext(session=GameSession())
+    ctx.engine = FakeEngine(
+        best_moves=(CandidateMove(uci="g1f3", san="Nf3", score_cp=30, mate_in=None),)
+    )
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Nf3 was the better try.",
+            tool_calls=(ToolCall(name="get_best_moves", args={"n": 1}),),
+        ),
+    )
+    client = TestClient(app)
+
+    body = {"text": "what's the best move?"}
+    response = client.post("/api/command", json=body).json()
+
+    assert response["commentary"] == "Nf3 was the better try."
+
+
+def test_a_played_move_may_be_named_with_hints_off():
+    """Reacting to what just happened is not advice: the turn changed the
+    board, and the commentary describes it."""
+    client, _ = make_client(move("e4", text="e4. Predictable."))
+    response = client.post("/api/command", json={"text": "king's pawn"}).json()
+    assert response["commentary"].startswith("e4. Predictable.")
 
 
 # --- The resign route: the player conceding is not the model's call.
