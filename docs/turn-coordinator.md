@@ -3,7 +3,8 @@
 `backend/src/chessapp/coordinator.py`. Sprint 1, slice 1 of the agent-control
 replan (`docs/agent-control-audit-2026-07-25.md`, items 3 and 10), extended by
 slice 3 — the move flow split (items 2 and 5), which filled the observation slot
-and is folded into this note where it changed something.
+— and by slice 4, which brought the board controls in (items 1 and 4). Both are
+folded into this note where they changed something.
 
 ## Why
 
@@ -89,15 +90,17 @@ The coordinator, and only the coordinator. Two callers ask for it two ways, and
 both are the same sequence:
 
 - `play_exchange(move)` — the whole thing in one call, no beats. `/api/game/move`
-  runs it (direct mode: a dragged move, no agent in the path) and so does the
-  `make_move` tool when the registry was built `atomic_exchange=True`, which is
-  the default and what the MCP server gets: an MCP call has nothing behind it to
-  collect a reply, and its game must not stall half-way through a turn.
+  runs it **in direct mode** (no brain configured, so there is no reaction to
+  stand between the two moves) and so does the `make_move` tool when the registry
+  was built `atomic_exchange=True`, which is the default and what the MCP server
+  gets: an MCP call has nothing behind it to collect a reply, and its game must
+  not stall half-way through a turn.
 - **the beats** — `apply_player_move` → (the agent's reaction) →
   `collect_engine_reply` → `complete_turn`, which is what the command pipeline
-  runs (`api._run_command`). App assembly builds the registry with
+  runs and, since slice 4, what a dragged move runs too (`api._play_move`, shared
+  by both — see below). App assembly builds the registry with
   `atomic_exchange=False` for exactly this: `make_move` applies the player's move
-  and stops, and the pipeline owns what happens next.
+  and stops, and the caller owns what happens next.
 
 The flag names the *sequencing owner*, never the boundary — the tool surface, the
 validation, and the legality gate are identical in both modes. The one
@@ -185,6 +188,59 @@ The phase deliberately does not move when the computation starts:
 what a UI progress line wants to show, and during the reaction the turn is
 blocked on nothing.
 
+## The board controls enter the machine (slice 4)
+
+Two ways in were left outside it, and the audit's items 1 and 4 are both about
+that.
+
+**A dragged move.** `/api/game/move` used to play the whole exchange itself, so
+in a game played by dragging pieces Glitch was never asked anything — the
+"personality in the path" story only ever covered typed and spoken input. The
+endpoint is now **mode-aware**:
+
+- **agent mode** (a brain is configured) runs the beats — and runs them through
+  the *same function* the command pipeline's fast path uses, `api._play_move`:
+  dispatch `make_move` through the registry, narrate the verified player move
+  while Stockfish computes, collect the reply, close the turn. One road in is
+  worth nothing if two roads sequence a turn differently, so there is exactly one
+  copy of that sequence. What reaches it is always a structured move string
+  (`e2e4`) — the fast path parsed an utterance into one, a drag never had words —
+  which is the audit's own wording for item 4. The response keeps every field it
+  had and gains `commentary` and `speak`; the turn joins `ctx.transcript` under
+  the move's SAN, so Glitch remembers games the player dragged, and it is traced
+  as its own route (`board`) with the structured move where the utterance goes.
+- **direct mode** (no brain) runs `play_exchange` and answers byte-for-byte what
+  it always answered, new keys included: none. This is the LLM-off invariant, not
+  a fallback, which is also why the mode is now *visible* —
+  `/api/settings.agent_available` drives a standing indicator and locks the
+  command box (which 503s in that mode anyway).
+
+One asymmetry worth knowing: a drag that arrives while a turn is open is refused
+409 in both modes, but agent mode *also* settles the turn that was left open (the
+beats' close runs regardless), so the machine heals rather than staying wedged.
+Direct mode's `play_exchange` raises before reaching it. That is the fast path's
+existing behavior, inherited by sharing its code.
+
+**Undo, new game, resign.** These bypassed the *confirmation* gate rather than
+the turn machine: the buttons acted immediately while a spoken "new game" armed
+`ctx.pending` and asked. Now `/api/game/new` and `/api/game/resign` dispatch
+through the registry, so `tools._gate` — one implementation — decides for both
+surfaces. On a fresh or finished board it stands aside and the op just runs (a
+question about nothing is not worth asking). Mid-game it arms the op and the
+endpoint answers **409 with the gate's question** (`{"detail", "confirm": true,
+"op"}`; `confirm: true` is what separates a question from a failure), and
+`/api/game/confirm` answers it — the *same* armed op, so a question raised by a
+button can be settled by a typed "yes" and the reverse. Whichever way it is
+answered, nothing stays armed, and a destructive op that *runs* clears anything
+that was: a pending op is about a game that no longer exists. `random` is still
+resolved before dispatch, so the op the player confirms is the game they were
+asked about rather than a fresh roll. Undo is not destructive — it is gated by
+nothing, and keeps its direct endpoint (which still `abandon_turn`s).
+
+Two direct-mode behaviors moved with this, both toward the rule the tools
+already derived: a mid-game reset asks first, and the resign button concedes for
+the **player** rather than for the side to move.
+
 ## One validation layer
 
 `TurnStateError` subclasses `ValueError`. That is the whole trick behind the
@@ -232,6 +288,11 @@ session object on the context mid-game.
 - **No board version / expected-FEN precondition** yet, so two clients can still
   interleave turns on the one shared session (audit item 7, Sprint 2). The turn
   id is the hook that work will hang off.
+- **A button-confirmed destructive op says nothing and is not traced.**
+  `/api/game/confirm` runs the armed op and returns the new state; the spoken
+  "yes" narrates and writes a trace record, this does not. Deliberate for now —
+  the dialog already told the player what was about to happen — but it is a gap
+  in the per-turn record that Sprint 5's trace slice should close.
 - **Mutation counting is not enforced** (audit item 6, Sprint 2). The phases make
   "one player move, one engine move per turn" *expressible* — a second
   `apply_player_move` mid-turn is already refused — but the destructive-op budget
