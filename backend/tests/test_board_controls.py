@@ -297,6 +297,36 @@ def test_new_game_on_an_untouched_board_just_runs():
     assert ctx.pending is None
 
 
+def test_switching_sides_after_the_engines_opening_move_is_not_gated():
+    """The gate guards the *player's* investment. Playing black, the engine has
+    opened and the player hasn't touched a piece — App's "Switch to white" offer
+    must not cost a confirmation about a game the player never joined."""
+    ctx = ToolContext(session=GameSession(player_color="black"), engine=FakeEngine())
+    ctx.session.submit_move("e4")  # the engine's opening move, nobody else's
+    client = TestClient(create_app(ctx))
+
+    response = client.post("/api/game/new", json={"color": "white"})
+
+    assert response.status_code == 200
+    assert response.json()["state"]["player_color"] == "white"
+    assert ctx.pending is None
+
+
+def test_the_black_players_own_reply_arms_the_gate():
+    """One ply later — the player answered — the same reset is worth asking
+    about, so the gate arms exactly as it does for a spoken "new game"."""
+    ctx = ToolContext(session=GameSession(player_color="black"), engine=FakeEngine())
+    ctx.session.submit_move("e4")
+    ctx.session.submit_move("e5")  # the player's reply: now there is a game
+    client = TestClient(create_app(ctx))
+
+    response = client.post("/api/game/new", json={"color": "white"})
+
+    assert response.status_code == 409
+    assert response.json()["confirm"] is True
+    assert ctx.pending is not None
+
+
 def test_new_game_after_the_game_ended_just_runs():
     ctx = developed(ToolContext(session=GameSession()))
     ctx.session.resign("white")
