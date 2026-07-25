@@ -56,10 +56,11 @@ Model-specific quirks, split across the two layers:
   The provider drops it, so `ChatResult.content` is final answers only and
   thought blocks never leak into commentary or back into history (BRIEF).
 - Thinking is toggled per request via the provider's `enable_thinking` flag.
-  It stays OFF for fast move parsing and flips ON for the rest of the run once
-  an analysis tool's result lands in context — the turn that comments on an
-  evaluation is analysis work, the turn that parses "knight f3" is not. The
-  narrator inherits that decision from the run it is closing.
+  Planner turns never think — picking or declining a tool is a parse, whatever
+  is in context. The narrator is the phase that reasons in words, so it alone
+  flips ON, and only when an analysis tool answered during the run it closes
+  (the turn that comments on an evaluation is analysis work, the turn that
+  parses "knight f3" is not). One thinking turn per analysis question.
 """
 
 import json
@@ -144,7 +145,12 @@ class LlamaBrain:
 
         for _ in range(self.max_iterations):
             try:
-                result = self._complete(messages, thinking=self._thinking(run))
+                # Planner turns never think: picking (or declining) a tool is a
+                # parse, even when an analysis result is in context — the phase
+                # that *reasons* about that result is the narrator, and it
+                # inherits the thinking flip in `_close`. One thinking turn per
+                # analysis question, not two.
+                result = self._complete(messages)
             except ToolCallArgumentsError as exc:
                 # The model was still called and the loop pays for it, so the
                 # round trip counts (with no tokens — nothing came back to read).

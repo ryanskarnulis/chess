@@ -28,7 +28,13 @@ what #124 won was the *loop*, and the loop is untouched.
 - tool results fed back as `role: "tool"` messages on a growing prompt
 - schema validation before dispatch; domain rejections as results, not errors
 - `get_best_moves` → `make_move` in one turn, and undo-then-replace with it
-- thinking OFF until an analysis tool answers, ON after
+
+One thing deliberately did *not* stay: the loop's turns no longer flip thinking
+on after an analysis result. Picking (or declining) a tool is a parse whatever
+is in context; the phase that reasons about an evaluation in words is the
+narrator, so it alone inherits the flip. The old rule ran the reasoning twice —
+live it showed up as a 26 s judgment turn, two thinking completions
+back-to-back — and the split makes the second one the only one.
 
 Only the *voice* left. The planner's first turn with no tool calls used to be
 the commentary; now it is a one-line internal note, and the player never sees
@@ -43,8 +49,17 @@ every load-bearing rule the old base layer carried about **acting**:
 - act only through tools
 - every submitted move must be an entry in the injected `legal_moves`; map loose
   phrasing onto one of them and never invent a move
-- ambiguous or missing information ⇒ make no tool call
+- ambiguous or missing information ⇒ no tool call, say what to ask instead
 - describe only what the tools reported
+
+Two bullets were added by the eval gate rather than the design (see the
+measurement record in `docs/agent-evals.md`): *omit optional tool arguments —
+the app derives the defaults* (the persona-free planner read "take that bishop
+move back" as `undo(plies=1)`, something the persona prompt never did), and *a
+failure result is yours to fix with another call* (without Glitch's
+conversational instincts the bare contract gave up on the first illegal-move
+rejection). Both are contract lines, not tone — the compactness tripwire in
+`test_personality.py` still holds with them in.
 
 …and drops everything about **speaking**, including the verbosity layer: the
 planner has no words to lengthen or shorten. Hints mode still reaches it, as one
@@ -104,7 +119,8 @@ in the turn's `model_calls` and tokens, so the trace and the eval baseline pay
 for it honestly rather than hiding it.
 
 Latency-wise the extra call is a short, tool-free completion with thinking off
-(unless analysis landed, where it was already on), against a warm local model.
+(unless analysis landed — then the narrator is the *one* turn that thinks,
+where the old loop thought twice), against a warm local model.
 The bet the slice makes is that a cooler, smaller planner prompt buys more in
 tool-call accuracy than one more round trip costs in seconds — which is
 measured, not assumed: `CHESSAPP_PLANNER_TEMPERATURE` sets the planner phase's

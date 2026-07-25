@@ -474,17 +474,18 @@ def test_the_first_turn_does_not_think():
     "tool", ["evaluate_position", "get_best_moves", "analyze_last_move"]
 )
 def test_thinking_turns_on_once_an_analysis_result_lands(tool):
-    # BRIEF: thinking OFF for fast move parsing, ON for analysis. In a loop the
-    # rule is positional — off until an analysis tool has answered, on after —
-    # and the narrator inherits it: the turn that puts an evaluation into words
-    # is analysis work too.
+    # BRIEF: thinking OFF for fast move parsing, ON for analysis. The split
+    # sharpens the rule: planner turns are tool-picking — a parse — so they
+    # never think, even with an analysis result in context; the narrator is the
+    # phase that reasons about that result, and it alone flips ON. One thinking
+    # turn per analysis question, not two.
     brain, provider = make_brain(
         tool_calls_turn((tool, {})),
         text_turn("evaluated the position"),
         text_turn("deep thoughts"),
     )
     brain.get_agent_response(board_state={}, command="how am I doing?")
-    assert [c["enable_thinking"] for c in provider.calls] == [False, True, True]
+    assert [c["enable_thinking"] for c in provider.calls] == [False, False, True]
 
 
 def test_a_plain_move_never_thinks():
