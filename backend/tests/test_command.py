@@ -12,7 +12,12 @@ fast path.
 
 from fastapi.testclient import TestClient
 
-from chessapp.api import UNTRUE_CLAIM_REPLY, create_app
+from chessapp.api import (
+    PROVIDER_LOST_RETRY,
+    PROVIDER_LOST_TURN_STANDS,
+    UNTRUE_CLAIM_REPLY,
+    create_app,
+)
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
@@ -893,3 +898,77 @@ def test_an_unrelated_command_drops_the_armed_op():
 
     assert ctx.pending is None, "changing the subject disarms the op"
     assert ctx.session.fen() != GameSession().fen()
+
+
+# --- Recovery: the provider dies mid-turn (audit item 20).
+#
+# The rule: the position stays valid and resumable, a move that landed is never
+# silently replayed (or invited to be), and no route 500s after the board
+# changed. The brain converts a mid-loop ProviderError into
+# stop_reason="provider_error" carrying whatever verifiably ran
+# (test_llama_brain.py); the pipeline's half is here — it still closes the
+# turn, broadcasts, and says the truth. The two canned lines differ on the one
+# fact that matters for retry advice: whether anything changed.
+
+
+def provider_died(*tool_calls: ToolCall) -> AgentResponse:
+    """What the real brain returns when llama-server dies mid-loop: no text,
+    the tool results of whatever already ran (filled in by ScriptedBrain's
+    dispatcher), and the provider_error stop."""
+    return AgentResponse(text="", tool_calls=tool_calls, stop_reason="provider_error")
+
+
+def test_a_provider_failure_after_the_move_keeps_it_and_closes_the_turn():
+    client, _, ctx = observing_client(
+        provider_died(ToolCall(name="make_move", args={"move": "e4"}))
+    )
+
+    response = client.post("/api/command", json={"text": "push the king pawn"})
+
+    assert response.status_code == 200, "the move landed; this is not a failure"
+    body = response.json()
+    assert ctx.session.move_history() == ["e4", "e5"], "move kept, reply collected"
+    assert body["commentary"] == f"{PROVIDER_LOST_TURN_STANDS}\n\ne5."
+    # Resumable: the next turn plays normally, and the landed move was not
+    # replayed by anything.
+    second = client.post("/api/command", json={"text": "Nf3"}).json()
+    assert second["state"]["history"] == ["e4", "e5", "Nf3"]
+
+
+def test_a_provider_failure_before_anything_ran_invites_a_retry():
+    client, _, ctx = observing_client(provider_died())
+    fen_before = ctx.session.fen()
+
+    body = client.post("/api/command", json={"text": "how does it look?"}).json()
+
+    assert ctx.session.fen() == fen_before
+    assert body["commentary"] == PROVIDER_LOST_RETRY, "nothing ran, so retry is safe"
+
+
+def test_a_narrator_failure_after_a_confirmed_reset_degrades_to_the_canned_line():
+    """The confirmation route's narration runs after the destructive op already
+    ran; a provider failure there must cost the words, never a 500 after the
+    board changed."""
+    client, _, ctx = make_developed_client(
+        destructive("new_game"), narrations=(ProviderError("llama-server died"),)
+    )
+    client.post("/api/command", json={"text": "new game"})
+
+    response = client.post("/api/command", json={"text": "yes"})
+
+    assert response.status_code == 200
+    assert response.json()["commentary"] == "New game."
+    assert ctx.session.fen() == GameSession().fen(), "the confirmed reset stands"
+
+
+def test_a_narrator_failure_after_a_confirmed_resign_degrades_the_same_way():
+    client, _, ctx = make_developed_client(
+        destructive("resign"), narrations=(ProviderError("llama-server died"),)
+    )
+    client.post("/api/command", json={"text": "i resign"})
+
+    response = client.post("/api/command", json={"text": "yes"})
+
+    assert response.status_code == 200
+    assert ctx.session.is_game_over()
+    assert response.json()["commentary"].startswith("Game over:")

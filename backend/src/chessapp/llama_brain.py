@@ -23,7 +23,11 @@ One turn is **two phases** (`docs/planner-narrator.md`, audit item 15):
 
 A budget stop (`max_iterations` / `correction_limit`) reaches no narrator: with
 nothing verified to speak from, the turn ends silent and the pipeline answers
-with its canned stuck reply.
+with its canned stuck reply. A provider death anywhere in the turn — mid-loop
+or in the narrator itself — ends it the same silent way under
+`stop_reason="provider_error"`, with everything that verifiably ran still in
+the response (audit item 20: the pipeline, not an exception path, decides what
+happens to a turn whose move already landed).
 
 The loop is the fleet's standard shape (`../agent-standard/STANDARD.md` §3,
 reference: `project-command-center/backend/app/ai/loop.py`): call the model
@@ -76,6 +80,7 @@ from chessapp.provider import (
     ChatProvider,
     ChatResult,
     LlamaCppProvider,
+    ProviderError,
     ToolCallArgumentsError,
     Usage,
 )
@@ -162,6 +167,14 @@ class LlamaBrain:
                     return run.response("", "correction_limit")
                 messages.append({"role": "user", "content": _wire_correction(exc)})
                 continue
+            except ProviderError:
+                # The provider died mid-turn (audit item 20). Whatever tools
+                # already ran are real board history — hand them back under
+                # their own stop so the pipeline can close the turn and tell
+                # the truth, instead of an exception escaping after the board
+                # changed. The round trip is counted like any raised call.
+                run.count_call()
+                return run.response("", "provider_error")
             run.count_call(*_usage_ints(result.usage))
 
             if not result.tool_calls:
@@ -214,11 +227,17 @@ class LlamaBrain:
         for `narrate`. The round trip is counted on the turn, so the split's
         extra call shows up in the trace and the eval baseline.
         """
-        narration = self._speak(
-            _closing_brief(command, run.tool_results, note),
-            transcript,
-            thinking=self._thinking(run),
-        )
+        try:
+            narration = self._speak(
+                _closing_brief(command, run.tool_results, note),
+                transcript,
+                thinking=self._thinking(run),
+            )
+        except ProviderError:
+            # The plan finished; the persona call died. Same contract as a
+            # mid-loop failure: the verified results come back, the words don't.
+            run.count_call()
+            return run.response("", "provider_error")
         run.count_call(narration.prompt_tokens, narration.completion_tokens)
         return run.response(narration.text, "completed")
 

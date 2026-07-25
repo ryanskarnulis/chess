@@ -10,7 +10,10 @@ back, and keeps going until the model stops asking for tools — but it never
 impossible for a brain to corrupt game state. The loop is bounded, and the
 stop reason says how it ended (`completed | max_iterations |
 correction_limit`, the fleet's vocabulary — `../agent-standard/STANDARD.md`
-§3).
+§3 — plus `provider_error` when the provider died mid-turn: the response
+still carries every tool result that verifiably ran, so the pipeline can
+close the turn and tell the truth instead of catching an exception after
+the board changed).
 
 How the words get written is the implementation's business, and
 `LlamaBrain`'s answer is a second, tool-free model phase
