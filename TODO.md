@@ -17,7 +17,6 @@ Parked work: branch `chore/clean-tool-schema-noise` holds the uncommitted `make_
 
 The house rule, applied to the loop itself: a rule the prompt asks for holds ~half the time; a policy the code owns holds always.
 
-- [ ] **[S] Tool-free closing pass** (audit 9). Once the turn's work is done (or the mutation limit is hit), the final model call is made with no tools on offer — the commentary CLAUDE.md already describes, now enforced structurally instead of by the model declining. The planner/narrator split (Sprint 1) provides the mechanism — the narrator call is tool-free by construction — so this slice reduces to asserting it: a deterministic test that no route can reach the model with tools after the turn's mutation budget is spent, and a CLAUDE.md wording fix.
 - [ ] **[S] Board-version precondition on mutations** (audit 7). Every state-changing request carries the board version / expected FEN and is rejected stale — closes the web + delegate + MCP concurrent-client race on the one shared session. E2E test: concurrent clients cannot advance the same turn twice.
 - [ ] **[S] Recovery semantics for provider failure mid-turn** (audit 20). Define and test what happens when the model times out after the player's move: position stays valid and resumable, the move is never silently replayed, and a fast-path `narrate` failure can't 500 a turn whose move already landed (today it escapes unhandled after the board changed, before the broadcast).
 
