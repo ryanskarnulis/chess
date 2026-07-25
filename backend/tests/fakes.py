@@ -202,12 +202,17 @@ class ScriptedProvider:
         tools: Sequence[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> ChatResult:
         self.calls.append(
             {
                 "messages": list(messages),
                 "tools": list(tools) if tools is not None else None,
                 "enable_thinking": enable_thinking,
+                # Recorded, not resolved: the planner asks for its own
+                # temperature and the narrator asks for none, and which of the
+                # two made a call is exactly what the split's tests assert on.
+                "temperature": temperature,
             }
         )
         turn = self._turns[min(len(self.calls) - 1, len(self._turns) - 1)]
@@ -254,6 +259,7 @@ class CountingProvider:
         tools: Sequence[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> ChatResult:
         started = time.monotonic()
         try:
@@ -262,6 +268,7 @@ class CountingProvider:
                 tools=tools,
                 enable_thinking=enable_thinking,
                 max_tokens=max_tokens,
+                temperature=temperature,
             )
         finally:
             self.calls.append(

@@ -35,6 +35,8 @@ from pydantic import BaseModel, Field, ValidationError
 # BRIEF-mandated sampling for Gemma-4 tool calling. The canonical set lives in
 # ../agent-standard/model-profile.md; the provider always sets it per request
 # so a drift in the shared server config never changes chess's behavior.
+# `_TEMPERATURE` is the default a caller gets by saying nothing — `chat` takes a
+# per-request override for the planner phase's cooler sampling.
 _TEMPERATURE = 1.0
 _TOP_P = 0.95
 _TOP_K = 64
@@ -149,6 +151,10 @@ class ChatProvider(Protocol):
     `definitions()` output) passed straight through; the brain owns schema
     validation of the parsed arguments, so the provider only guarantees they
     are a JSON object.
+
+    `temperature` is the one sampling knob a caller may set per request, for
+    the planner/narrator split's per-phase sampling; `None` means the module
+    default, so a caller that does not care sends exactly what it always did.
     """
 
     def chat(
@@ -158,6 +164,7 @@ class ChatProvider(Protocol):
         tools: Sequence[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> ChatResult: ...
 
 
@@ -199,6 +206,7 @@ class LlamaCppProvider:
         tools: Sequence[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> ChatResult:
         """One completion turn, optionally offering tools."""
         payload = self._payload(
@@ -206,6 +214,7 @@ class LlamaCppProvider:
             tools=tools,
             enable_thinking=enable_thinking,
             max_tokens=max_tokens,
+            temperature=temperature,
         )
         return self._result(self._post(payload))
 
@@ -216,11 +225,14 @@ class LlamaCppProvider:
         tools: Sequence[dict[str, Any]] | None,
         enable_thinking: bool,
         max_tokens: int | None,
+        temperature: float | None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": list(messages),
-            "temperature": _TEMPERATURE,
+            # `None` resolves to the module default rather than omitting the
+            # field, so a caller with no opinion sends the same bytes as ever.
+            "temperature": _TEMPERATURE if temperature is None else temperature,
             "top_p": _TOP_P,
             # llama-server takes these OpenAI extensions as plain body fields.
             "top_k": _TOP_K,

@@ -100,6 +100,28 @@ def test_chat_sets_sampling_and_thinking_off_per_request():
     assert "tools" not in payload
 
 
+def test_chat_temperature_can_be_overridden_per_request():
+    # The planner phase samples cooler than the narrator (audit 15): the caller
+    # asks for a temperature and the wire carries exactly that, leaving the
+    # rest of the BRIEF's sampling set alone.
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    _provider_returning(body, captured=captured).chat(_USER, temperature=0.2)
+
+    payload = captured[0]
+    assert payload["temperature"] == 0.2
+    assert (payload["top_p"], payload["top_k"]) == (0.95, 64)
+
+
+def test_chat_without_a_temperature_sends_the_default_unchanged():
+    # None is not "omit temperature" — it is "the module default", so an
+    # untouched call is byte-identical to what it sent before the knob existed.
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    _provider_returning(body, captured=captured).chat(_USER, temperature=None)
+    assert captured[0]["temperature"] == 1.0
+
+
 def test_chat_thinking_can_be_enabled():
     captured: list[dict[str, Any]] = []
     body = _completion_body({"role": "assistant", "content": "deep thoughts"})
