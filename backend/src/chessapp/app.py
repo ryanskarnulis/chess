@@ -22,6 +22,7 @@ from fastapi import FastAPI
 
 from chessapp.api import create_app
 from chessapp.brain import Brain
+from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
@@ -71,10 +72,15 @@ def build_app(
             engine.set_skill_level(ctx.settings.skill_level)
         elif ctx.settings.elo is not None:
             engine.set_elo(ctx.settings.elo)
+    # One turn coordinator for the whole app, shared by the tool path and the
+    # board endpoints: the turn sequence (and the engine's reply inside it) is
+    # one machine's, so a dragged move and a typed move cannot disagree about
+    # which turn the game is on.
+    coordinator = TurnCoordinator(ctx)
     # One registry for the whole app: the brain dispatches its tool calls
     # through it and the pipeline runs the fast path through it, so the tools
     # the agent is offered are exactly the tools that execute.
-    registry = build_registry(ctx)
+    registry = build_registry(ctx, coordinator)
     if brain is None:
         brain = create_llama_brain(
             base_url=llama_base_url,
@@ -99,6 +105,7 @@ def build_app(
         static_dir=static_dir,
         registry=registry,
         tracer=tracer,
+        coordinator=coordinator,
     )
 
 

@@ -29,6 +29,7 @@ from pydantic import Field
 from chessapp.analysis import analyze_last_move as _analyze_last_move
 from chessapp.analysis import review_game as _review_game
 from chessapp.conversation import Transcript
+from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import (
     DEFAULT_TIER,
     DIFFICULTY_TIERS,
@@ -38,7 +39,7 @@ from chessapp.engine import (
     SKILL_MIN,
     EnginePlayer,
 )
-from chessapp.game import GameSession
+from chessapp.game import GameSession, MoveResult
 
 GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
@@ -250,6 +251,15 @@ def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
     }
 
 
+def _engine_move_dict(reply: MoveResult | None) -> dict[str, Any] | None:
+    """How the move tools report an engine move: `{"san", "uci"}`, or None when
+    the coordinator says the engine owed none. One shape for `make_move`'s reply
+    and `new_game`'s opening move, which is what their results promise."""
+    if reply is None:
+        return None
+    return {"san": reply.san, "uci": reply.uci}
+
+
 def _require_engine(ctx: ToolContext) -> EnginePlayer:
     if ctx.engine is None:
         raise ValueError("engine unavailable: analysis tools need Stockfish")
@@ -291,10 +301,21 @@ def saved_game_names(ctx: ToolContext) -> list[str]:
     return sorted(path.stem for path in ctx.save_dir.glob("*.json"))
 
 
-def build_registry(ctx: ToolContext) -> ToolRegistry:
+def build_registry(
+    ctx: ToolContext, coordinator: TurnCoordinator | None = None
+) -> ToolRegistry:
     """All read and write tools bound to `ctx`. Settings tools join in the
-    final slice of the tool-layer epic."""
+    final slice of the tool-layer epic.
+
+    `coordinator` is the turn state machine the move tools drive. Pass the app's
+    one shared instance (app assembly does) so a move played through a tool and a
+    move dragged on the board advance the same turn; omit it and the registry
+    builds its own over the same `ctx` — enough for the MCP server, which is the
+    only session in the process that owns nothing else.
+    """
     registry = ToolRegistry()
+    if coordinator is None:
+        coordinator = TurnCoordinator(ctx)
 
     @registry.tool()
     def get_board_state() -> dict[str, Any]:
@@ -427,22 +448,18 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         Call this at most once per player turn — the engine plays its reply
         inside the same call. If you proposed a move and the player accepts
         ("yes"), call it now; announcing a move in words is not making it."""
-        result = ctx.session.submit_move(move)
+        # The turn sequence — player move, then the engine's reply — is the
+        # coordinator's, not this tool's and not the model's. What the caller
+        # sees is unchanged: one call, the whole exchange.
+        result, reply = coordinator.play_exchange(move)
         if not result.legal:
             return {"ok": True, "legal": False, "reason": result.reason}
-        # Mirror the UI move path: a legal player move gets the engine's
-        # reply in the same call, so a move sent through the agent never
-        # leaves the player to move for both sides.
-        engine_move: dict[str, Any] | None = None
-        if ctx.engine is not None and not ctx.session.is_game_over():
-            reply = ctx.engine.play_move(ctx.session)
-            engine_move = {"san": reply.san, "uci": reply.uci}
         return {
             "ok": True,
             "legal": True,
             "san": result.san,
             "uci": result.uci,
-            "engine_move": engine_move,
+            "engine_move": _engine_move_dict(reply),
             "game_over": ctx.session.is_game_over(),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
@@ -525,16 +542,13 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
         if refusal is not None:
             return refusal
         ctx.session.new_game(player_color)
-        # Mirror the UI path: when the player has black, the engine owns
-        # white and makes the opening move — otherwise the fresh board would
-        # sit waiting for a move only the engine can make.
-        engine_move: dict[str, Any] | None = None
-        if ctx.session.player_color == "black" and ctx.engine is not None:
-            reply = ctx.engine.play_move(ctx.session)
-            engine_move = {"san": reply.san, "uci": reply.uci}
+        # When the player has black the engine owns white and makes the opening
+        # move — otherwise the fresh board would sit waiting for a move only the
+        # engine can make. The coordinator owns that call (and the condition):
+        # every engine move in the app comes from one place.
         return {
             "ok": True,
-            "engine_move": engine_move,
+            "engine_move": _engine_move_dict(coordinator.engine_opening_move()),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }

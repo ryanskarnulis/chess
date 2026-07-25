@@ -7,10 +7,12 @@ Conventions:
 - Illegal moves are data (`legal: false`), not HTTP errors — legality is
   the engine's answer, not a transport failure.
 - Domain failures on mutations (nothing to undo, resigning a finished
-  game) are 409s.
-- When the context has an engine and the player's move leaves the game
-  running, the engine replies in the same request — that's the LLM-off
-  vs-Stockfish mode the app must always support.
+  game, an action that doesn't belong in the current turn phase) are 409s.
+- Board mutations run through the shared `TurnCoordinator`, which owns the
+  turn sequence and the engine's reply: when the context has an engine and
+  the player's move leaves the game running, the engine replies in the same
+  request — that's the LLM-off vs-Stockfish mode the app must always
+  support, now going through the same machine the agent's moves do.
 
 Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
@@ -32,6 +34,7 @@ from pydantic import BaseModel, Field, model_validator
 from chessapp.agent_api import ConversationStore, build_agent_router
 from chessapp.analysis import review_game
 from chessapp.brain import Brain
+from chessapp.coordinator import TurnCoordinator, TurnStateError
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
@@ -289,17 +292,25 @@ def create_app(
     static_dir: Path | None = None,
     registry: ToolRegistry | None = None,
     tracer: Tracer | None = None,
+    coordinator: TurnCoordinator | None = None,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
     does), so what the agent is offered is exactly what the app runs; omit it
     and the app builds its own over the same `ctx`.
 
+    `coordinator` is the turn state machine the board endpoints drive. App
+    assembly passes the *same* one it gave `build_registry`, so a move dragged on
+    the board and a move typed at the agent advance one turn machine rather than
+    two that can disagree; omit both and the app builds a matched pair itself.
+
     `tracer` records one JSONL row per command (route taken, tool trajectory,
     stop reason) for review; omit it and nothing is traced."""
     app = FastAPI(title="chessapp")
     broadcaster = StateBroadcaster()
+    if coordinator is None:
+        coordinator = TurnCoordinator(ctx)
     if registry is None:
-        registry = build_registry(ctx)
+        registry = build_registry(ctx, coordinator)
     store = ConversationStore()
 
     async def _broadcast_state() -> None:
@@ -322,10 +333,14 @@ def create_app(
 
     @app.post("/api/game/move")
     async def submit_move(request: MoveRequest) -> dict[str, Any]:
-        result = ctx.session.submit_move(request.move)
-        engine_move: dict[str, Any] | None = None
-        if result.legal and ctx.engine is not None and not ctx.session.is_game_over():
-            engine_move = _move_dict(ctx.engine.play_move(ctx.session))
+        # The coordinator runs the exchange: player move, then the engine's
+        # reply if one is owed. Trusted path, so a turn-state rejection is a
+        # 409 rather than the error *result* the agent gets for the same thing.
+        try:
+            result, reply = coordinator.play_exchange(request.move)
+        except TurnStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        engine_move = _move_dict(reply) if reply is not None else None
         if result.legal:
             await _broadcast_state()
         return {
@@ -343,11 +358,13 @@ def create_app(
         if color == "random":
             color = random.choice(["white", "black"])
         ctx.session.new_game(player_color=color)
-        # The engine owns the other side: when the player takes black it
-        # makes the opening move right away, same as its reply inside
-        # /api/game/move.
-        if color == "black" and ctx.engine is not None:
-            ctx.engine.play_move(ctx.session)
+        # The engine owns the other side: when the player takes black it makes
+        # the opening move right away. Whether it owes one, and playing it, are
+        # the coordinator's — the same call the `new_game` tool makes.
+        try:
+            coordinator.engine_opening_move()
+        except TurnStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         await _broadcast_state()
         return {"state": _state_dict(ctx.session)}
 
