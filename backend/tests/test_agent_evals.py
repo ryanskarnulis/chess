@@ -37,9 +37,15 @@ Cost is measured, not just printed: the live `LlamaCppProvider` is wrapped in a
 through, so the scenarios assert on **model calls** (not just tool calls) and on
 the **thinking flag per turn**. That is what pins the three claims the loop's
 design rests on: a fast-path move is zero-LLM at verbosity=low (one `narrate`
-call above it), a tool-using utterance costs the tool turn plus the loop's
-closing turn, and thinking stays OFF until an analysis tool's result lands in
-context — then ON for the turn that reasons about it.
+call above it), a tool-using utterance costs the planner's tool turn plus its
+handoff turn plus the narrator's reply, and thinking stays OFF until an analysis
+tool's result lands in context — then ON for the turn that reasons about it.
+
+A brain-routed turn is **two phases** since 2026-07-25
+(`docs/planner-narrator.md`): the planner's bounded tool loop, then one
+tool-free narrator call that speaks as Glitch. So every model-routed scenario
+here costs exactly one call more than it did before that slice, and the fast
+path — which was already planner-free — costs exactly what it always did.
 
 This suite is the tripwire the standard requires: baseline results are recorded
 in `docs/agent-evals.md`, and it gates every future prompt/model/loop change —
@@ -63,7 +69,7 @@ from chessapp.engine import DEFAULT_TIER, EnginePlayer
 from chessapp.fastparse import parse_move
 from chessapp.game import GameSession
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
-from chessapp.personality import system_prompt_for
+from chessapp.personality import planner_prompt_for, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import BOARD_STATE_TOOLS, Settings, ToolContext, build_registry
 from fakes import CountingProvider, ModelCall
@@ -78,6 +84,15 @@ pytestmark = pytest.mark.skipif(
 LLAMACPP_BASE_URL = os.environ.get("LLAMACPP_BASE_URL", "http://127.0.0.1:8200/v1")
 LLAMACPP_MODEL = os.environ.get("LLAMACPP_MODEL", "gemma-4-12b")
 STOCKFISH_PATH = os.environ.get("CHESSAPP_STOCKFISH", "/usr/bin/stockfish")
+
+# The planner phase's sampling temperature, read exactly as `build_app_from_env`
+# reads it: unset means the provider's default, so a measurement run is
+# `CHESSAPP_PLANNER_TEMPERATURE=0.3 CHESSAPP_AGENT_EVALS=1 pytest …` and the
+# baseline it produces is the app's own behavior at that number.
+_PLANNER_TEMPERATURE_ENV = os.environ.get("CHESSAPP_PLANNER_TEMPERATURE")
+PLANNER_TEMPERATURE = (
+    float(_PLANNER_TEMPERATURE_ENV) if _PLANNER_TEMPERATURE_ENV else None
+)
 
 # Generous request timeout: a cold llama-swap load is ~100 s before the first
 # byte (the provider's own read timeout is 300 s). TestClient's ASGI transport
@@ -158,9 +173,15 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         # 2026-07-13 trace review saw capture phrasings behave differently under
         # the two lists).
         tool_definitions=registry.definitions(exclude=BOARD_STATE_TOOLS),
+        # Both prompts, exactly as build_app wires them: the narrator's carries
+        # personality plus the live verbosity/hints layers, the planner's the
+        # compact tool contract plus the hints permission. Measuring the tool
+        # decision under the wrong prompt would measure a different agent.
         system_prompt_provider=lambda: system_prompt_for(
             ctx.settings.verbosity, ctx.settings.hints_mode
         ),
+        planner_prompt_provider=lambda: planner_prompt_for(ctx.settings.hints_mode),
+        planner_temperature=PLANNER_TEMPERATURE,
         provider=provider,
     )
     client = TestClient(create_app(ctx, brain=brain, registry=registry))
@@ -245,8 +266,9 @@ class EvalRun(NamedTuple):
     """What one scenario measured: the wire's answer, and what it cost.
 
     `model_calls` is every round trip the brain made to the model for this one
-    utterance — the loop's turns, or `narrate`'s single turn on the fast path,
-    or none at all when the fast path answers with a canned confirmation.
+    utterance — the planner loop's turns plus the narrator's closing turn, or
+    `narrate`'s single turn on the fast path, or none at all when the fast path
+    answers with a canned confirmation.
     """
 
     assistant: dict[str, Any]
@@ -281,13 +303,18 @@ def _run(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
 
 
 def _assert_loop_budget(run: EvalRun) -> None:
-    """The loop stayed inside its bound. Scenarios whose trajectory is fixed
+    """The turn stayed inside its bound. Scenarios whose trajectory is fixed
     pin an exact count instead; this is for the ones the model may legitimately
-    answer in one turn (no tool) or three (a read, then an act) — the shape
-    that matters there is only that it terminated on its own, not on the
-    budget."""
-    assert 1 <= len(run.model_calls) <= _DEFAULT_MAX_ITERATIONS, (
-        f"expected 1..{_DEFAULT_MAX_ITERATIONS} model calls, got {len(run.model_calls)}"
+    answer in two turns (decline, then narrate) or four (a read, an act, a note,
+    the reply) — the shape that matters there is only that it terminated on its
+    own, not on the budget.
+
+    The ceiling is the planner's iteration budget **plus one**: a turn that ends
+    on its own always pays for the narrator, and a turn that ends on a budget
+    never reaches it (so it can't exceed the budget either way)."""
+    ceiling = _DEFAULT_MAX_ITERATIONS + 1
+    assert 1 <= len(run.model_calls) <= ceiling, (
+        f"expected 1..{ceiling} model calls, got {len(run.model_calls)}"
     )
 
 
@@ -351,10 +378,12 @@ def test_eval_fast_path_plain_move_is_zero_llm(eval_app: EvalApp) -> None:
 
 
 def test_eval_fast_path_move_costs_one_call_when_chatty(eval_app: EvalApp) -> None:
-    """Above verbosity=low the fast path still skips the *loop* — it dispatches
-    the move deterministically and pays for commentary only: exactly one model
-    call (`Brain.narrate`, the loop's closing turn on its own), thinking off,
-    and no tool-decision turn."""
+    """Above verbosity=low the fast path still skips the *planner* — it
+    dispatches the move deterministically and pays for commentary only: exactly
+    one model call (`Brain.narrate`, the narrator phase on its own), thinking
+    off, and no tool-decision turn. Unchanged by the planner/narrator split:
+    this path was always narrator-only, which is what made it the model for
+    the split."""
     app = eval_app
     assert app.ctx.settings.verbosity == "normal"  # the default
     utterance = "e4"
@@ -374,8 +403,9 @@ def test_eval_plain_move_via_the_agent_path(eval_app: EvalApp) -> None:
     leading verb keeps it off the fast path) becomes exactly one legal
     make_move, and the board starts with e4 (plus the engine's reply).
 
-    Also the loop's minimum cost: the tool turn plus the closing turn that
-    comments on its result — two model round trips, both thinking-off."""
+    Also a brain-routed turn's minimum cost: the planner's tool turn, the
+    planner's handoff note, and the narrator's reply — three model round trips,
+    all thinking-off."""
     app = eval_app
     utterance = "play e4"
     assert parse_move(utterance, app.ctx.session.fen()) is None  # stays a model eval
@@ -389,7 +419,9 @@ def test_eval_plain_move_via_the_agent_path(eval_app: EvalApp) -> None:
     assert history[0] == "e4"
     assert len(history) == 2, "engine should have replied in the same turn"
     assert assistant["content"], "expected a non-empty reply"
-    assert len(run.model_calls) == 2, "the loop's minimum: tool turn + closing turn"
+    assert len(run.model_calls) == 3, (
+        "the minimum: planner tool turn + planner note + narrator"
+    )
     _assert_thinking_starts_off(run)
     assert all(call.thinking is False for call in run.model_calls), (
         "a move is not analysis — thinking stays OFF for the whole run"
@@ -405,7 +437,9 @@ def test_eval_judgment_question_routes_through_analysis(eval_app: EvalApp) -> No
     against the live model: the turn that *picks* the analysis tool runs with
     thinking off (it is just a parse), and the turn that reasons about the
     result it got back runs with thinking on. Pinned here because
-    test_llama_brain only pins it against a scripted provider."""
+    test_llama_brain only pins it against a scripted provider. The last call is
+    now the narrator's, and it inherits the flip — putting an evaluation into
+    words is analysis work too."""
     app = eval_app
     for san in ("e4", "e5", "Nf3", "Nc6"):  # a natural position, White to move
         assert app.ctx.session.submit_move(san).legal
@@ -426,8 +460,9 @@ def test_eval_judgment_question_routes_through_analysis(eval_app: EvalApp) -> No
     assert assistant["content"], "expected a non-empty reply"
 
     # The OFF → ON flip, live. The analysis result lands during the first turn,
-    # so the closing turn — the one that actually judges the position — thinks.
-    assert len(run.model_calls) >= 2, "expected a tool turn and a closing turn"
+    # so everything after it — including the narrator, the turn that actually
+    # puts the judgment into words — thinks.
+    assert len(run.model_calls) >= 3, "expected a tool turn, a note, and the narrator"
     _assert_thinking_starts_off(run)
     assert run.model_calls[-1].thinking is True, (
         "the turn commenting on an analysis result must run with thinking ON"
@@ -440,8 +475,9 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(eval_app: EvalApp) -> None
     ambiguous — the agent must ask, not guess a move. (1. a4 a5 2. h4 h5 opens
     both White rook files; White to move, four rook moves available.)
 
-    The cheapest loop run there is: one turn, no tools, straight to the
-    clarifying question."""
+    The cheapest brain-routed turn there is: the planner declines to call
+    anything and says what to ask, then the narrator asks it — two calls, no
+    tools dispatched."""
     app = eval_app
     for san in ("a4", "a5", "h4", "h5"):
         assert app.ctx.session.submit_move(san).legal
@@ -456,7 +492,10 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(eval_app: EvalApp) -> None
     assert _board_mutations(assistant) == []
     assert _history(app.client) == before
     assert assistant["content"], "expected a clarifying question"
-    _assert_loop_budget(run)
+    assert len(run.model_calls) == 2, (
+        "expected the planner's decline plus the narrator's question, "
+        f"got {len(run.model_calls)} calls"
+    )
     _assert_thinking_starts_off(run)
     assert run.duration < _THINKING_OFF_CEILING_S
 
@@ -482,7 +521,9 @@ def test_eval_settings_by_speech_makes_it_easier(eval_app: EvalApp) -> None:
     )
     assert _board_mutations(assistant) == []
     assert _history(app.client) == before
-    assert len(run.model_calls) == 2, "the loop's minimum: tool turn + closing turn"
+    assert len(run.model_calls) == 3, (
+        "the minimum: planner tool turn + planner note + narrator"
+    )
     assert all(call.thinking is False for call in run.model_calls), (
         "a settings change is not analysis — thinking stays OFF"
     )

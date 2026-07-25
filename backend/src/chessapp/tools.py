@@ -479,8 +479,11 @@ def build_registry(
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Take back the player's last move. Omit plies unless the player asked
-        for a specific number of half-moves."""
+        """Take back the player's last move. For any normal takeback ("undo",
+        "take that back") omit plies: the app pops the full exchange — the
+        player's move and the engine's reply — leaving the player to move
+        again. Pass plies only when the player asked for an explicit count of
+        half-moves."""
         result = ctx.session.undo(_takeback_plies(ctx) if plies is None else plies)
         if not result.ok:
             return {"ok": False, "error": result.reason}

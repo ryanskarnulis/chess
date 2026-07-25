@@ -4,13 +4,18 @@ Everything model-specific lives behind `Brain.get_agent_response`; nothing
 outside a Brain implementation may know which model or backend answers.
 
 The brain runs the agent loop — it calls the model, feeds each tool result
-back, and keeps going until the model answers in words — but it never
+back, and keeps going until the model stops asking for tools — but it never
 *executes* anything itself: every call it decides on goes out through a
 `ToolDispatcher` (the validated `ToolRegistry`), which is what makes it
 impossible for a brain to corrupt game state. The loop is bounded, and the
 stop reason says how it ended (`completed | max_iterations |
 correction_limit`, the fleet's vocabulary — `../agent-standard/STANDARD.md`
 §3).
+
+How the words get written is the implementation's business, and
+`LlamaBrain`'s answer is a second, tool-free model phase
+(`docs/planner-narrator.md`). This seam only promises that `text` is what the
+player may be shown and that it was produced from verified results.
 """
 
 from collections.abc import Sequence
@@ -42,9 +47,11 @@ class ToolDispatcher(Protocol):
 class AgentResponse:
     """One finished agent run.
 
-    `text` is the user-facing commentary — the model's first turn that asked
-    for no tools (empty when the loop stopped on a budget instead). Every call
-    the loop made and ran is in `tool_calls`, with `tool_results` holding each
+    `text` is the user-facing commentary — spoken by the narrator phase from
+    the turn's verified results (empty when the loop stopped on a budget
+    instead, in which case no narrator ran and the pipeline substitutes its
+    stuck reply). Every call the loop made and ran is in `tool_calls`, with
+    `tool_results` holding each
     one's `{"name", "result"}` in the *same order*: the two are parallel by
     construction, and the delegate wire zips them strictly.
     """
@@ -63,8 +70,8 @@ class AgentResponse:
 
 @dataclass(frozen=True)
 class Narration:
-    """One commentary turn made outside the loop (the fast path's stand-in for
-    the closing turn). `text` is what the player sees; the cost fields mirror
+    """One narrator turn: commentary on work already done, with no tools on
+    offer. `text` is what the player sees; the cost fields mirror
     `AgentResponse`'s so a narrated turn reaches the trace with the same
     accounting a looped one does. It is always exactly one model call."""
 
@@ -117,9 +124,10 @@ class Brain(Protocol):
     ) -> AgentResponse:
         """Run the agent loop for one utterance: turn it into tool calls, run
         them through the dispatcher, feed the results back, and stop on the
-        first turn that asks for no tools — that turn *is* the commentary, and
-        because it is offered no tools it cannot act on the utterance a second
-        time. `board_state` is the agent-facing view (fen, turn, player_color,
+        first turn that asks for no tools. The commentary is then written from
+        the turn's results by a phase that holds no tools, so it cannot act on
+        the utterance a second time. `board_state` is the agent-facing view
+        (fen, turn, player_color,
         in_check, SAN history, captured, legal_moves, game_over/outcome — not
         the UI state document), captured before the loop runs; the loop reads
         every later state change from the tool results themselves.
@@ -135,11 +143,11 @@ class Brain(Protocol):
         transcript: Sequence[dict[str, str]] = (),
     ) -> Narration:
         """Commentary on a move the loop did not make: the deterministic fast
-        path (`parse_move` → `make_move`) skips the model entirely, so there is
-        no tool-less turn to take the commentary from. This is that turn on its
+        path (`parse_move` → `make_move`) skips the planner entirely, so there
+        is no turn for the narrator to close. This is the narrator phase on its
         own — the *new* board plus `changes` (each a `{"name", "result"}` tool
-        result), no tools offered, no access to the raw utterance. It is the
-        only commentary path outside the loop, and it exists because the fast
-        path is deliberately outside the loop too; at verbosity=low even this
-        is skipped for a canned confirmation, making a plain move zero-LLM."""
+        result), no tools offered, no access to the raw utterance. It exists
+        because the fast path is deliberately outside the loop; at verbosity=low
+        even this is skipped for a canned confirmation, making a plain move
+        zero-LLM."""
         ...

@@ -202,12 +202,17 @@ class ScriptedProvider:
         tools: Sequence[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> ChatResult:
         self.calls.append(
             {
                 "messages": list(messages),
                 "tools": list(tools) if tools is not None else None,
                 "enable_thinking": enable_thinking,
+                # Recorded, not resolved: the planner asks for its own
+                # temperature and the narrator asks for none, and which of the
+                # two made a call is exactly what the split's tests assert on.
+                "temperature": temperature,
             }
         )
         turn = self._turns[min(len(self.calls) - 1, len(self._turns) - 1)]
@@ -232,8 +237,9 @@ class CountingProvider:
     went over. The agent evals wrap the live `LlamaCppProvider` in one, because
     `ChatProvider` is the only seam every round trip passes through and nothing
     in production counts them — that is how the evals can assert a fast-path
-    move costs zero model calls, a tool-using utterance costs the tool turn plus
-    the loop's closing turn, and thinking is off until an analysis result lands.
+    move costs zero model calls, a tool-using utterance costs the planner's tool
+    turn plus its handoff note plus the narrator's reply, and thinking is off
+    until an analysis result lands.
 
     A raising round trip is still recorded: the model was called, and the loop
     pays a correction for it.
@@ -254,6 +260,7 @@ class CountingProvider:
         tools: Sequence[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> ChatResult:
         started = time.monotonic()
         try:
@@ -262,6 +269,7 @@ class CountingProvider:
                 tools=tools,
                 enable_thinking=enable_thinking,
                 max_tokens=max_tokens,
+                temperature=temperature,
             )
         finally:
             self.calls.append(

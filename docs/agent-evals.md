@@ -77,8 +77,8 @@ a new model), re-record the table below in the same PR and say why.
 | --- | --- | --- |
 | `fast_path_low` | "e4" (verbosity=low) | The one scenario that *does* parse: the fast path dispatches the move and answers with a canned confirmation — **zero model calls**. |
 | `fast_path_normal` | "e4" (verbosity=normal) | Above verbosity=low the fast path still skips the loop and pays for commentary only: **exactly one** model call (`Brain.narrate`), thinking off. |
-| `plain_move` | "play e4" | Parser lets the verb-prefixed move through; exactly one **legal** `make_move`; board becomes `[e4, <engine reply>]`; `completed`. **2 model calls** (tool turn + closing turn), thinking off throughout. |
-| `judgment_question` | "how am I doing?" (4 plies in) | A judgment question routes through `evaluate_position`/`analyze_last_move` — never answered from vibes; **zero board mutations**; non-empty reply. Also the live thinking-policy pin: the tool-picking turn is thinking **off**, the turn that reasons about the result is thinking **on**. |
+| `plain_move` | "play e4" | Parser lets the verb-prefixed move through; exactly one **legal** `make_move`; board becomes `[e4, <engine reply>]`; `completed`. **3 model calls** (tool turn + planner handoff + narrator), thinking off throughout. |
+| `judgment_question` | "how am I doing?" (4 plies in) | A judgment question routes through `evaluate_position`/`analyze_last_move` — never answered from vibes; **zero board mutations**; non-empty reply. Also the live thinking-policy pin: every planner turn is thinking **off**, and the narrator — the one turn that reasons about the result — is thinking **on**. |
 | `ambiguous_move` | "move the rook" (both rook files open) | Genuine ambiguity → asks instead of guessing: **no legal `make_move`**, board unchanged, non-empty clarifying reply. |
 | `settings_by_speech` | "make it easier" | `set_difficulty` called successfully toward a **weaker** setting than the `casual` default; no board mutation. |
 | `honest_illegal` | "castle kingside" (illegal move 1) | No fabricated legal move; board unchanged. An attempted-and-rejected `make_move` (`legal:false`) is fine — only the board-didn't-change invariant is asserted, never wording. |
@@ -267,7 +267,79 @@ still live, is replaced with the truth and the turn is traced as `guarded`
 *doing* a destructive op unasked; the guard stops it *claiming* one. Neither is a prompt
 rule, so neither is a coin flip.
 
+## The planner/narrator split (2026-07-25) — the baseline shifts, and long_capture closes
+
+The split (`docs/planner-narrator.md`) moves the tool loop onto a compact,
+persona-free planner prompt and adds one narrator call — the Glitch voice, no
+tools — after it. Two consequences for every number in this file:
+
+- **Brain-routed turns cost one more model call** (the planner's handoff turn
+  plus the narrator, where the old closing turn was both). The fast path is
+  untouched: `fast_path_low` is still zero-LLM, `fast_path_normal` still one.
+- **Thinking moved.** Planner turns never think — picking a tool is a parse —
+  and the narrator alone flips ON when an analysis result landed. The old rule
+  ran two thinking completions per judgment question; live that measured 26 s
+  once. `judgment_question` now pins `[off, off, on]`.
+
+**`long_capture` is cured, and it was the prompt all along.** The same-day
+pre-split baseline on this machine measured fresh 5/5, live_like 4/5, poisoned
+**1/5** (the standing RED from #136). Post-split, all three conditions measured
+**5/5**, repeatedly, at both measured planner temperatures. That confirms the
+harness audit's instruction-competition diagnosis — the capture was drowning
+under a page of persona, not under noisy context — and it means Sprint 3's
+structured-errors slice inherits a green scenario to *keep* green rather than a
+red one to cure.
+
+**The persona-free contract needed two rounds of eval-driven iteration** —
+recorded here because both failures are lessons about what Glitch's prose had
+been quietly doing:
+
+1. `ambiguous_move` regressed first (the planner *played* a rook move instead
+   of declining). The persona prompt's "ask one short clarifying question"
+   instinct had been load-bearing; the bare contract's "make no tool call"
+   wasn't enough. Fixed by telling the planner what to do instead of act
+   ("reply with one short line saying what the player must be asked") and
+   softening the job line to "decide which tool calls, *if any*". 5/5 after.
+2. `undo_and_replace` then regressed (2/5): the literal-minded planner read
+   "take that bishop move back" as `undo(plies=1)`, left black to move, failed
+   to play d4, and gave up. Three fixes: an omit-optional-arguments contract
+   line, a fix-your-own-failures contract line, and a clarified `undo`
+   docstring ("for any normal takeback omit plies — the app pops the full
+   exchange"; the golden updated with it). 25/25 on a dedicated run after,
+   4–5/5 in full-suite runs.
+
+**Planner temperature was measured, and the default did not move.** The knob is
+`CHESSAPP_PLANNER_TEMPERATURE` (unset = the model profile's 1.0), read by app
+assembly and by this harness alike. At 1.0 and at 0.3, every accuracy scenario
+(`plain_move`, `ambiguous_move`, `undo_and_replace`, `my_mistake_is_mine`,
+`play_as_black`, `resume_not_denied`, all three `long_capture` conditions)
+passed at or above the floor; 5-run sampling cannot distinguish the two, and a
+default that moves on data that can't resolve a difference is a default moved
+on vibes. It stays at 1.0 until a measurement says otherwise.
+
+**One infrastructure caveat on this record.** llama-server crash-restarts under
+sustained suite load (`upstream exited unexpectedly` in the llama-swap log,
+roughly every 3–8 minutes of continuous generation; the 12 GB card sits at
+~10.8 GiB). A crashed run answers 502 and the harness counts it as a failed
+sample, so the 2026-07-25 record is a composite of consecutive runs in which
+every 502-hit scenario was re-run to completion. **Every failure in every run
+was a 502; not one was a behavioral miss.** The server flags are owned by
+`../llama-swap/config.yaml`, not this repo; filed there.
+
 ## Recorded baseline
+
+**gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-25
+(planner/narrator slice) — 22/22 hard scenarios pass, 1 xfailed, nothing
+behaviorally red.** Composite across consecutive same-build runs per the 502
+caveat above; every scenario that reached a live server passed, including all
+three `long_capture` conditions (the standing RED from #136, now closed — see
+the split section above). The lone xfail is still the hints leak
+(`hints_off_no_advice` 0/5), unchanged by the split and still waiting on its
+Sprint 3 capability-restriction fix. Costs shifted by exactly the narrator
+call everywhere the loop runs; the fast path's zero- and one-call rows held.
+
+The 2026-07-13 record it supersedes, kept because its findings are still the
+reasons behind two tool signatures:
 
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-13
 (play-as-black slice) — 22/22 hard scenarios pass, 1 xfailed, nothing red.** Both
@@ -318,6 +390,10 @@ full list and 0–3/5 under the real one.
 `undo_and_replace` at 5/5 settles TODO #4: **multi-tool turns already work** —
 the loop dispatches both calls in one turn. It was a measurement gap, not a code
 gap, and this scenario now guards it.
+
+All rates were re-confirmed on the 2026-07-25 planner/narrator build at both
+measured planner temperatures; `undo_and_replace` additionally ran **25/25** on
+a dedicated run after its prompt iteration (the split section above).
 
 ### Shape scenarios
 

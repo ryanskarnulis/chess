@@ -49,7 +49,7 @@
   },
   {
     "function": {
-      "description": "Stockfish evaluation of the current position from White's point of view: centipawns, or mate-in-N. This is how you answer \"who's winning?\" — from the result, never from a guess.",
+      "description": "Stockfish evaluation of the current position from White's point of view: centipawns, or mate-in-N. This is how you answer \"who's winning?\" \u2014 from the result, never from a guess.",
       "name": "evaluate_position",
       "parameters": {
         "additionalProperties": false,
@@ -80,7 +80,7 @@
   },
   {
     "function": {
-      "description": "Analyze a move: how it compares to Stockfish's best from the same position — centipawn loss, verdict (good/inaccuracy/mistake/blunder), and what was best. This is how you answer \"how good was that move?\" or \"what was my mistake?\" — from the result, never from a guess. Defaults to the player's own last move (what 'my mistake' means); pass a color to analyze that side's last move instead.",
+      "description": "Analyze a move: how it compares to Stockfish's best from the same position \u2014 centipawn loss, verdict (good/inaccuracy/mistake/blunder), and what was best. This is how you answer \"how good was that move?\" or \"what was my mistake?\" \u2014 from the result, never from a guess. Defaults to the player's own last move (what 'my mistake' means); pass a color to analyze that side's last move instead.",
       "name": "analyze_last_move",
       "parameters": {
         "additionalProperties": false,
@@ -112,7 +112,7 @@
   },
   {
     "function": {
-      "description": "Submit the player's move: a string copied from the board state's\n`legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to\nthe matching entry (\"push the queen's bishop pawn one square\" → 'c3')\nand fix voice slips (\"e 4\" → 'e4'); never invent a string that isn't in\n`legal_moves`.\n\nCall this at most once per player turn — the engine plays its reply\ninside the same call. If you proposed a move and the player accepts\n(\"yes\"), call it now; announcing a move in words is not making it.",
+      "description": "Submit the player's move: a string copied from the board state's\n`legal_moves` list \u2014 SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to\nthe matching entry (\"push the queen's bishop pawn one square\" \u2192 'c3')\nand fix voice slips (\"e 4\" \u2192 'e4'); never invent a string that isn't in\n`legal_moves`.\n\nCall this at most once per player turn \u2014 the engine plays its reply\ninside the same call. If you proposed a move and the player accepts\n(\"yes\"), call it now; announcing a move in words is not making it.",
       "name": "make_move",
       "parameters": {
         "additionalProperties": false,
@@ -132,13 +132,13 @@
   },
   {
     "function": {
-      "description": "Take back the player's last move. Omit plies unless the player asked for a specific number of half-moves.",
+      "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\") omit plies: the app pops the full exchange \u2014 the\nplayer's move and the engine's reply \u2014 leaving the player to move\nagain. Pass plies only when the player asked for an explicit count of\nhalf-moves.",
       "name": "undo",
       "parameters": {
         "additionalProperties": false,
         "properties": {
           "plies": {
-            "description": "How many half-moves to take back. Omit for a normal takeback — the app works out the right number itself.",
+            "description": "How many half-moves to take back. Omit for a normal takeback \u2014 the app works out the right number itself.",
             "maximum": 100,
             "minimum": 1,
             "type": "integer"
@@ -151,7 +151,7 @@
   },
   {
     "function": {
-      "description": "Reset to the starting position and begin a new game. Pass `player_color` to put the player on that side (\"let's play as black\"); omitted, they keep the side they have. Call this as soon as the player asks — do not ask them to confirm first. If a game is in progress the result comes back refusing and asking you to confirm; relay that to the player in your own words and stop, do not call again. When it returns ok, the game really did reset.",
+      "description": "Reset to the starting position and begin a new game. Pass `player_color` to put the player on that side (\"let's play as black\"); omitted, they keep the side they have. Call this as soon as the player asks \u2014 do not ask them to confirm first. If a game is in progress the result comes back refusing and asking you to confirm; relay that to the player in your own words and stop, do not call again. When it returns ok, the game really did reset.",
       "name": "new_game",
       "parameters": {
         "additionalProperties": false,
@@ -171,7 +171,7 @@
   },
   {
     "function": {
-      "description": "Resign the game. Defaults to the player's own side; pass a color to resign for that side. Call this as soon as the player concedes — do not ask them to confirm first. If a game is in progress the result comes back refusing and asking you to confirm; relay that to the player and stop, do not call again. When it returns ok, the game really did end.",
+      "description": "Resign the game. Defaults to the player's own side; pass a color to resign for that side. Call this as soon as the player concedes \u2014 do not ask them to confirm first. If a game is in progress the result comes back refusing and asking you to confirm; relay that to the player and stop, do not call again. When it returns ok, the game really did end.",
       "name": "resign",
       "parameters": {
         "additionalProperties": false,

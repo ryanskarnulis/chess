@@ -6,9 +6,11 @@ One shared `ToolContext` holds the session, settings, and optional engine, so
 the tools the brain calls and the state the API serves are the same truth.
 
 Live prompt settings land here: the brain is built with a
-`system_prompt_provider` that reads `ctx.settings`, and `set_verbosity` /
-`set_hints_mode` mutate exactly those settings — so a change takes effect on
-the very next command, no rebuild.
+`system_prompt_provider` and a `planner_prompt_provider` that both read
+`ctx.settings`, and `set_verbosity` / `set_hints_mode` mutate exactly those
+settings — so a change takes effect on the very next command, no rebuild.
+Verbosity only reaches the narrator (the planner has no words to lengthen);
+hints reach both, as tone on one side and tool permission on the other.
 
 `main()` reads config from the environment and runs the app under uvicorn.
 Basic gameplay works with the LLM off (no brain / no `/api/command`) and with
@@ -26,7 +28,7 @@ from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
-from chessapp.personality import system_prompt_for
+from chessapp.personality import planner_prompt_for, system_prompt_for
 from chessapp.provider import ChatProvider
 from chessapp.tools import BOARD_STATE_TOOLS, ToolContext, build_registry
 from chessapp.trace import JsonlTracer, Tracer
@@ -53,14 +55,17 @@ def build_app(
     speech: SpeechClient | None = None,
     static_dir: Path | None = None,
     tracer: Tracer | None = None,
+    planner_temperature: float | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
     Pass a `brain` to inject one (tests, or an alternate backend); otherwise a
-    `LlamaBrain` is built against `llama_base_url`, wired to resolve its system
-    prompt from `ctx.settings` on every command so `set_verbosity` and
+    `LlamaBrain` is built against `llama_base_url`, wired to resolve both of its
+    prompts from `ctx.settings` on every command so `set_verbosity` and
     `set_hints_mode` take effect live. `provider` injects a fake `ChatProvider`
-    into that default brain without a real llama-server.
+    into that default brain without a real llama-server. `planner_temperature`
+    samples the planner phase apart from the narrator (None: both on the
+    provider's default).
     """
     ctx = ToolContext(session=GameSession(), engine=engine, save_dir=save_dir)
     if engine is not None:
@@ -92,10 +97,15 @@ def build_app(
             # would cost it a round trip out of four. Callers with no such
             # injection (MCP, the delegate wire) still see the full list.
             tool_definitions=registry.definitions(exclude=BOARD_STATE_TOOLS),
+            # The narrator's prompt (personality + verbosity + hints tone) and
+            # the planner's (the compact tool contract, plus the hints
+            # permission), each re-resolved per command off the live settings.
             system_prompt_provider=lambda: system_prompt_for(
                 ctx.settings.verbosity,
                 ctx.settings.hints_mode,
             ),
+            planner_prompt_provider=lambda: planner_prompt_for(ctx.settings.hints_mode),
+            planner_temperature=planner_temperature,
             provider=provider,
         )
     return create_app(
@@ -142,6 +152,17 @@ def _tracer_from_env() -> Tracer | None:
     return JsonlTracer(Path(path)) if path else None
 
 
+def _planner_temperature_from_env() -> float | None:
+    """The planner phase's sampling temperature, if one is pinned.
+
+    Unset (the default) means the provider's own temperature, so nothing
+    changes until the number has been measured — the split's sampling
+    experiment is run through this knob, not by editing a constant.
+    """
+    value = os.environ.get("CHESSAPP_PLANNER_TEMPERATURE")
+    return float(value) if value else None
+
+
 def build_app_from_env() -> FastAPI:
     """`build_app` configured from environment variables (for `main`/ASGI)."""
     save_dir_env = os.environ.get("CHESSAPP_SAVE_DIR")
@@ -154,6 +175,7 @@ def build_app_from_env() -> FastAPI:
         speech=_speech_from_env(),
         static_dir=Path(static_dir_env) if static_dir_env else None,
         tracer=_tracer_from_env(),
+        planner_temperature=_planner_temperature_from_env(),
     )
 
 

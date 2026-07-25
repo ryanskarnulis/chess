@@ -3,12 +3,17 @@
 Exercised only through a `ScriptedProvider` (tests/fakes.py) that returns canned
 `ChatResult`s and records the `chat()` requests — never a live LLM. These tests
 pin the brain's orchestration: the bounded tool loop (results fed back as `tool`
-messages, a text turn ending the run, the iteration and correction budgets), the
-request it builds (tools offered, thinking flag, prompt contents), and the
+messages, a text turn ending the loop, the iteration and correction budgets),
+the two phases the loop sits inside (`docs/planner-narrator.md`), the requests
+it builds (tools offered, thinking flag, temperature, prompt contents), and the
 ChatResult->AgentResponse mapping. The wire itself (sampling, top_k,
 chat_template_kwargs, tool-arg JSON parsing, reasoning_content drop) is pinned
 one layer down in test_provider.py; the pipeline around the brain is pinned in
 test_command.py.
+
+One turn is two phases, so most scripted sequences here end with **two** text
+turns: the planner's handoff note (which no player ever sees) and the narrator's
+reply (which is the `AgentResponse.text`).
 """
 
 import json
@@ -18,7 +23,7 @@ import pytest
 from chessapp.brain import AgentResponse
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain, create_llama_brain
-from chessapp.personality import system_prompt_for
+from chessapp.personality import PLANNER_PROMPT, planner_prompt_for, system_prompt_for
 from chessapp.provider import ToolCallArgumentsError, Usage
 from chessapp.tools import ToolContext, build_registry
 from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
@@ -100,23 +105,34 @@ class FakeDispatcher:
         return self.results.get(name, {"ok": True})
 
 
+# The two prompts, as recognizable stand-ins: which one a call carries is how a
+# test tells a planner turn from the narrator's.
+PLANNER = "Pick the tools."
+PERSONA = "You are a chess opponent."
+
+
 def make_brain(
     *turns, dispatcher=None, **kwargs
 ) -> tuple[LlamaBrain, ScriptedProvider]:
     """A brain wired to a ScriptedProvider playing `turns` in order.
 
     One turn is returned for every call; several are returned in order and the
-    last repeats (so a loop scripts as "tool call, then the answer"). A turn may
+    last repeats (so a loop scripts as "tool call, note, reply"). A turn may
     be an Exception to raise, modelling a provider-level failure.
     """
     provider = ScriptedProvider(*turns)
     brain = LlamaBrain(
         provider=provider,
         dispatcher=dispatcher if dispatcher is not None else FakeDispatcher(),
-        system_prompt="You are a chess opponent.",
-        **{"tool_definitions": TOOLS, **kwargs},
+        system_prompt=PERSONA,
+        **{"tool_definitions": TOOLS, "planner_prompt": PLANNER, **kwargs},
     )
     return brain, provider
+
+
+def system_prompts(provider: ScriptedProvider) -> list[str]:
+    """The system prompt every recorded call carried, in order."""
+    return [call["messages"][0]["content"] for call in provider.calls]
 
 
 def real_registry() -> tuple[object, GameSession]:
@@ -131,18 +147,19 @@ def real_registry() -> tuple[object, GameSession]:
 
 def test_the_agent_can_read_a_tool_result_and_then_act_on_it():
     # The case the old two-phase flow made structurally impossible: read
-    # candidate moves, *then* play one. Three turns — call, call, comment.
+    # candidate moves, *then* play one. Four turns — call, call, note, reply.
     registry, session = real_registry()
     brain, provider = make_brain(
         tool_calls_turn(("get_best_moves", {"n": 3})),
         tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("read the candidates, played e4"),
         text_turn("Best line on the board. Your move."),
         dispatcher=registry,
         tool_definitions=registry.definitions(),
     )
     resp = brain.get_agent_response(board_state={}, command="play the best move")
 
-    assert len(provider.calls) == 3
+    assert len(provider.calls) == 4
     assert [tc.name for tc in resp.tool_calls] == ["get_best_moves", "make_move"]
     assert [r["name"] for r in resp.tool_results] == ["get_best_moves", "make_move"]
     assert resp.text == "Best line on the board. Your move."
@@ -174,25 +191,30 @@ def test_tool_results_go_back_as_tool_messages_on_a_growing_prompt():
     }
 
 
-def test_every_turn_still_offers_tools():
+def test_every_planner_turn_still_offers_tools():
     # The loop ends when the model declines to call a tool, never because the
-    # brain took them away mid-run.
+    # brain took them away mid-run. (The narrator is a different phase and is
+    # offered none — pinned below.)
     brain, provider = make_brain(
         tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
         text_turn("done"),
     )
     brain.get_agent_response(board_state={}, command="play e4")
-    assert all(call["tools"] == TOOLS for call in provider.calls)
+    assert [call["tools"] for call in provider.calls] == [TOOLS, TOOLS, None]
 
 
-def test_a_text_turn_ends_the_run_and_is_the_commentary():
-    brain, provider = make_brain(text_turn("I like the Ruy Lopez!"))
+def test_a_planner_text_turn_ends_the_loop_and_hands_off():
+    brain, provider = make_brain(
+        text_turn("nothing to do; answer the opening question"),
+        text_turn("I like the Ruy Lopez!"),
+    )
     resp = brain.get_agent_response(board_state={}, command="favorite openings?")
     assert resp.text == "I like the Ruy Lopez!"
     assert resp.tool_calls == ()
     assert resp.tool_results == ()
     assert resp.stop_reason == "completed"
-    assert len(provider.calls) == 1
+    assert len(provider.calls) == 2  # the decline, then the voice
 
 
 def test_null_content_becomes_empty_string():
@@ -308,7 +330,9 @@ def test_an_unknown_tool_is_an_error_result_and_is_corrected():
 
 def test_repeated_schema_failures_exhaust_the_correction_budget():
     # A model that cannot form a valid call stops early, on its own budget —
-    # without burning the whole iteration budget.
+    # without burning the whole iteration budget. A budget stop also skips the
+    # narrator entirely: there is no verified outcome to speak from, so the
+    # pipeline's canned stuck reply answers instead.
     brain, provider = make_brain(
         tool_calls_turn(("make_move", {"move": 5})),
         max_iterations=8,
@@ -368,7 +392,7 @@ def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
     )
     resp = brain.get_agent_response(board_state={}, command="play e4")
     assert resp.stop_reason == "max_iterations"
-    assert len(provider.calls) == 3
+    assert len(provider.calls) == 3  # the loop's turns only — no narrator
     assert resp.text == ""
     assert len(resp.tool_results) == 3  # everything it did is still reported
 
@@ -377,26 +401,42 @@ def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
 
 
 def test_a_run_sums_tokens_and_counts_its_model_calls():
-    # Two round trips — a tool call then the closing comment. The turn's cost is
-    # their sum, and the call count is what every context cut is measured against.
+    # Three round trips — a tool call, the planner's note, the narrator's reply.
+    # The turn's cost is their sum, and the call count is what every context cut
+    # is measured against.
     brain, _ = make_brain(
         tool_calls_turn(
             ("make_move", {"move": "e4"}),
             usage=Usage(prompt_tokens=7, completion_tokens=3),
         ),
-        text_turn("e4 it is.", usage=Usage(prompt_tokens=5, completion_tokens=2)),
+        text_turn("played e4", usage=Usage(prompt_tokens=5, completion_tokens=2)),
+        text_turn("e4 it is.", usage=Usage(prompt_tokens=4, completion_tokens=6)),
     )
     resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert resp.model_calls == 3
+    assert resp.prompt_tokens == 16
+    assert resp.completion_tokens == 11
+
+
+def test_the_narrator_round_trip_is_counted():
+    # The extra call the split costs is *visible*: it is in the turn's own
+    # accounting, so the trace and the eval baseline pay for it honestly.
+    brain, _ = make_brain(
+        text_turn("nothing to do", usage=Usage(prompt_tokens=3, completion_tokens=1)),
+        text_turn(
+            "Ruy Lopez, obviously.", usage=Usage(prompt_tokens=8, completion_tokens=5)
+        ),
+    )
+    resp = brain.get_agent_response(board_state={}, command="favorite openings?")
     assert resp.model_calls == 2
-    assert resp.prompt_tokens == 12
-    assert resp.completion_tokens == 5
+    assert (resp.prompt_tokens, resp.completion_tokens) == (11, 6)
 
 
 def test_missing_usage_counts_the_call_but_adds_no_tokens():
     # llama-server may omit usage; a call with none still happened.
     brain, _ = make_brain(text_turn("hi", usage=None))
     resp = brain.get_agent_response(board_state={}, command="hi")
-    assert resp.model_calls == 1
+    assert resp.model_calls == 2  # the planner's decline and the narrator
     assert resp.prompt_tokens == 0
     assert resp.completion_tokens == 0
 
@@ -411,12 +451,14 @@ def test_a_raised_round_trip_still_counts_as_a_call():
             ("make_move", {"move": "e2e4"}),
             usage=Usage(prompt_tokens=4, completion_tokens=1),
         ),
-        text_turn("e4.", usage=Usage(prompt_tokens=6, completion_tokens=2)),
+        text_turn("played e4", usage=Usage(prompt_tokens=6, completion_tokens=2)),
+        text_turn("e4.", usage=Usage(prompt_tokens=3, completion_tokens=1)),
     )
     resp = brain.get_agent_response(board_state={}, command="play e4")
-    assert resp.model_calls == 3  # the raised call, the good call, the comment
-    assert resp.prompt_tokens == 10  # only the two that returned usage
-    assert resp.completion_tokens == 3
+    # The raised call, the good call, the note, the reply.
+    assert resp.model_calls == 4
+    assert resp.prompt_tokens == 13  # only the three that returned usage
+    assert resp.completion_tokens == 4
 
 
 # --- thinking mode: OFF for speed, ON once analysis lands ------------------
@@ -432,24 +474,28 @@ def test_the_first_turn_does_not_think():
     "tool", ["evaluate_position", "get_best_moves", "analyze_last_move"]
 )
 def test_thinking_turns_on_once_an_analysis_result_lands(tool):
-    # BRIEF: thinking OFF for fast move parsing, ON for analysis. In a loop the
-    # rule is positional — off until an analysis tool has answered, on after.
+    # BRIEF: thinking OFF for fast move parsing, ON for analysis. The split
+    # sharpens the rule: planner turns are tool-picking — a parse — so they
+    # never think, even with an analysis result in context; the narrator is the
+    # phase that reasons about that result, and it alone flips ON. One thinking
+    # turn per analysis question, not two.
     brain, provider = make_brain(
         tool_calls_turn((tool, {})),
+        text_turn("evaluated the position"),
         text_turn("deep thoughts"),
     )
     brain.get_agent_response(board_state={}, command="how am I doing?")
-    assert provider.calls[0]["enable_thinking"] is False
-    assert provider.calls[1]["enable_thinking"] is True
+    assert [c["enable_thinking"] for c in provider.calls] == [False, False, True]
 
 
 def test_a_plain_move_never_thinks():
     brain, provider = make_brain(
         tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
         text_turn("nice move"),
     )
     brain.get_agent_response(board_state={}, command="play e4")
-    assert [c["enable_thinking"] for c in provider.calls] == [False, False]
+    assert [c["enable_thinking"] for c in provider.calls] == [False, False, False]
 
 
 def test_thinking_can_be_forced_on_for_the_whole_run():
@@ -461,15 +507,150 @@ def test_thinking_can_be_forced_on_for_the_whole_run():
 # --- request the brain sends ----------------------------------------------
 
 
-def test_prompt_includes_system_board_state_and_command():
+def test_planner_prompt_includes_system_board_state_and_command():
     brain, provider = make_brain(text_turn("ok"))
     brain.get_agent_response(board_state={"fen": "8/8/8/8"}, command="play Nf3")
     messages = provider.calls[0]["messages"]
     assert messages[0]["role"] == "system"
-    assert "chess opponent" in messages[0]["content"]
+    assert messages[0]["content"] == PLANNER
     blob = " ".join(m["content"] for m in messages)
     assert "8/8/8/8" in blob  # board state reached the model
     assert "Nf3" in blob  # command reached the model
+
+
+# --- the two phases: the planner decides, the narrator speaks ----------------
+#
+# `docs/planner-narrator.md`. The loop is unchanged (audit 15 keeps #124's win);
+# what moved out of it is the voice. So every turn that finishes its work is two
+# prompts: the compact contract the tools were chosen under, then the persona
+# prompt that phrases the reply — with no tools on offer, so the closing pass is
+# tool-free by construction rather than by the model declining.
+
+
+def test_loop_turns_run_on_the_planner_prompt_and_the_closer_on_the_persona():
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]
+
+
+def test_the_narrator_is_offered_no_tools():
+    # Audit item 9's mechanism: the phase that talks to the player cannot act,
+    # because it is never handed anything to act with.
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    assert provider.calls[-1]["tools"] is None
+
+
+def test_the_narrators_text_is_the_reply_and_the_planners_note_is_not():
+    # The handoff: the planner's line is context for the narrator and nothing
+    # else. It must never be what the player reads.
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("made the move e4, it was legal"),
+        text_turn("e4 it is."),
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+
+    assert resp.text == "e4 it is."
+    assert "made the move e4" not in resp.text
+    narrator = " ".join(m["content"] for m in provider.calls[-1]["messages"])
+    assert "made the move e4, it was legal" in narrator  # the note carried over
+
+
+def test_the_narrator_sees_the_utterance_and_what_the_turn_did():
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("Classic."),
+        dispatcher=FakeDispatcher({"make_move": {"legal": True, "san": "e4"}}),
+    )
+    brain.get_agent_response(board_state={}, command="king's pawn, two squares")
+
+    narrator = " ".join(m["content"] for m in provider.calls[-1]["messages"])
+    assert "king's pawn, two squares" in narrator  # what was asked
+    assert json.dumps({"legal": True, "san": "e4"}) in narrator  # what happened
+
+
+def test_the_narrator_gets_the_transcript():
+    brain, provider = make_brain(text_turn("nothing to do"), text_turn("ok"))
+    brain.get_agent_response(board_state={}, command="hi", transcript=TRANSCRIPT)
+    assert provider.calls[-1]["messages"][1:3] == TRANSCRIPT
+
+
+@pytest.mark.parametrize(
+    ("tool", "thinks"),
+    [
+        ("evaluate_position", True),
+        ("get_best_moves", True),
+        ("analyze_last_move", True),
+        ("make_move", False),
+        ("new_game", False),
+    ],
+)
+def test_the_narrator_thinks_only_after_an_analysis_result(tool, thinks):
+    brain, provider = make_brain(
+        tool_calls_turn((tool, {})),
+        text_turn("did the thing"),
+        text_turn("words for the player"),
+    )
+    brain.get_agent_response(board_state={}, command="do it")
+    assert provider.calls[-1]["enable_thinking"] is thinks
+
+
+def test_a_budget_stop_never_reaches_the_narrator():
+    # Nothing verified came back, so there is nothing to speak from: the turn
+    # ends silent and the pipeline's canned stuck reply covers it.
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),  # repeats forever
+        max_iterations=2,
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert resp.stop_reason == "max_iterations"
+    assert resp.text == ""
+    assert system_prompts(provider) == [PLANNER, PLANNER]  # never the persona
+    assert resp.model_calls == 2
+
+
+# --- per-phase sampling ------------------------------------------------------
+
+
+def test_the_planners_temperature_rides_on_its_own_calls_only():
+    # The split's other half (the absorbed sampling experiment): the planner may
+    # sample cooler than the narrator, whose job is words and wants the
+    # BRIEF's default. `None` is "the provider's default", not "no temperature".
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+        planner_temperature=0.2,
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    assert [call["temperature"] for call in provider.calls] == [0.2, 0.2, None]
+
+
+def test_no_planner_temperature_leaves_every_call_on_the_default():
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    assert [call["temperature"] for call in provider.calls] == [None, None, None]
+
+
+def test_narrate_stays_on_the_default_temperature():
+    # The fast path's request must not change at all in this slice.
+    brain, provider = make_brain(text_turn("ok"), planner_temperature=0.2)
+    brain.narrate(board_state={}, changes=[])
+    assert provider.calls[0]["temperature"] is None
 
 
 # --- conversation transcript ------------------------------------------------
@@ -569,6 +750,28 @@ def test_create_llama_brain_defaults_to_the_glitch_prompt():
     assert brain.system_prompt == system_prompt_for()
 
 
+def test_create_llama_brain_defaults_to_the_planner_prompt_for_the_loop():
+    brain = create_llama_brain(
+        base_url="http://localhost:8200/v1",
+        model="gemma",
+        dispatcher=FakeDispatcher(),
+        tool_definitions=[],
+    )
+    assert brain.planner_prompt == planner_prompt_for()
+    assert brain.planner_temperature is None  # the provider's default
+
+
+def test_create_llama_brain_carries_a_planner_temperature():
+    brain = create_llama_brain(
+        base_url="http://localhost:8200/v1",
+        model="gemma",
+        dispatcher=FakeDispatcher(),
+        tool_definitions=[],
+        planner_temperature=0.3,
+    )
+    assert brain.planner_temperature == 0.3
+
+
 # --- live prompt switching --------------------------------------------------
 
 
@@ -576,7 +779,7 @@ def test_callable_system_prompt_is_resolved_per_request():
     # Live switching: the brain may carry a provider instead of a frozen
     # string, so a settings change (verbosity/hints) between commands takes
     # effect on the very next command — the prompt is resolved fresh each
-    # request.
+    # request. Verbosity lands on the narrator, the phase that has words.
     live = {"verbosity": "normal"}
     provider = ScriptedProvider(text_turn("a"), text_turn("b"))
     brain = LlamaBrain(
@@ -584,13 +787,35 @@ def test_callable_system_prompt_is_resolved_per_request():
         dispatcher=FakeDispatcher(),
         tool_definitions=TOOLS,
         system_prompt=lambda: system_prompt_for(verbosity=live["verbosity"]),
+        planner_prompt=PLANNER,
     )
     brain.get_agent_response(board_state={}, command="hi")
-    assert provider.calls[0]["messages"][0]["content"] == system_prompt_for()
+    assert system_prompts(provider) == [PLANNER, system_prompt_for()]
     live["verbosity"] = "low"
     brain.get_agent_response(board_state={}, command="hi again")
-    assert provider.calls[1]["messages"][0]["content"] == system_prompt_for(
+    assert provider.calls[-1]["messages"][0]["content"] == system_prompt_for(
         verbosity="low"
+    )
+
+
+def test_callable_planner_prompt_is_resolved_per_request():
+    # Same live-settings seam, planner side: hints mode changes what the loop is
+    # told about `get_best_moves`, so the planner prompt is resolved fresh too.
+    live = {"hints": False}
+    provider = ScriptedProvider(text_turn("a"), text_turn("b"))
+    brain = LlamaBrain(
+        provider=provider,
+        dispatcher=FakeDispatcher(),
+        tool_definitions=TOOLS,
+        system_prompt=PERSONA,
+        planner_prompt=lambda: planner_prompt_for(hints_mode=live["hints"]),
+    )
+    brain.get_agent_response(board_state={}, command="hi")
+    assert provider.calls[0]["messages"][0]["content"] == PLANNER_PROMPT
+    live["hints"] = True
+    brain.get_agent_response(board_state={}, command="what should I play?")
+    assert provider.calls[2]["messages"][0]["content"] == planner_prompt_for(
+        hints_mode=True
     )
 
 
@@ -623,6 +848,23 @@ def test_create_llama_brain_accepts_a_live_prompt_provider():
     assert brain.system_prompt() == system_prompt_for()
     settings.verbosity = "low"
     assert brain.system_prompt() == system_prompt_for(verbosity="low")
+
+
+def test_create_llama_brain_accepts_a_live_planner_prompt_provider():
+    from chessapp.tools import Settings
+
+    settings = Settings()  # hints default to off
+    brain = create_llama_brain(
+        base_url="http://localhost:8200/v1",
+        model="gemma",
+        dispatcher=FakeDispatcher(),
+        tool_definitions=[],
+        planner_prompt_provider=lambda: planner_prompt_for(settings.hints_mode),
+        provider=ScriptedProvider(text_turn("ok")),
+    )
+    assert brain.planner_prompt() == planner_prompt_for()
+    settings.hints_mode = True
+    assert brain.planner_prompt() == planner_prompt_for(hints_mode=True)
 
 
 def test_create_llama_brain_accepts_an_injected_provider():

@@ -52,15 +52,20 @@ def test_it_times_each_round_trip():
     assert provider.calls[0].seconds >= 0.0
 
 
-def test_it_passes_tools_and_max_tokens_through():
+def test_it_passes_tools_max_tokens_and_temperature_through():
     inner = ScriptedProvider(tool_calls_turn(("make_move", {"move": "e4"})))
     provider = CountingProvider(inner)
     tools = [{"type": "function", "function": {"name": "make_move"}}]
 
-    provider.chat(_USER, tools=tools, enable_thinking=True, max_tokens=64)
+    provider.chat(
+        _USER, tools=tools, enable_thinking=True, max_tokens=64, temperature=0.2
+    )
 
     assert inner.calls[0]["tools"] == tools
     assert inner.calls[0]["enable_thinking"] is True
+    # The evals measure the planner's own sampling, so the decorator must not
+    # quietly swallow the knob on its way to the live wire.
+    assert inner.calls[0]["temperature"] == 0.2
 
 
 def test_a_raising_round_trip_still_counts():
