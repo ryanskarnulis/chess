@@ -367,7 +367,13 @@ hollows out a tripwire.
 
 `judgment_question`'s latency remains variable (9.2 s recorded recently); the GPU is
 shared with project-command-center and the tripwire (15 s) is deliberately loose for
-exactly that reason.
+exactly that reason. **Re-recorded 2026-07-25:** under the split the one thinking
+turn is the narrator's, whose reasoning length is sampling-dependent — measured
+3.4–18 s warm with an idle GPU — so the ceiling moved to 30 s. Not a quiet
+loosening: two consecutive over-15s runs on an unchanged path with no competing
+traffic is the tripwire flapping, and the numbers are recorded here where a human
+reads them. Bounding the narrator's thinking budget structurally is a candidate for
+the eval-statistics slice.
 
 One harness bug was fixed in the capture slice and it still matters when reading any
 number here: `_build_eval_app` was offering the brain the **full** registry,
