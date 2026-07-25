@@ -1,7 +1,9 @@
 # The turn coordinator — design note (2026-07-25)
 
 `backend/src/chessapp/coordinator.py`. Sprint 1, slice 1 of the agent-control
-replan (`docs/agent-control-audit-2026-07-25.md`, items 3 and 10).
+replan (`docs/agent-control-audit-2026-07-25.md`, items 3 and 10), extended by
+slice 3 — the move flow split (items 2 and 5), which filled the observation slot
+and is folded into this note where it changed something.
 
 ## Why
 
@@ -37,6 +39,7 @@ instead, and the model got the *slots* rather than the wheel.
             awaiting_player                                        │
                     │                                              │
    apply_player_move│ (illegal move → stays here, as a result)     │
+                    │ …and starts the engine thinking              │
                     ▼                                              │
           player_move_applied ──────────────────────┐              │
                     │                               │              │
@@ -44,7 +47,7 @@ instead, and the model got the *slots* rather than the wheel.
                     ▼                               │              │
             agent_observing ────────────────────────┤              │
                                                     │              │
-                                        engine_reply│              │
+                                 collect_engine_reply              │
                                                     ▼              │
                                           engine_calculating       │
                                                     │              │
@@ -54,6 +57,9 @@ instead, and the model got the *slots* rather than the wheel.
                                        complete_turn│ turn_id + 1  │
                                                     ▼              │
                                                 completed ─────────┘
+
+            abandon_turn: from anywhere back to awaiting_player
+                          (turn_id + 1, pending computation dropped)
 ```
 
 - `turn_id` starts at 1 and counts boundaries, so two mutations under one id is
@@ -65,18 +71,42 @@ instead, and the model got the *slots* rather than the wheel.
   nothing left to wait for.
 - An **illegal** player move is a result, not a transition: the phase and the
   turn id are untouched, exactly as if nothing had been said.
-- `engine_reply` returns `None` and advances anyway when there is no engine or
-  the game is over. Whether the engine owes a reply is derivable from the
-  session, so no caller has to work it out.
+- `collect_engine_reply` returns `None` and advances anyway when there is no
+  engine or the game is over. Whether the engine owes a reply is derivable from
+  the session, so no caller has to work it out — and it is derived *at collect
+  time*, not remembered from when the computation started.
+- **`abandon_turn` is the only other way out.** Undo, a new game, a resignation
+  and a resumed save all replace the position the open turn is about, so each
+  runs it before mutating (the tool handlers and their trusted-API twins both).
+  It drops any pending computation, bumps the turn id, and comes back out
+  awaiting the player; between turns it is a no-op, so the id keeps counting real
+  turns rather than every button press. Without it, an undo mid-turn would leave
+  the machine waiting to apply a reply decided for a board that no longer exists.
 
 ## Who owns the engine's reply
 
-The coordinator, and only the coordinator. `play_exchange(move)` is the whole
-sequence in one call, and it is what the `make_move` tool, `/api/game/move`, and
-(through the tool) the fast path all run — so a move dragged on the board and a
-move typed at the agent go through the same machine. `engine_opening_move()` is
-the same story for the engine's first move when the player takes black, replacing
-the color-check-plus-`play_move` that `new_game` had in both layers.
+The coordinator, and only the coordinator. Two callers ask for it two ways, and
+both are the same sequence:
+
+- `play_exchange(move)` — the whole thing in one call, no beats. `/api/game/move`
+  runs it (direct mode: a dragged move, no agent in the path) and so does the
+  `make_move` tool when the registry was built `atomic_exchange=True`, which is
+  the default and what the MCP server gets: an MCP call has nothing behind it to
+  collect a reply, and its game must not stall half-way through a turn.
+- **the beats** — `apply_player_move` → (the agent's reaction) →
+  `collect_engine_reply` → `complete_turn`, which is what the command pipeline
+  runs (`api._run_command`). App assembly builds the registry with
+  `atomic_exchange=False` for exactly this: `make_move` applies the player's move
+  and stops, and the pipeline owns what happens next.
+
+The flag names the *sequencing owner*, never the boundary — the tool surface, the
+validation, and the legality gate are identical in both modes. The one
+caller-visible difference is that the atomic result carries `engine_move` and the
+split one does not, because at that moment there is no reply to report.
+
+`engine_opening_move()` is the same story for the engine's first move when the
+player takes black, replacing the color-check-plus-`play_move` that `new_game`
+had in both layers.
 
 **The engine's reply is not a model-callable tool and must not become one.**
 `test_engine_reply_is_not_a_callable_tool` pins that. A model that could ask for
@@ -87,21 +117,65 @@ playing regardless.
 the same reason: closing early would be a back door to skipping the engine's
 move, which is precisely what this module exists to prevent.
 
-## The observe slot, and what fills it later
+## The observe slot, and what fills it
 
 `begin_observation()` marks the beat where Glitch reacts to the *verified* player
-move — the audit's item 5. In this slice the slot exists and nothing fills it:
-`play_exchange` skips straight to the reply, so a plain move costs exactly what
-it cost before. Slice 3 fills it, and slice 2's narrator is the voice that speaks
-in it (`docs/planner-narrator.md`: a persona-prompted, tool-free model call over
-verified results — which is exactly what an observation beat needs, and why it
+move — the audit's item 5 — and slice 2's narrator is the voice that speaks in it
+(`docs/planner-narrator.md`: a persona-prompted, tool-free model call over
+verified results, which is exactly what an observation beat needs and why it
 cannot reorder or skip anything).
 
+What fills it depends on the route, and neither route needed a new call:
+
+- **the fast path** — `Brain.narrate` on the post-player-move board plus the
+  `make_move` result, which is what it always did; the only change is that the
+  result it reads no longer has the engine's answer in it.
+- **the brain route** — the planner/narrator loop's own closing narration, which
+  now naturally reacts to a player move alone for the same reason.
+
+Then the pipeline collects the reply and appends a **deterministic** line
+announcing it (`api._reply_announcement`). No second narration: the reaction has
+already been paid for, and a model turn per engine move is precisely the latency
+this beat is not allowed to add.
+
 It is a phase rather than a callback because the reaction has to be **optional by
-construction**. `engine_reply` is legal from `player_move_applied` *and* from
-`agent_observing`, so skipping the model — verbosity low, no brain configured, a
-provider timeout — skips only the words. Latency is an acceptance criterion for
-that slice: if the observation beat makes a plain move feel slower, it failed.
+construction**. `collect_engine_reply` is legal from `player_move_applied` *and*
+from `agent_observing`, so skipping the model — verbosity low, no brain
+configured, a `ProviderError` — skips only the words, and at verbosity=low the
+whole turn is one canned line assembled from the two results, byte-for-byte what
+a plain move said before.
+
+### Why the reply is computed in the background
+
+Latency is the acceptance criterion: *if the observation beat makes a plain move
+feel slower, it failed*. A reaction that runs before the engine is even asked
+would add a model round trip to every move, so it doesn't. `apply_player_move`
+starts the engine thinking the moment a legal move lands — a thread computing
+`engine.choose_move` against a `GameSession` copy of the position — and the
+narration runs while that happens. `collect_engine_reply` joins it, and the two
+costs overlap instead of queueing.
+
+The rule that makes it safe is that the background **touches nothing**: it reads
+its own copy, and only the collecting thread ever submits a move, through the
+session's legality gate as always. `EnginePlayer.choose_move` already worked from
+`chess.Board(session.fen())`, and python-chess's `SimpleEngine` serializes
+concurrent UCI commands internally, so no new locking was needed.
+
+Two things could make a background answer wrong, and both are handled the same
+way — discard it and ask the engine here and now:
+
+- **the board moved under it** (an undo mid-turn). The position the computation
+  started from is recorded, and a mismatch at collect time means the answer is
+  about a position that no longer exists. Applying it blind would be a move from
+  the wrong board.
+- **it failed.** The exception is swallowed in the thread and surfaces from the
+  synchronous ask instead, which keeps failure semantics exactly where they were
+  (see the known edge below — audit item 20 still owns improving them).
+
+The phase deliberately does not move when the computation starts:
+`engine_calculating` marks where the *turn* is blocked on Stockfish, which is
+what a UI progress line wants to show, and during the reaction the turn is
+blocked on nothing.
 
 ## One validation layer
 
@@ -123,10 +197,13 @@ converge on `dispatch`, and `dispatch` converges on the coordinator.
 ## Wiring
 
 One coordinator per app. `app.build_app` creates it and passes it to both
-`build_registry(ctx, coordinator)` and `create_app(..., coordinator=...)`;
-`tests/fakes.scripted_app` mirrors that. Both parameters default to `None` and
-build a matched pair, which is what the MCP server (its own process, owning
-nothing else) and the older single-purpose tests use.
+`build_registry(ctx, coordinator, atomic_exchange=False)` and
+`create_app(..., coordinator=...)`; `tests/fakes.scripted_app` and the eval
+harness mirror that, flag included — a harness that measured the atomic tool
+would be measuring a different sequencing owner than the one that ships. Both
+parameters default to `None` and build a matched pair, which is what the MCP
+server (its own process, owning nothing else) and the older single-purpose tests
+use.
 
 The coordinator holds the shared `ToolContext`, not a session or an engine, and
 reads `ctx.session` / `ctx.engine` live on every call — `resume_game` swaps the
@@ -137,7 +214,13 @@ session object on the context mid-game.
 - **An engine that raises mid-calculation** leaves the phase at
   `engine_calculating`. Recovery semantics are audit item 20 (Sprint 2), which
   owns defining what a failure between the player's move and the reply means;
-  guessing at it here would be a policy invented ahead of its test.
+  guessing at it here would be a policy invented ahead of its test. (A *failed*
+  background computation is not this case: it is discarded and re-asked, so the
+  failure arrives from the synchronous call exactly as it always did.)
+- **A route that raises after the player's move landed** leaves the turn open, so
+  the next command's `make_move` is refused as turn-state error data and *that*
+  turn's close beat plays the owed reply. Self-healing rather than wedged, but the
+  player pays an utterance for it — the resumability half of audit item 20.
 - **No board version / expected-FEN precondition** yet, so two clients can still
   interleave turns on the one shared session (audit item 7, Sprint 2). The turn
   id is the hook that work will hang off.
