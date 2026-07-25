@@ -79,12 +79,19 @@ this document on 2026-07-25; item numbers below are the report's.
 - **Direct mode already exists (item 1).** Full games with the LLM off are a
   binding invariant. The new work is making the mode *visible and deliberate*
   in the UI, and routing agent-mode board input through the coordinator.
-- **Planner/narrator split (item 15).** A full two-phase re-split would
-  partially reverse the deliberate one-loop rework (#124) that fixed real
-  multi-step failures. The compatible version is (a) the already-planned
-  per-phase sampling experiment (lower temp on tool-selection calls only) and
-  (b) the P0 observation/close beats, which give narration its own model call
-  naturally. Re-evaluate after P0 lands.
+- **Planner/narrator split (item 15) — initially reshaped, then elevated to
+  P0 (Ryan, 2026-07-25).** The first-pass concern was that a two-phase
+  re-split would reverse the deliberate one-loop rework (#124), which fixed
+  real multi-step failures. The reconciliation: what #124 fixed was that the
+  old phase one was a *single call with no loop*, and the split doesn't
+  require going back to that — the planner keeps the full bounded tool loop
+  and only the voice moves out, into a narrator phase that is the
+  generalization of the fast path's existing `narrate()`. That shape keeps
+  #124's win, gives the P0 observe/close beats their call sites, makes the
+  closing pass tool-free by construction (item 9), and takes persona tokens
+  out of the prompt the tool decisions are made under — the harness audit's
+  core "instruction competition" diagnosis. Lives in Sprint 1; absorbs the
+  sampling experiment (planner temperature measured inside the slice).
 
 ## One standing warning the replan must not lose
 
