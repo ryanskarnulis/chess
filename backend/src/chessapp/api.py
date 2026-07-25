@@ -25,6 +25,13 @@ Conventions:
   ran, answering byte-for-byte what it answered before: LLM-off play is a
   binding invariant, and `/api/settings`' `agent_available` is what makes the
   mode visible in the UI rather than a per-input surprise.
+- **Every mutation is version-checkable and serialized** (audit item 7). The
+  state document carries `version` (`ToolContext.board_version`), and every
+  mutating request may carry the one it last saw: superseded means 409 with
+  `stale: true` and the current state, omitted means today's behavior. The check
+  and the mutation happen under `ctx.mutation_lock` and cannot be split, so two
+  clients on the one shared session cannot advance the same turn twice — see
+  `_mutation` and `docs/turn-coordinator.md`.
 - **The destructive-op gate is one system.** `/api/game/new` and
   `/api/game/resign` dispatch through the registry, so the same deterministic
   gate that refuses an unconfirmed `new_game`/`resign` for the agent arms
@@ -41,12 +48,21 @@ object on the context.
 import logging
 import mimetypes
 import random
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+import anyio.to_thread
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -83,11 +99,45 @@ from chessapp.voice import SpeechClient
 logger = logging.getLogger(__name__)
 
 
-class MoveRequest(BaseModel):
+class StaleVersionError(Exception):
+    """A mutating request about a board that has already moved on.
+
+    Raised by the mutation guard *before* anything changes, and turned into the
+    409 below by an app-wide handler — which is why it is an exception rather
+    than a returned response: the check happens inside a context manager
+    wrapping the whole mutation, and the one thing a guard must be able to do
+    from there is stop the body from running at all.
+    """
+
+    def __init__(self, expected: int, current: int) -> None:
+        super().__init__(f"stale board version {expected}; current is {current}")
+        self.expected = expected
+        self.current = current
+
+
+class VersionedRequest(BaseModel):
+    """The optional board-version precondition every mutating request carries.
+
+    `version` is the `state.version` the client last saw. Supplied and still
+    current, the request proceeds; supplied and superseded, it is refused 409
+    without touching the board (`StaleVersionError`). Omitted — the default —
+    is exactly today's behavior, because the precondition is a client's opt-in:
+    the board UI adopts it when it is ready to, and a client that never heard
+    of versions keeps playing.
+
+    Optional rather than required for one more reason: the version is a
+    *transport* fact. Nothing about a legal move depends on it, so a request
+    that doesn't care about concurrency should not have to prove anything.
+    """
+
+    version: int | None = None
+
+
+class MoveRequest(VersionedRequest):
     move: str
 
 
-class CommandRequest(BaseModel):
+class CommandRequest(VersionedRequest):
     text: str
 
 
@@ -99,13 +149,13 @@ class VoiceOutputRequest(BaseModel):
     enabled: bool
 
 
-class NewGameRequest(BaseModel):
+class NewGameRequest(VersionedRequest):
     """`color` is the side the player takes; `random` (the default) rolls."""
 
     color: str = Field(default="random", pattern="^(white|black|random)$")
 
 
-class UndoRequest(BaseModel):
+class UndoRequest(VersionedRequest):
     """None means "the player's takeback": vs the engine that's the full
     exchange (their move plus the engine's reply), engine-free one ply —
     the endpoint decides from the live context."""
@@ -113,11 +163,11 @@ class UndoRequest(BaseModel):
     plies: int | None = Field(default=None, ge=1, le=UNDO_PLIES_MAX)
 
 
-class ResignRequest(BaseModel):
+class ResignRequest(VersionedRequest):
     color: str | None = Field(default=None, pattern="^(white|black)$")
 
 
-class ConfirmRequest(BaseModel):
+class ConfirmRequest(VersionedRequest):
     """The player's answer to an armed destructive op: yes runs it, no drops
     it. The same two answers `parse_confirmation` reads off a spoken turn, and
     the same one `ctx.pending` — a question asked by a button can be answered
@@ -153,9 +203,19 @@ def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
     }
 
 
-def _state_dict(session: GameSession) -> dict[str, Any]:
-    """The full state document the board UI renders from."""
+def _state_dict(ctx: ToolContext) -> dict[str, Any]:
+    """The full state document the board UI renders from.
+
+    Takes the context rather than the session because `version` is the
+    context's (`ToolContext.board_version`) — a resumed game replaces the
+    session, and that replacement is one of the things a client has to be able
+    to notice. Every mutation response embeds this document, so the version a
+    client needs for its *next* request always comes back with the answer to
+    this one.
+    """
+    session = ctx.session
     return {
+        "version": ctx.board_version,
         "fen": session.fen(),
         "turn": session.turn,
         "player_color": session.player_color,
@@ -453,16 +513,69 @@ def create_app(
     store = ConversationStore()
 
     async def _broadcast_state() -> None:
-        await broadcaster.broadcast(_state_dict(ctx.session))
+        await broadcaster.broadcast(_state_dict(ctx))
+
+    @app.exception_handler(StaleVersionError)
+    async def _stale_version(_request: Request, exc: StaleVersionError) -> JSONResponse:
+        """409 for a request about a superseded board (audit item 7).
+
+        A 409 for the same reason every other one here is: nothing happened, and
+        the request as sent cannot be completed. The body follows the gate's
+        convention — `detail` is the line to show, and a flag (`stale`, next to
+        the gate's `confirm`) says which kind of "no" this is — and it carries
+        the current `version` *and* the current state, because a client that
+        just found out it is behind needs both to catch up and retry without a
+        second round trip.
+        """
+        logger.info("stale_version expected=%s current=%s", exc.expected, exc.current)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": (
+                    "the board changed since you last saw it — "
+                    f"you sent version {exc.expected}, it is now {exc.current}"
+                ),
+                "stale": True,
+                "version": exc.current,
+                "state": _state_dict(ctx),
+            },
+        )
+
+    @asynccontextmanager
+    async def _mutation(expected: int | None) -> AsyncIterator[None]:
+        """Hold the mutation lock across one request's check *and* its mutation.
+
+        The two halves are inseparable or the precondition is theatre: between a
+        version read and the move it authorizes, another client's whole turn can
+        land — FastAPI runs sync endpoints in a threadpool and async ones on the
+        loop, so requests genuinely interleave. Everything a mutating endpoint
+        does runs inside this, the check first, so a stale request is refused
+        with the board untouched — including untouched by `abandon_turn`, which
+        would otherwise throw away an open turn on behalf of a request that was
+        never going to be allowed.
+
+        The lock is acquired in a worker thread rather than by blocking the
+        event loop. That is not a nicety: a waiter that blocks the loop would
+        stop the *holder* from ever finishing its own awaits, and the two would
+        deadlock. Acquiring off-loop means a waiting request costs a parked
+        thread and nothing else.
+        """
+        await anyio.to_thread.run_sync(ctx.mutation_lock.acquire)
+        try:
+            if expected is not None and expected != ctx.board_version:
+                raise StaleVersionError(expected, ctx.board_version)
+            yield
+        finally:
+            ctx.mutation_lock.release()
 
     @app.get("/api/state")
     def get_state() -> dict[str, Any]:
-        return _state_dict(ctx.session)
+        return _state_dict(ctx)
 
     @app.websocket("/ws")
     async def state_channel(websocket: WebSocket) -> None:
         await broadcaster.connect(websocket)
-        await websocket.send_json({"type": "state", "state": _state_dict(ctx.session)})
+        await websocket.send_json({"type": "state", "state": _state_dict(ctx)})
         try:
             # The channel is one-way; we only read to notice the disconnect.
             while True:
@@ -595,7 +708,7 @@ def create_app(
                 if beats.engine_reply is not None
                 else None
             ),
-            "state": _state_dict(ctx.session),
+            "state": _state_dict(ctx),
             "commentary": commentary,
             # Whether the client should voice it — the user's voice_output
             # setting, the same contract `/api/command` has.
@@ -614,26 +727,27 @@ def create_app(
         legality, the engine's reply, and the response's existing fields are the
         same machine's answers either way.
         """
-        if brain is not None:
-            return await _agent_move(request.move)
-        # The coordinator runs the exchange: player move, then the engine's
-        # reply if one is owed. Trusted path, so a turn-state rejection is a
-        # 409 rather than the error *result* the agent gets for the same thing.
-        try:
-            result, reply = coordinator.play_exchange(request.move)
-        except TurnStateError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        engine_move = _move_dict(reply) if reply is not None else None
-        if result.legal:
-            await _broadcast_state()
-        return {
-            "legal": result.legal,
-            "san": result.san,
-            "uci": result.uci,
-            "reason": result.reason,
-            "engine_move": engine_move,
-            "state": _state_dict(ctx.session),
-        }
+        async with _mutation(request.version):
+            if brain is not None:
+                return await _agent_move(request.move)
+            # The coordinator runs the exchange: player move, then the engine's
+            # reply if one is owed. Trusted path, so a turn-state rejection is a
+            # 409 rather than the error *result* the agent gets for the same thing.
+            try:
+                result, reply = coordinator.play_exchange(request.move)
+            except TurnStateError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            engine_move = _move_dict(reply) if reply is not None else None
+            if result.legal:
+                await _broadcast_state()
+            return {
+                "legal": result.legal,
+                "san": result.san,
+                "uci": result.uci,
+                "reason": result.reason,
+                "engine_move": engine_move,
+                "state": _state_dict(ctx),
+            }
 
     def _run_destructive(
         name: str, args: dict[str, Any]
@@ -678,11 +792,12 @@ def create_app(
         color = request.color if request is not None else "random"
         if color == "random":
             color = random.choice(["white", "black"])
-        outcome = _run_destructive("new_game", {"player_color": color})
-        if isinstance(outcome, JSONResponse):
-            return outcome
-        await _broadcast_state()
-        return {"state": _state_dict(ctx.session)}
+        async with _mutation(request.version if request is not None else None):
+            outcome = _run_destructive("new_game", {"player_color": color})
+            if isinstance(outcome, JSONResponse):
+                return outcome
+            await _broadcast_state()
+            return {"state": _state_dict(ctx)}
 
     @app.post("/api/game/confirm")
     async def confirm_destructive(request: ConfirmRequest) -> dict[str, Any]:
@@ -698,44 +813,48 @@ def create_app(
         call stands between the yes and the reset (the same reason
         `confirm_pending` exists).
         """
-        armed = ctx.pending
-        if armed is None:
-            raise HTTPException(status_code=409, detail="nothing to confirm")
-        if not request.confirm:
-            ctx.pending = None
-            return {
-                "op": armed.name,
-                "confirmed": False,
-                "state": _state_dict(ctx.session),
-            }
-        confirmed = confirm_pending(registry, ctx)
-        assert confirmed is not None  # armed above, and only this consumes it
-        name, result = confirmed
-        if result.get("ok") is not True:
-            raise HTTPException(
-                status_code=409, detail=result.get("error", f"cannot {name}")
-            )
-        await _broadcast_state()
-        return {"op": name, "confirmed": True, "state": _state_dict(ctx.session)}
+        async with _mutation(request.version):
+            armed = ctx.pending
+            if armed is None:
+                raise HTTPException(status_code=409, detail="nothing to confirm")
+            if not request.confirm:
+                ctx.pending = None
+                return {
+                    "op": armed.name,
+                    "confirmed": False,
+                    "state": _state_dict(ctx),
+                }
+            confirmed = confirm_pending(registry, ctx)
+            assert confirmed is not None  # armed above, and only this consumes it
+            name, result = confirmed
+            if result.get("ok") is not True:
+                raise HTTPException(
+                    status_code=409, detail=result.get("error", f"cannot {name}")
+                )
+            await _broadcast_state()
+            return {"op": name, "confirmed": True, "state": _state_dict(ctx)}
 
     @app.post("/api/game/undo")
     async def undo(request: UndoRequest) -> dict[str, Any]:
-        plies = request.plies
-        if plies is None:
-            # The player's takeback: vs the engine it is always the player's
-            # turn after an exchange, so pop their move and the engine's
-            # reply; when the game ended on the player's own move (no reply)
-            # or there is no engine, one ply. Never the engine's lone
-            # opening — that is not the player's to take back (409 below).
-            session = ctx.session
-            vs_engine = ctx.engine is not None
-            plies = 2 if vs_engine and session.turn == session.player_color else 1
-        coordinator.abandon_turn()  # the open turn's position is being taken back
-        result = ctx.session.undo(plies)
-        if not result.ok:
-            raise HTTPException(status_code=409, detail=result.reason)
-        await _broadcast_state()
-        return {"undone": list(result.undone), "state": _state_dict(ctx.session)}
+        async with _mutation(request.version):
+            plies = request.plies
+            if plies is None:
+                # The player's takeback: vs the engine it is always the player's
+                # turn after an exchange, so pop their move and the engine's
+                # reply; when the game ended on the player's own move (no reply)
+                # or there is no engine, one ply. Never the engine's lone
+                # opening — that is not the player's to take back (409 below).
+                session = ctx.session
+                vs_engine = ctx.engine is not None
+                plies = 2 if vs_engine and session.turn == session.player_color else 1
+            # Inside the guard, so a stale takeback costs the open turn nothing:
+            # the position it was about is not the one this request meant.
+            coordinator.abandon_turn()
+            result = ctx.session.undo(plies)
+            if not result.ok:
+                raise HTTPException(status_code=409, detail=result.reason)
+            await _broadcast_state()
+            return {"undone": list(result.undone), "state": _state_dict(ctx)}
 
     @app.post("/api/game/resign")
     async def resign(request: ResignRequest) -> Any:
@@ -747,13 +866,14 @@ def create_app(
         player's own side, and the side to move is only coincidentally that
         (trace review, finding 8).
         """
-        outcome = _run_destructive(
-            "resign", {"color": request.color or ctx.session.player_color}
-        )
-        if isinstance(outcome, JSONResponse):
-            return outcome
-        await _broadcast_state()
-        return {"outcome": outcome["outcome"], "state": _state_dict(ctx.session)}
+        async with _mutation(request.version):
+            outcome = _run_destructive(
+                "resign", {"color": request.color or ctx.session.player_color}
+            )
+            if isinstance(outcome, JSONResponse):
+                return outcome
+            await _broadcast_state()
+            return {"outcome": outcome["outcome"], "state": _state_dict(ctx)}
 
     @app.post("/api/game/difficulty")
     def set_difficulty(request: DifficultyRequest) -> dict[str, Any]:
@@ -810,6 +930,23 @@ def create_app(
             logger.warning("trace_failed", exc_info=True)
 
     async def _run_command(
+        text: str,
+        transcript: Sequence[dict[str, str]],
+        version: int | None = None,
+    ) -> CommandOutcome:
+        """The command pipeline, under the mutation guard.
+
+        A command is a mutation path like any other — one utterance can move the
+        board — so it carries the same optional `version` precondition, and a
+        stale one is refused before the model is asked anything. The guard wraps
+        the *whole* run rather than the individual dispatches inside it: a turn
+        is one thing that happens to one board, and half of it landing on a
+        board someone else changed is exactly the race this closes.
+        """
+        async with _mutation(version):
+            return await _command_turn(text, transcript)
+
+    async def _command_turn(
         text: str, transcript: Sequence[dict[str, str]]
     ) -> CommandOutcome:
         """The single pipeline: user string → brain's tool loop → new state.
@@ -1035,7 +1172,7 @@ def create_app(
             # The UI still gets its own full document; a mutation shows up in the
             # agent view too (any board change moves the fen), so that comparison
             # decides the broadcast.
-            state = _state_dict(ctx.session)
+            state = _state_dict(ctx)
             changed = agent_state != before
             if changed:
                 await broadcaster.broadcast(state)
@@ -1074,7 +1211,7 @@ def create_app(
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
         transcript = ctx.transcript.window()
-        outcome = await _run_command(request.text, transcript)
+        outcome = await _run_command(request.text, transcript, request.version)
         # Record on the context, not a captured reference: resume_game may
         # have just swapped in the saved game's transcript, and this turn
         # belongs to that thread.

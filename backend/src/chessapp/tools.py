@@ -17,6 +17,7 @@ exactly-one-of `oneOf` cannot come from a plain signature.
 
 import inspect
 import json
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -110,7 +111,14 @@ class ToolContext:
     gate when it refuses a call, consumed by the pipeline on the next user turn.
     `_confirming` is the gate's only key, and it is deliberately not reachable
     from a tool argument — `confirm_pending` is the sole thing that turns it on,
-    so nothing the model can emit opens the gate."""
+    so nothing the model can emit opens the gate.
+
+    `board_version` and `mutation_lock` are the concurrency pair (audit item 7):
+    the version says *which* board a client is acting on, the lock is what makes
+    checking it and acting on it one indivisible step. Both live here rather
+    than on the session because the session is the thing that gets replaced —
+    `resume_game` swaps it, and resuming is itself a mutation clients must be
+    told about."""
 
     session: GameSession
     engine: EnginePlayer | None = None
@@ -119,6 +127,43 @@ class ToolContext:
     transcript: Transcript = field(default_factory=Transcript)
     pending: PendingOp | None = None
     _confirming: bool = False
+    # Carried across session swaps so the version never goes backwards; see
+    # `replace_session`. Not a public counter — `board_version` is.
+    _version_base: int = 0
+    # Plain and non-reentrant on purpose. Plain because the async transport
+    # acquires it off the event loop and releases it back on it — an owner-bound
+    # `RLock` would refuse that release. Non-reentrant because there is exactly
+    # one holder per request by construction: a transport takes it once around a
+    # whole mutation and nothing under it reaches for it again. Nesting two
+    # guarded regions in one thread would deadlock; don't.
+    mutation_lock: Any = field(default_factory=threading.Lock)
+
+    @property
+    def board_version(self) -> int:
+        """Monotonic id of the current board, bumped by every mutation.
+
+        Derived rather than counted by hand: `GameSession.revision` is the one
+        chokepoint every board mutation already passes through, so a player
+        move, the engine's reply, an undo, a new game and a resignation all
+        move this without a single `bump()` call scattered through the
+        handlers. What the session cannot see is its own replacement, and
+        `_version_base` is exactly that gap closed.
+        """
+        return self._version_base + self.session.revision
+
+    def replace_session(self, session: GameSession, transcript: Transcript) -> None:
+        """Swap in a resumed game — a mutation like any other, version included.
+
+        The base absorbs whatever the two sessions counted for themselves and
+        leaves the swap worth exactly one bump — the incoming session's own
+        revisions are not the shared board's history (a resumed game arrives
+        with one per replayed move, which no client ever saw happen). Clients
+        holding the old version are stale, which is the truth: they are holding
+        a number for a game that is no longer on the board.
+        """
+        self._version_base = self.board_version + 1 - session.revision
+        self.session = session
+        self.transcript = transcript
 
 
 # The two tools that throw a real game away.
@@ -704,8 +749,7 @@ def build_registry(
         # A different game replaces the position entirely, so the open turn (and
         # anything being computed for the *old* session) is abandoned first.
         coordinator.abandon_turn()
-        ctx.session = session
-        ctx.transcript = transcript
+        ctx.replace_session(session, transcript)
         return {
             "ok": True,
             "name": name,
