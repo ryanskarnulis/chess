@@ -11,6 +11,7 @@ import shutil
 
 import pytest
 
+from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.engine import DEFAULT_TIER
 from chessapp.game import GameSession
 from chessapp.tools import (
@@ -376,6 +377,180 @@ def test_make_move_without_engine_has_no_reply(registry):
     result = registry.dispatch("make_move", {"move": "e4"})
     assert result["engine_move"] is None
     assert result["turn"] == "black"
+
+
+# --- make_move, the two sequencing modes -------------------------------------
+#
+# The boundary is the same either way; who *sequences* the turn differs. Built
+# with `atomic_exchange=False` (app assembly), the tool applies the player's move
+# and stops, because the pipeline owns the beats that follow — the observation
+# reaction, then collecting the engine's reply. Built atomically (the default,
+# and what the MCP server gets), it runs the whole exchange itself, because an
+# MCP caller has no pipeline and its game must not stall half-way through a turn.
+
+
+def _split_registry(ctx: ToolContext):
+    coordinator = TurnCoordinator(ctx)
+    return build_registry(ctx, coordinator, atomic_exchange=False), coordinator
+
+
+def test_split_make_move_applies_the_player_move_only(session):
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    registry, coordinator = _split_registry(ctx)
+
+    result = registry.dispatch("make_move", {"move": "e4"})
+
+    assert result["legal"] is True
+    assert result["san"] == "e4"
+    assert "engine_move" not in result, "the reply is not this call's to report"
+    assert session.move_history() == ["e4"], "the engine has not moved yet"
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
+    assert coordinator.turn_id == 1, "the turn is still open"
+
+
+def test_split_make_move_reports_the_facts_the_narrator_reacts_to(session):
+    """The observation beat's structured facts (audit item 5): what moved, what
+    it took, whether it checks, and the board it left behind."""
+    for san in ("e4", "d5"):
+        session.submit_move(san)
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    registry, _ = _split_registry(ctx)
+
+    result = registry.dispatch("make_move", {"move": "exd5"})
+
+    assert result["san"] == "exd5"
+    assert result["uci"] == "e4d5"
+    assert result["capture"] == "p"
+    assert result["check"] is False
+    assert result["game_over"] is False
+    assert result["fen"] == session.fen()
+    assert result["turn"] == "black"
+
+
+def test_split_make_move_reports_a_check(session):
+    ctx = ToolContext(session=GameSession("4k3/8/8/8/8/8/8/4K2R w K - 0 1"))
+    registry, _ = _split_registry(ctx)
+    result = registry.dispatch("make_move", {"move": "Rh8"})
+    assert result["check"] is True
+    assert result["capture"] is None
+
+
+def test_split_make_move_on_a_game_ending_move_closes_the_turn():
+    session = GameSession(WHITE_MATE_IN_1)
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    registry, coordinator = _split_registry(ctx)
+
+    result = registry.dispatch("make_move", {"move": "Qxf7#"})
+
+    assert result["game_over"] is True
+    # Nothing is owed, so there is no beat left to run and no turn left open.
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+    assert coordinator.turn_id == 2
+
+
+def test_split_make_move_illegal_leaves_the_turn_untouched(session):
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    registry, coordinator = _split_registry(ctx)
+
+    result = registry.dispatch("make_move", {"move": "e5"})
+
+    assert result["legal"] is False
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+    assert session.move_history() == []
+
+
+def test_atomic_make_move_keeps_the_whole_exchange_and_the_new_facts(session):
+    """The default. An MCP caller dispatches this with nothing behind it to
+    collect the reply, so the tool finishes the turn itself — and gains the same
+    move facts the split result carries."""
+    for san in ("e4", "d5"):
+        session.submit_move(san)
+    ctx = ToolContext(session=session, engine=FakeEngine("b8c6"))
+    coordinator = TurnCoordinator(ctx)
+    registry = build_registry(ctx, coordinator)
+
+    result = registry.dispatch("make_move", {"move": "exd5"})
+
+    assert result["engine_move"] == {"san": "Nc6", "uci": "b8c6"}
+    assert result["capture"] == "p"
+    assert result["check"] is False
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+    assert coordinator.turn_id == 2
+    assert session.move_history() == ["e4", "d5", "exd5", "Nc6"]
+
+
+def test_the_two_modes_describe_themselves_differently(session):
+    """The docstring is the model's only account of what the call does, so it
+    cannot promise a reply inside the call in the mode that has none."""
+    ctx = ToolContext(session=session)
+
+    def description(registry):
+        return next(
+            d["function"]["description"]
+            for d in registry.definitions()
+            if d["function"]["name"] == "make_move"
+        )
+
+    atomic = description(build_registry(ctx))
+    split = description(build_registry(ctx, atomic_exchange=False))
+    assert "inside the same call" in atomic
+    assert "inside the same call" not in split
+    # Neither mode asks the model to do anything about the reply.
+    assert "Map loose phrasing" in atomic and "Map loose phrasing" in split
+
+
+# --- non-move mutations end the open turn ------------------------------------
+#
+# A turn is about a position. Undo, a new game, a resignation and a resumed save
+# all replace that position, so the coordinator's open turn — and any reply being
+# computed for it — goes with them. Otherwise the next collect would apply a
+# move decided for a board that no longer exists.
+
+
+def test_undo_abandons_the_open_turn(session):
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    registry, coordinator = _split_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
+
+    result = registry.dispatch("undo", {})
+
+    assert result["ok"] is True
+    assert session.move_history() == []
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+def test_new_game_abandons_the_open_turn(session):
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    ctx._confirming = True  # past the gate; this is about the turn, not the ask
+    registry, coordinator = _split_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})
+
+    result = registry.dispatch("new_game", {})
+
+    assert result["ok"] is True, "a fresh board mid-turn is not a turn-state error"
+    assert session.move_history() == []
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+def test_resign_abandons_the_open_turn(session):
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    ctx._confirming = True  # past the gate; this is about the turn, not the ask
+    registry, coordinator = _split_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})
+
+    assert registry.dispatch("resign", {})["ok"] is True
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+def test_resume_game_abandons_the_open_turn(session, tmp_path):
+    GameSession().save(tmp_path / "saved.json")
+    ctx = ToolContext(session=session, engine=FakeEngine(), save_dir=tmp_path)
+    registry, coordinator = _split_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})
+
+    assert registry.dispatch("resume_game", {"name": "saved"})["ok"] is True
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
 
 
 def test_make_move_reports_checkmate(registry):
