@@ -4,7 +4,8 @@
 replan (`docs/agent-control-audit-2026-07-25.md`, items 3 and 10), extended by
 slice 3 — the move flow split (items 2 and 5), which filled the observation slot
 — and by slice 4, which brought the board controls in (items 1 and 4). Sprint 2's
-first slice then made the per-turn mutation limits real (item 6). All of them are
+first slice then made the per-turn mutation limits real (item 6) and its second
+gave every mutation a board-version precondition (item 7). All of them are
 folded into this note where they changed something.
 
 ## Why
@@ -318,6 +319,66 @@ offer mid-loop: a tool list that changes shape between iterations is a second
 mechanism to keep in step with this one, and the refusal already arrives where
 the model reads every other kind of "no".
 
+## The board-version precondition (Sprint 2, slice 2 — audit item 7)
+
+The turn machine says what may happen *next*; it never said which **board** a
+request was about. One session is shared by the web UI, the delegate API a
+conductor drives, and MCP, so two clients could both read the position and both
+play into it, and the second move would land on a board its author had never
+seen. Two pieces close that, and neither is the model's business:
+
+- **`ToolContext.board_version`** — a monotonic int, published as `state.version`
+  in every state document (so it rides back on `/api/state`, the websocket push,
+  and every mutation response). It is *derived*, not counted by hand:
+  `GameSession.revision` bumps inside each mutating session method, which is the
+  one chokepoint a board mutation cannot avoid, so a player move, the engine's
+  reply, an undo, a new game and a resignation all move it with no `bump()` calls
+  sprinkled through the handlers. A read, an illegal move, a takeback of more
+  plies than were played, an op the confirmation gate merely *armed* — none of
+  them move it, because none of them changed anything.
+
+  It lives on the **context**, not the session, because the session is the thing
+  that gets replaced: `resume_game` swaps it, and resuming is itself a mutation
+  clients must be able to notice. `ToolContext.replace_session` is that one
+  bump, and it absorbs the incoming session's own replay revisions so the swap
+  is worth exactly one.
+
+- **An optional `version` on every mutating request** (`VersionedRequest` in
+  `api.py`, covering move / undo / new / resign / confirm / command, and
+  `MessageCreate.version` on the delegate wire). Supplied and superseded → 409
+  with `{"detail", "stale": true, "version", "state"}`: the same shape family as
+  the gate's `confirm: true` question, carrying what a client needs to resync and
+  retry in one round trip. Supplied and current, or omitted → exactly today's
+  behavior. Optional on purpose — the precondition is the *client's* opt-in, and
+  the frontend can adopt it in its own slice.
+
+**Atomicity is the load-bearing half.** A check that is not welded to the
+mutation is theatre: FastAPI runs sync endpoints in a threadpool and async ones
+on the loop, so requests genuinely interleave, and a whole turn can land between
+a version read and the move it authorized. Every mutating endpoint therefore runs
+inside `_mutation(expected)`, which takes `ctx.mutation_lock`, checks, and holds
+it for the duration — including across `abandon_turn`, so a stale undo does not
+cost an open turn on behalf of a request that was never going to be allowed. The
+lock is acquired **off the event loop** (`anyio.to_thread`), because a waiter that
+blocked the loop would stop the holder from finishing its own awaits and the two
+would deadlock; it is a plain non-reentrant `Lock` for the matching reason, since
+an owner-bound `RLock` would refuse a release from the thread that resumes the
+request.
+
+**MCP gets the lock but no `version` parameter.** Its tools are advertised from
+the very schema objects the brain is offered (`registry.definitions()`), and that
+shape is frozen by the eval floor on gemma-4-12b — TODO.md's standing warning.
+So `mcp_server._mcp_tool` takes `ctx.mutation_lock` around each dispatch instead:
+combined with its atomic `make_move`, that means two concurrent MCP calls take
+turns and neither can leave a turn half-played, which is serialization rather
+than staleness detection. A second MCP client can still play a move the first did
+not expect; what it cannot do is interleave with one.
+
+**The brain never sees a version.** Not in `_agent_state_dict`, not in a tool
+schema. It is transport bookkeeping between the app and its clients, and the
+house rule cuts both ways: code owns what code knows, and the model is not handed
+a number it would only be tempted to reason with.
+
 ## Known edges, deliberately left
 
 - **An engine that raises mid-calculation** leaves the phase at
@@ -330,9 +391,6 @@ the model reads every other kind of "no".
   the next command's `make_move` is refused as turn-state error data and *that*
   turn's close beat plays the owed reply. Self-healing rather than wedged, but the
   player pays an utterance for it — the resumability half of audit item 20.
-- **No board version / expected-FEN precondition** yet, so two clients can still
-  interleave turns on the one shared session (audit item 7, Sprint 2). The turn
-  id is the hook that work will hang off.
 - **A button-confirmed destructive op says nothing and is not traced.**
   `/api/game/confirm` runs the armed op and returns the new state; the spoken
   "yes" narrates and writes a trace record, this does not. Deliberate for now —

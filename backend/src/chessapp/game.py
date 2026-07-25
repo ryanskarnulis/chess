@@ -73,6 +73,23 @@ class GameSession:
         self._board = chess.Board(fen) if fen is not None else chess.Board()
         self._resigned: chess.Color | None = None
         self._player_color = _validate_player_color(player_color)
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        """How many times this session's board truth has changed, from 0.
+
+        The chokepoint the shared context's board version is built on: every
+        mutating method here bumps it, and only after the mutation actually
+        happened — an illegal move, a takeback of more plies than were played,
+        a resignation of a finished game all leave it where it was, because
+        nothing changed. Reads never touch it.
+
+        It counts *mutations*, not plies: a full exchange is two, an undo of two
+        plies is one. Nobody outside compares it to a move count — what a client
+        needs is only whether the number it holds is still the current one.
+        """
+        return self._revision
 
     @property
     def turn(self) -> str:
@@ -97,6 +114,7 @@ class GameSession:
         self._resigned = None
         if player_color is not None:
             self._player_color = player_color
+        self._revision += 1
 
     def resign(self, color: str | None = None) -> Outcome:
         """Record a resignation. Defaults to the side to move.
@@ -114,6 +132,7 @@ class GameSession:
                 raise ValueError(f"invalid color: {color!r}")
             resigner = by_name[color]
         self._resigned = resigner
+        self._revision += 1
         return self.outcome()
 
     def submit_move(self, move_str: str) -> MoveResult:
@@ -127,6 +146,7 @@ class GameSession:
         san = self._board.san(move)
         capture = self._captured_symbol(move)
         self._board.push(move)
+        self._revision += 1
         return MoveResult(
             legal=True,
             san=san,
@@ -216,6 +236,7 @@ class GameSession:
         undone = tuple(reversed(self.move_history()[-plies:]))
         for _ in range(plies):
             self._board.pop()
+        self._revision += 1
         return UndoResult(ok=True, undone=undone)
 
     def legal_moves(self) -> list[str]:

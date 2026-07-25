@@ -106,6 +106,14 @@ class ConversationRead(BaseModel):
 
 class MessageCreate(BaseModel):
     content: AgentMessageText
+    # The delegate half of the board-version precondition (audit item 7). A
+    # conductor drives the *same* session the web board does, so it gets the
+    # same opt-in guarantee at its own entry point: supply the `state.version`
+    # you last saw and a turn that would land on a board somebody else has
+    # already moved is refused 409 instead of played. Omitted is today's
+    # behavior — the field is additive, and PCC's schema has no counterpart, so
+    # a caller that never sends it stays byte-compatible.
+    version: int | None = None
 
 
 class ToolCallRead(BaseModel):
@@ -386,7 +394,9 @@ def rate_limit(
 
 # --- router -------------------------------------------------------------------
 
-RunCommand = Callable[[str, Sequence[dict[str, str]]], "Awaitable[CommandOutcome]"]
+RunCommand = Callable[
+    [str, Sequence[dict[str, str]], int | None], "Awaitable[CommandOutcome]"
+]
 
 
 def build_agent_router(
@@ -454,7 +464,10 @@ def build_agent_router(
         assistant turn.
 
         The user turn is committed *before* the pipeline runs, so a provider
-        failure — surfaced as 502 — never loses what the caller said. History
+        failure — surfaced as 502 — never loses what the caller said, and a
+        stale `version` (409, from the pipeline's mutation guard) is the same
+        deal: the turn is on the record, the board is untouched, and the caller
+        can resync and say it again. History
         replays as text turns only; ``X-Agent-Actor`` binds a trusted delegate
         caller (conductor) as the run's audit actor in the log, otherwise it
         falls back to the loop's default identity.
@@ -475,7 +488,7 @@ def build_agent_router(
         user_message = store.append_user_message(conversation, data.content)
 
         try:
-            outcome = await run_command(data.content, history)
+            outcome = await run_command(data.content, history, data.version)
         except ProviderError as exc:
             logger.error(
                 "agent_delegate_run_failed conversation_id=%s error=%s",
