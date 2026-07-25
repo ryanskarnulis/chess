@@ -535,15 +535,21 @@ def create_app(
         before = _agent_state_dict(ctx)
         beats = _play_move(move, ctx.transcript.window())
         result = beats.result
+        narration = beats.narration
         if result.get("ok") is False:
             # A turn-state rejection: 409 on the trusted path, exactly as direct
             # mode answers it (the agent reads the same refusal as result data).
+            # The drag played nothing, but the beats may have settled a turn that
+            # was left open — that reply is on the board now, so every client
+            # hears about it before the refusal goes back.
+            if ctx.session.fen() != before["fen"]:
+                await _broadcast_state()
             raise HTTPException(status_code=409, detail=result["error"])
         commentary = ""
         guarded = False
         if beats.legal:
             commentary = _move_commentary(
-                beats.narration.text if beats.narration is not None else "",
+                narration.text if narration is not None else "",
                 result,
                 beats.engine_reply,
                 beats.owed_reply,
@@ -561,7 +567,6 @@ def create_app(
                 guarded = True
             ctx.transcript.record(result["san"], commentary)
             await _broadcast_state()
-        narration = beats.narration
         _trace_turn(
             utterance=move,
             route=ROUTE_BOARD,

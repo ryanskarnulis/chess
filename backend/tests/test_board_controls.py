@@ -129,7 +129,12 @@ def test_a_drag_out_of_turn_is_409_and_settles_the_open_turn():
     )
     coordinator.apply_player_move("e4")  # a turn is open, mid-sequence
 
-    response = client.post("/api/game/move", json={"move": "d2d4"})
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # connect snapshot
+        response = client.post("/api/game/move", json={"move": "d2d4"})
+        # The settled reply is on the board, so the clients are told even though
+        # the request itself was refused.
+        assert ws.receive_json()["state"]["history"] == ["e4", "e5"]
 
     assert response.status_code == 409
     assert "d4" not in ctx.session.move_history(), "the refused drag played nothing"
