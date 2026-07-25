@@ -328,6 +328,12 @@ was a 502; not one was a behavioral miss.** The server flags are owned by
 
 ## Recorded baseline
 
+**Re-confirmed 2026-07-25 on the mutation-limits build (#148)**, whose one
+prompt change was deleting the "at most once per player turn" sentence from
+`make_move`'s description: 21 passed + `resume_not_denied` re-run to green
+after a 502 crash-restart (the composite procedure below), `hints_off` xfail
+unchanged, zero behavioral misses.
+
 **gemma-4-12b (UD-Q4_K_XL), Stockfish 17 @ `/usr/bin/stockfish`, 2026-07-25
 (planner/narrator slice) — 22/22 hard scenarios pass, 1 xfailed, nothing
 behaviorally red.** Composite across consecutive same-build runs per the 502
