@@ -47,6 +47,14 @@ tool-free narrator call that speaks as Glitch. So every model-routed scenario
 here costs exactly one call more than it did before that slice, and the fast
 path — which was already planner-free — costs exactly what it always did.
 
+Since the move-flow split (`docs/turn-coordinator.md`), a move turn's narration
+is the coordinator's *observation* beat — a reaction to the verified player move,
+run while Stockfish computes its reply — and the pipeline appends the reply as a
+canned line afterwards. That replaces the old post-hoc narration one for one, so
+every cost pin below is unchanged; what changed is that `make_move`'s result no
+longer carries the reply, so a scenario's board end-state is read where it always
+was, from `GET /api/state`.
+
 This suite is the tripwire the standard requires: baseline results are recorded
 in `docs/agent-evals.md`, and it gates every future prompt/model/loop change —
 run it before merging one; the baseline must not regress.
@@ -65,6 +73,7 @@ from fastapi.testclient import TestClient
 
 from chessapp.agent_api import reset_rate_limit
 from chessapp.api import create_app
+from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
 from chessapp.fastparse import parse_move
 from chessapp.game import GameSession
@@ -155,9 +164,13 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
     # settings default so reported difficulty and real strength agree.
     if ctx.settings.tier is not None:
         engine.set_tier(ctx.settings.tier)
-    # One registry, exactly as build_app does: the brain's loop dispatches
-    # through the same registry the app runs the fast path through.
-    registry = build_registry(ctx)
+    # One registry and one turn coordinator, exactly as build_app does: the
+    # brain's loop dispatches through the same registry the app runs the fast
+    # path through, and `atomic_exchange=False` leaves the engine's reply to the
+    # pipeline's close beat. Measuring the atomic tool instead would measure a
+    # different sequencing owner than the one that ships.
+    coordinator = TurnCoordinator(ctx)
+    registry = build_registry(ctx, coordinator, atomic_exchange=False)
     # The only departure from build_app: the real provider is wrapped so every
     # model round trip is counted and timed. create_llama_brain builds exactly
     # this provider when none is passed, so the wire itself is unchanged.
@@ -184,7 +197,9 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         planner_temperature=PLANNER_TEMPERATURE,
         provider=provider,
     )
-    client = TestClient(create_app(ctx, brain=brain, registry=registry))
+    client = TestClient(
+        create_app(ctx, brain=brain, registry=registry, coordinator=coordinator)
+    )
     return EvalApp(client=client, ctx=ctx, provider=provider)
 
 
