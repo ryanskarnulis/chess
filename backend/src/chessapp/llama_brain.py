@@ -114,7 +114,13 @@ class LlamaBrain:
 
     provider: ChatProvider
     dispatcher: ToolDispatcher
-    tool_definitions: list[dict[str, Any]]
+    # What the loop is *offered* — and therefore all it may call: a call
+    # outside this list is a schema-level unknown even when the dispatcher
+    # behind it could run it. A callable is re-resolved per command, the same
+    # live-settings seam as the two prompts, because settings change what
+    # exists for the model (hints off withholds `get_best_moves`), not just
+    # what it is told.
+    tool_definitions: list[dict[str, Any]] | Callable[[], list[dict[str, Any]]]
     system_prompt: str | Callable[[], str]
     # The loop's own prompt. Defaults to the shipped planner contract so a
     # caller that only cares about the persona still gets the split.
@@ -145,6 +151,11 @@ class LlamaBrain:
         transcript: Sequence[dict[str, str]] = (),
     ) -> AgentResponse:
         messages = self._messages(board_state, command, transcript)
+        # One resolution per command: the offer and the schemas it is validated
+        # against must be the same list for the whole run, even if a tool the
+        # run itself calls (set_hints_mode) changes what the *next* command gets.
+        tools = _resolve(self.tool_definitions)
+        schemas = _schemas_of(tools)
         run = _RunState()
         corrections = 0
 
@@ -155,7 +166,7 @@ class LlamaBrain:
                 # that *reasons* about that result is the narrator, and it
                 # inherits the thinking flip in `_close`. One thinking turn per
                 # analysis question, not two.
-                result = self._complete(messages)
+                result = self._complete(messages, tools)
             except ToolCallArgumentsError as exc:
                 # The model was still called and the loop pays for it, so the
                 # round trip counts (with no tokens — nothing came back to read).
@@ -186,7 +197,7 @@ class LlamaBrain:
             messages.append(result.to_message())
             schema_error = False
             for call in result.tool_calls:
-                payload, bad_schema = self._dispatch(call)
+                payload, bad_schema = self._dispatch(call, schemas)
                 schema_error = schema_error or bad_schema
                 run.record(call.name, call.arguments, payload)
                 messages.append(_tool_message(call.id, payload))
@@ -265,23 +276,21 @@ class LlamaBrain:
             completion_tokens=completion_tokens,
         )
 
-    def _dispatch(self, call: ProviderToolCall) -> tuple[dict[str, Any], bool]:
+    def _dispatch(
+        self, call: ProviderToolCall, schemas: dict[str, dict[str, Any]]
+    ) -> tuple[dict[str, Any], bool]:
         """Run one tool call; return its result and whether it failed at the
         *schema* level (an unknown tool, or arguments the schema rejects) —
         which is what separates a correction from an ordinary domain result.
         A schema-invalid call is never dispatched: the registry would only
         turn it into the same error, and the model needs the error either way.
+        `schemas` are the run's offered tools' — so a tool withheld from the
+        offer (hints off) is an unknown here too, never a dispatch.
         """
-        error = _validate_call(call, self._schemas())
+        error = _validate_call(call, schemas)
         if error is not None:
             return {"ok": False, "error": error}, True
         return self.dispatcher.dispatch(call.name, call.arguments), False
-
-    def _schemas(self) -> dict[str, dict[str, Any]]:
-        return {
-            d["function"]["name"]: d["function"]["parameters"]
-            for d in self.tool_definitions
-        }
 
     def _thinking(self, run: _RunState) -> bool:
         """Thinking is off until an analysis tool has answered; from then on
@@ -293,6 +302,7 @@ class LlamaBrain:
     def _complete(
         self,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
         *,
         thinking: bool | None = None,
     ) -> ChatResult:
@@ -304,7 +314,7 @@ class LlamaBrain:
         # different call).
         return self.provider.chat(
             messages,
-            tools=self.tool_definitions,
+            tools=tools,
             enable_thinking=(self.enable_thinking if thinking is None else thinking),
             temperature=self.planner_temperature,
         )
@@ -327,9 +337,13 @@ class LlamaBrain:
         ]
 
 
-def _resolve(prompt: str | Callable[[], str]) -> str:
-    """A prompt that may be a fixed string or a per-call provider."""
-    return prompt() if callable(prompt) else prompt
+def _resolve[T](value: T | Callable[[], T]) -> T:
+    """A prompt or tool list that may be a fixed value or a per-call provider."""
+    return value() if callable(value) else value
+
+
+def _schemas_of(tools: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {d["function"]["name"]: d["function"]["parameters"] for d in tools}
 
 
 def _fast_path_brief(board_state: dict[str, Any], changes: list[dict[str, Any]]) -> str:
@@ -411,7 +425,7 @@ def create_llama_brain(
     base_url: str,
     model: str,
     dispatcher: ToolDispatcher,
-    tool_definitions: list[dict[str, Any]],
+    tool_definitions: list[dict[str, Any]] | Callable[[], list[dict[str, Any]]],
     system_prompt_provider: Callable[[], str] | None = None,
     planner_prompt_provider: Callable[[], str] | None = None,
     enable_thinking: bool = False,
@@ -424,7 +438,9 @@ def create_llama_brain(
 
     `dispatcher` and `tool_definitions` should come from the same registry —
     the app assembly passes one `ToolRegistry` for both, so what the agent is
-    offered is exactly what can be run.
+    offered is exactly what can be run. Like the prompts, `tool_definitions`
+    may be a zero-arg callable resolved per command, so live settings can
+    change the offer itself (hints off withholds `get_best_moves`).
 
     Two prompts, because a turn is two phases: `system_prompt_provider` is the
     narrator's (the personality) and `planner_prompt_provider` is the loop's

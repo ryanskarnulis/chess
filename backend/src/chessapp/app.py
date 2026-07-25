@@ -19,6 +19,7 @@ Stockfish off (no engine); both are optional here.
 
 import os
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -90,17 +91,32 @@ def build_app(
     # to the verified move, then collecting the engine's reply. (The MCP server,
     # which has no pipeline, keeps the atomic default.)
     registry = build_registry(ctx, coordinator, atomic_exchange=False)
+
+    def offered_tools() -> list[dict[str, Any]]:
+        """What the brain may call this command, resolved off live settings.
+
+        Always minus the pure reads (it gets the board state in its prompt
+        every turn, so a read it already has the answer to only burns a round
+        trip out of four), and minus `get_best_moves` while hints are off —
+        the audit's item 11: hints-off is a capability the code withholds, not
+        a rule the prompt asks the model to follow. Callers with no such
+        injection (MCP, the delegate wire, /api/game/hint) keep the full
+        registry.
+        """
+        exclude = list(BOARD_STATE_TOOLS)
+        if not ctx.settings.hints_mode:
+            exclude.append("get_best_moves")
+        return registry.definitions(exclude=exclude)
+
     if brain is None:
         brain = create_llama_brain(
             base_url=llama_base_url,
             model=model,
             dispatcher=registry,
-            # The brain dispatches through the whole registry but is *offered*
-            # less: it gets the board state in its prompt every turn, so the
-            # tools that only read that state back can teach it nothing and
-            # would cost it a round trip out of four. Callers with no such
-            # injection (MCP, the delegate wire) still see the full list.
-            tool_definitions=registry.definitions(exclude=BOARD_STATE_TOOLS),
+            # The brain dispatches through the registry but is *offered* less
+            # (`offered_tools` above), re-resolved per command so the hints
+            # gate tracks the live setting.
+            tool_definitions=offered_tools,
             # The narrator's prompt (personality + verbosity + hints tone) and
             # the planner's (the compact tool contract, plus the hints
             # permission), each re-resolved per command off the live settings.
