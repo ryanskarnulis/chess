@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from chessapp.api import UNTRUE_CLAIM_REPLY, create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
+from chessapp.provider import ProviderError
 from chessapp.tools import ToolContext
 from fakes import FakeEngine, ScriptedBrain, scripted_app
 
@@ -452,6 +453,183 @@ def test_fast_move_broadcasts_state_to_ws():
         client.post("/api/command", json={"text": "e4"})
         message = ws.receive_json()
     assert message["state"]["history"] == ["e4"]
+
+
+# --- The observe beat: a reaction to the player's move, then the reply.
+#
+# `make_move` applies the player's move and stops (audit items 2/5), so the
+# narration Glitch produces on any route is now a reaction to a *verified player
+# move* rather than to a finished exchange. The pipeline runs the beats around
+# it: the reaction (which overlaps Stockfish, already computing since the move
+# landed), then collecting the reply, then a deterministic line announcing it.
+# The close beat is canned on purpose — the narration has already been paid for,
+# and a second round trip to react to the reply is the latency the acceptance
+# criterion forbids.
+
+
+def observing_client(
+    *responses: AgentResponse,
+    narrations: tuple = (),
+    verbosity: str = "normal",
+    reply_uci: str = "e7e5",
+):
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci))
+    ctx.settings.verbosity = verbosity
+    brain = ScriptedBrain(*responses, narrations=narrations)
+    app, _ = scripted_app(ctx, brain=brain)
+    return TestClient(app), brain, ctx
+
+
+def test_the_observation_reacts_to_the_player_move_alone():
+    """The board the narrator is handed has the player's move on it and nothing
+    else: the reply does not exist yet, so Glitch cannot be asked to react to
+    something it has not seen."""
+    client, brain, _ = observing_client(narrations=("Bold opener.",))
+
+    body = client.post("/api/command", json={"text": "e4"}).json()
+
+    assert len(brain.narrate_calls) == 1
+    state, changes = brain.narrate_calls[0]
+    assert state["history"] == ["e4"], "the engine has not replied yet"
+    assert state["turn"] == "black"
+    result = changes[0]["result"]
+    assert result["san"] == "e4"
+    assert "engine_move" not in result
+    assert body["state"]["history"] == ["e4", "e5"], "and then it replied"
+
+
+def test_the_observation_is_handed_the_facts_about_the_move():
+    """The structured facts the audit asks for: what moved, what it took, and
+    whether it checks — all from the session, none from the model."""
+    client, brain, ctx = observing_client(narrations=("Mine.",), reply_uci="b8c6")
+    for san in ("e4", "d5"):
+        ctx.session.submit_move(san)
+
+    client.post("/api/command", json={"text": "exd5"})
+
+    result = brain.narrate_calls[0][1][0]["result"]
+    assert result["capture"] == "p"
+    assert result["check"] is False
+
+
+def test_the_reply_is_announced_after_the_reaction():
+    client, _, _ = observing_client(narrations=("Bold opener.",))
+    body = client.post("/api/command", json={"text": "e4"}).json()
+    assert body["commentary"] == "Bold opener.\n\ne5."
+
+
+def test_the_brain_routes_move_gets_the_reply_appended_too():
+    """One convergent close beat: the loop's own closing narration is the observe
+    beat on that route, and the reply announcement follows it the same way."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
+    app, _ = scripted_app(ctx, move("e4", text="King's pawn, obviously."))
+
+    body = TestClient(app).post("/api/command", json={"text": "play e4"}).json()
+
+    assert body["commentary"] == "King's pawn, obviously.\n\ne5."
+    assert body["state"]["history"] == ["e4", "e5"]
+    # What the brain saw is what it reacted to: no reply in the tool result.
+    assert "engine_move" not in body["tool_results"][0]["result"]
+
+
+def test_a_turn_that_moved_nothing_announces_nothing():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    app, _ = scripted_app(ctx, AgentResponse(text="Twenty moves, take your pick."))
+
+    body = TestClient(app).post("/api/command", json={"text": "how's it look?"}).json()
+
+    assert body["commentary"] == "Twenty moves, take your pick."
+    assert body["state"]["history"] == []
+
+
+def test_a_game_ending_player_move_has_no_reply_to_announce():
+    client, _, ctx = observing_client(narrations=("Called it.",))
+    for san in ("e4", "f6", "d3", "g5"):
+        ctx.session.submit_move(san)
+
+    body = client.post("/api/command", json={"text": "queen to h5"}).json()
+
+    assert ctx.session.is_game_over()
+    assert body["commentary"] == "Called it.", "nothing replied, so nothing is added"
+
+
+def test_a_reply_that_ends_the_game_says_so():
+    """The close beat carries the outcome, because the reply is the one move
+    Glitch's reaction could not have seen coming."""
+    client, _, ctx = observing_client(narrations=("Your funeral.",), reply_uci="d8h4")
+    for san in ("f3", "e5"):
+        ctx.session.submit_move(san)
+
+    body = client.post("/api/command", json={"text": "g4"}).json()
+
+    assert ctx.session.is_game_over()
+    assert body["commentary"] == "Your funeral.\n\nQh4#. Game over: 0-1 (checkmate)."
+
+
+def test_a_failed_observation_still_gets_the_reply_and_the_turn():
+    """Direct-mode degradation (audit item 20): the reaction is optional by
+    construction, the engine's reply is not. A provider failure costs the words
+    and nothing else — the move it was about has already been played."""
+    client, _, ctx = observing_client(
+        narrations=(ProviderError("llama-server went away"),)
+    )
+
+    body = client.post("/api/command", json={"text": "e4"}).json()
+
+    assert body["commentary"] == "e4. e5.", "the canned confirmation stands in"
+    assert ctx.session.move_history() == ["e4", "e5"]
+    # And the turn really closed: the next move is accepted straight away.
+    second = client.post("/api/command", json={"text": "Nf3"}).json()
+    assert second["state"]["history"][:3] == ["e4", "e5", "Nf3"]
+
+
+def test_low_verbosity_keeps_the_zero_llm_move_with_the_reply_in_one_line():
+    """The latency floor the acceptance criterion protects: verbosity=low skips
+    the reaction exactly as it always skipped narration, and the whole turn is
+    one canned line assembled from the two results."""
+    client, brain, _ = observing_client(verbosity="low")
+
+    body = client.post("/api/command", json={"text": "e4"}).json()
+
+    assert brain.calls == [] and brain.narrate_calls == []
+    assert body["commentary"] == "e4. e5."
+
+
+def test_an_undo_inside_the_turn_abandons_the_owed_reply():
+    """undo-then-replace in one turn: the undo abandons the coordinator's turn,
+    so the reply that was being computed for the undone move never lands."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Fine, taken back.",
+            tool_calls=(
+                ToolCall(name="make_move", args={"move": "e4"}),
+                ToolCall(name="undo", args={}),
+            ),
+        ),
+    )
+
+    body = (
+        TestClient(app)
+        .post("/api/command", json={"text": "e4 — no wait, take that back"})
+        .json()
+    )
+
+    assert ctx.session.move_history() == []
+    assert body["commentary"] == "Fine, taken back.", "no reply to announce"
+
+
+def test_a_false_ending_in_the_observation_is_still_guarded():
+    """The guard runs on the assembled commentary against the post-reply board,
+    so a reaction that invents an ending is caught on the new road too."""
+    client, _, ctx = observing_client(narrations=("That's the game. Game over.",))
+
+    body = client.post("/api/command", json={"text": "e4"}).json()
+
+    assert not ctx.session.is_game_over()
+    assert body["commentary"] == UNTRUE_CLAIM_REPLY
+    assert "e5" not in body["commentary"], "the lie takes the reply line with it"
 
 
 # --- The destructive-op confirmation gate, at the pipeline.

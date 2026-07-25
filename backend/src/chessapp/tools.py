@@ -301,8 +301,43 @@ def saved_game_names(ctx: ToolContext) -> list[str]:
     return sorted(path.stem for path in ctx.save_dir.glob("*.json"))
 
 
+# `make_move`'s description, in two variants — see `build_registry`'s
+# `atomic_exchange`. Only the account of the engine's reply differs, because that
+# is the only caller-visible difference: in one mode the reply has already been
+# played when the result comes back, in the other it lands a moment later.
+# Either way it is automatic and none of the model's business, and neither
+# variant offers it anything to do about it. Written out as constants (rather
+# than one template) so the atomic text stays byte-for-byte what the schema
+# golden recorded; the wrapping is `inspect.getdoc`'s.
+_MAKE_MOVE_HOW = """Submit the player's move: a string copied from the board state's
+`legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to
+the matching entry ("push the queen's bishop pawn one square" → 'c3')
+and fix voice slips ("e 4" → 'e4'); never invent a string that isn't in
+`legal_moves`."""
+
+_MAKE_MOVE_ATOMIC_TAIL = (
+    "Call this at most once per player turn — the engine plays its reply\n"
+    "inside the same call. If you proposed a move and the player accepts\n"
+    '("yes"), call it now; announcing a move in words is not making it.'
+)
+
+_MAKE_MOVE_SPLIT_TAIL = (
+    "Call this at most once per player turn — the engine answers as soon as\n"
+    "your move lands, without being asked. If you proposed a move and the\n"
+    'player accepts ("yes"), call it now; announcing a move in words is not\n'
+    "making it."
+)
+
+
+def _make_move_doc(atomic_exchange: bool) -> str:
+    tail = _MAKE_MOVE_ATOMIC_TAIL if atomic_exchange else _MAKE_MOVE_SPLIT_TAIL
+    return f"{_MAKE_MOVE_HOW}\n\n{tail}"
+
+
 def build_registry(
-    ctx: ToolContext, coordinator: TurnCoordinator | None = None
+    ctx: ToolContext,
+    coordinator: TurnCoordinator | None = None,
+    atomic_exchange: bool = True,
 ) -> ToolRegistry:
     """All read and write tools bound to `ctx`. Settings tools join in the
     final slice of the tool-layer epic.
@@ -312,6 +347,15 @@ def build_registry(
     move dragged on the board advance the same turn; omit it and the registry
     builds its own over the same `ctx` — enough for the MCP server, which is the
     only session in the process that owns nothing else.
+
+    `atomic_exchange` says who *sequences* a move turn — the boundary is the same
+    either way. True (the default): `make_move` runs the whole exchange, player
+    move and engine reply, and closes the turn. False: it applies the player's
+    move and stops, leaving the coordinator mid-turn for a caller that owns the
+    beats that follow — the observation reaction, then collecting the reply. App
+    assembly passes False because the command pipeline is that caller; the MCP
+    server keeps True, because an MCP call has nothing behind it to collect the
+    reply and its game must never stall half-way through a turn.
     """
     registry = ToolRegistry()
     if coordinator is None:
@@ -435,35 +479,40 @@ def build_registry(
             "counts": review.counts,
         }
 
-    @registry.tool()
     def make_move(
         move: Annotated[str, Field(description="SAN or UCI move.")],
     ) -> dict[str, Any]:
-        """Submit the player's move: a string copied from the board state's
-        `legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to
-        the matching entry ("push the queen's bishop pawn one square" → 'c3')
-        and fix voice slips ("e 4" → 'e4'); never invent a string that isn't in
-        `legal_moves`.
-
-        Call this at most once per player turn — the engine plays its reply
-        inside the same call. If you proposed a move and the player accepts
-        ("yes"), call it now; announcing a move in words is not making it."""
         # The turn sequence — player move, then the engine's reply — is the
-        # coordinator's, not this tool's and not the model's. What the caller
-        # sees is unchanged: one call, the whole exchange.
-        result, reply = coordinator.play_exchange(move)
+        # coordinator's, not this tool's and not the model's. All this tool
+        # chooses is how much of the sequence to run before answering: the whole
+        # exchange for a caller with nothing behind it (`atomic_exchange`), or the
+        # player's move alone, leaving the beats to the pipeline.
+        if atomic_exchange:
+            result, reply = coordinator.play_exchange(move)
+        else:
+            result, reply = coordinator.apply_player_move(move), None
         if not result.legal:
             return {"ok": True, "legal": False, "reason": result.reason}
-        return {
+        payload = {
             "ok": True,
             "legal": True,
             "san": result.san,
             "uci": result.uci,
-            "engine_move": _engine_move_dict(reply),
+            # What the move did, for whoever narrates it: the piece it took (a
+            # symbol, or null) and whether it left the opponent in check. Board
+            # truth, derived by the session at move time.
+            "capture": result.capture,
+            "check": result.check,
             "game_over": ctx.session.is_game_over(),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }
+        if atomic_exchange:
+            payload["engine_move"] = _engine_move_dict(reply)
+        return payload
+
+    make_move.__doc__ = _make_move_doc(atomic_exchange)
+    registry.tool()(make_move)
 
     @registry.tool()
     def undo(
@@ -484,6 +533,10 @@ def build_registry(
         player's move and the engine's reply — leaving the player to move
         again. Pass plies only when the player asked for an explicit count of
         half-moves."""
+        # A takeback replaces the position the open turn is about, so the turn
+        # goes with it (and any reply being computed for it). Same rule for every
+        # non-move mutation below.
+        coordinator.abandon_turn()
         result = ctx.session.undo(_takeback_plies(ctx) if plies is None else plies)
         if not result.ok:
             return {"ok": False, "error": result.reason}
@@ -544,6 +597,7 @@ def build_registry(
         refusal = _gate("new_game", {"player_color": player_color})
         if refusal is not None:
             return refusal
+        coordinator.abandon_turn()  # the old turn is about a board that is gone
         ctx.session.new_game(player_color)
         # When the player has black the engine owns white and makes the opening
         # move — otherwise the fresh board would sit waiting for a move only the
@@ -571,6 +625,7 @@ def build_registry(
         refusal = _gate("resign", {"color": color})
         if refusal is not None:
             return refusal
+        coordinator.abandon_turn()  # no reply is owed on a game that just ended
         outcome = ctx.session.resign(color)
         return {
             "ok": True,
@@ -613,6 +668,9 @@ def build_registry(
         # can't leave a restored board with someone else's conversation.
         session = GameSession.from_dict(data)
         transcript = Transcript.from_dict(data.get("transcript", []))
+        # A different game replaces the position entirely, so the open turn (and
+        # anything being computed for the *old* session) is abandoned first.
+        coordinator.abandon_turn()
         ctx.session = session
         ctx.transcript = transcript
         return {

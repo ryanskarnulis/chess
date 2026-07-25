@@ -85,7 +85,11 @@ def build_app(
     # One registry for the whole app: the brain dispatches its tool calls
     # through it and the pipeline runs the fast path through it, so the tools
     # the agent is offered are exactly the tools that execute.
-    registry = build_registry(ctx, coordinator)
+    # `atomic_exchange=False`: `make_move` applies the player's move and stops,
+    # because the command pipeline owns the beats that follow — Glitch's reaction
+    # to the verified move, then collecting the engine's reply. (The MCP server,
+    # which has no pipeline, keeps the atomic default.)
+    registry = build_registry(ctx, coordinator, atomic_exchange=False)
     if brain is None:
         brain = create_llama_brain(
             base_url=llama_base_url,

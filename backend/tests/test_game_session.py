@@ -80,6 +80,61 @@ def test_san_capture_notation_is_accepted():
     assert result.san == "exd5"
 
 
+# --- what the move did: the facts the narrator reacts to --------------------
+#
+# The observe beat between the player's move and the engine's reply describes a
+# *verified* move ("you took my bishop", "and that's check"), so those two facts
+# come back with the move itself. They are board truth, so the session derives
+# them — not the caller, and never the model.
+
+
+def test_a_quiet_move_captured_nothing_and_gave_no_check():
+    result = GameSession().submit_move("e4")
+    assert result.capture is None
+    assert result.check is False
+
+
+def test_a_capture_reports_the_piece_it_took():
+    session = GameSession()
+    session.submit_move("e4")
+    session.submit_move("d5")
+    result = session.submit_move("exd5")
+    assert result.capture == "p"
+
+
+def test_a_capture_reports_the_piece_type_not_just_that_it_captured():
+    session = GameSession(
+        "rnbqkbnr/ppp1pppp/8/8/3n4/2P5/PP1PPPPP/RNBQKBNR w KQkq - 0 1"
+    )
+    result = session.submit_move("cxd4")
+    assert result.capture == "n"
+
+
+def test_en_passant_reports_the_pawn_it_took():
+    """The captured piece is not on the destination square, which is the one
+    case a naive `piece_at(to_square)` gets wrong (and `captured_pieces`
+    already handles)."""
+    session = GameSession(
+        "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3"
+    )
+    result = session.submit_move("exf6")
+    assert result.capture == "p"
+
+
+def test_a_checking_move_reports_the_check():
+    session = GameSession("4k3/8/8/8/8/8/8/4K2R w K - 0 1")
+    result = session.submit_move("Rh8")
+    assert result.check is True
+    assert result.capture is None
+
+
+def test_a_rejected_move_reports_neither_fact():
+    result = GameSession().submit_move("e5")
+    assert result.legal is False
+    assert result.capture is None
+    assert result.check is False
+
+
 def test_uci_promotion_move_is_accepted():
     session = GameSession(fen="8/4P3/8/8/8/8/2k5/K7 w - - 0 1")
     result = session.submit_move("e7e8q")

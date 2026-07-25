@@ -25,13 +25,23 @@ _TERMINATION_NAMES = {
 
 @dataclass(frozen=True)
 class MoveResult:
-    """Outcome of a move submission. `legal` is the engine's final word."""
+    """Outcome of a move submission. `legal` is the engine's final word.
+
+    `capture` (the symbol of the piece the move took, or None) and `check`
+    (whether it left the opponent in check) are here because the observe beat
+    between the player's move and the engine's reply narrates a verified move,
+    and those are the two facts a reaction is made of. They are board truth, so
+    the session derives them at move time — the caller never re-reads the board
+    to work out what just happened, and the model is never asked.
+    """
 
     legal: bool
     san: str | None = None
     uci: str | None = None
     game_over: bool = False
     reason: str | None = None
+    capture: str | None = None
+    check: bool = False
 
 
 @dataclass(frozen=True)
@@ -115,13 +125,28 @@ class GameSession:
             return MoveResult(legal=False, reason=f"illegal move: {move_str}")
 
         san = self._board.san(move)
+        capture = self._captured_symbol(move)
         self._board.push(move)
         return MoveResult(
             legal=True,
             san=san,
             uci=move.uci(),
             game_over=self._board.is_game_over(),
+            capture=capture,
+            check=self._board.is_check(),
         )
+
+    def _captured_symbol(self, move: chess.Move) -> str | None:
+        """The symbol of the piece `move` takes, or None for a quiet move.
+        Read before the push, and en-passant-aware: there the captured pawn is
+        not on the destination square (the same rule `captured_pieces` replays).
+        """
+        if not self._board.is_capture(move):
+            return None
+        if self._board.is_en_passant(move):
+            return chess.piece_symbol(chess.PAWN)
+        piece = self._board.piece_at(move.to_square)
+        return chess.piece_symbol(piece.piece_type) if piece is not None else None
 
     def export_pgn(self) -> str:
         """The game so far as PGN. Result reflects resignation too."""

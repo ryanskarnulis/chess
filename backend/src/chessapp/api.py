@@ -13,6 +13,11 @@ Conventions:
   the player's move leaves the game running, the engine replies in the same
   request — that's the LLM-off vs-Stockfish mode the app must always
   support, now going through the same machine the agent's moves do.
+  `/api/game/move` runs the exchange atomically (no agent, so no beats to
+  run); the command pipeline runs the same sequence one beat at a time, with
+  Glitch's reaction in the middle (`_run_command`). Any non-move mutation
+  (undo, new game, resignation) abandons an open turn first, here as in the
+  tools: the position that turn was about is the thing being replaced.
 
 Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
@@ -34,11 +39,12 @@ from pydantic import BaseModel, Field, model_validator
 from chessapp.agent_api import ConversationStore, build_agent_router
 from chessapp.analysis import review_game
 from chessapp.brain import Brain
-from chessapp.coordinator import TurnCoordinator, TurnStateError
+from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
 from chessapp.honesty import claims_destructive_outcome
+from chessapp.provider import ProviderError
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
     UNDO_PLIES_MAX,
@@ -175,6 +181,15 @@ def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
 
 
+def _move_reply_dict(reply: MoveResult | None) -> dict[str, Any] | None:
+    """The engine's reply for the trace record: `{"san", "uci"}`, or None when
+    none was owed. It no longer rides inside a tool result, so this is the only
+    place a traced move turn can learn what answered it."""
+    if reply is None:
+        return None
+    return {"san": reply.san, "uci": reply.uci}
+
+
 def _destructive_confirmation(
     name: str, result: dict[str, Any], session: GameSession
 ) -> str:
@@ -193,19 +208,38 @@ def _destructive_confirmation(
     return " ".join(parts)
 
 
-def _move_confirmation(result: dict[str, Any], session: GameSession) -> str:
-    """Deterministic stand-in for the reaction on the fast path at
-    verbosity=low: the move, the engine's reply, and the outcome if the game
-    ended — facts from the tool result, zero LLM calls."""
-    parts = [f"{result['san']}."]
-    engine_move = result.get("engine_move")
-    if engine_move:
-        parts.append(f"{engine_move['san']}.")
-    if result.get("game_over"):
+def _reply_announcement(reply: MoveResult | None, session: GameSession) -> str:
+    """The close beat, in the app's own words: the engine's reply, plus the
+    outcome if that reply ended the game. Empty when no reply was owed.
+
+    Deterministic on purpose. The turn's one narration already happened — during
+    the observation beat, while this very move was being computed — and asking
+    Glitch to react to the reply as well would cost a second round trip on every
+    move, which is precisely the latency the observation beat is required not to
+    add. So the reaction is the model's and the announcement is the app's.
+    """
+    parts: list[str] = []
+    if reply is not None and reply.san:
+        parts.append(f"{reply.san}.")
+    if session.is_game_over():
         outcome = _outcome_dict(session)
         if outcome:
             parts.append(f"Game over: {outcome['result']} ({outcome['termination']}).")
     return " ".join(parts)
+
+
+def _move_confirmation(
+    result: dict[str, Any], reply: MoveResult | None, session: GameSession
+) -> str:
+    """Deterministic stand-in for a whole fast-path move turn: the player's move,
+    the engine's reply, and the outcome if the game ended — facts from the two
+    results, zero LLM calls. What verbosity=low says, and what a failed
+    observation degrades to."""
+    return " ".join(
+        part
+        for part in (f"{result['san']}.", _reply_announcement(reply, session))
+        if part
+    )
 
 
 # What the player hears when the brain's loop ran out of budget instead of
@@ -357,6 +391,10 @@ def create_app(
         color = request.color if request is not None else "random"
         if color == "random":
             color = random.choice(["white", "black"])
+        # A fresh board is a different position, so whatever turn was open (and
+        # any reply being computed for it) is abandoned — the twin of what the
+        # `new_game` tool does on the agent's side.
+        coordinator.abandon_turn()
         ctx.session.new_game(player_color=color)
         # The engine owns the other side: when the player takes black it makes
         # the opening move right away. Whether it owes one, and playing it, are
@@ -380,6 +418,7 @@ def create_app(
             session = ctx.session
             vs_engine = ctx.engine is not None
             plies = 2 if vs_engine and session.turn == session.player_color else 1
+        coordinator.abandon_turn()  # the open turn's position is being taken back
         result = ctx.session.undo(plies)
         if not result.ok:
             raise HTTPException(status_code=409, detail=result.reason)
@@ -389,6 +428,7 @@ def create_app(
     @app.post("/api/game/resign")
     async def resign(request: ResignRequest) -> dict[str, Any]:
         try:
+            coordinator.abandon_turn()  # nothing is owed on a game that just ended
             outcome = ctx.session.resign(request.color)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -473,6 +513,18 @@ def create_app(
         second time. The pipeline no longer decides anything about tools — it
         hands the brain the board, takes back what happened, and broadcasts.
 
+        **The beats around a move.** `make_move` applies the player's move and
+        stops, so whatever narration the chosen route produced is a reaction to a
+        verified *player* move — the coordinator's observation beat, filled at
+        last (audit item 5). The pipeline then closes the turn: collect the reply
+        the engine has been computing since the move landed, complete the turn,
+        and append a deterministic line announcing it. Two properties are worth
+        being explicit about, because both are acceptance criteria. The
+        narration overlaps Stockfish rather than queueing behind it, so a plain
+        move costs the one model call it always cost. And the announcement is the
+        app's own words, not a second narration: Glitch reacts to what the player
+        did, and the app reports what answered.
+
         The brain sees the `transcript` the caller supplies (prior turns'
         commands plus the commentary that was shown, a bounded window, final
         answers only), so the agent can follow references to earlier turns —
@@ -484,10 +536,12 @@ def create_app(
         The fast path (the seam BRIEF reserves): an utterance that is exactly
         one unambiguous legal move skips the brain entirely and goes straight
         to make_move — through the same registry, so the road stays one road,
-        minus the model. At verbosity=low a canned confirmation stands in for
-        the commentary too, making a plain move a zero-LLM turn; otherwise the
-        brain still narrates the move that was made. Anything ambiguous or
-        non-move reaches the brain unchanged.
+        minus the model. `Brain.narrate` is that route's observation beat. At
+        verbosity=low it is skipped and one canned confirmation covers the move
+        and the reply, making a plain move a zero-LLM turn; a provider failure
+        degrades to the same line, because the reaction is optional and the
+        engine's reply is not. Anything ambiguous or non-move reaches the brain
+        unchanged.
         """
         assert brain is not None  # both callers guard; documents the invariant
         before = _agent_state_dict(ctx)
@@ -498,6 +552,10 @@ def create_app(
         tool_args: list[dict[str, Any]] = []
         commentary = ""
         stop_reason = "completed"
+        # The fast path's landed player move, held for the close beat: with no
+        # narration to speak for the turn (verbosity=low, or a provider failure)
+        # it and the engine's reply become one canned confirmation.
+        move_result: dict[str, Any] | None = None
         # The turn's cost at the provider boundary, summed across whatever model
         # calls the chosen route made. The deterministic branches (a canned
         # confirmation, a declined op) leave these at zero — a real, readable
@@ -541,18 +599,41 @@ def create_app(
             result = registry.dispatch("make_move", args)
             tool_results.append({"name": "make_move", "result": result})
             tool_args.append(args)
-            if ctx.settings.verbosity == "low":
-                commentary = _move_confirmation(result, ctx.session)
+            if result.get("legal") is True:
+                # Held for the close beat, which assembles the canned line from
+                # this and the engine's reply when no narration speaks for them.
+                move_result = result
             else:
-                narration = brain.narrate(
-                    _agent_state_dict(ctx),
-                    tool_results,
-                    transcript,
-                )
-                commentary = narration.text
-                model_calls = narration.model_calls
-                prompt_tokens = narration.prompt_tokens
-                completion_tokens = narration.completion_tokens
+                # `parse_move` already matched the move against this board, so a
+                # refusal here is a turn-state rejection (a previous turn left
+                # the machine mid-sequence), not an illegal move: nothing moved,
+                # so there is nothing to react to. The close beat below still
+                # settles whatever that turn left owing.
+                commentary = _STUCK_REPLY
+            if move_result is not None and ctx.settings.verbosity != "low":
+                # The observation beat. Stockfish has been computing its reply
+                # since the move landed, so this narration overlaps it instead of
+                # queueing behind it — the whole reason a plain move does not get
+                # slower for gaining a reaction. verbosity=low skips it exactly
+                # as it always skipped narration, keeping that move zero-LLM, and
+                # the canned confirmation below stands in.
+                try:
+                    narration = brain.narrate(
+                        _agent_state_dict(ctx),
+                        tool_results,
+                        transcript,
+                    )
+                except ProviderError:
+                    # The reaction is optional by construction (the coordinator's
+                    # observation phase); the engine's reply and the turn are not.
+                    # A provider failure costs the words and nothing else — the
+                    # move it was about is already on the board.
+                    logger.warning("observe_narration_failed", exc_info=True)
+                else:
+                    commentary = narration.text
+                    model_calls = narration.model_calls
+                    prompt_tokens = narration.prompt_tokens
+                    completion_tokens = narration.completion_tokens
         elif parse_resign(text):
             # An explicit resignation is deterministic text, so the model gets no
             # vote on whether it happened: live, it took one and answered "Word.
@@ -588,6 +669,27 @@ def create_app(
             # A budget stop (max_iterations / correction_limit) carries no
             # commentary: the loop never reached a text turn.
             commentary = response.text or _STUCK_REPLY
+        # The close beat, at the one point every route converges. A coordinator
+        # left mid-sequence means the player's move landed without its reply —
+        # whichever route played it — and whatever narration that route produced
+        # was this turn's reaction to it. So: collect the answer the engine has
+        # been computing all along, close the turn, and announce the reply in the
+        # app's own words. `complete_turn` is deliberately the pipeline's and not
+        # the tool's: nothing may close a turn the engine still owes a move to.
+        engine_reply: MoveResult | None = None
+        owed_reply = coordinator.phase in (
+            TurnPhase.PLAYER_MOVE_APPLIED,
+            TurnPhase.AGENT_OBSERVING,
+        )
+        if owed_reply:
+            engine_reply = coordinator.collect_engine_reply()
+            coordinator.complete_turn()
+        if move_result is not None and not commentary:
+            commentary = _move_confirmation(move_result, engine_reply, ctx.session)
+        elif owed_reply and (
+            reply_line := _reply_announcement(engine_reply, ctx.session)
+        ):
+            commentary = f"{commentary}\n\n{reply_line}" if commentary else reply_line
         # The honesty guard, at the one point every route converges: commentary
         # that announces the game ended (or restarted) when nothing ended it is
         # not shown to the player. The board and the tool results are the record
@@ -619,6 +721,7 @@ def create_app(
             fen_after=agent_state["fen"],
             tool_calls=tool_args,
             tool_results=tool_results,
+            engine_reply=_move_reply_dict(engine_reply),
             guarded=guarded,
             model_calls=model_calls,
             prompt_tokens=prompt_tokens,

@@ -90,7 +90,14 @@ def _mcp_tool(
 
 
 def build_mcp_server(ctx: ToolContext) -> FastMCP:
-    """A FastMCP server exposing exactly `build_registry(ctx)`'s tools."""
+    """A FastMCP server exposing exactly `build_registry(ctx)`'s tools.
+
+    Deliberately the registry's *atomic* default (`atomic_exchange=True`): the
+    same tool boundary the app offers, sequenced differently. An MCP call has no
+    pipeline behind it to run the app's observe/close beats, so `make_move` must
+    finish the exchange itself — otherwise a call would leave this process's game
+    parked mid-turn with a reply nobody is going to collect.
+    """
     registry = build_registry(ctx)
     tools = [
         _mcp_tool(
