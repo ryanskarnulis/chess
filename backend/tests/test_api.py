@@ -13,9 +13,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.api import create_app
+from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.engine import DEFAULT_TIER, CandidateMove, EnginePlayer
 from chessapp.game import GameSession
-from chessapp.tools import ToolContext
+from chessapp.tools import ToolContext, build_registry
 from fakes import FakeEngine
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -99,6 +100,56 @@ def test_move_accepts_uci(client):
 
 def test_missing_move_field_is_422(client):
     assert client.post("/api/game/move", json={}).status_code == 422
+
+
+# --- the turn coordinator on the trusted path -------------------------------
+
+
+def test_board_move_advances_the_coordinator(ctx):
+    ctx.engine = FakeEngine()
+    coordinator = TurnCoordinator(ctx)
+    client = TestClient(create_app(ctx, coordinator=coordinator))
+    body = client.post("/api/game/move", json={"move": "e4"}).json()
+    assert body["engine_move"]["uci"] == "e7e5"
+    assert coordinator.turn_id == 2
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+def test_board_move_out_of_turn_is_409(ctx):
+    """A turn-state rejection is a domain failure on the trusted path, the same
+    as an impossible undo — the agent sees the same refusal as result data."""
+    ctx.engine = FakeEngine()
+    coordinator = TurnCoordinator(ctx)
+    client = TestClient(create_app(ctx, coordinator=coordinator))
+    coordinator.apply_player_move("e4")  # a turn is open, mid-sequence
+    response = client.post("/api/game/move", json={"move": "d4"})
+    assert response.status_code == 409
+    assert ctx.session.move_history() == ["e4"]
+
+
+def test_new_game_opening_move_comes_from_the_coordinator(ctx):
+    ctx.engine = FakeEngine(reply_uci="e2e4")
+    coordinator = TurnCoordinator(ctx)
+    client = TestClient(create_app(ctx, coordinator=coordinator))
+    body = client.post("/api/game/new", json={"color": "black"}).json()
+    assert body["state"]["history"] == ["e4"]
+    # The engine's opening move is not a turn: the player's first is still due.
+    assert coordinator.turn_id == 1
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+def test_tool_path_and_board_path_share_one_turn_machine(ctx):
+    """App assembly passes one coordinator to both `build_registry` and
+    `create_app`, so a move typed at the agent and a move dragged on the board
+    advance the same turn counter — not two machines that can disagree."""
+    ctx.engine = FakeEngine()
+    coordinator = TurnCoordinator(ctx)
+    registry = build_registry(ctx, coordinator)
+    client = TestClient(create_app(ctx, registry=registry, coordinator=coordinator))
+    registry.dispatch("make_move", {"move": "e4"})
+    assert coordinator.turn_id == 2
+    client.post("/api/game/move", json={"move": "Nf3"})
+    assert coordinator.turn_id == 3
 
 
 # --- lifecycle -------------------------------------------------------------

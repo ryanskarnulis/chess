@@ -23,6 +23,7 @@ from typing import Any
 
 from chessapp.api import create_app
 from chessapp.brain import AgentResponse, Narration
+from chessapp.coordinator import TurnCoordinator
 from chessapp.provider import ChatResult, Usage
 from chessapp.provider import ToolCall as ProviderToolCall
 from chessapp.tools import build_registry
@@ -124,16 +125,27 @@ def scripted_app(ctx, *responses: AgentResponse, brain=None, **create_kwargs):
     """`create_app` with a `ScriptedBrain` that dispatches through the app's own
     registry — the one wiring every api-level test needs.
 
-    The brain and the app share a single registry, exactly as app assembly does,
-    so a scripted tool call really runs against the real `ToolContext` and its
+    The brain and the app share a single registry — and one turn coordinator
+    behind it — exactly as app assembly does, so a scripted tool call really runs
+    against the real `ToolContext`, advances the real turn machine, and its
     result is real. Returns `(app, brain)`.
     """
-    registry = build_registry(ctx)
+    coordinator = TurnCoordinator(ctx)
+    registry = build_registry(ctx, coordinator)
     if brain is None:
         brain = ScriptedBrain(*responses, dispatcher=registry)
     elif getattr(brain, "dispatcher", None) is None:
         brain.dispatcher = registry
-    return create_app(ctx, brain=brain, registry=registry, **create_kwargs), brain
+    return (
+        create_app(
+            ctx,
+            brain=brain,
+            registry=registry,
+            coordinator=coordinator,
+            **create_kwargs,
+        ),
+        brain,
+    )
 
 
 def text_turn(
