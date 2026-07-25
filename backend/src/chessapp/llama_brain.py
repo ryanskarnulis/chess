@@ -7,11 +7,28 @@ httpx, and execution to a `ToolDispatcher` (the registry). This module is the
 only place that knows the model is Gemma-4 behind llama.cpp; everything else
 sees the `Brain` protocol.
 
+One turn is **two phases** (`docs/planner-narrator.md`, audit item 15):
+
+- The **planner** is the loop below. It runs on `planner_prompt` — the compact,
+  persona-free tool contract — because on a 12B a page of tone competes with
+  the tool decision for attention. Its first turn with no tool calls ends the
+  loop, and that turn's text is an internal handoff note, not commentary: the
+  planner never speaks to the player.
+- The **narrator** is one further call on `system_prompt` — the full Glitch
+  personality — offered **no tools**, given the utterance, the turn's tool
+  results and the planner's note. Its text is the reply. `narrate()`, the fast
+  path's commentary turn, is the same call with a different brief; both run
+  through `_speak`. Because the phase that talks holds no tools, the closing
+  pass is tool-free by construction rather than by the model declining.
+
+A budget stop (`max_iterations` / `correction_limit`) reaches no narrator: with
+nothing verified to speak from, the turn ends silent and the pipeline answers
+with its canned stuck reply.
+
 The loop is the fleet's standard shape (`../agent-standard/STANDARD.md` §3,
 reference: `project-command-center/backend/app/ai/loop.py`): call the model
 with tools, append its turn, dispatch each call, append each result as a
-`role: "tool"` message, repeat. A turn with no tool calls terminates the loop
-and its text is the commentary. Termination is structural — at most
+`role: "tool"` message, repeat. Termination is structural — at most
 `max_iterations` model turns — so the model can read a tool result while it
 still holds tools (that is what makes `get_best_moves` → `make_move` possible)
 without ever being able to spin.
@@ -41,7 +58,8 @@ Model-specific quirks, split across the two layers:
 - Thinking is toggled per request via the provider's `enable_thinking` flag.
   It stays OFF for fast move parsing and flips ON for the rest of the run once
   an analysis tool's result lands in context — the turn that comments on an
-  evaluation is analysis work, the turn that parses "knight f3" is not.
+  evaluation is analysis work, the turn that parses "knight f3" is not. The
+  narrator inherits that decision from the run it is closing.
 """
 
 import json
@@ -52,7 +70,7 @@ from typing import Any
 import jsonschema
 
 from chessapp.brain import AgentResponse, Narration, ToolDispatcher, _RunState
-from chessapp.personality import system_prompt_for
+from chessapp.personality import planner_prompt_for, system_prompt_for
 from chessapp.provider import (
     ChatProvider,
     ChatResult,
@@ -92,17 +110,27 @@ class LlamaBrain:
     dispatcher: ToolDispatcher
     tool_definitions: list[dict[str, Any]]
     system_prompt: str | Callable[[], str]
+    # The loop's own prompt. Defaults to the shipped planner contract so a
+    # caller that only cares about the persona still gets the split.
+    planner_prompt: str | Callable[[], str] = planner_prompt_for()
     enable_thinking: bool = False
     max_iterations: int = _DEFAULT_MAX_ITERATIONS
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS
+    # Per-phase sampling: the planner may run cooler than the narrator, which
+    # keeps the provider's default. None means "whatever the provider samples at".
+    planner_temperature: float | None = None
 
     def _resolve_system_prompt(self) -> str:
-        """The system prompt for this request. A callable is re-resolved every
-        call, so a live settings change (verbosity/hints mutating what the
-        provider reads) takes effect on the next command; a plain string is a
-        fixed prompt."""
-        prompt = self.system_prompt
-        return prompt() if callable(prompt) else prompt
+        """The narrator's system prompt for this request. A callable is
+        re-resolved every call, so a live settings change (verbosity/hints
+        mutating what the provider reads) takes effect on the next command; a
+        plain string is a fixed prompt."""
+        return _resolve(self.system_prompt)
+
+    def _resolve_planner_prompt(self) -> str:
+        """The loop's system prompt for this request, resolved per call for the
+        same reason (hints mode changes what the planner is told)."""
+        return _resolve(self.planner_prompt)
 
     def get_agent_response(
         self,
@@ -131,9 +159,10 @@ class LlamaBrain:
             run.count_call(*_usage_ints(result.usage))
 
             if not result.tool_calls:
-                # A text turn ends the run: it is the commentary, and it was
-                # produced with no tools on offer, so it cannot also act.
-                return run.response(result.content or "", "completed")
+                # The planner is done. Its text is a handoff note, never the
+                # reply — the narrator turns the turn's verified results into
+                # what the player actually reads.
+                return self._close(run, command, result.content or "", transcript)
 
             messages.append(result.to_message())
             schema_error = False
@@ -155,24 +184,54 @@ class LlamaBrain:
         changes: list[dict[str, Any]],
         transcript: Sequence[dict[str, str]] = (),
     ) -> Narration:
-        # The fast path's stand-in for the loop's closing turn: it reads the new
-        # board and what changed, never the raw utterance, and is offered no
-        # tools — so it can only comment, exactly like the turn it replaces.
-        prompt = (
-            "You just acted on the player's behalf. Here is what happened "
-            f"(each entry is a tool call and its result):\n{json.dumps(changes)}"
-            f"\n\nNew board state:\n{json.dumps(board_state)}\n\n"
-            "React with a short, in-character comment for the player, based "
-            "only on these results and the new board. Do not call any tools."
+        # The fast path's narrator turn: it reads the new board and what
+        # changed, never the raw utterance. Same phase as the loop's closer —
+        # same prompt, same absence of tools — with its own brief, because here
+        # the move is already on the board and there is no planner note.
+        return self._speak(
+            _fast_path_brief(board_state, changes),
+            transcript,
+            thinking=self.enable_thinking,
         )
+
+    def _close(
+        self,
+        run: _RunState,
+        command: str,
+        note: str,
+        transcript: Sequence[dict[str, str]],
+    ) -> AgentResponse:
+        """The narrator phase: speak as Glitch from what the turn actually did.
+
+        The board is not re-read here — the brain has no session, by design —
+        so the tool results are the record of what changed, exactly as they are
+        for `narrate`. The round trip is counted on the turn, so the split's
+        extra call shows up in the trace and the eval baseline.
+        """
+        narration = self._speak(
+            _closing_brief(command, run.tool_results, note),
+            transcript,
+            thinking=self._thinking(run),
+        )
+        run.count_call(narration.prompt_tokens, narration.completion_tokens)
+        return run.response(narration.text, "completed")
+
+    def _speak(
+        self,
+        brief: str,
+        transcript: Sequence[dict[str, str]],
+        *,
+        thinking: bool,
+    ) -> Narration:
+        """One narrator round trip: the persona prompt, the conversation, a
+        brief describing what happened — and no tools, so this phase cannot
+        act on anything it reads."""
         messages = [
             {"role": "system", "content": self._resolve_system_prompt()},
             *transcript,
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": brief},
         ]
-        result = self.provider.chat(
-            messages, tools=None, enable_thinking=self.enable_thinking
-        )
+        result = self.provider.chat(messages, tools=None, enable_thinking=thinking)
         prompt_tokens, completion_tokens = _usage_ints(result.usage)
         return Narration(
             text=result.content or "",
@@ -212,14 +271,17 @@ class LlamaBrain:
         *,
         thinking: bool | None = None,
     ) -> ChatResult:
-        # The provider owns the wire (model, sampling, top_k, the payload
-        # shape); the brain owns only the policy knob — whether the thinking
-        # channel is on for this call. Tools are always offered: the loop ends
-        # when the model declines to use them, not because we took them away.
+        # The provider owns the wire (model, top_p, top_k, the payload shape);
+        # the brain owns the policy knobs — whether the thinking channel is on,
+        # and the planner phase's temperature. Tools are always offered: the loop
+        # ends when the model declines to use them, not because we took them
+        # away (the phase that may not act is the narrator, and it is a
+        # different call).
         return self.provider.chat(
             messages,
             tools=self.tool_definitions,
             enable_thinking=(self.enable_thinking if thinking is None else thinking),
+            temperature=self.planner_temperature,
         )
 
     def _messages(
@@ -228,16 +290,51 @@ class LlamaBrain:
         command: str,
         transcript: Sequence[dict[str, str]] = (),
     ) -> list[dict[str, Any]]:
-        # Small prompt: personality/instructions, prior conversation (a
-        # bounded Transcript window, final answers only), then board truth +
-        # command. It is only the *opening* of the run — the loop grows this
-        # list turn by turn rather than rebuilding it, so the KV cache holds.
+        # Small prompt: the planner's contract, prior conversation (a bounded
+        # Transcript window, final answers only), then board truth + command.
+        # It is only the *opening* of the run — the loop grows this list turn by
+        # turn rather than rebuilding it, so the KV cache holds.
         user = f"Board state:\n{json.dumps(board_state)}\n\nCommand: {command}"
         return [
-            {"role": "system", "content": self._resolve_system_prompt()},
+            {"role": "system", "content": self._resolve_planner_prompt()},
             *transcript,
             {"role": "user", "content": user},
         ]
+
+
+def _resolve(prompt: str | Callable[[], str]) -> str:
+    """A prompt that may be a fixed string or a per-call provider."""
+    return prompt() if callable(prompt) else prompt
+
+
+def _fast_path_brief(board_state: dict[str, Any], changes: list[dict[str, Any]]) -> str:
+    """The narrator's brief for a move the loop never saw (the fast path). The
+    board here *is* fresh — the caller read it after the move landed."""
+    return (
+        "You just acted on the player's behalf. Here is what happened "
+        f"(each entry is a tool call and its result):\n{json.dumps(changes)}"
+        f"\n\nNew board state:\n{json.dumps(board_state)}\n\n"
+        "React with a short, in-character comment for the player, based "
+        "only on these results and the new board. Do not call any tools."
+    )
+
+
+def _closing_brief(command: str, changes: list[dict[str, Any]], note: str) -> str:
+    """The narrator's brief for a turn the planner just finished.
+
+    No board state: the one the loop opened with is stale the moment a tool
+    mutates anything, and the brain has no session to re-read (that is the
+    point of the seam). The tool results are the record of what changed, and
+    the planner's note says what it believes it did or what needs answering.
+    """
+    return (
+        f"The player said:\n{command}\n\n"
+        "Here is what was done about it (each entry is a tool call and its "
+        f"result):\n{json.dumps(changes)}\n\n"
+        f"Note from the layer that did it:\n{note}\n\n"
+        "Reply to the player in character, based only on those results and "
+        "that note. Do not call any tools."
+    )
 
 
 def _usage_ints(usage: Usage | None) -> tuple[int, int]:
@@ -291,9 +388,11 @@ def create_llama_brain(
     dispatcher: ToolDispatcher,
     tool_definitions: list[dict[str, Any]],
     system_prompt_provider: Callable[[], str] | None = None,
+    planner_prompt_provider: Callable[[], str] | None = None,
     enable_thinking: bool = False,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS,
+    planner_temperature: float | None = None,
     provider: ChatProvider | None = None,
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8200/v1).
@@ -302,11 +401,16 @@ def create_llama_brain(
     the app assembly passes one `ToolRegistry` for both, so what the agent is
     offered is exactly what can be run.
 
-    The system prompt, two ways: by default it is resolved once to a fixed
-    string; pass a `system_prompt_provider` — a zero-arg callable the brain
-    calls per command — so live settings changes (verbosity/hints) take effect
-    immediately (the app-assembly wires it to read `ctx.settings`). Either way
-    the brain stays prompt-agnostic: it just carries a string or a callable.
+    Two prompts, because a turn is two phases: `system_prompt_provider` is the
+    narrator's (the personality) and `planner_prompt_provider` is the loop's
+    (the tool contract). Each defaults to being resolved once into a fixed
+    string; pass a zero-arg callable — which the brain calls per command — so
+    live settings changes (verbosity, hints) take effect immediately (the
+    app-assembly wires both to read `ctx.settings`). Either way the brain stays
+    prompt-agnostic: it just carries a string or a callable.
+
+    `planner_temperature` samples the planner phase apart from the narrator;
+    None leaves both on the provider's default.
 
     `provider` is injected in tests / alternate backends; otherwise the factory
     builds a real `LlamaCppProvider` against `base_url` + `model` (no API key —
@@ -319,12 +423,19 @@ def create_llama_brain(
         if system_prompt_provider is not None
         else system_prompt_for()
     )
+    planner_prompt: str | Callable[[], str] = (
+        planner_prompt_provider
+        if planner_prompt_provider is not None
+        else planner_prompt_for()
+    )
     return LlamaBrain(
         provider=provider,
         dispatcher=dispatcher,
         tool_definitions=tool_definitions,
         system_prompt=system_prompt,
+        planner_prompt=planner_prompt,
         enable_thinking=enable_thinking,
         max_iterations=max_iterations,
         max_corrections=max_corrections,
+        planner_temperature=planner_temperature,
     )

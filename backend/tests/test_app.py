@@ -21,7 +21,7 @@ from chessapp.app import (
 )
 from chessapp.brain import AgentResponse
 from chessapp.engine import DEFAULT_TIER
-from chessapp.personality import system_prompt_for
+from chessapp.personality import planner_prompt_for, system_prompt_for
 from chessapp.tools import BOARD_STATE_TOOLS
 from fakes import (
     FakeEngine,
@@ -121,15 +121,38 @@ def test_build_app_without_a_static_dir_serves_no_frontend():
     assert client.get("/api/state").status_code == 200
 
 
+def test_build_app_wires_the_planner_and_narrator_prompts():
+    # The assembled shape of the split (docs/planner-narrator.md): the loop's
+    # turns run on the compact planner contract and the closing turn runs on the
+    # personality — one command, both prompts, from real app assembly.
+    fake = ScriptedProvider(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+    )
+    client = TestClient(build_app(model="gemma", provider=fake))
+
+    body = client.post("/api/command", json={"text": "play the king's pawn"}).json()
+
+    assert [call["messages"][0]["content"] for call in fake.calls] == [
+        planner_prompt_for(),
+        planner_prompt_for(),
+        system_prompt_for(),
+    ]
+    assert [call["tools"] is None for call in fake.calls] == [False, False, True]
+    assert body["commentary"] == "e4 it is."  # the narrator's words, not the note
+
+
 def test_build_app_wires_live_verbosity_switching():
     # "Talk less": a set_verbosity command must change the system prompt the
     # brain gets on the *next* command — end to end, through the assembled app
     # (settings mutated by the tool, read by the brain), so voice commands
-    # like "talk more/less" are real.
+    # like "talk more/less" are real. Verbosity is the narrator's layer, so it
+    # is the closing call of each command that has to move.
     fake = ScriptedProvider(
-        # cmd 1, phase one: the verbosity switch.
+        # cmd 1, planner turn one: the verbosity switch.
         tool_calls_turn(("set_verbosity", {"verbosity": "low"})),
-        # cmd 1, phase two (react) + everything after: plain text, no tools.
+        # the planner's handoff note, then every call after: plain text.
         text_turn("ok"),
     )
     client = TestClient(build_app(model="gemma", provider=fake))
@@ -137,17 +160,18 @@ def test_build_app_wires_live_verbosity_switching():
     client.post("/api/command", json={"text": "talk less"})
     client.post("/api/command", json={"text": "hello"})
 
-    # Before the switch the first command used the plain prompt...
-    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for()
-    # ...and the last command, after the switch, gets the low-verbosity layer.
+    # The command that made the switch planned under the plain planner prompt...
+    assert fake.calls[0]["messages"][0]["content"] == planner_prompt_for()
+    # ...and the last command's narrator gets the low-verbosity layer.
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
         verbosity="low"
     )
 
 
 def test_build_app_wires_live_hints_switching():
-    # "Give me hints": set_hints_mode must change the system prompt the brain
-    # gets on the next command, same live-settings seam as verbosity.
+    # "Give me hints": set_hints_mode must change *both* prompts on the next
+    # command — the narrator's tone layer and the planner's permission to reach
+    # for get_best_moves — the same live-settings seam as verbosity.
     fake = ScriptedProvider(
         tool_calls_turn(("set_hints_mode", {"enabled": True})),
         text_turn("ok"),
@@ -157,10 +181,34 @@ def test_build_app_wires_live_hints_switching():
     client.post("/api/command", json={"text": "give me hints"})
     client.post("/api/command", json={"text": "hello"})
 
-    assert fake.calls[0]["messages"][0]["content"] == system_prompt_for()
+    assert fake.calls[0]["messages"][0]["content"] == planner_prompt_for()
+    # cmd 2: the planner turn, then the narrator, both with hints on.
+    assert fake.calls[-2]["messages"][0]["content"] == planner_prompt_for(
+        hints_mode=True
+    )
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
         hints_mode=True
     )
+
+
+def test_build_app_from_env_reads_the_planner_temperature(monkeypatch):
+    # The sampling experiment's knob: a number in the environment, so a
+    # measurement run needs no code change. Unset means the provider's default.
+    captured: dict[str, object] = {}
+
+    def fake_create_llama_brain(*, planner_temperature=None, **kwargs):
+        captured["planner_temperature"] = planner_temperature
+        return ScriptedBrain(AgentResponse(text="hi"))
+
+    monkeypatch.setattr(chessapp.app, "create_llama_brain", fake_create_llama_brain)
+
+    monkeypatch.delenv("CHESSAPP_PLANNER_TEMPERATURE", raising=False)
+    build_app_from_env()
+    assert captured["planner_temperature"] is None
+
+    monkeypatch.setenv("CHESSAPP_PLANNER_TEMPERATURE", "0.3")
+    build_app_from_env()
+    assert captured["planner_temperature"] == 0.3
 
 
 def test_build_app_from_env_honors_the_llamacpp_env_vars(monkeypatch):
