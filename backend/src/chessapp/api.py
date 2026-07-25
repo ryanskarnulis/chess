@@ -13,11 +13,26 @@ Conventions:
   the player's move leaves the game running, the engine replies in the same
   request — that's the LLM-off vs-Stockfish mode the app must always
   support, now going through the same machine the agent's moves do.
-  `/api/game/move` runs the exchange atomically (no agent, so no beats to
-  run); the command pipeline runs the same sequence one beat at a time, with
-  Glitch's reaction in the middle (`_run_command`). Any non-move mutation
-  (undo, new game, resignation) abandons an open turn first, here as in the
-  tools: the position that turn was about is the thing being replaced.
+  Any non-move mutation (undo, new game, resignation) abandons an open turn
+  first, here as in the tools: the position that turn was about is the thing
+  being replaced.
+- **`/api/game/move` is mode-aware** (audit items 1/4). With a brain
+  configured — agent mode — a dragged move runs the same beats the command
+  pipeline's fast path runs (`_play_move`: dispatch `make_move`, let Glitch
+  react to the verified player move, collect the reply, close the turn), so a
+  drag-played game produces Glitch turns too and the drag is *not* a silent
+  bypass. With no brain — direct mode — it runs the atomic exchange it always
+  ran, answering byte-for-byte what it answered before: LLM-off play is a
+  binding invariant, and `/api/settings`' `agent_available` is what makes the
+  mode visible in the UI rather than a per-input surprise.
+- **The destructive-op gate is one system.** `/api/game/new` and
+  `/api/game/resign` dispatch through the registry, so the same deterministic
+  gate that refuses an unconfirmed `new_game`/`resign` for the agent arms
+  `ctx.pending` for a button press too: mid-game those endpoints answer 409
+  with the gate's question (`confirm: true`), and `/api/game/confirm` answers
+  it. It is the *same* armed op the spoken road uses, so a question asked by a
+  button can be answered by a typed "yes" and vice versa. Undo is not
+  destructive and keeps its direct endpoint.
 
 Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
@@ -32,13 +47,13 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from chessapp.agent_api import ConversationStore, build_agent_router
 from chessapp.analysis import review_game
-from chessapp.brain import Brain
+from chessapp.brain import Brain, Narration
 from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
@@ -55,6 +70,7 @@ from chessapp.tools import (
     saved_game_names,
 )
 from chessapp.trace import (
+    ROUTE_BOARD,
     ROUTE_BRAIN,
     ROUTE_CONFIRMATION,
     ROUTE_FAST_PATH,
@@ -99,6 +115,15 @@ class UndoRequest(BaseModel):
 
 class ResignRequest(BaseModel):
     color: str | None = Field(default=None, pattern="^(white|black)$")
+
+
+class ConfirmRequest(BaseModel):
+    """The player's answer to an armed destructive op: yes runs it, no drops
+    it. The same two answers `parse_confirmation` reads off a spoken turn, and
+    the same one `ctx.pending` — a question asked by a button can be answered
+    in words, and the other way round."""
+
+    confirm: bool
 
 
 class DifficultyRequest(BaseModel):
@@ -242,6 +267,31 @@ def _move_confirmation(
     )
 
 
+def _move_commentary(
+    reaction: str,
+    result: dict[str, Any],
+    reply: MoveResult | None,
+    owed_reply: bool,
+    session: GameSession,
+) -> str:
+    """The words for one move turn: Glitch's reaction to the verified player
+    move, then the app's own line announcing what answered it.
+
+    Shared by every route that plays a move — the fast path, a board drag — so
+    the two cannot drift apart in what a move turn *says*. With no reaction to
+    show (verbosity=low, a provider failure) one canned confirmation covers the
+    move and the reply together. `owed_reply` is why the announcement is not
+    derived from `reply` alone: a game-ending player move is owed nothing, and
+    its outcome already belongs to the reaction's turn rather than to a reply
+    that never came.
+    """
+    if not reaction:
+        return _move_confirmation(result, reply, session)
+    if owed_reply and (line := _reply_announcement(reply, session)):
+        return f"{reaction}\n\n{line}"
+    return reaction
+
+
 # What the player hears when the brain's loop ran out of budget instead of
 # answering (`max_iterations` / `correction_limit`): those stops carry no
 # commentary, and an empty bubble would read as a crash.
@@ -261,6 +311,61 @@ UNTRUE_CLAIM_REPLY = (
 # Deterministic, like the gate it came from: the model is not consulted about a
 # resignation at any point, including how to ask about one.
 _RESIGN_CONFIRM = "That's the game if you mean it. Say yes and I'll resign for you."
+
+# The same questions for a destructive op the *board UI* armed. Deterministic for
+# the same reason (`_RESIGN_CONFIRM` is this rule on the spoken road), and
+# phrased for a dialog rather than for a spoken yes.
+_CONFIRM_QUESTIONS = {
+    "new_game": "That ends the game in progress. Start a new one?",
+    "resign": "That's the game if you mean it. Resign?",
+}
+
+
+def _confirm_required(op: str) -> JSONResponse:
+    """409 + the gate's question, for a destructive UI action the gate armed.
+
+    A 409 because nothing happened and the request as sent cannot be completed —
+    the same status the endpoints already answer for an impossible undo. What
+    makes this one different is `confirm: true`: it marks the body as a *question*
+    rather than a failure, so a client can tell "answer me" from "no", and
+    `detail` stays what every other 409 here puts there — the line to show the
+    player. `op` names the armed op, so the client knows what it is confirming.
+    """
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": _CONFIRM_QUESTIONS.get(op, f"Confirm {op}?"),
+            "confirm": True,
+            "op": op,
+        },
+    )
+
+
+@dataclass(frozen=True)
+class _MoveBeats:
+    """One player move played through the coordinator's beats.
+
+    What `_play_move` did, for whoever asked it: the `make_move` result as
+    `changes` (the `{"name", "result"}` shape a narration and the trace both
+    read), the reaction if one was produced, and the engine's reply with whether
+    one was ever owed — `owed_reply` is False both when the game ended on the
+    player's own move and when the coordinator had nothing open, and the
+    commentary needs to tell those apart from "the engine passed".
+    """
+
+    changes: list[dict[str, Any]]
+    narration: Narration | None
+    engine_reply: MoveResult | None
+    owed_reply: bool
+
+    @property
+    def result(self) -> dict[str, Any]:
+        """The `make_move` result itself."""
+        return self.changes[0]["result"]
+
+    @property
+    def legal(self) -> bool:
+        return self.result.get("legal") is True
 
 
 def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
@@ -365,8 +470,147 @@ def create_app(
         except WebSocketDisconnect:
             broadcaster.disconnect(websocket)
 
+    def _play_move(move: str, transcript: Sequence[dict[str, str]]) -> _MoveBeats:
+        """One move through the coordinator's beats: apply, observe, close.
+
+        The move-turn orchestration, in one place, because two callers own those
+        beats — the command pipeline's fast path and a board drag in agent mode —
+        and "one road in" is worth nothing if the two roads sequence a turn
+        differently. `move` is always a structured move string (SAN or UCI), never
+        natural language: the fast path has already parsed the utterance against
+        this board, and a drag never had words in the first place.
+
+        The order is the whole point. `make_move` applies the player's move and
+        stops, the engine starts thinking the moment it lands, and the reaction
+        runs *while* it does — so the observation costs no wall clock. Then the
+        reply is collected and the turn closed. The reaction is optional by
+        construction: verbosity=low skips it, and a `ProviderError` costs the
+        words and nothing else, because the move it was about is already on the
+        board and the engine's answer is not the model's to hold up.
+        """
+        assert brain is not None  # both callers are agent-mode only
+        result = registry.dispatch("make_move", {"move": move})
+        changes = [{"name": "make_move", "result": result}]
+        narration: Narration | None = None
+        if result.get("legal") is True and ctx.settings.verbosity != "low":
+            try:
+                narration = brain.narrate(_agent_state_dict(ctx), changes, transcript)
+            except ProviderError:
+                logger.warning("observe_narration_failed", exc_info=True)
+        # The close beat. A turn still mid-sequence is one whose player move
+        # landed without its reply — including one *this* call did not open, left
+        # owing by a route that raised, which is settled here rather than left to
+        # wedge the machine.
+        owed_reply = coordinator.phase in (
+            TurnPhase.PLAYER_MOVE_APPLIED,
+            TurnPhase.AGENT_OBSERVING,
+        )
+        engine_reply: MoveResult | None = None
+        if owed_reply:
+            engine_reply = coordinator.collect_engine_reply()
+            coordinator.complete_turn()
+        elif (played := result.get("engine_move")) is not None:
+            # An atomic registry played the reply inside the tool (not how the
+            # app is assembled — see `build_registry`'s `atomic_exchange`), so
+            # there is nothing left to collect. Take its word for the reply
+            # rather than report a silence the board would contradict.
+            owed_reply = True
+            engine_reply = MoveResult(legal=True, san=played["san"], uci=played["uci"])
+        return _MoveBeats(
+            changes=changes,
+            narration=narration,
+            engine_reply=engine_reply,
+            owed_reply=owed_reply,
+        )
+
+    async def _agent_move(move: str) -> dict[str, Any]:
+        """A dragged move in agent mode: the same beats, the same one turn.
+
+        The audit's item 4. The board sends the structured move it always sent and
+        gets back the response it always got — plus the reaction Glitch had to it,
+        and whether to speak it. The turn is recorded on the panel transcript
+        under the move's SAN, so Glitch's later turns remember games the player
+        dragged as well as games they talked their way through.
+        """
+        before = _agent_state_dict(ctx)
+        beats = _play_move(move, ctx.transcript.window())
+        result = beats.result
+        if result.get("ok") is False:
+            # A turn-state rejection: 409 on the trusted path, exactly as direct
+            # mode answers it (the agent reads the same refusal as result data).
+            raise HTTPException(status_code=409, detail=result["error"])
+        commentary = ""
+        guarded = False
+        if beats.legal:
+            commentary = _move_commentary(
+                beats.narration.text if beats.narration is not None else "",
+                result,
+                beats.engine_reply,
+                beats.owed_reply,
+                ctx.session,
+            )
+            # The honesty guard, on this road too: a reaction that announces an
+            # ending the board never reached is replaced with the truth.
+            if not ctx.session.is_game_over() and claims_destructive_outcome(
+                commentary
+            ):
+                logger.warning(
+                    "commentary_claimed_untrue_outcome", extra={"move": move}
+                )
+                commentary = UNTRUE_CLAIM_REPLY
+                guarded = True
+            ctx.transcript.record(result["san"], commentary)
+            await _broadcast_state()
+        narration = beats.narration
+        _trace_turn(
+            utterance=move,
+            route=ROUTE_BOARD,
+            commentary=commentary,
+            stop_reason="completed",
+            changed=beats.legal,
+            fen_before=before["fen"],
+            fen_after=ctx.session.fen(),
+            tool_calls=[{"move": move}],
+            tool_results=beats.changes,
+            engine_reply=_move_reply_dict(beats.engine_reply),
+            guarded=guarded,
+            model_calls=narration.model_calls if narration is not None else 0,
+            prompt_tokens=narration.prompt_tokens if narration is not None else 0,
+            completion_tokens=(
+                narration.completion_tokens if narration is not None else 0
+            ),
+        )
+        return {
+            "legal": beats.legal,
+            "san": result.get("san"),
+            "uci": result.get("uci"),
+            "reason": result.get("reason"),
+            "engine_move": (
+                _move_dict(beats.engine_reply)
+                if beats.engine_reply is not None
+                else None
+            ),
+            "state": _state_dict(ctx.session),
+            "commentary": commentary,
+            # Whether the client should voice it — the user's voice_output
+            # setting, the same contract `/api/command` has.
+            "speak": ctx.settings.voice_output,
+        }
+
     @app.post("/api/game/move")
     async def submit_move(request: MoveRequest) -> dict[str, Any]:
+        """A move from the board: through the agent's beats when there is an
+        agent, straight down the deterministic exchange when there isn't.
+
+        The mode split is the whole of audit items 1/4. Direct mode is not a
+        fallback here, it is the LLM-off invariant: no brain means no reaction to
+        wait for, so the coordinator runs the exchange atomically and the response
+        carries not one new key. Agent mode adds the beats — and only the beats;
+        legality, the engine's reply, and the response's existing fields are the
+        same machine's answers either way.
+        """
+        if brain is not None:
+            return await _agent_move(request.move)
         # The coordinator runs the exchange: player move, then the engine's
         # reply if one is owed. Trusted path, so a turn-state rejection is a
         # 409 rather than the error *result* the agent gets for the same thing.
@@ -386,25 +630,88 @@ def create_app(
             "state": _state_dict(ctx.session),
         }
 
+    def _run_destructive(
+        name: str, args: dict[str, Any]
+    ) -> dict[str, Any] | JSONResponse:
+        """Dispatch a destructive UI action through the registry — gate included.
+
+        The button and the spoken command now ask the *same* question, because
+        they run the same code: `_gate` decides whether a game is in progress and
+        arms `ctx.pending` if it is, and this returns the 409 that relays its
+        question. On a fresh or finished board the gate stands aside and the op
+        simply runs, which is why these endpoints keep their old behavior in
+        exactly the cases where confirming would have been a question about
+        nothing.
+
+        Returns the tool result when the op ran, or the confirm-required response
+        when the gate armed it instead. An op that *ran* clears anything else that
+        was armed: a pending op is about a game that no longer exists.
+        """
+        result = registry.dispatch(name, args)
+        armed = ctx.pending
+        if result.get("ok") is False and armed is not None and armed.name == name:
+            return _confirm_required(name)
+        if result.get("ok") is not True:
+            raise HTTPException(
+                status_code=409, detail=result.get("error", f"cannot {name}")
+            )
+        ctx.pending = None
+        return result
+
     @app.post("/api/game/new")
-    async def new_game(request: NewGameRequest | None = None) -> dict[str, Any]:
+    async def new_game(request: NewGameRequest | None = None) -> Any:
+        """Start a new game — through the gate, so a game in progress is never
+        thrown away without an answer (409 + the question; `/api/game/confirm`
+        answers it).
+
+        `random` is resolved here, before the op is armed, so the game the player
+        confirms is the game they were asked about rather than a fresh roll. The
+        turn the old board had open, and the engine's opening move when the player
+        takes black, are the `new_game` tool's business now — which is the
+        coordinator's, in one place, exactly as before.
+        """
         color = request.color if request is not None else "random"
         if color == "random":
             color = random.choice(["white", "black"])
-        # A fresh board is a different position, so whatever turn was open (and
-        # any reply being computed for it) is abandoned — the twin of what the
-        # `new_game` tool does on the agent's side.
-        coordinator.abandon_turn()
-        ctx.session.new_game(player_color=color)
-        # The engine owns the other side: when the player takes black it makes
-        # the opening move right away. Whether it owes one, and playing it, are
-        # the coordinator's — the same call the `new_game` tool makes.
-        try:
-            coordinator.engine_opening_move()
-        except TurnStateError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        outcome = _run_destructive("new_game", {"player_color": color})
+        if isinstance(outcome, JSONResponse):
+            return outcome
         await _broadcast_state()
         return {"state": _state_dict(ctx.session)}
+
+    @app.post("/api/game/confirm")
+    async def confirm_destructive(request: ConfirmRequest) -> dict[str, Any]:
+        """Answer the armed destructive op: yes runs it, no drops it.
+
+        The button half of the confirmation gate, and deliberately the *same*
+        `ctx.pending` the spoken road uses — an op armed by a button and confirmed
+        by a typed "yes" works, and so does the reverse. Like a spoken answer it
+        settles the op for good: whichever way it is answered, nothing stays
+        armed, so a stale click can never revive a reset the player declined.
+
+        No commentary: by this point there is nothing left to decide, so no model
+        call stands between the yes and the reset (the same reason
+        `confirm_pending` exists).
+        """
+        armed = ctx.pending
+        if armed is None:
+            raise HTTPException(status_code=409, detail="nothing to confirm")
+        if not request.confirm:
+            ctx.pending = None
+            return {
+                "op": armed.name,
+                "confirmed": False,
+                "state": _state_dict(ctx.session),
+            }
+        confirmed = confirm_pending(registry, ctx)
+        assert confirmed is not None  # armed above, and only this consumes it
+        name, result = confirmed
+        if result.get("ok") is not True:
+            raise HTTPException(
+                status_code=409, detail=result.get("error", f"cannot {name}")
+            )
+        await _broadcast_state()
+        return {"op": name, "confirmed": True, "state": _state_dict(ctx.session)}
 
     @app.post("/api/game/undo")
     async def undo(request: UndoRequest) -> dict[str, Any]:
@@ -426,21 +733,22 @@ def create_app(
         return {"undone": list(result.undone), "state": _state_dict(ctx.session)}
 
     @app.post("/api/game/resign")
-    async def resign(request: ResignRequest) -> dict[str, Any]:
-        try:
-            coordinator.abandon_turn()  # nothing is owed on a game that just ended
-            outcome = ctx.session.resign(request.color)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    async def resign(request: ResignRequest) -> Any:
+        """Resign — through the same gate as `new_game` and as a spoken "I
+        resign" (409 + the question mid-game, `/api/game/confirm` answers it).
+
+        Whose resignation an unqualified one is, is not a caller's judgment any
+        more than it is the model's: the `resign` tool defaults it to the
+        player's own side, and the side to move is only coincidentally that
+        (trace review, finding 8).
+        """
+        outcome = _run_destructive(
+            "resign", {"color": request.color or ctx.session.player_color}
+        )
+        if isinstance(outcome, JSONResponse):
+            return outcome
         await _broadcast_state()
-        return {
-            "outcome": {
-                "termination": outcome.termination,
-                "winner": outcome.winner,
-                "result": outcome.result,
-            },
-            "state": _state_dict(ctx.session),
-        }
+        return {"outcome": outcome["outcome"], "state": _state_dict(ctx.session)}
 
     @app.post("/api/game/difficulty")
     def set_difficulty(request: DifficultyRequest) -> dict[str, Any]:
@@ -552,10 +860,11 @@ def create_app(
         tool_args: list[dict[str, Any]] = []
         commentary = ""
         stop_reason = "completed"
-        # The fast path's landed player move, held for the close beat: with no
+        # The fast path's move beats, held for the commentary below: with no
         # narration to speak for the turn (verbosity=low, or a provider failure)
-        # it and the engine's reply become one canned confirmation.
-        move_result: dict[str, Any] | None = None
+        # the move and the engine's reply become one canned confirmation. None on
+        # every other route — those close their own turn further down.
+        move_beats: _MoveBeats | None = None
         # The turn's cost at the provider boundary, summed across whatever model
         # calls the chosen route made. The deterministic branches (a canned
         # confirmation, a declined op) leave these at zero — a real, readable
@@ -594,46 +903,24 @@ def create_app(
                 # Declined: nothing ran, so there is nothing to narrate from.
                 commentary = _DECLINED_REPLY
         elif (fast_san := parse_move(text, ctx.session.fen())) is not None:
+            # The same beats a board drag runs, on the same helper: the parse is
+            # what differs between the two routes, never the sequencing.
             route = ROUTE_FAST_PATH
-            args = {"move": fast_san}
-            result = registry.dispatch("make_move", args)
-            tool_results.append({"name": "make_move", "result": result})
-            tool_args.append(args)
-            if result.get("legal") is True:
-                # Held for the close beat, which assembles the canned line from
-                # this and the engine's reply when no narration speaks for them.
-                move_result = result
-            else:
+            move_beats = _play_move(fast_san, transcript)
+            tool_results.extend(move_beats.changes)
+            tool_args.append({"move": fast_san})
+            if not move_beats.legal:
                 # `parse_move` already matched the move against this board, so a
                 # refusal here is a turn-state rejection (a previous turn left
                 # the machine mid-sequence), not an illegal move: nothing moved,
-                # so there is nothing to react to. The close beat below still
-                # settles whatever that turn left owing.
+                # so there is nothing to react to. The beats still settled
+                # whatever that turn left owing.
                 commentary = _STUCK_REPLY
-            if move_result is not None and ctx.settings.verbosity != "low":
-                # The observation beat. Stockfish has been computing its reply
-                # since the move landed, so this narration overlaps it instead of
-                # queueing behind it — the whole reason a plain move does not get
-                # slower for gaining a reaction. verbosity=low skips it exactly
-                # as it always skipped narration, keeping that move zero-LLM, and
-                # the canned confirmation below stands in.
-                try:
-                    narration = brain.narrate(
-                        _agent_state_dict(ctx),
-                        tool_results,
-                        transcript,
-                    )
-                except ProviderError:
-                    # The reaction is optional by construction (the coordinator's
-                    # observation phase); the engine's reply and the turn are not.
-                    # A provider failure costs the words and nothing else — the
-                    # move it was about is already on the board.
-                    logger.warning("observe_narration_failed", exc_info=True)
-                else:
-                    commentary = narration.text
-                    model_calls = narration.model_calls
-                    prompt_tokens = narration.prompt_tokens
-                    completion_tokens = narration.completion_tokens
+            elif move_beats.narration is not None:
+                commentary = move_beats.narration.text
+                model_calls = move_beats.narration.model_calls
+                prompt_tokens = move_beats.narration.prompt_tokens
+                completion_tokens = move_beats.narration.completion_tokens
         elif parse_resign(text):
             # An explicit resignation is deterministic text, so the model gets no
             # vote on whether it happened: live, it took one and answered "Word.
@@ -677,15 +964,22 @@ def create_app(
         # app's own words. `complete_turn` is deliberately the pipeline's and not
         # the tool's: nothing may close a turn the engine still owes a move to.
         engine_reply: MoveResult | None = None
-        owed_reply = coordinator.phase in (
+        owed_reply = False
+        if move_beats is not None:
+            # The fast path ran the beats already, close included; what they
+            # settled is what this turn has to say for itself.
+            engine_reply, owed_reply = move_beats.engine_reply, move_beats.owed_reply
+        elif coordinator.phase in (
             TurnPhase.PLAYER_MOVE_APPLIED,
             TurnPhase.AGENT_OBSERVING,
-        )
-        if owed_reply:
+        ):
+            owed_reply = True
             engine_reply = coordinator.collect_engine_reply()
             coordinator.complete_turn()
-        if move_result is not None and not commentary:
-            commentary = _move_confirmation(move_result, engine_reply, ctx.session)
+        if move_beats is not None and move_beats.legal:
+            commentary = _move_commentary(
+                commentary, move_beats.result, engine_reply, owed_reply, ctx.session
+            )
         elif owed_reply and (
             reply_line := _reply_announcement(engine_reply, ctx.session)
         ):
@@ -769,7 +1063,13 @@ def create_app(
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         """The agent-adjustable settings, for the UI to render its controls
-        from (the same truth the tools mutate)."""
+        from (the same truth the tools mutate).
+
+        `agent_available` is not a setting but the operating mode: whether a brain
+        is configured at all. It is here because direct mode has to be *visible* —
+        the audit's item 1 — rather than something the player discovers when the
+        command box 503s and their drags come back without a word from Glitch.
+        """
         s = ctx.settings
         return {
             "verbosity": s.verbosity,
@@ -778,6 +1078,7 @@ def create_app(
             "tier": s.tier,
             "skill_level": s.skill_level,
             "elo": s.elo,
+            "agent_available": brain is not None,
         }
 
     @app.post("/api/settings/voice")

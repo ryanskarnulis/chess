@@ -5,6 +5,12 @@ shared `ToolContext`) — the tool registry stays the LLM's boundary. Illegal
 moves are data (`legal: false`), not HTTP errors; domain failures on
 mutations (undo with nothing to undo, resigning a finished game) are 409s.
 Engine-reply tests need a live Stockfish and are skipped without one.
+
+Every app here is built with no brain, so this file is the **direct mode**
+spec: the board route answers the exact document it always answered, with no
+agent beats and no new keys. Agent mode, and the destructive-op gate the
+lifecycle endpoints now share with the spoken road, live in
+test_board_controls.py.
 """
 
 import shutil
@@ -157,7 +163,12 @@ def test_tool_path_and_board_path_share_one_turn_machine(ctx):
 
 def test_new_game_resets_position(client):
     client.post("/api/game/move", json={"move": "e4"})
-    body = client.post("/api/game/new").json()
+    # A game in progress is not thrown away unanswered: the endpoint dispatches
+    # through the same gate the agent's `new_game` hits, so mid-game it asks
+    # (409 + the question) and the answer is what resets. The gate's contract
+    # lives in test_board_controls.py; this pins that the reset still happens.
+    assert client.post("/api/game/new").status_code == 409
+    body = client.post("/api/game/confirm", json={"confirm": True}).json()
     assert body["state"]["fen"] == START_FEN
     assert body["state"]["history"] == []
 
@@ -210,10 +221,15 @@ def test_move_after_game_over_is_rejected_as_illegal(client):
 
 def test_export_pgn(client):
     client.post("/api/game/move", json={"move": "e4"})
-    client.post("/api/game/resign", json={})
+    client.post("/api/game/resign", json={})  # gated mid-game: it asks
+    client.post("/api/game/confirm", json={"confirm": True})
     body = client.get("/api/game/pgn").json()
     assert "1. e4" in body["pgn"]
-    assert "1-0" in body["pgn"]
+    # 0-1: the resign button is the *player* conceding (white here), not the
+    # side to move — the rule the `resign` tool derives, now that the endpoint
+    # dispatches through it. The side to move was only ever coincidentally the
+    # player (trace review, finding 8).
+    assert "0-1" in body["pgn"]
 
 
 # --- difficulty ------------------------------------------------------------
@@ -429,6 +445,9 @@ def test_get_settings_returns_the_full_settings_document(client):
         "tier": DEFAULT_TIER,
         "skill_level": None,
         "elo": None,
+        # These tests build the app without a brain: direct mode, and the UI
+        # renders that as a visible state rather than discovering it on a 503.
+        "agent_available": False,
     }
 
 
