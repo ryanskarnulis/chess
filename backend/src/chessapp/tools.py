@@ -39,7 +39,7 @@ from chessapp.engine import (
     SKILL_MIN,
     EnginePlayer,
 )
-from chessapp.game import GameSession
+from chessapp.game import GameSession, MoveResult
 
 GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
@@ -251,6 +251,15 @@ def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
     }
 
 
+def _engine_move_dict(reply: MoveResult | None) -> dict[str, Any] | None:
+    """How the move tools report an engine move: `{"san", "uci"}`, or None when
+    the coordinator says the engine owed none. One shape for `make_move`'s reply
+    and `new_game`'s opening move, which is what their results promise."""
+    if reply is None:
+        return None
+    return {"san": reply.san, "uci": reply.uci}
+
+
 def _require_engine(ctx: ToolContext) -> EnginePlayer:
     if ctx.engine is None:
         raise ValueError("engine unavailable: analysis tools need Stockfish")
@@ -445,15 +454,12 @@ def build_registry(
         result, reply = coordinator.play_exchange(move)
         if not result.legal:
             return {"ok": True, "legal": False, "reason": result.reason}
-        engine_move: dict[str, Any] | None = None
-        if reply is not None:
-            engine_move = {"san": reply.san, "uci": reply.uci}
         return {
             "ok": True,
             "legal": True,
             "san": result.san,
             "uci": result.uci,
-            "engine_move": engine_move,
+            "engine_move": _engine_move_dict(reply),
             "game_over": ctx.session.is_game_over(),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
@@ -540,13 +546,9 @@ def build_registry(
         # move — otherwise the fresh board would sit waiting for a move only the
         # engine can make. The coordinator owns that call (and the condition):
         # every engine move in the app comes from one place.
-        engine_move: dict[str, Any] | None = None
-        reply = coordinator.engine_opening_move()
-        if reply is not None:
-            engine_move = {"san": reply.san, "uci": reply.uci}
         return {
             "ok": True,
-            "engine_move": engine_move,
+            "engine_move": _engine_move_dict(coordinator.engine_opening_move()),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }
