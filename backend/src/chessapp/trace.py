@@ -45,6 +45,7 @@ def turn_record(
     fen_after: str,
     tool_calls: list[dict[str, Any]],
     tool_results: list[dict[str, Any]],
+    engine_reply: dict[str, Any] | None = None,
     guarded: bool = False,
     model_calls: int = 0,
     prompt_tokens: int = 0,
@@ -56,6 +57,13 @@ def turn_record(
     — args and `{"name", "result"}`, parallel by construction — and are zipped
     back into one entry per call, which is the shape a human actually wants:
     what it called, with what, and what came back.
+
+    `engine_reply` (`{"san", "uci"}`, or None when none was owed) is recorded
+    separately because the reply is no longer part of any tool result: the move
+    tool applies the player's move and the pipeline collects the answer after the
+    observation beat. Without it a traced move turn would show a move with no
+    answer to it — and a missing or duplicated engine move is one of the main
+    things a trace is read to find.
 
     `guarded` marks a turn whose commentary was suppressed by the honesty guard
     (it announced an ending no tool produced). `commentary` is what the player
@@ -80,6 +88,7 @@ def turn_record(
         "completion_tokens": completion_tokens,
         "fen_before": fen_before,
         "fen_after": fen_after,
+        "engine_reply": engine_reply,
         "tools": [
             {"name": result["name"], "args": args, "result": result["result"]}
             for args, result in zip(tool_calls, tool_results, strict=True)

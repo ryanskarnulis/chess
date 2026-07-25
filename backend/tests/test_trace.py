@@ -73,6 +73,15 @@ def test_turn_record_carries_model_cost_when_given():
     assert record["completion_tokens"] == 96
 
 
+def test_turn_record_carries_the_engine_reply_when_there_was_one():
+    record = _record_fields(engine_reply={"san": "e5", "uci": "e7e5"})
+    assert record["engine_reply"] == {"san": "e5", "uci": "e7e5"}
+
+
+def test_turn_record_engine_reply_defaults_to_none():
+    assert _record_fields()["engine_reply"] is None
+
+
 def test_turn_record_model_cost_defaults_to_zero():
     """A route that made no model call (a canned confirmation) still records a
     cost — zero — so a reader never has to distinguish 'free' from 'unrecorded'."""
@@ -95,6 +104,24 @@ def test_fast_path_turn_is_traced_as_such(trace_path):
     assert record["tools"][0]["args"] == {"move": "e4"}
     assert record["tools"][0]["result"]["legal"] is True
     assert record["changed"] is True
+
+
+def test_a_move_turn_records_the_engine_reply(trace_path):
+    """The reply is no longer inside `make_move`'s result, so without this the
+    trace of a move turn would show the player's move and no answer to it — and
+    a duplicated or missing engine move is exactly what a trace is read for."""
+    client, _ = make_client(trace_path, engine=FakeEngine("e7e5"))
+    client.post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["tools"][0]["result"].get("engine_move") is None
+    assert record["engine_reply"] == {"san": "e5", "uci": "e7e5"}
+
+
+def test_a_turn_that_owed_no_reply_records_none(trace_path):
+    client, _ = make_client(trace_path, AgentResponse(text="hi"), engine=FakeEngine())
+    client.post("/api/command", json={"text": "hello"})
+    (record,) = read_records(trace_path)
+    assert record["engine_reply"] is None
 
 
 def test_brain_turn_traces_the_whole_trajectory(trace_path):

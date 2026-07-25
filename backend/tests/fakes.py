@@ -75,17 +75,20 @@ class ScriptedBrain:
     Under-scripting raises `IndexError` so a test that asks for more turns than
     it planned fails loudly instead of silently reusing stale output.
 
-    `narrate` — the fast path's commentary turn, the one commentary path
+    `narrate` — the observation beat's commentary turn, the one commentary path
     outside the loop — pops the next scripted narration and records the new
     board plus what changed. When none is scripted it returns a placeholder, so
-    tests that don't assert on commentary don't have to script one.
+    tests that don't assert on commentary don't have to script one. A scripted
+    `Exception` is raised instead of returned, which is how a provider failure
+    during the observation beat is exercised (the beat is skippable; the engine's
+    reply and the turn are not).
     """
 
     def __init__(
         self,
         *responses: AgentResponse,
         dispatcher=None,
-        narrations: tuple[str | Narration, ...] = (),
+        narrations: tuple[str | Narration | Exception, ...] = (),
     ) -> None:
         self._responses = list(responses)
         self._narrations = list(narrations)
@@ -116,6 +119,8 @@ class ScriptedBrain:
         self.narrate_calls.append((board_state, changes))
         self.narrate_transcripts.append(list(transcript))
         scripted = self._narrations.pop(0) if self._narrations else "(commentary)"
+        if isinstance(scripted, Exception):
+            raise scripted
         # A bare string is the common case (a test that only cares about the
         # words); a full `Narration` lets a test script the cost fields too.
         return scripted if isinstance(scripted, Narration) else Narration(text=scripted)
@@ -128,10 +133,13 @@ def scripted_app(ctx, *responses: AgentResponse, brain=None, **create_kwargs):
     The brain and the app share a single registry — and one turn coordinator
     behind it — exactly as app assembly does, so a scripted tool call really runs
     against the real `ToolContext`, advances the real turn machine, and its
-    result is real. Returns `(app, brain)`.
+    result is real. `atomic_exchange=False` mirrors assembly too: a scripted
+    `make_move` applies the player's move and leaves the coordinator mid-turn for
+    the pipeline to run its beats and collect the engine's reply.
+    Returns `(app, brain)`.
     """
     coordinator = TurnCoordinator(ctx)
-    registry = build_registry(ctx, coordinator)
+    registry = build_registry(ctx, coordinator, atomic_exchange=False)
     if brain is None:
         brain = ScriptedBrain(*responses, dispatcher=registry)
     elif getattr(brain, "dispatcher", None) is None:
