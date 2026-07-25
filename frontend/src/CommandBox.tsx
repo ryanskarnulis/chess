@@ -17,6 +17,10 @@ export interface CommandBoxProps {
   /** Render the commentary/thinking block below the input (default). The
    * mobile layout passes false and stages commentary in the agent bubble. */
   showCommentary?: boolean
+  /** No agent is configured — direct mode. The box locks: there is nothing
+   * behind it (the endpoint 503s), so a dead input is the honest state rather
+   * than an error the player has to trip over. */
+  disabled?: boolean
 }
 
 /**
@@ -31,16 +35,18 @@ export function CommandBox({
   voiceOutput,
   onToggleVoice,
   showCommentary = true,
+  disabled = false,
 }: CommandBoxProps) {
   const [text, setText] = useState('')
   const trimmed = text.trim()
+  const locked = thinking || disabled
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
     // Mobile browsers only allow audio primed inside a user gesture; this
     // submit is the gesture that precedes the agent's spoken reply.
     unlockAudio()
-    if (!trimmed || thinking) return
+    if (!trimmed || locked) return
     void onSubmit(trimmed)
     setText('')
   }
@@ -52,7 +58,7 @@ export function CommandBox({
             regardless of how the input or commentary below reflows. */}
         {/* Voice in: the transcript goes down the exact same pipeline as a
             typed command. Renders nothing in unsupporting browsers. */}
-        <MicButton onTranscript={onSubmit} disabled={thinking} />
+        <MicButton onTranscript={onSubmit} disabled={locked} />
         {/* Voice out: mute/unmute. Hidden until the setting has loaded so
             the toggle never shows a state it just guessed. */}
         {voiceOutput !== null && (
@@ -73,12 +79,12 @@ export function CommandBox({
         <input
           type="text"
           aria-label="Command"
-          placeholder="Tell the agent what to do…"
+          placeholder={disabled ? 'No agent — play on the board' : 'Tell the agent what to do…'}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          disabled={thinking}
+          disabled={locked}
         />
-        <button type="submit" disabled={thinking || !trimmed}>
+        <button type="submit" disabled={locked || !trimmed}>
           Send
         </button>
       </form>

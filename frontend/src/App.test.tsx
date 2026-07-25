@@ -203,6 +203,47 @@ describe('player color', () => {
   })
 })
 
+// Direct mode: no brain configured. The game is fully playable against
+// Stockfish, and that is a deliberate mode — so it is shown, and the command
+// box is a designed dead state rather than a 503 the player has to trip over.
+describe('direct mode', () => {
+  function serveSettings(extra: Record<string, unknown>) {
+    fetchMock.mockImplementation((url: string) => {
+      const path = String(url)
+      const body = path.includes('/api/settings')
+        ? {
+            verbosity: 'normal',
+            hints_mode: false,
+            voice_output: false,
+            tier: 'casual',
+            skill_level: null,
+            elo: null,
+            ...extra,
+          }
+        : path.includes('/api/game/')
+          ? { state: served }
+          : served
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) })
+    })
+  }
+
+  it('shows a standing indicator and locks the command box', async () => {
+    serveSettings({ agent_available: false })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText(/direct mode/i)).toBeInTheDocument())
+    expect(screen.getByRole('textbox', { name: /command/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled()
+  })
+
+  it('says nothing and leaves the box open when an agent is available', async () => {
+    serveSettings({ agent_available: true })
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.move-strip')).toBeInTheDocument())
+    expect(screen.queryByText(/direct mode/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: /command/i })).not.toBeDisabled()
+  })
+})
+
 describe('post-game screen', () => {
   const overState = () =>
     state({
