@@ -4,6 +4,13 @@ Completed tasks, newest first. Moved here from `TODO.md` with the completion dat
 
 ## 2026-07-25
 
+**Sprint 1 closed — P0: the turn coordinator (audit items 1–5, 10).** All four slices merged same-day as the replan; the target architecture holds: player intent → validated player move → Glitch observes → Stockfish replies → Glitch closes the turn, with the deterministic coordinator, never the model, owning the sequence. Slices 3 and 4 were stacked branches merged after slices 1–2 squashed; their merge also restored two doc hunks (CLAUDE.md's planner/narrator paragraph, `docs/turn-coordinator.md`'s cross-reference) lost to a wrong-side conflict resolution when #144 landed.
+
+- [x] **[L] Turn state machine + coordinator** (audit 3, 10). Explicit per-turn states, a turn ID, and rejection of actions that don't belong in the current state; the engine reply is the coordinator's job, never a model-callable tool. (#143)
+- [x] **[M] Full planner/narrator split** (audit 15). Two model phases: the planner keeps the bounded tool loop on a compact persona-free contract; the narrator speaks as Glitch from verified results, offered no tools. Eval-gated; cured the `long_capture` regression (poisoned 1/5 → 5/5). (#144)
+- [x] **[M] Split the move flow: the observe beat** (audit 2, 5). `make_move` and `/api/game/move` apply the player's move only; Glitch reacts while Stockfish calculates; the reply lands with a deterministic announcement. Skippable by construction (verbosity=low, provider failure). (#145)
+- [x] **[M] Board controls route through the coordinator in agent mode** (audit 1, 4). A drag sends the structured move into the same beats (trace route `board`); UI new-game/resign go through the same confirmation gate; direct mode is deliberate and visible via `agent_available`. (#146)
+
 **Backlog replanned around the external agent-control audit.** `TODO.md` rebuilt from `docs/agent-control-audit-2026-07-25.md` (the ChatGPT report Ryan supplied, code-checked and annotated). The 2026-07-14 context-sprint framing is superseded; its surviving items (hints gating, structured tool errors, turn summaries, live tool UI, eval statistics, sampling experiment, fresh trace baseline) folded into the new sprint structure rather than closed. The `long_capture` RED regression and the schema-cut warning carry over as standing constraints. The in-progress per-tool docstring-hardening thread (branch `chore/clean-tool-schema-noise`, `make_move` cut done-not-committed) is parked — Sprint 1 rewrites the move tools; its docstring lessons are noted in the new TODO for salvage there.
 
 ## 2026-07-21
