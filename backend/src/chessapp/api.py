@@ -358,6 +358,19 @@ def _move_commentary(
 _STUCK_REPLY = "I lost the thread on that one — say it again?"
 _DECLINED_REPLY = "Alright, keeping it. Your move."
 
+# What the player hears when the provider died mid-turn (audit item 20). Two
+# lines because the two cases carry opposite retry advice, and that advice is a
+# fact the code knows: nothing changed means saying it again is safe; something
+# changed means repeating the utterance could replay a move, so the line says
+# the work stands instead of inviting a retry. Public so tests pin the
+# substitution, not a wording.
+PROVIDER_LOST_RETRY = (
+    "My brain cut out before anything happened — the board is untouched. Say it again."
+)
+PROVIDER_LOST_TURN_STANDS = (
+    "My brain cut out mid-turn, but everything it already did stands."
+)
+
 # What the player hears instead of a lie. The guard below catches commentary that
 # announces the game ended (or restarted) when the board says otherwise; rather
 # than emit it, the pipeline says what is actually true. Public so tests can pin
@@ -447,8 +460,10 @@ class CommandOutcome:
     endpoint needs them to build its wire `tool_calls`, but `/api/command`
     never exposes them. `stop_reason` is the brain loop's, in the fleet's
     vocabulary: `completed` when the agent finished with an answer,
-    `max_iterations` or `correction_limit` when it ran out of budget first.
-    The fast path is always `completed` — it never reaches the model."""
+    `max_iterations` or `correction_limit` when it ran out of budget first,
+    `provider_error` when the provider died mid-turn (the results of whatever
+    ran are still here, and the turn was still closed). The fast path is
+    always `completed` — it never reaches the model."""
 
     commentary: str
     tool_results: list[dict[str, Any]]
@@ -1052,13 +1067,24 @@ def create_app(
                             name, result, ctx.session
                         )
                     else:
-                        narration = brain.narrate(
-                            _agent_state_dict(ctx), tool_results, transcript
-                        )
-                        commentary = narration.text
-                        model_calls = narration.model_calls
-                        prompt_tokens = narration.prompt_tokens
-                        completion_tokens = narration.completion_tokens
+                        # The op already ran; the narration is a garnish on a
+                        # board that changed, so a provider failure costs the
+                        # words and degrades to the canned line — never a 500
+                        # after the mutation, before the broadcast.
+                        try:
+                            narration = brain.narrate(
+                                _agent_state_dict(ctx), tool_results, transcript
+                            )
+                        except ProviderError:
+                            logger.warning("close_narration_failed", exc_info=True)
+                            commentary = _destructive_confirmation(
+                                name, result, ctx.session
+                            )
+                        else:
+                            commentary = narration.text
+                            model_calls = narration.model_calls
+                            prompt_tokens = narration.prompt_tokens
+                            completion_tokens = narration.completion_tokens
                 else:
                     # Declined: nothing ran, so there is nothing to narrate from.
                     commentary = _DECLINED_REPLY
@@ -1101,13 +1127,23 @@ def create_app(
                         "resign", result, ctx.session
                     )
                 else:
-                    narration = brain.narrate(
-                        _agent_state_dict(ctx), tool_results, transcript
-                    )
-                    commentary = narration.text
-                    model_calls = narration.model_calls
-                    prompt_tokens = narration.prompt_tokens
-                    completion_tokens = narration.completion_tokens
+                    # Same degradation as the confirmed-op narration above: the
+                    # resignation is already on the record, so the words are
+                    # the only thing a dead provider may cost.
+                    try:
+                        narration = brain.narrate(
+                            _agent_state_dict(ctx), tool_results, transcript
+                        )
+                    except ProviderError:
+                        logger.warning("close_narration_failed", exc_info=True)
+                        commentary = _destructive_confirmation(
+                            "resign", result, ctx.session
+                        )
+                    else:
+                        commentary = narration.text
+                        model_calls = narration.model_calls
+                        prompt_tokens = narration.prompt_tokens
+                        completion_tokens = narration.completion_tokens
             else:
                 route = ROUTE_BRAIN
                 response = brain.get_agent_response(before, text, transcript)
@@ -1118,8 +1154,12 @@ def create_app(
                 prompt_tokens = response.prompt_tokens
                 completion_tokens = response.completion_tokens
                 # A budget stop (max_iterations / correction_limit) carries no
-                # commentary: the loop never reached a text turn.
-                commentary = response.text or _STUCK_REPLY
+                # commentary: the loop never reached a text turn. A provider
+                # stop is left empty here — what it should say depends on
+                # whether anything changed, which the close beat below settles.
+                commentary = response.text
+                if not commentary and stop_reason != "provider_error":
+                    commentary = _STUCK_REPLY
             # The close beat, at the one point every route converges. A coordinator
             # left mid-sequence means the player's move landed without its reply —
             # whichever route played it — and whatever narration that route produced
@@ -1153,6 +1193,17 @@ def create_app(
                 commentary = (
                     f"{commentary}\n\n{reply_line}" if commentary else reply_line
                 )
+            if stop_reason == "provider_error":
+                # Recovery semantics (audit item 20): the turn is already
+                # settled — whatever ran stands, the reply was collected above —
+                # so the only thing left to own is what the player is told. The
+                # line the code picks is the one the board supports.
+                lost = (
+                    PROVIDER_LOST_TURN_STANDS
+                    if _agent_state_dict(ctx) != before
+                    else PROVIDER_LOST_RETRY
+                )
+                commentary = f"{lost}\n\n{commentary}" if commentary else lost
             # The honesty guard, at the one point every route converges: commentary
             # that announces the game ended (or restarted) when nothing ended it is
             # not shown to the player. The board and the tool results are the record

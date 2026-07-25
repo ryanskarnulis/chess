@@ -24,7 +24,7 @@ from chessapp.brain import AgentResponse
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, planner_prompt_for, system_prompt_for
-from chessapp.provider import ToolCallArgumentsError, Usage
+from chessapp.provider import ProviderError, ToolCallArgumentsError, Usage
 from chessapp.tools import ToolContext, build_registry
 from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
 
@@ -733,6 +733,61 @@ def test_narrate_includes_the_transcript():
 def test_narrate_null_content_becomes_empty_string():
     brain, _ = make_brain(text_turn(None))
     assert brain.narrate(board_state={}, changes=[]).text == ""
+
+
+# --- recovery: a provider failure mid-turn (audit item 20) ------------------
+#
+# A dead llama-server is a fact about the turn, not an exception the pipeline
+# should have to catch after the board already changed. The loop converts it to
+# `stop_reason="provider_error"` and hands back everything that verifiably ran,
+# so the pipeline can still close the turn (collect the engine's reply,
+# broadcast) and tell the player the truth. `narrate` is the one deliberate
+# exception: its only caller wraps it, and it runs after no tools at all.
+
+
+def test_provider_failure_mid_loop_returns_the_turn_so_far():
+    registry, session = real_registry()
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        ProviderError("llama-server went away"),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="push the king pawn")
+
+    assert resp.stop_reason == "provider_error"
+    assert resp.text == ""
+    assert [r["name"] for r in resp.tool_results] == ["make_move"]
+    assert session.move_history()[0] == "e4", "the move that landed stands"
+
+
+def test_provider_failure_on_the_first_call_reports_an_empty_turn():
+    brain, _ = make_brain(ProviderError("connection refused"))
+
+    resp = brain.get_agent_response(board_state={}, command="hello?")
+
+    assert resp.stop_reason == "provider_error"
+    assert resp.tool_results == () and resp.text == ""
+    # The round trip is still counted — the docstring's convention for a call
+    # that raised before returning a result.
+    assert resp.model_calls == 1
+
+
+def test_provider_failure_in_the_narrator_still_reports_the_tools():
+    # The planner finished; the persona call died. The tool results are the
+    # record of a turn that really happened, so they come back regardless.
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        ProviderError("timed out"),
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="e pawn forward")
+
+    assert resp.stop_reason == "provider_error"
+    assert resp.text == ""
+    assert [r["name"] for r in resp.tool_results] == ["make_move"]
 
 
 # --- factory wires the system prompt ---------------------------------------

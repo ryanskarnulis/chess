@@ -13,13 +13,6 @@ This replaces the 2026-07-14 context-sprint framing. Surviving items from it are
 
 Parked work: branch `chore/clean-tool-schema-noise` holds the uncommitted `make_move` docstring cut (tripwires green). Sprint 1 rewrites the move tools anyway — salvage its docstring lessons there (especially: result-restating prose like "the engine decides legality" is a plausible anti-self-poisoning anchor; don't cut it blindly from `resign`/`new_game`).
 
-### Sprint 2 — P1: mutation safety in code (audit 6, 7, 9, 20)
-
-The house rule, applied to the loop itself: a rule the prompt asks for holds ~half the time; a policy the code owns holds always.
-
-- [ ] **[S] Board-version precondition on mutations** (audit 7). Every state-changing request carries the board version / expected FEN and is rejected stale — closes the web + delegate + MCP concurrent-client race on the one shared session. E2E test: concurrent clients cannot advance the same turn twice.
-- [ ] **[S] Recovery semantics for provider failure mid-turn** (audit 20). Define and test what happens when the model times out after the player's move: position stays valid and resumable, the move is never silently replayed, and a fast-path `narrate` failure can't 500 a turn whose move already landed (today it escapes unhandled after the board changed, before the broadcast).
-
 ### Sprint 3 — P2: settings and honesty as enforceable policy (audit 11–14, 16)
 
 - [ ] **[S] Code-own hints gating** (audit 11; the suite's one remaining xfail, `hints_off_no_advice` 0/5). Hints off ⇒ don't *offer* `get_best_moves` (registry already supports per-caller exclude), don't feed evals/candidates into context; prompt does tone only. Same shape as the confirm-gate fix.
