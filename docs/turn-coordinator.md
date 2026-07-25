@@ -3,7 +3,8 @@
 `backend/src/chessapp/coordinator.py`. Sprint 1, slice 1 of the agent-control
 replan (`docs/agent-control-audit-2026-07-25.md`, items 3 and 10), extended by
 slice 3 — the move flow split (items 2 and 5), which filled the observation slot
-— and by slice 4, which brought the board controls in (items 1 and 4). Both are
+— and by slice 4, which brought the board controls in (items 1 and 4). Sprint 2's
+first slice then made the per-turn mutation limits real (item 6). All of them are
 folded into this note where they changed something.
 
 ## Why
@@ -273,6 +274,50 @@ The coordinator holds the shared `ToolContext`, not a session or an engine, and
 reads `ctx.session` / `ctx.engine` live on every call — `resume_game` swaps the
 session object on the context mid-game.
 
+## Mutation limits (Sprint 2, slice 1 — audit item 6)
+
+Three mutations per turn, and each limit is code's rather than the prompt's:
+
+- **One accepted player move and one engine reply** were already structural.
+  There is no transition that admits a second of either — a second
+  `apply_player_move` mid-turn is refused, and so is a second
+  `collect_engine_reply` — so nothing has to be *counted* for this half. It is
+  the shape of the machine, and `make_move`'s description no longer repeats it in
+  prose: a rule code owns does not also live in the prompt.
+- **One destructive op per command.** `new_game` and `resign` were gated but not
+  budgeted, and the gate guards the *player's investment*, so it stands aside
+  when there is none (a finished game, a board nobody has moved). That left a
+  hole exactly one command wide: reset a finished game, then resign the fresh
+  board that reset just made — both past the gate, both inside one user
+  interaction.
+
+The budget is **command-scoped, not turn-scoped**, which is the load-bearing
+detail: `new_game` and `resign` each `abandon_turn` as part of doing their work,
+so a flag the phase machine owned would reset itself on the way out and enforce
+nothing. `begin_command`/`end_command` bracket one interaction,
+`require_destructive_budget()` refuses a second op inside it, and
+`record_destructive_op()` spends the budget only once the session has actually
+changed. Check then record: a gate refusal, or a `resign` that raised on an
+already-finished game, leaves the budget where it was, because nothing was thrown
+away.
+
+Only `api._run_command` opens a window, in a `try/finally` around the whole run —
+a command that raises half-way must not leak an open window into the next button
+press. It is the one surface that can chain several dispatches inside a single
+interaction (the brain loop), and therefore the only one that can spend a budget
+twice. The board buttons (`_run_destructive`), `/api/game/confirm`,
+`/api/game/move` and the MCP server dispatch once per interaction by
+construction and stay **windowless on purpose**: none of their behavior changes,
+and an MCP client may legitimately start game after game across a session.
+
+The refusal is a `TurnStateError` like the phase rejections, so it adds no new
+failure shape — the agent reads `{"ok": False, "error": ...}` and the message
+tells it to report what happened instead of retrying, and a trusted caller would
+answer 409. What this deliberately does *not* do is withdraw the tool from the
+offer mid-loop: a tool list that changes shape between iterations is a second
+mechanism to keep in step with this one, and the refusal already arrives where
+the model reads every other kind of "no".
+
 ## Known edges, deliberately left
 
 - **An engine that raises mid-calculation** leaves the phase at
@@ -293,7 +338,6 @@ session object on the context mid-game.
   "yes" narrates and writes a trace record, this does not. Deliberate for now —
   the dialog already told the player what was about to happen — but it is a gap
   in the per-turn record that Sprint 5's trace slice should close.
-- **Mutation counting is not enforced** (audit item 6, Sprint 2). The phases make
-  "one player move, one engine move per turn" *expressible* — a second
-  `apply_player_move` mid-turn is already refused — but the destructive-op budget
-  and the per-turn tool withdrawal are that slice's.
+- **A destructive op that runs on a windowless surface is unbudgeted** by design
+  (see the mutation limits above). Two MCP calls in a row can still reset a game
+  and resign it; what they cannot do is happen inside one command.

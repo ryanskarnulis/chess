@@ -838,6 +838,13 @@ def create_app(
         app's own words, not a second narration: Glitch reacts to what the player
         did, and the app reports what answered.
 
+        **One command, one destructive op.** The turn's move budget is the
+        phases' (a second player move mid-turn is refused); the destructive ops
+        need a wider scope than a turn, because they end the one they run in. So
+        this brackets the whole run in a coordinator *command window* — the only
+        surface that does, and the only one that can chain dispatches inside a
+        single interaction.
+
         The brain sees the `transcript` the caller supplies (prior turns'
         commands plus the commentary that was shown, a bounded window, final
         answers only), so the agent can follow references to earlier turns —
@@ -858,44 +865,104 @@ def create_app(
         """
         assert brain is not None  # both callers guard; documents the invariant
         before = _agent_state_dict(ctx)
-        # `tool_results` is the {"name", "result"} list the UI sees; `tool_args`
-        # mirrors it with each call's arguments, for the delegate wire — kept
-        # parallel so the UI-facing shape stays untouched.
-        tool_results: list[dict[str, Any]] = []
-        tool_args: list[dict[str, Any]] = []
-        commentary = ""
-        stop_reason = "completed"
-        # The fast path's move beats, held for the commentary below: with no
-        # narration to speak for the turn (verbosity=low, or a provider failure)
-        # the move and the engine's reply become one canned confirmation. None on
-        # every other route — those close their own turn further down.
-        move_beats: _MoveBeats | None = None
-        # The turn's cost at the provider boundary, summed across whatever model
-        # calls the chosen route made. The deterministic branches (a canned
-        # confirmation, a declined op) leave these at zero — a real, readable
-        # zero, which is what tells a later cut it changed nothing here.
-        model_calls = 0
-        prompt_tokens = 0
-        completion_tokens = 0
-        # An armed destructive op (the tool gate refused new_game/resign last
-        # turn and asked). This turn is its answer — and the answer is ours, not
-        # the model's: a bare yes runs it with the gate open, a bare no drops it,
-        # and anything else is a new intent that disarms it on the way past. The
-        # op never survives the turn, so a stale "yes" can never revive it.
-        armed = ctx.pending
-        ctx.pending = None
-        answer = parse_confirmation(text) if armed is not None else None
-        route = ROUTE_CONFIRMATION
-        if armed is not None and answer is not None:
-            if answer:
-                ctx.pending = armed  # confirm_pending consumes it
-                confirmed = confirm_pending(registry, ctx)
-                assert confirmed is not None
-                name, result = confirmed
-                tool_results.append({"name": name, "result": result})
-                tool_args.append(dict(armed.args))
-                if ctx.settings.verbosity == "low":
-                    commentary = _destructive_confirmation(name, result, ctx.session)
+        # One user interaction, one destructive op: the brain loop is the only
+        # thing in the app that can chain several dispatches inside a single
+        # command, so it is the only surface that needs the coordinator's
+        # destructive budget (the buttons and the confirm endpoint dispatch once
+        # by construction). The `finally` is the point of the window as much as
+        # the budget is: a command that raises half-way must not leak an open
+        # window into the next one.
+        coordinator.begin_command()
+        try:
+            # `tool_results` is the {"name", "result"} list the UI sees; `tool_args`
+            # mirrors it with each call's arguments, for the delegate wire — kept
+            # parallel so the UI-facing shape stays untouched.
+            tool_results: list[dict[str, Any]] = []
+            tool_args: list[dict[str, Any]] = []
+            commentary = ""
+            stop_reason = "completed"
+            # The fast path's move beats, held for the commentary below: with no
+            # narration to speak for the turn (verbosity=low, or a provider failure)
+            # the move and the engine's reply become one canned confirmation. None on
+            # every other route — those close their own turn further down.
+            move_beats: _MoveBeats | None = None
+            # The turn's cost at the provider boundary, summed across whatever model
+            # calls the chosen route made. The deterministic branches (a canned
+            # confirmation, a declined op) leave these at zero — a real, readable
+            # zero, which is what tells a later cut it changed nothing here.
+            model_calls = 0
+            prompt_tokens = 0
+            completion_tokens = 0
+            # An armed destructive op (the tool gate refused new_game/resign last
+            # turn and asked). This turn is its answer — and the answer is ours, not
+            # the model's: a bare yes runs it with the gate open, a bare no drops it,
+            # and anything else is a new intent that disarms it on the way past. The
+            # op never survives the turn, so a stale "yes" can never revive it.
+            armed = ctx.pending
+            ctx.pending = None
+            answer = parse_confirmation(text) if armed is not None else None
+            route = ROUTE_CONFIRMATION
+            if armed is not None and answer is not None:
+                if answer:
+                    ctx.pending = armed  # confirm_pending consumes it
+                    confirmed = confirm_pending(registry, ctx)
+                    assert confirmed is not None
+                    name, result = confirmed
+                    tool_results.append({"name": name, "result": result})
+                    tool_args.append(dict(armed.args))
+                    if ctx.settings.verbosity == "low":
+                        commentary = _destructive_confirmation(
+                            name, result, ctx.session
+                        )
+                    else:
+                        narration = brain.narrate(
+                            _agent_state_dict(ctx), tool_results, transcript
+                        )
+                        commentary = narration.text
+                        model_calls = narration.model_calls
+                        prompt_tokens = narration.prompt_tokens
+                        completion_tokens = narration.completion_tokens
+                else:
+                    # Declined: nothing ran, so there is nothing to narrate from.
+                    commentary = _DECLINED_REPLY
+            elif (fast_san := parse_move(text, ctx.session.fen())) is not None:
+                # The same beats a board drag runs, on the same helper: the parse is
+                # what differs between the two routes, never the sequencing.
+                route = ROUTE_FAST_PATH
+                move_beats = _play_move(fast_san, transcript)
+                tool_results.extend(move_beats.changes)
+                tool_args.append({"move": fast_san})
+                if not move_beats.legal:
+                    # `parse_move` already matched the move against this board, so a
+                    # refusal here is a turn-state rejection (a previous turn left
+                    # the machine mid-sequence), not an illegal move: nothing moved,
+                    # so there is nothing to react to. The beats still settled
+                    # whatever that turn left owing.
+                    commentary = _STUCK_REPLY
+                elif move_beats.narration is not None:
+                    commentary = move_beats.narration.text
+                    model_calls = move_beats.narration.model_calls
+                    prompt_tokens = move_beats.narration.prompt_tokens
+                    completion_tokens = move_beats.narration.completion_tokens
+            elif parse_resign(text):
+                # An explicit resignation is deterministic text, so the model gets no
+                # vote on whether it happened: live, it took one and answered "Word.
+                # Game over." with no tool call on a live board. The call still goes
+                # through the registry, so the gate arms it and the player's yes —
+                # not the agent's word — is what ends the game.
+                route = ROUTE_RESIGN
+                args = {"color": ctx.session.player_color}
+                result = registry.dispatch("resign", args)
+                tool_results.append({"name": "resign", "result": result})
+                tool_args.append(args)
+                if not result.get("ok"):
+                    commentary = (
+                        _RESIGN_CONFIRM  # the gate armed it; the answer is theirs
+                    )
+                elif ctx.settings.verbosity == "low":
+                    commentary = _destructive_confirmation(
+                        "resign", result, ctx.session
+                    )
                 else:
                     narration = brain.narrate(
                         _agent_state_dict(ctx), tool_results, transcript
@@ -905,135 +972,99 @@ def create_app(
                     prompt_tokens = narration.prompt_tokens
                     completion_tokens = narration.completion_tokens
             else:
-                # Declined: nothing ran, so there is nothing to narrate from.
-                commentary = _DECLINED_REPLY
-        elif (fast_san := parse_move(text, ctx.session.fen())) is not None:
-            # The same beats a board drag runs, on the same helper: the parse is
-            # what differs between the two routes, never the sequencing.
-            route = ROUTE_FAST_PATH
-            move_beats = _play_move(fast_san, transcript)
-            tool_results.extend(move_beats.changes)
-            tool_args.append({"move": fast_san})
-            if not move_beats.legal:
-                # `parse_move` already matched the move against this board, so a
-                # refusal here is a turn-state rejection (a previous turn left
-                # the machine mid-sequence), not an illegal move: nothing moved,
-                # so there is nothing to react to. The beats still settled
-                # whatever that turn left owing.
-                commentary = _STUCK_REPLY
-            elif move_beats.narration is not None:
-                commentary = move_beats.narration.text
-                model_calls = move_beats.narration.model_calls
-                prompt_tokens = move_beats.narration.prompt_tokens
-                completion_tokens = move_beats.narration.completion_tokens
-        elif parse_resign(text):
-            # An explicit resignation is deterministic text, so the model gets no
-            # vote on whether it happened: live, it took one and answered "Word.
-            # Game over." with no tool call on a live board. The call still goes
-            # through the registry, so the gate arms it and the player's yes —
-            # not the agent's word — is what ends the game.
-            route = ROUTE_RESIGN
-            args = {"color": ctx.session.player_color}
-            result = registry.dispatch("resign", args)
-            tool_results.append({"name": "resign", "result": result})
-            tool_args.append(args)
-            if not result.get("ok"):
-                commentary = _RESIGN_CONFIRM  # the gate armed it; the answer is theirs
-            elif ctx.settings.verbosity == "low":
-                commentary = _destructive_confirmation("resign", result, ctx.session)
-            else:
-                narration = brain.narrate(
-                    _agent_state_dict(ctx), tool_results, transcript
+                route = ROUTE_BRAIN
+                response = brain.get_agent_response(before, text, transcript)
+                tool_results = list(response.tool_results)
+                tool_args = [call.args for call in response.tool_calls]
+                stop_reason = response.stop_reason
+                model_calls = response.model_calls
+                prompt_tokens = response.prompt_tokens
+                completion_tokens = response.completion_tokens
+                # A budget stop (max_iterations / correction_limit) carries no
+                # commentary: the loop never reached a text turn.
+                commentary = response.text or _STUCK_REPLY
+            # The close beat, at the one point every route converges. A coordinator
+            # left mid-sequence means the player's move landed without its reply —
+            # whichever route played it — and whatever narration that route produced
+            # was this turn's reaction to it. So: collect the answer the engine has
+            # been computing all along, close the turn, and announce the reply in the
+            # app's own words. `complete_turn` is deliberately the pipeline's and not
+            # the tool's: nothing may close a turn the engine still owes a move to.
+            engine_reply: MoveResult | None = None
+            owed_reply = False
+            if move_beats is not None:
+                # The fast path ran the beats already, close included; what they
+                # settled is what this turn has to say for itself.
+                engine_reply, owed_reply = (
+                    move_beats.engine_reply,
+                    move_beats.owed_reply,
                 )
-                commentary = narration.text
-                model_calls = narration.model_calls
-                prompt_tokens = narration.prompt_tokens
-                completion_tokens = narration.completion_tokens
-        else:
-            route = ROUTE_BRAIN
-            response = brain.get_agent_response(before, text, transcript)
-            tool_results = list(response.tool_results)
-            tool_args = [call.args for call in response.tool_calls]
-            stop_reason = response.stop_reason
-            model_calls = response.model_calls
-            prompt_tokens = response.prompt_tokens
-            completion_tokens = response.completion_tokens
-            # A budget stop (max_iterations / correction_limit) carries no
-            # commentary: the loop never reached a text turn.
-            commentary = response.text or _STUCK_REPLY
-        # The close beat, at the one point every route converges. A coordinator
-        # left mid-sequence means the player's move landed without its reply —
-        # whichever route played it — and whatever narration that route produced
-        # was this turn's reaction to it. So: collect the answer the engine has
-        # been computing all along, close the turn, and announce the reply in the
-        # app's own words. `complete_turn` is deliberately the pipeline's and not
-        # the tool's: nothing may close a turn the engine still owes a move to.
-        engine_reply: MoveResult | None = None
-        owed_reply = False
-        if move_beats is not None:
-            # The fast path ran the beats already, close included; what they
-            # settled is what this turn has to say for itself.
-            engine_reply, owed_reply = move_beats.engine_reply, move_beats.owed_reply
-        elif coordinator.phase in (
-            TurnPhase.PLAYER_MOVE_APPLIED,
-            TurnPhase.AGENT_OBSERVING,
-        ):
-            owed_reply = True
-            engine_reply = coordinator.collect_engine_reply()
-            coordinator.complete_turn()
-        if move_beats is not None and move_beats.legal:
-            commentary = _move_commentary(
-                commentary, move_beats.result, engine_reply, owed_reply, ctx.session
+            elif coordinator.phase in (
+                TurnPhase.PLAYER_MOVE_APPLIED,
+                TurnPhase.AGENT_OBSERVING,
+            ):
+                owed_reply = True
+                engine_reply = coordinator.collect_engine_reply()
+                coordinator.complete_turn()
+            if move_beats is not None and move_beats.legal:
+                commentary = _move_commentary(
+                    commentary, move_beats.result, engine_reply, owed_reply, ctx.session
+                )
+            elif owed_reply and (
+                reply_line := _reply_announcement(engine_reply, ctx.session)
+            ):
+                commentary = (
+                    f"{commentary}\n\n{reply_line}" if commentary else reply_line
+                )
+            # The honesty guard, at the one point every route converges: commentary
+            # that announces the game ended (or restarted) when nothing ended it is
+            # not shown to the player. The board and the tool results are the record
+            # of what happened; the model's prose is not, and live it has claimed
+            # resignations and checkmates that never occurred (trace review, finding
+            # 6). This is the same rule as the gate, applied one step later — the
+            # model may neither *do* a destructive op unasked nor *say* it did.
+            guarded = False
+            ended = ctx.session.is_game_over() or _destructive_succeeded(tool_results)
+            if not ended and claims_destructive_outcome(commentary):
+                logger.warning(
+                    "commentary_claimed_untrue_outcome", extra={"text": text}
+                )
+                commentary = UNTRUE_CLAIM_REPLY
+                guarded = True
+            agent_state = _agent_state_dict(ctx)
+            # The UI still gets its own full document; a mutation shows up in the
+            # agent view too (any board change moves the fen), so that comparison
+            # decides the broadcast.
+            state = _state_dict(ctx.session)
+            changed = agent_state != before
+            if changed:
+                await broadcaster.broadcast(state)
+            _trace_turn(
+                utterance=text,
+                route=route,
+                commentary=commentary,
+                stop_reason=stop_reason,
+                changed=changed,
+                fen_before=before["fen"],
+                fen_after=agent_state["fen"],
+                tool_calls=tool_args,
+                tool_results=tool_results,
+                engine_reply=_move_reply_dict(engine_reply),
+                guarded=guarded,
+                model_calls=model_calls,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
             )
-        elif owed_reply and (
-            reply_line := _reply_announcement(engine_reply, ctx.session)
-        ):
-            commentary = f"{commentary}\n\n{reply_line}" if commentary else reply_line
-        # The honesty guard, at the one point every route converges: commentary
-        # that announces the game ended (or restarted) when nothing ended it is
-        # not shown to the player. The board and the tool results are the record
-        # of what happened; the model's prose is not, and live it has claimed
-        # resignations and checkmates that never occurred (trace review, finding
-        # 6). This is the same rule as the gate, applied one step later — the
-        # model may neither *do* a destructive op unasked nor *say* it did.
-        guarded = False
-        ended = ctx.session.is_game_over() or _destructive_succeeded(tool_results)
-        if not ended and claims_destructive_outcome(commentary):
-            logger.warning("commentary_claimed_untrue_outcome", extra={"text": text})
-            commentary = UNTRUE_CLAIM_REPLY
-            guarded = True
-        agent_state = _agent_state_dict(ctx)
-        # The UI still gets its own full document; a mutation shows up in the
-        # agent view too (any board change moves the fen), so that comparison
-        # decides the broadcast.
-        state = _state_dict(ctx.session)
-        changed = agent_state != before
-        if changed:
-            await broadcaster.broadcast(state)
-        _trace_turn(
-            utterance=text,
-            route=route,
-            commentary=commentary,
-            stop_reason=stop_reason,
-            changed=changed,
-            fen_before=before["fen"],
-            fen_after=agent_state["fen"],
-            tool_calls=tool_args,
-            tool_results=tool_results,
-            engine_reply=_move_reply_dict(engine_reply),
-            guarded=guarded,
-            model_calls=model_calls,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
-        return CommandOutcome(
-            commentary=commentary,
-            tool_results=tool_results,
-            tool_args=tool_args,
-            state=state,
-            changed=changed,
-            stop_reason=stop_reason,
-        )
+            return CommandOutcome(
+                commentary=commentary,
+                tool_results=tool_results,
+                tool_args=tool_args,
+                state=state,
+                changed=changed,
+                stop_reason=stop_reason,
+            )
+        finally:
+            coordinator.end_command()
 
     @app.post("/api/command")
     async def command(request: CommandRequest) -> dict[str, Any]:

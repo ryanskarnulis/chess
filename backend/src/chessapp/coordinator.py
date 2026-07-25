@@ -33,6 +33,17 @@ the whole reason it is safe to leave running while the narrator talks; the
 collecting thread checks that the position it computed from is still the
 position on the board and recomputes if not.
 
+**The destructive ops are budgeted per *command*, not per turn.** One player
+move and one engine move per turn are already the phases' business — a second of
+either is refused — but `new_game` and `resign` abandon the turn they run in, so
+a flag scoped to the turn would reset itself and enforce nothing. The window a
+`begin_command`/`end_command` pair opens is one *user interaction* wide and
+independent of the turn ids, and inside it a second destructive op is refused.
+Only the command pipeline opens one, because only the pipeline can chain several
+dispatches inside a single interaction (the brain loop); the board buttons, the
+confirm endpoint and MCP dispatch once per interaction by construction, so they
+stay unconstrained — an MCP client may start game after game across a session.
+
 State lives on the coordinator, board truth stays in `GameSession`: the phases
 say what may happen next, never what is on the board. `ctx.session` and
 `ctx.engine` are read live on every call because `resume_game` swaps the session
@@ -124,6 +135,10 @@ class TurnCoordinator:
         self._turn_id = 1
         self._phase = TurnPhase.AWAITING_PLAYER
         self._pending: _PendingReply | None = None
+        # The command window (see the module docstring). Deliberately not phase
+        # state: the ops it budgets abandon the turn as part of running.
+        self._command_open = False
+        self._destructive_spent = False
 
     @property
     def phase(self) -> TurnPhase:
@@ -260,6 +275,62 @@ class TurnCoordinator:
         self._phase = TurnPhase.COMPLETED
         self._turn_id += 1
         self._phase = TurnPhase.AWAITING_PLAYER
+
+    def begin_command(self) -> None:
+        """Open a command window: one user interaction, one destructive op.
+
+        The command pipeline calls this, and it is the only caller by design —
+        it is the one surface that can chain several dispatches inside a single
+        interaction (the brain loop), which is the only way a budget can be
+        spent twice. The board buttons, `/api/game/confirm`, `/api/game/move`
+        and the MCP server dispatch once per interaction by construction and
+        deliberately stay windowless, so nothing about their behavior changes.
+
+        Idempotent about the past: opening a window resets the budget, so a
+        previous command's spent op never charges this one.
+        """
+        self._command_open = True
+        self._destructive_spent = False
+
+    def end_command(self) -> None:
+        """Close the command window; outside one the budget is not enforced.
+
+        The pipeline runs this in a `finally`, because a command that raised
+        half-way must not leak an open window into the next button press.
+        """
+        self._command_open = False
+
+    def require_destructive_budget(self) -> None:
+        """Refuse a destructive op when this command has already had one.
+
+        A `TurnStateError`, so the model reads it as ordinary result data (it is
+        a `ValueError`, and `dispatch` converts those) and a trusted caller
+        answers 409 — the budget adds no new failure shape anywhere. The message
+        is written for the model, which is why it says "turn": that is the
+        vocabulary the tool contract uses, and what it needs to hear is *stop
+        retrying and report*.
+
+        Outside a window this is a no-op: a caller that dispatches once per
+        interaction cannot spend a budget twice, so it is never asked to hold
+        one.
+        """
+        if self._command_open and self._destructive_spent:
+            raise TurnStateError(
+                "a destructive operation already ran this turn — at most one "
+                "per turn; report what happened to the player instead of "
+                "retrying"
+            )
+
+    def record_destructive_op(self) -> None:
+        """Spend the window's destructive budget. A no-op with no window open.
+
+        Called after the op has actually mutated the session, never before:
+        check then record, so a call refused by the confirmation gate or one
+        that raised on the way (resigning a finished game) leaves the budget
+        where it was. Nothing was thrown away, so nothing was spent.
+        """
+        if self._command_open:
+            self._destructive_spent = True
 
     def engine_opening_move(self) -> MoveResult | None:
         """The engine's opening move on a game the player takes as black.
