@@ -617,7 +617,6 @@ def create_app(
                 # slower for gaining a reaction. verbosity=low skips it exactly
                 # as it always skipped narration, keeping that move zero-LLM, and
                 # the canned confirmation below stands in.
-                move_result = result
                 try:
                     narration = brain.narrate(
                         _agent_state_dict(ctx),
