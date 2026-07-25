@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from chessapp.personality import SYSTEM_PROMPT, system_prompt_for
+from chessapp.personality import (
+    PLANNER_PROMPT,
+    SYSTEM_PROMPT,
+    planner_prompt_for,
+    system_prompt_for,
+)
 
 
 def test_default_lookup_returns_the_glitch_prompt():
@@ -196,6 +201,68 @@ def test_unknown_verbosity_falls_back_to_normal():
     # `set_verbosity` is enum-guarded, but the lookup must never leave the
     # agent without a valid prompt.
     assert system_prompt_for(verbosity="shouting") == SYSTEM_PROMPT
+
+
+# --- the planner prompt (the other half of the planner/narrator split) --------
+#
+# Two model phases, two prompts (docs/planner-narrator.md). The planner picks
+# tools and never speaks; the narrator above speaks and holds no tools. These
+# pin what the planner prompt must and must not contain: the whole point of the
+# split is that no persona token competes with the tool decision, so a token
+# leaking back in is a regression, not a style choice.
+
+
+def test_planner_prompt_default_lookup():
+    assert planner_prompt_for() == PLANNER_PROMPT
+    assert PLANNER_PROMPT.strip()
+
+
+def test_planner_prompt_carries_no_persona():
+    # The diagnosis the split exists to fix: on a 12B, tone instructions
+    # compete with tool selection for attention. None of Glitch reaches here.
+    prompt = planner_prompt_for().lower()
+    for token in ("glitch", "troll", "swear", "cope", "props", "bro"):
+        assert token not in prompt, f"persona token leaked into the planner: {token}"
+
+
+def test_planner_prompt_carries_no_verbosity_layer():
+    # Verbosity shapes what the player is *told*, and the planner tells them
+    # nothing — so it takes no verbosity layer at any setting.
+    assert planner_prompt_for() == planner_prompt_for(hints_mode=False)
+    assert "talk less" not in PLANNER_PROMPT.lower()
+
+
+def test_planner_prompt_is_compact():
+    # Compactness is the mechanism, not a nicety: measurably smaller than the
+    # personality prompt the same decision used to be made under.
+    assert len(PLANNER_PROMPT) < len(SYSTEM_PROMPT) / 2
+
+
+def test_planner_prompt_keeps_the_load_bearing_rules():
+    # Persona-free, not contract-free. Everything the base layer guaranteed
+    # about *acting* has to survive the compaction.
+    prompt = planner_prompt_for().lower()
+    assert "referee" in prompt  # the board and engine own legality
+    assert "tool" in prompt  # act only through tools
+    assert "legal_moves" in prompt  # map phrasing onto the injected list
+    assert "never invent" in prompt  # and never onto something else
+    assert "ambiguous" in prompt  # ask rather than guess
+    assert "no tool" in prompt  # by declining to call anything
+
+
+def test_planner_prompt_states_the_handoff_contract():
+    # Its closing text is an internal note, not commentary: a separate voice
+    # writes what the player reads.
+    prompt = planner_prompt_for().lower()
+    assert "separate voice" in prompt
+    assert "never address the player" in prompt
+
+
+def test_planner_prompt_adds_a_hints_line_when_hints_are_on():
+    with_hints = planner_prompt_for(hints_mode=True)
+    assert with_hints.startswith(PLANNER_PROMPT)
+    assert "get_best_moves" in with_hints
+    assert "get_best_moves" not in PLANNER_PROMPT
 
 
 # --- hints mode ---------------------------------------------------------------
