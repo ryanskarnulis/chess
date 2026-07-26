@@ -874,6 +874,49 @@ def test_callable_planner_prompt_is_resolved_per_request():
     )
 
 
+def test_callable_tool_definitions_are_resolved_per_request():
+    # Live capability switching (audit 11): hints gating changes what tools the
+    # loop is *offered*, so the offer may be a provider too — resolved fresh per
+    # command, the same seam as the two prompts.
+    live = {"tools": TOOLS[:1]}
+    provider = ScriptedProvider(text_turn("a"), text_turn("b"))
+    brain = LlamaBrain(
+        provider=provider,
+        dispatcher=FakeDispatcher(),
+        tool_definitions=lambda: live["tools"],
+        system_prompt=PERSONA,
+        planner_prompt=PLANNER,
+    )
+    brain.get_agent_response(board_state={}, command="hi")
+    assert provider.calls[0]["tools"] == TOOLS[:1]
+    live["tools"] = TOOLS
+    brain.get_agent_response(board_state={}, command="hi again")
+    assert provider.calls[2]["tools"] == TOOLS
+
+
+def test_a_withheld_tool_is_never_dispatched():
+    # The capability side of hints gating: a tool outside the resolved offer is
+    # a schema-level unknown, even when the registry behind the dispatcher
+    # could run it — what the model may call is exactly what it was offered.
+    dispatcher = FakeDispatcher()
+    offered = [t for t in TOOLS if t["function"]["name"] != "get_best_moves"]
+    provider = ScriptedProvider(
+        tool_calls_turn(("get_best_moves", {})),
+        text_turn("note"),
+        text_turn("no hints from me."),
+    )
+    brain = LlamaBrain(
+        provider=provider,
+        dispatcher=dispatcher,
+        tool_definitions=lambda: offered,
+        system_prompt=PERSONA,
+        planner_prompt=PLANNER,
+    )
+    resp = brain.get_agent_response(board_state={}, command="what should I play?")
+    assert dispatcher.calls == []
+    assert "unknown tool" in resp.tool_results[0]["result"]["error"]
+
+
 def test_callable_system_prompt_also_drives_narration():
     provider = ScriptedProvider(text_turn("ok"))
     brain = LlamaBrain(

@@ -191,6 +191,32 @@ def test_build_app_wires_live_hints_switching():
     )
 
 
+def test_build_app_gates_get_best_moves_on_hints_mode():
+    # Audit 11, code-owned: hints off is a capability restriction, not a prompt
+    # line. With hints off (the default) the brain is not *offered*
+    # `get_best_moves` at all; turning hints on offers it on the very next
+    # command — the same live seam the prompts already use. The registry keeps
+    # the tool for the trusted callers (MCP, the delegate wire, /api/game/hint).
+    fake = ScriptedProvider(
+        tool_calls_turn(("set_hints_mode", {"enabled": True})),
+        text_turn("ok"),
+    )
+    client = TestClient(build_app(model="gemma", provider=fake))
+
+    client.post("/api/command", json={"text": "give me hints"})
+    client.post("/api/command", json={"text": "what should I play?"})
+
+    def offered(call) -> set[str]:
+        return {t["function"]["name"] for t in call["tools"] or []}
+
+    # cmd 1 planned with hints off: no get_best_moves on the table.
+    assert "get_best_moves" not in offered(fake.calls[0])
+    # cmd 2's planner turn: the switch took effect without a rebuild.
+    assert "get_best_moves" in offered(fake.calls[-2])
+    # The other analysis reads are ungated — hints only gates move advice.
+    assert {"evaluate_position", "analyze_last_move"} <= offered(fake.calls[0])
+
+
 def test_build_app_from_env_reads_the_planner_temperature(monkeypatch):
     # The sampling experiment's knob: a number in the environment, so a
     # measurement run needs no code change. Unset means the provider's default.

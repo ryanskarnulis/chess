@@ -74,7 +74,7 @@ from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
-from chessapp.honesty import claims_destructive_outcome
+from chessapp.honesty import claims_destructive_outcome, names_a_legal_move
 from chessapp.provider import ProviderError
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
@@ -380,6 +380,16 @@ UNTRUE_CLAIM_REPLY = (
     "Say it again if you meant it."
 )
 
+# What the player hears instead of a hint they turned off. The advice guard
+# catches commentary that hands over a currently-playable move when hints are
+# off and no analysis tool the player asked for reported it (audit item 11's
+# response check — the capability cut stops the tool call, this stops the
+# model's own head). Public so tests pin the substitution, not a wording.
+MOVE_ADVICE_REPLY = (
+    "Hints are off, so you're not getting a move out of me. "
+    "Ask me to turn hints on if you want help."
+)
+
 # The confirmation question for a resignation the pipeline itself dispatched.
 # Deterministic, like the gate it came from: the model is not consulted about a
 # resignation at any point, including how to ask about one.
@@ -439,6 +449,18 @@ class _MoveBeats:
     @property
     def legal(self) -> bool:
         return self.result.get("legal") is True
+
+
+def _advice_evidence(tool_results: Sequence[dict[str, Any]]) -> bool:
+    """Did a tool that legitimately names moves succeed this turn? Analysis
+    the player explicitly asked for reports moves (`best`, candidate lists),
+    and commentary repeating a reported move is a verified fact, not a leak —
+    "what was my mistake?" works with hints off, and its answer names moves."""
+    return any(
+        r["name"] in ("get_best_moves", "analyze_last_move")
+        and r["result"].get("ok") is True
+        for r in tool_results
+    )
 
 
 def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
@@ -1220,6 +1242,22 @@ def create_app(
                 commentary = UNTRUE_CLAIM_REPLY
                 guarded = True
             agent_state = _agent_state_dict(ctx)
+            # The advice guard, same convergence point (audit item 11's second
+            # half): with hints off, a currently-playable move in the
+            # commentary is a hint whatever prose carries it. It only fires on
+            # a turn that changed nothing — reacting to a move just played is
+            # description, not advice — and never over analysis the player
+            # asked for, whose reported moves are verified facts.
+            if (
+                not guarded
+                and not ctx.settings.hints_mode
+                and agent_state == before
+                and not _advice_evidence(tool_results)
+                and names_a_legal_move(commentary, ctx.session.legal_moves())
+            ):
+                logger.warning("commentary_leaked_move_advice", extra={"text": text})
+                commentary = MOVE_ADVICE_REPLY
+                guarded = True
             # The UI still gets its own full document; a mutation shows up in the
             # agent view too (any board change moves the fen), so that comparison
             # decides the broadcast.

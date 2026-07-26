@@ -17,7 +17,7 @@ agent's whole personality, and suppressing those would cost more than the lie.
 
 import pytest
 
-from chessapp.honesty import claims_destructive_outcome
+from chessapp.honesty import claims_destructive_outcome, names_a_legal_move
 
 
 @pytest.mark.parametrize(
@@ -67,3 +67,47 @@ def test_an_asserted_ending_is_a_claim(text):
 )
 def test_ordinary_commentary_is_not_a_claim(text):
     assert claims_destructive_outcome(text) is False
+
+
+# --- naming a playable move (the hints-off advice leak) ------------------------
+#
+# Audit item 11's second half: with hints off the model can no longer *call*
+# get_best_moves (the offer withholds it), but it can still invent a move from
+# its own head — the 2026-07-13 trace leak, still measured live after the
+# capability cut (2/5–3/5). The payload of a hint is a SAN token the player
+# could play right now, whatever prose surrounds it, so that is what the
+# predicate matches. The pipeline pairs it with the settings and the turn's
+# evidence: analysis the player explicitly asked for keeps its moves.
+
+LEGAL = ["Nf3", "Nc3", "e4", "d4", "Bc4", "O-O"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Try Nf3 here.",
+        "I'd go with e4, obviously.",
+        "Bc4 or Nc3 — both fine.",
+        "Castle already: O-O!",
+        "`d4` is the move.",
+    ],
+)
+def test_naming_a_playable_move_is_advice(text):
+    assert names_a_legal_move(text, LEGAL) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Declining, needling, or talking about the position without handing
+        # over a move — the commentary hints-off is supposed to produce.
+        "Figure it out yourself.",
+        "Hints are off. You wanted a fair fight, remember?",
+        "Your knight is hanging, just saying.",
+        # A move that is not currently playable is not a hint.
+        "That e5 push last game was rough.",
+        "",
+    ],
+)
+def test_commentary_without_a_playable_move_is_not_advice(text):
+    assert names_a_legal_move(text, LEGAL) is False

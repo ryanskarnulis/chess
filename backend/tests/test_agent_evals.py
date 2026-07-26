@@ -180,17 +180,26 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
     # model round trip is counted and timed. create_llama_brain builds exactly
     # this provider when none is passed, so the wire itself is unchanged.
     provider = CountingProvider(LlamaCppProvider(LLAMACPP_BASE_URL, LLAMACPP_MODEL))
+
+    def offered_tools() -> list[dict[str, Any]]:
+        # Exactly what build_app offers the brain, resolved live per command:
+        # the board state is injected into its prompt every turn, so
+        # BOARD_STATE_TOOLS are dispatchable but not *offered*, and with hints
+        # off `get_best_moves` is withheld too (audit 11 — the capability
+        # restriction, not a prompt rule). Offering more here would measure a
+        # different agent than the one that ships — and a bigger tool list is
+        # itself a variable (the 2026-07-13 trace review saw capture phrasings
+        # behave differently under the two lists).
+        exclude = list(BOARD_STATE_TOOLS)
+        if not ctx.settings.hints_mode:
+            exclude.append("get_best_moves")
+        return registry.definitions(exclude=exclude)
+
     brain = create_llama_brain(
         base_url=LLAMACPP_BASE_URL,
         model=LLAMACPP_MODEL,
         dispatcher=registry,
-        # Exactly what build_app offers the brain: the board state is injected
-        # into its prompt every turn, so BOARD_STATE_TOOLS are dispatchable but
-        # not *offered*. Offering them here would measure a different agent than
-        # the one that ships — and a bigger tool list is itself a variable (the
-        # 2026-07-13 trace review saw capture phrasings behave differently under
-        # the two lists).
-        tool_definitions=registry.definitions(exclude=BOARD_STATE_TOOLS),
+        tool_definitions=offered_tools,
         # Both prompts, exactly as build_app wires them: the narrator's carries
         # personality plus the live verbosity/hints layers, the planner's the
         # compact tool contract plus the hints permission. Measuring the tool
@@ -989,20 +998,16 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
     )
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "KNOWN BROKEN (trace review 2026-07-13, secondary): with hints_mode "
-        "off, 'what should I play here?' got concrete move advice (Nc3, exd6) "
-        "invented by the model with no get_best_moves call — both a gating leak "
-        "and advice that isn't the engine's. BRIEF: hints appear when on, never "
-        "when off."
-    ),
-)
 def test_eval_hints_off_means_no_move_advice(engine: EnginePlayer) -> None:
     """With hints off the agent must not hand over a move to play — not from the
     engine, and not from its own head. It should decline (or offer to turn hints
-    on), and it must not have called get_best_moves to get there."""
+    on), and it must not have called get_best_moves to get there.
+
+    Was xfail 0/5 from 2026-07-13 (the trace-review gating leak: concrete
+    move advice invented with no get_best_moves call). Cured 2026-07-25 by the
+    Sprint 3 capability restriction — with hints off `get_best_moves` is not
+    in the offer at all — and hard-asserted since (XPASS 5/5 on the gating
+    build)."""
 
     def setup(app: EvalApp) -> None:
         assert app.ctx.settings.hints_mode is False  # the default
