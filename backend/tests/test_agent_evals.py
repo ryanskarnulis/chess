@@ -58,14 +58,42 @@ was, from `GET /api/state`.
 This suite is the tripwire the standard requires: baseline results are recorded
 in `docs/agent-evals.md`, and it gates every future prompt/model/loop change —
 run it before merging one; the baseline must not regress.
+
+**A pass rate is judged statistically, not compared to a literal** (Sprint 5,
+slice 3; audit item 23). `assert result.rate >= 0.8` over five samples is a coin
+flip at the floor — the record has the same build measuring 3/5 then 4/5, and
+`play_as_black` measuring 5/5, 2/5, 0/5, 5/5 — so every decision this file makes
+about a count now lives in `evalstats.py`, which is pure, GPU-free and
+unit-tested on every commit (`test_evalstats.py`). Three consequences here:
+
+- **Sampling is block-sequential.** A block of `_BLOCK_RUNS` is taken, and only
+  a genuinely ambiguous count (the interval straddles the floor) buys another,
+  up to `_MAX_RUNS`. At n=5 a healthy scenario still costs exactly five samples.
+- **Infrastructure is retried, not scored.** llama-server crash-restarts every
+  3–8 minutes of sustained generation, and since audit 20 that arrives as a 200
+  carrying `stop_reason="provider_error"` — indistinguishable, to the old
+  harness, from the model quietly doing nothing. A `_CollectingTracer` on the
+  app's own tracer seam supplies the real stop reason on both seams, so such a
+  sample is thrown away and re-taken instead of counted as a miss.
+- **A run that never reached the narrator is not a pass.** A budget stop reaches
+  no narrator, so a purely negative commentary check passes for never having been
+  tested (that really happened — three of four `hints_off_no_advice` passes in
+  one recorded run). `_assert_reached_narrator` makes it a visible non-pass.
+
+Set `CHESSAPP_EVAL_REPORT=/path/to.jsonl` and the suite writes one machine-
+readable line per scenario *as it finishes*, so a baseline stops being
+transcribed by hand out of terminal scrollback.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from collections.abc import Callable, Generator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
 import pytest
@@ -81,6 +109,15 @@ from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import planner_prompt_for, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import BOARD_STATE_TOOLS, Settings, ToolContext, build_registry
+from evalstats import (
+    STOP_PROVIDER_ERROR,
+    Decision,
+    Outcome,
+    RateResult,
+    VacuousRun,
+    classify,
+    scenario_record,
+)
 from fakes import CountingProvider, ModelCall
 
 pytestmark = pytest.mark.skipif(
@@ -127,6 +164,143 @@ _BOARD_TOOLS = frozenset({"make_move", "undo", "new_game", "resign", "resume_gam
 _ANALYSIS_CEILING_S = 30.0
 _THINKING_OFF_CEILING_S = 8.0
 
+# --- sampling knobs -----------------------------------------------------------
+#
+# All five are env-overridable so a measurement campaign needs no code edit (and
+# so a campaign's settings land in the report header, where the number it
+# produced can be read back against them). The 20-sample campaign is
+# `CHESSAPP_EVAL_RUNS=20 CHESSAPP_EVAL_MAX_RUNS=20` — a minimum block equal to
+# the cap forces the full count with no separate override.
+#
+# `_INFRA_RETRIES` / `_INFRA_BUDGET` are sized off the observed crash cadence
+# rather than picked: ~10 s a sample and a crash every 18–48 samples means
+# 0.4–1.1 expected deaths per 20-sample escalation, so five per scenario is ~5×
+# expected, and the worst case is ~8 min of re-runs at the ~100 s cold reload.
+_BLOCK_RUNS = int(os.environ.get("CHESSAPP_EVAL_RUNS", "5"))
+_MAX_RUNS = int(os.environ.get("CHESSAPP_EVAL_MAX_RUNS", "20"))
+_INFRA_RETRIES = int(os.environ.get("CHESSAPP_EVAL_INFRA_RETRIES", "5"))
+_INFRA_BUDGET = int(os.environ.get("CHESSAPP_EVAL_INFRA_BUDGET", "25"))
+_REPORT_PATH = os.environ.get("CHESSAPP_EVAL_REPORT")
+
+# The floors, in one table instead of nine literals scattered through the file.
+# They are what the current build actually achieves (recorded in
+# docs/agent-evals.md) — regression tripwires, not aspirations — and lowering one
+# for quiet is the move that hollows out a gate: power depends on the floor, so
+# 0.8 → 0.7 halves the gate's chance of catching a real drop to 0.6.
+_FLOORS: dict[str, float] = {
+    "undo_and_replace": 0.8,
+    "my_mistake_is_mine": 0.8,
+    "play_as_black": 0.8,
+    "resume_not_denied": 0.8,
+    "resign_never_pretends": 0.8,
+    "hints_off_no_advice": 0.8,
+    "long_resume": 0.8,
+    "long_resign": 0.8,
+    "long_capture": 0.8,
+}
+
+# The loop's budget stops. A turn that ended on one reached no narrator, so it
+# produced no commentary — which is a sample that tested nothing, not a pass.
+_BUDGET_STOPS = frozenset({"max_iterations", "correction_limit"})
+
+
+# --- the report ---------------------------------------------------------------
+
+
+@dataclass
+class _SuiteTotals:
+    """What the whole run cost, and the shared ceiling on infra re-runs.
+
+    The budget is suite-wide as well as per-scenario because the failure mode it
+    guards against is not one bad scenario but a server that has stopped coming
+    back: without a ceiling, a dead llama-server turns the suite into an
+    unbounded retry loop that never reports anything.
+    """
+
+    scenarios: int = 0
+    samples: int = 0
+    infra_spent: int = 0
+    infra_budget: int = _INFRA_BUDGET
+
+    def spend_infra(self) -> bool:
+        """Charge one thrown-away sample; False when the suite is out of budget."""
+        self.infra_spent += 1
+        return self.infra_spent < self.infra_budget
+
+
+_SUITE = _SuiteTotals()
+
+
+def _report(record: dict[str, Any]) -> None:
+    """Append one JSONL line, if a report path was asked for.
+
+    Failures are swallowed and printed, like the tracer's: losing a diagnostic
+    line must never turn a measured run into a failed one. JSONL and appended as
+    each scenario finishes, so a Ctrl-C mid-suite still leaves every completed
+    scenario on disk.
+    """
+    if _REPORT_PATH is None:
+        return
+    try:
+        with open(_REPORT_PATH, "a") as handle:
+            handle.write(json.dumps(record) + "\n")
+    except OSError as exc:  # pragma: no cover - diagnostics only
+        print(f"\n[eval] report write failed: {exc}")
+
+
+def _git_sha() -> str:
+    """The build the numbers belong to. A baseline without one is a rumour."""
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover
+        return "unknown"
+    return completed.stdout.strip()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _report_session() -> Generator[None, None, None]:
+    """Bracket the run with a header and a totals line.
+
+    The header goes out *before* the first scenario so an interrupted run still
+    says what produced its lines — which knobs, which build, which floors. A
+    baseline should say what budget produced it, so the closing line carries the
+    infra budget actually consumed alongside the wall clock.
+    """
+    _report(
+        {
+            "kind": "header",
+            "started": datetime.now(UTC).isoformat(),
+            "git_sha": _git_sha(),
+            "model": LLAMACPP_MODEL,
+            "planner_temperature": PLANNER_TEMPERATURE,
+            "knobs": {
+                "block_runs": _BLOCK_RUNS,
+                "max_runs": _MAX_RUNS,
+                "infra_retries": _INFRA_RETRIES,
+                "infra_budget": _INFRA_BUDGET,
+            },
+            "floors": _FLOORS,
+        }
+    )
+    started = time.monotonic()
+    yield
+    _report(
+        {
+            "kind": "suite",
+            "finished": datetime.now(UTC).isoformat(),
+            "seconds": round(time.monotonic() - started, 1),
+            "scenarios": _SUITE.scenarios,
+            "samples": _SUITE.samples,
+            "infra_spent": _SUITE.infra_spent,
+            "infra_budget": _SUITE.infra_budget,
+        }
+    )
+
 
 # --- app / engine fixtures ----------------------------------------------------
 
@@ -150,12 +324,44 @@ def engine() -> Generator[EnginePlayer, None, None]:
         eng.close()
 
 
+@dataclass
+class _CollectingTracer:
+    """The app's own `Tracer` seam (`trace.Tracer`), kept in memory.
+
+    `api._run_command` traces **every** route, so this is how the harness learns
+    the things the HTTP answer does not carry: the real `stop_reason` on the
+    panel seam (`/api/command` genuinely does not return one), plus `route`,
+    `mutations`, `guarded`, `model_calls` and `model_ms` on *both* seams. That is
+    what lets an infra death be told from a behavioral miss with **zero**
+    production change — the alternative was adding `stop_reason` to the panel
+    response, which would put a production edit inside a harness slice, and the
+    harness-bug precedent (a wrong tool offer silently moving a scenario from
+    5/5 to 0–3/5) is the reason that is not allowed here.
+    """
+
+    turns: list[dict[str, Any]] = field(default_factory=list)
+
+    def record(self, turn: dict[str, Any]) -> None:
+        self.turns.append(turn)
+
+    def reset(self) -> None:
+        """One sample measures one utterance — same rule as `provider.reset()`."""
+        self.turns.clear()
+
+    @property
+    def last(self) -> dict[str, Any]:
+        """The turn just run, or an empty record when nothing was traced (a
+        request that failed before the pipeline reached its trace point)."""
+        return self.turns[-1] if self.turns else {}
+
+
 class EvalApp(NamedTuple):
     """One assembled eval app: the wire, the state, and the model-call meter."""
 
     client: TestClient
     ctx: ToolContext
     provider: CountingProvider
+    tracer: _CollectingTracer
 
 
 def _build_eval_app(engine: EnginePlayer) -> EvalApp:
@@ -211,10 +417,20 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         planner_temperature=PLANNER_TEMPERATURE,
         provider=provider,
     )
+    # The second departure, and it is observation only: the app's existing
+    # tracer seam is pointed at a list. Nothing the model sees changes — a
+    # tracer is a diagnostic sink the pipeline already swallows failures from.
+    tracer = _CollectingTracer()
     client = TestClient(
-        create_app(ctx, brain=brain, registry=registry, coordinator=coordinator)
+        create_app(
+            ctx,
+            brain=brain,
+            registry=registry,
+            coordinator=coordinator,
+            tracer=tracer,
+        )
     )
-    return EvalApp(client=client, ctx=ctx, provider=provider)
+    return EvalApp(client=client, ctx=ctx, provider=provider, tracer=tracer)
 
 
 @pytest.fixture
@@ -298,18 +514,39 @@ class EvalRun(NamedTuple):
     utterance — the planner loop's turns plus the narrator's closing turn, or
     `narrate`'s single turn on the fast path, or none at all when the fast path
     answers with a canned confirmation.
+
+    `status_code` and `stop_reason` are what a sample is *classified* by, and
+    neither is faked: the status is the response's, and the stop reason is read
+    off the tracer (the panel seam does not return one). Together they are the
+    difference between "the model did nothing" and "llama-server died again".
     """
 
     assistant: dict[str, Any]
     duration: float
     model_calls: list[ModelCall]
+    status_code: int
+    stop_reason: str | None
+
+
+# A non-200 means the request never produced a turn (almost always the provider
+# dying mid-generation). The sample is classified INFRA and re-taken, so nothing
+# reads this stub — it exists so the failure reaches the printed line and the
+# report rather than an exception off a missing key.
+_NO_TURN: dict[str, Any] = {"content": "", "tool_calls": [], "stop_reason": None}
 
 
 def _run(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
     """One eval run against the live model: fresh conversation → one message →
-    the `[eval]` stats line the baseline table is built from."""
+    the `[eval]` stats line the baseline table is built from.
+
+    Deliberately does **not** assert on the status: a pass-rate scenario has to
+    be able to retry an infra death, and an assertion here would make that death
+    a behavioral miss. The assertion moved to `_run_once`, which the single-shot
+    scenarios use.
+    """
     conversation_id = app.client.post("/api/agent/conversations", json={}).json()["id"]
     app.provider.reset()  # measure this utterance, not the fixture's history
+    app.tracer.reset()
     started = time.monotonic()
     response = app.client.post(
         f"/api/agent/conversations/{conversation_id}/messages",
@@ -317,18 +554,71 @@ def _run(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
         timeout=_REQUEST_TIMEOUT,
     )
     duration = time.monotonic() - started
-    assert response.status_code == 200, response.text
-    assistant = response.json()["assistant_message"]
+    assistant = (
+        response.json()["assistant_message"]
+        if response.status_code == 200
+        else dict(_NO_TURN)
+    )
+    return _measured(app, scenario, assistant, response, duration)
+
+
+def _measured(
+    app: EvalApp,
+    scenario: str,
+    assistant: dict[str, Any],
+    response: Any,
+    duration: float,
+) -> EvalRun:
+    """The `[eval]` line and the `EvalRun`, shared by both seams.
+
+    The line now carries what the tracer knows — the route the utterance took,
+    the real stop reason, the board mutations counted off `board_version`, and
+    `model_ms`. The last one is not decoration: a prompt-cache hit is *fast*, so
+    correlating an outcome with the turn's model latency tests the run-order
+    hypothesis behind `play_as_black`'s 5/5-in-isolation / 0/5-mid-suite split at
+    zero GPU cost.
+    """
+    traced = app.tracer.last
     model_calls = list(app.provider.calls)
     thinking = ",".join("on" if call.thinking else "off" for call in model_calls)
     print(
-        f"\n[eval] scenario={scenario} stop={assistant['stop_reason']} "
+        f"\n[eval] scenario={scenario} status={response.status_code} "
+        f"stop={traced.get('stop_reason')} route={traced.get('route')} "
         f"calls={len(_tool_calls(assistant))} model_calls={len(model_calls)} "
-        f"thinking=[{thinking}] "
-        f"mutations={len(_board_mutations(assistant))} duration={duration:.1f}s "
-        f"trajectory=[{_trajectory(assistant)}]"
+        f"thinking=[{thinking}] model_ms={traced.get('model_ms')} "
+        f"mutations={traced.get('mutations', len(_board_mutations(assistant)))} "
+        f"duration={duration:.1f}s trajectory=[{_trajectory(assistant)}]"
     )
-    return EvalRun(assistant=assistant, duration=duration, model_calls=model_calls)
+    if response.status_code != 200:
+        print(f"[eval]   ! HTTP {response.status_code}: {response.text[:300]}")
+    return EvalRun(
+        assistant=assistant,
+        duration=duration,
+        model_calls=model_calls,
+        status_code=response.status_code,
+        stop_reason=traced.get("stop_reason"),
+    )
+
+
+def _run_once(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
+    """One sample, for a scenario that only takes one — and the two ways such a
+    sample can be worthless.
+
+    The status assertion `_run` used to carry lives here rather than being
+    deleted: the shape scenarios have no rate for an infra death to be absorbed
+    into, so for them it has to be loud. `provider_error` is asserted beside it
+    because since audit item 20 that *is* the crash, wearing a 200: the brain
+    catches `ProviderError` and answers with whatever verifiably ran, which for
+    a shape scenario is an unmeasured model rather than a measured miss.
+    """
+    run = _run(app, scenario, utterance)
+    assert run.status_code == 200, (
+        f"{scenario}: HTTP {run.status_code} — see the [eval] line above"
+    )
+    assert run.stop_reason != STOP_PROVIDER_ERROR, (
+        f"{scenario}: the provider died mid-turn, so nothing was measured"
+    )
+    return run
 
 
 def _assert_loop_budget(run: EvalRun) -> None:
@@ -396,7 +686,7 @@ def test_eval_fast_path_plain_move_is_zero_llm(eval_app: EvalApp) -> None:
     utterance = "e4"
     assert parse_move(utterance, app.ctx.session.fen()) is not None  # takes fast path
 
-    run = _run(app, "fast_path_low", utterance)
+    run = _run_once(app, "fast_path_low", utterance)
 
     assert run.model_calls == [], "a fast-path move at verbosity=low must be zero-LLM"
     assert run.assistant["stop_reason"] == "completed"
@@ -418,7 +708,7 @@ def test_eval_fast_path_move_costs_one_call_when_chatty(eval_app: EvalApp) -> No
     utterance = "e4"
     assert parse_move(utterance, app.ctx.session.fen()) is not None
 
-    run = _run(app, "fast_path_normal", utterance)
+    run = _run_once(app, "fast_path_normal", utterance)
 
     assert len(run.model_calls) == 1, "expected narrate only — no tool-decision turn"
     _assert_thinking_starts_off(run)
@@ -439,7 +729,7 @@ def test_eval_plain_move_via_the_agent_path(eval_app: EvalApp) -> None:
     utterance = "play e4"
     assert parse_move(utterance, app.ctx.session.fen()) is None  # stays a model eval
 
-    run = _run(app, "plain_move", utterance)
+    run = _run_once(app, "plain_move", utterance)
     assistant = run.assistant
 
     assert assistant["stop_reason"] == "completed"
@@ -476,7 +766,7 @@ def test_eval_judgment_question_routes_through_analysis(eval_app: EvalApp) -> No
     utterance = "how am I doing?"
     assert parse_move(utterance, app.ctx.session.fen()) is None
 
-    run = _run(app, "judgment_question", utterance)
+    run = _run_once(app, "judgment_question", utterance)
     assistant = run.assistant
 
     assert assistant["stop_reason"] == "completed"
@@ -514,7 +804,7 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(eval_app: EvalApp) -> None
     utterance = "move the rook"
     assert parse_move(utterance, app.ctx.session.fen()) is None
 
-    run = _run(app, "ambiguous_move", utterance)
+    run = _run_once(app, "ambiguous_move", utterance)
     assistant = run.assistant
 
     assert _legal_moves(assistant) == [], "must not guess a move when ambiguous"
@@ -538,7 +828,7 @@ def test_eval_settings_by_speech_makes_it_easier(eval_app: EvalApp) -> None:
     utterance = "make it easier"
     assert parse_move(utterance, app.ctx.session.fen()) is None
 
-    run = _run(app, "settings_by_speech", utterance)
+    run = _run_once(app, "settings_by_speech", utterance)
     assistant = run.assistant
 
     assert assistant["stop_reason"] == "completed"
@@ -575,7 +865,7 @@ def test_eval_honest_about_an_illegal_move(eval_app: EvalApp) -> None:
     utterance = "castle kingside"
     assert parse_move(utterance, app.ctx.session.fen()) is None
 
-    run = _run(app, "honest_illegal", utterance)
+    run = _run_once(app, "honest_illegal", utterance)
     assistant = run.assistant
 
     assert _legal_moves(assistant) == [], "must not fabricate a legal move"
@@ -616,7 +906,7 @@ def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:
     utterance = "new game"
     assert parse_move(utterance, app.ctx.session.fen()) is None
 
-    run = _run(app, "destructive_confirm", utterance)
+    run = _run_once(app, "destructive_confirm", utterance)
     assistant = run.assistant
 
     assert _successful(assistant, "new_game") == [], (
@@ -653,23 +943,17 @@ def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:
 # They run N times and report a **pass rate**, not a boolean. The model samples
 # at temp 1.0: a single assert on a path that works 70% of the time flaps, and a
 # flapping test teaches you nothing. A rate tells you whether a prompt change
-# moved the number. The floors below are deliberately set at what the current
-# build actually achieves (recorded in docs/agent-evals.md) — they are
+# moved the number. The floors (`_FLOORS`) are deliberately set at what the
+# current build actually achieves (recorded in docs/agent-evals.md) — they are
 # regression tripwires, not aspirations.
-
-_PASS_RATE_RUNS = 5
-
-
-class RateResult(NamedTuple):
-    """What N runs of one scenario measured."""
-
-    passed: int
-    runs: int
-    failures: list[str]
-
-    @property
-    def rate(self) -> float:
-        return self.passed / self.runs
+#
+# What the rate is *compared against* changed in Sprint 5 slice 3, and it is the
+# one thing in this section worth reading twice: five samples cannot resolve a
+# 60–100% band, so `rate >= floor` was a coin flip on exactly the scenarios that
+# matter. The verdict is now a one-sided Wilson bound with block-sequential
+# sampling (`evalstats.decide`), and `RateResult` — which used to be three
+# fields here — moved to `evalstats.py` where it can be unit-tested without a
+# GPU.
 
 
 def _run_panel(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
@@ -691,36 +975,106 @@ def _run_panel(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
     The panel returns a thinner document than the delegate wire (`tool_results`
     is `{name, result}` with no arguments and no separate error channel, and its
     `result` is a decoded dict rather than the wire's JSON string), so it is
-    adapted into the same shape the trajectory helpers above read."""
+    adapted into the same shape the trajectory helpers above read.
+
+    It no longer *invents* a stop reason. This adapter used to carry
+    `"stop_reason": "completed"` with the comment "not exposed on this seam",
+    which is true of the HTTP answer and was quietly asserting that every panel
+    turn completed — including the ones where the provider had died. The real
+    stop reason comes off the tracer now (`_measured`), and the key is simply
+    gone from the adapted document, because a value the seam does not carry
+    should not be readable from it at all."""
     app.provider.reset()
+    app.tracer.reset()
     started = time.monotonic()
     response = app.client.post(
         "/api/command", json={"text": utterance}, timeout=_REQUEST_TIMEOUT
     )
     duration = time.monotonic() - started
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assistant = {
-        "content": body["commentary"],
-        # The panel has no error channel: a dispatch failure rides on `result`.
-        "tool_calls": [
-            {
-                "tool": r["name"],
-                "arguments": {},
-                "result": json.dumps(r["result"]),
-                "error": None,
-            }
-            for r in body["tool_results"]
-        ],
-        "stop_reason": "completed",  # not exposed on this seam
-    }
-    model_calls = list(app.provider.calls)
-    print(
-        f"\n[eval] scenario={scenario} calls={len(assistant['tool_calls'])} "
-        f"model_calls={len(model_calls)} duration={duration:.1f}s "
-        f"trajectory=[{_trajectory(assistant)}]"
-    )
-    return EvalRun(assistant=assistant, duration=duration, model_calls=model_calls)
+    if response.status_code == 200:
+        body = response.json()
+        assistant = {
+            "content": body["commentary"],
+            # The panel has no error channel: a dispatch failure rides on
+            # `result`.
+            "tool_calls": [
+                {
+                    "tool": r["name"],
+                    "arguments": {},
+                    "result": json.dumps(r["result"]),
+                    "error": None,
+                }
+                for r in body["tool_results"]
+            ],
+        }
+    else:
+        assistant = {"content": "", "tool_calls": []}
+    return _measured(app, scenario, assistant, response, duration)
+
+
+def _assert_reached_narrator(run: EvalRun) -> None:
+    """The turn got far enough for a commentary check to mean anything.
+
+    A budget stop reaches no narrator by construction (`docs/planner-narrator.md`
+    — nothing verified came back to speak from), so a *purely negative* check
+    over commentary passes for never having been tested. That is not a thought
+    experiment: three of four `hints_off_no_advice` passes in one recorded run
+    were `max_iterations` stops (`docs/agent-evals.md`), which is part of why
+    that scenario's rate read as noise.
+
+    Raises `VacuousRun` — an `AssertionError` subclass `classify` reads as
+    INCONCLUSIVE, so the sample counts against the rate and is reported as what
+    it was, rather than either passing silently or being blamed on the model.
+    """
+    if run.stop_reason in _BUDGET_STOPS:
+        raise VacuousRun(
+            f"stopped on {run.stop_reason}: no narrator ran, so nothing was tested"
+        )
+    if not run.assistant["content"]:
+        raise VacuousRun("no commentary was produced, so nothing was tested")
+
+
+def _sample(
+    engine: EnginePlayer,
+    label: str,
+    utterance: str,
+    check: Callable[[EvalApp, dict[str, Any]], None],
+    setup: Callable[[EvalApp], None] | None,
+    runner: Callable[[EvalApp, str, str], EvalRun],
+    requires_narrator: bool,
+) -> tuple[Outcome, EvalRun, BaseException | None]:
+    """One sample on a fresh app, and what kind of sample it turned out to be.
+
+    The check is only run on a turn that actually happened. On a dead provider it
+    would raise off the `_NO_TURN` stub and read as a HARNESS bug — which
+    `classify` deliberately never retries — so the guard here is what keeps a
+    crash classified as the crash it is.
+    """
+    app = _build_eval_app(engine)
+    try:
+        if setup is not None:
+            setup(app)
+        reset_rate_limit()  # each sample is its own conversation
+        run = runner(app, label, utterance)
+        error: BaseException | None = None
+        if run.status_code == 200 and run.stop_reason != STOP_PROVIDER_ERROR:
+            try:
+                if requires_narrator:
+                    _assert_reached_narrator(run)
+                check(app, run.assistant)
+            except Exception as exc:
+                # Everything a check can raise is data about *something*: a
+                # failed assertion is the model, a VacuousRun is the budget, and
+                # anything else is a bug in this file. KeyboardInterrupt is
+                # deliberately not caught — a Ctrl-C mid-suite must abort, with
+                # every finished scenario already on disk.
+                error = exc
+        outcome = classify(
+            status_code=run.status_code, stop_reason=run.stop_reason, error=error
+        )
+        return outcome, run, error
+    finally:
+        app.client.close()
 
 
 def _pass_rate(
@@ -729,38 +1083,181 @@ def _pass_rate(
     utterance: str,
     check: Callable[[EvalApp, dict[str, Any]], None],
     *,
+    floor: float,
     setup: Callable[[EvalApp], None] | None = None,
-    runs: int = _PASS_RATE_RUNS,
     runner: Callable[[EvalApp, str, str], EvalRun] = _run,
+    requires_narrator: bool = False,
 ) -> RateResult:
-    """Run one scenario `runs` times on a fresh app each time, counting how
-    often `check` holds. `check` raises AssertionError to fail a run; anything
-    it raises is recorded, never propagated — one bad sample is data, not a
-    test failure. The verdict is the rate, which the caller asserts on.
+    """Sample one scenario in blocks until its count decides against `floor`.
+
+    A block of `_BLOCK_RUNS` is taken, then `evalstats.decide`: a Wilson upper
+    bound below the floor is red and stops, a point estimate at the floor is
+    green and stops, and only the genuinely ambiguous middle buys another block
+    (up to `_MAX_RUNS`). At the default five that means a healthy scenario costs
+    exactly what it cost before this slice, and the escalation is spent only
+    where the old literal was a coin flip.
+
+    Blocks rather than one sample at a time for three reasons: identical
+    operating characteristics, a decision table small enough to unit-test, and
+    per-block rates — which are the only measurement in this suite that can see
+    the run-order confound (`play_as_black` at 5/5 isolated and 0/5 mid-suite).
+    `evalstats.block_stability` flags it; nothing here fixes it, because
+    interleaving samples across scenarios needs a session-scoped sampler this
+    slice does not build.
+
+    An infra death (a 502, or the 200 that carries `stop_reason="provider_error"`)
+    is thrown away and re-taken without consuming a sample, bounded per scenario
+    and across the suite. Exhausting either is `INFRA_ABORTED` — no rate, a hard
+    failure, and louder than today on purpose: it is also what a *deterministic*
+    provider error (a context overrun, a malformed request) now looks like.
 
     `runner` picks the seam: `_run` (the delegate wire, fresh conversation each
     time) or `_run_panel` (the web panel, reading whatever `setup` left on
-    `ctx.transcript`)."""
-    passed = 0
+    `ctx.transcript`). `requires_narrator` adds the vacuity check for a scenario
+    whose verdict is only about commentary.
+    """
+    blocks: list[tuple[int, int]] = []
     failures: list[str] = []
-    for i in range(runs):
-        app = _build_eval_app(engine)
-        try:
-            if setup is not None:
-                setup(app)
-            reset_rate_limit()  # each run is its own conversation
-            run = runner(app, f"{scenario}[{i + 1}/{runs}]", utterance)
-            check(app, run.assistant)
-            passed += 1
-        except AssertionError as exc:
-            failures.append(f"run {i + 1}: {exc}")
-        finally:
-            app.client.close()
-    result = RateResult(passed=passed, runs=runs, failures=failures)
-    print(f"\n[eval] scenario={scenario} PASS_RATE={passed}/{runs} ({result.rate:.0%})")
-    for failure in failures:
+    samples: list[dict[str, Any]] = []
+    infra = 0
+    inconclusive = 0
+    taken = 0
+    started = time.monotonic()
+
+    def record(**meta: Any) -> dict[str, Any]:
+        """Assemble the scenario's report line from whatever is settled so far,
+        so an abort is as readable as a completion."""
+        return {
+            "kind": "scenario",
+            "seconds": round(time.monotonic() - started, 1),
+            "seam": "panel" if runner is _run_panel else "delegate",
+            "utterance": utterance,
+            "samples": samples,
+            **meta,
+        }
+
+    while True:
+        block_passed = 0
+        block_runs = 0
+        while block_runs < _BLOCK_RUNS:
+            taken += 1
+            outcome, run, error = _sample(
+                engine,
+                f"{scenario}[{taken}]",
+                utterance,
+                check,
+                setup,
+                runner,
+                requires_narrator,
+            )
+            _SUITE.samples += 1
+            samples.append(
+                {
+                    "outcome": str(outcome),
+                    "status_code": run.status_code,
+                    "stop_reason": run.stop_reason,
+                    "model_calls": len(run.model_calls),
+                    "seconds": round(run.duration, 1),
+                    "error": str(error) if error is not None else None,
+                }
+            )
+            if outcome is Outcome.INFRA:
+                # Not a sample: the provider died, so the model was never asked.
+                infra += 1
+                budget_left = _SUITE.spend_infra()
+                print(f"[eval]   ⟳ infra retry {infra}/{_INFRA_RETRIES} ({scenario})")
+                if infra >= _INFRA_RETRIES or not budget_left:
+                    _report(
+                        record(
+                            scenario=scenario,
+                            floor=floor,
+                            decision="INFRA_ABORTED",
+                            infra=infra,
+                            suite_infra_spent=_SUITE.infra_spent,
+                        )
+                    )
+                    pytest.fail(
+                        f"{scenario}: INFRA_ABORTED after {infra} provider deaths "
+                        f"(suite budget spent {_SUITE.infra_spent}/"
+                        f"{_SUITE.infra_budget}). No rate was measured — either "
+                        "llama-server is not staying up, or the failure is "
+                        "deterministic (a context overrun answers the same way "
+                        "every time)."
+                    )
+                continue
+            if outcome is Outcome.HARNESS:
+                # A bug in this file, not data about the model. Reported before
+                # it propagates, so the samples already taken are not lost —
+                # which is exactly what used to happen.
+                _report(
+                    record(
+                        scenario=scenario,
+                        floor=floor,
+                        decision="HARNESS_ERROR",
+                        infra=infra,
+                        error=str(error),
+                    )
+                )
+                assert error is not None  # HARNESS is only reachable with one
+                raise error
+            block_runs += 1
+            if outcome is Outcome.PASS:
+                block_passed += 1
+            else:
+                failures.append(f"run {taken} [{outcome}]: {error}")
+                if outcome is Outcome.INCONCLUSIVE:
+                    inconclusive += 1
+        blocks.append((block_passed, block_runs))
+        result = RateResult.from_blocks(
+            blocks=blocks,
+            failures=failures,
+            floor=floor,
+            infra=infra,
+            inconclusive=inconclusive,
+        )
+        if result.decision is not Decision.UNDECIDED or result.runs >= _MAX_RUNS:
+            break
+
+    _SUITE.scenarios += 1
+    print(
+        f"\n[eval] scenario={scenario} PASS_RATE={result.summary()} floor={floor:.0%}"
+    )
+    for failure in result.failures:
         print(f"[eval]   ✗ {failure}")
+    for mode, count in sorted(result.failure_modes.items(), key=lambda item: -item[1]):
+        print(f"[eval]   ×{count} {mode}")
+    _report(record(**scenario_record(scenario, result, floor)))
     return result
+
+
+def _assert_floor(result: RateResult, floor: float, *, blocking: bool = False) -> None:
+    """The verdict, replacing nine copies of `assert result.rate >= 0.8`.
+
+    Red takes evidence: only a Wilson upper bound *below* the floor fails the
+    item, so a bad sample is no longer a regression. A count that never resolved
+    (the interval still straddles the floor at the cap) is reported as
+    UNDECIDED — and passes, except where the item is release-blocking, because
+    `TODO.md` declares `long_capture` a release blocker and an unresolved gate on
+    a release blocker is not a pass.
+
+    What a green now means is therefore weaker than it looked and stronger than
+    it was: **not statistically below the floor**. The gate separates ≈0.95 from
+    ≈0.5–0.6 and nothing finer (`docs/agent-evals.md` records the power table).
+    """
+    detail = f"{result.summary()} floor={floor:.0%}"
+    assert result.decision is not Decision.BELOW_FLOOR, (
+        f"below the floor with evidence, not noise: {detail}"
+    )
+    if result.decision is Decision.UNDECIDED:
+        message = f"UNDECIDED at the sampling cap: {detail}"
+        if blocking:
+            pytest.fail(f"release-blocking scenario is unresolved — {message}")
+        print(f"[eval]   ⚠ {message}")
+    if result.inconclusive:
+        print(
+            f"[eval]   ⚠ {result.inconclusive} sample(s) never reached a narrator "
+            "and were counted as non-passes"
+        )
 
 
 def _played(app: EvalApp, assistant: dict[str, Any]) -> str | None:
@@ -820,17 +1317,17 @@ def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
         assert history[:5] == ["e4", "b6", "Nf3", "h6", "d4"], history
         assert "Bc4" not in history, "the takeback did not stick"
 
+    floor = _FLOORS["undo_and_replace"]
     result = _pass_rate(
         engine,
         "undo_and_replace",
         "take that bishop move back and play d4 instead",
         check,
+        floor=floor,
         setup=setup,
     )
 
-    assert result.rate >= 0.8, (
-        f"undo+replace landed {result.passed}/{result.runs} times"
-    )
+    _assert_floor(result, floor)
 
 
 def test_eval_what_was_my_mistake_analyzes_the_players_move(
@@ -876,17 +1373,17 @@ def test_eval_what_was_my_mistake_analyzes_the_players_move(
         )
         assert _board_mutations(assistant) == [], "a question must not move a piece"
 
+    floor = _FLOORS["my_mistake_is_mine"]
     result = _pass_rate(
         engine,
         "my_mistake_is_mine",
         "what was my mistake?",
         check,
+        floor=floor,
         setup=setup,
     )
 
-    assert result.rate >= 0.8, (
-        f"analyzed the player's move {result.passed}/{result.runs} times"
-    )
+    _assert_floor(result, floor)
 
 
 def test_eval_play_as_black_actually_assigns_black(engine: EnginePlayer) -> None:
@@ -909,16 +1406,16 @@ def test_eval_play_as_black_actually_assigns_black(engine: EnginePlayer) -> None
         )
         assert app.ctx.session.turn == "black", "it must be the player's move"
 
+    floor = _FLOORS["play_as_black"]
     result = _pass_rate(
         engine,
         "play_as_black",
         "let's play chess as black",
         check,
+        floor=floor,
     )
 
-    assert result.rate >= 0.8, (
-        f"the player got black {result.passed}/{result.runs} times"
-    )
+    _assert_floor(result, floor)
 
 
 def test_eval_resume_game_is_not_denied(engine: EnginePlayer, tmp_path: Any) -> None:
@@ -949,15 +1446,17 @@ def test_eval_resume_game_is_not_denied(engine: EnginePlayer, tmp_path: Any) -> 
             "the saved game did not come back"
         )
 
+    floor = _FLOORS["resume_not_denied"]
     result = _pass_rate(
         engine,
         "resume_not_denied",
         "load up the game I saved as scholars",
         check,
+        floor=floor,
         setup=setup,
     )
 
-    assert result.rate >= 0.8, f"resume_game ran {result.passed}/{result.runs} times"
+    _assert_floor(result, floor)
 
 
 def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> None:
@@ -989,17 +1488,17 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
         # Either it was gated (armed, board live) or it ran — never a lie.
         assert app.ctx.session.is_game_over() or app.ctx.pending is not None
 
+    floor = _FLOORS["resign_never_pretends"]
     result = _pass_rate(
         engine,
         "resign_never_pretends",
         "you know what, I give up. I resign",
         check,
+        floor=floor,
         setup=setup,
     )
 
-    assert result.rate >= 0.8, (
-        f"resign was actually called {result.passed}/{result.runs} times"
-    )
+    _assert_floor(result, floor)
 
 
 def test_eval_hints_off_means_no_move_advice(engine: EnginePlayer) -> None:
@@ -1034,15 +1533,23 @@ def test_eval_hints_off_means_no_move_advice(engine: EnginePlayer) -> None:
         }
         assert not named, f"handed over a move with hints off: {sorted(named)}"
 
+    floor = _FLOORS["hints_off_no_advice"]
     result = _pass_rate(
         engine,
         "hints_off_no_advice",
         "what should I play here?",
         check,
+        floor=floor,
         setup=setup,
+        # The only pass-rate scenario whose check is *purely* negative: nothing
+        # here asserts a tool ran, so a turn that never reached a narrator has no
+        # commentary to leak and would score a pass for never having been tested.
+        # (`my_mistake_is_mine` cannot pass that way — it asserts an analysis
+        # call — which is why this is the one call site.)
+        requires_narrator=True,
     )
 
-    assert result.rate >= 0.8, f"hints stayed off {result.passed}/{result.runs} times"
+    _assert_floor(result, floor)
 
 
 # --- long transcript: the condition every live failure shared -----------------
@@ -1247,18 +1754,18 @@ def test_eval_long_transcript_resume_is_not_denied(
         )
         assert _history(app.client) == ["e4", "e5", "Nf3", "Nc6"]
 
+    floor = _FLOORS["long_resume"]
     result = _pass_rate(
         engine,
         f"long_resume[{label}]",
         "load up the game I saved as scholars",
         check,
+        floor=floor,
         setup=setup,
         runner=_run_panel,
     )
 
-    assert result.rate >= 0.8, (
-        f"[{label}] resume_game ran {result.passed}/{result.runs} times"
-    )
+    _assert_floor(result, floor)
 
 
 @pytest.mark.parametrize(("condition", "label"), _conditions(*_DECLINE_TURNS))
@@ -1291,18 +1798,18 @@ def test_eval_long_transcript_resign_never_pretends(
             "neither resigned nor armed for confirmation"
         )
 
+    floor = _FLOORS["long_resign"]
     result = _pass_rate(
         engine,
         f"long_resign[{label}]",
         "you know what, I give up. I resign",
         check,
+        floor=floor,
         setup=condition,
         runner=_run_panel,
     )
 
-    assert result.rate >= 0.8, (
-        f"[{label}] resign was actually called {result.passed}/{result.runs} times"
-    )
+    _assert_floor(result, floor)
 
 
 @pytest.mark.parametrize(("condition", "label"), _conditions(*_ILLEGAL_TURNS))
@@ -1328,15 +1835,18 @@ def test_eval_long_transcript_capture_still_lands(
     conditions."""
     assert parse_move("grab the pawn on e6", _LIVE_FEN) is None
 
+    floor = _FLOORS["long_capture"]
     result = _pass_rate(
         engine,
         f"long_capture[{label}]",
         "grab the pawn on e6",
         _expect_san("Bxe6"),
+        floor=floor,
         setup=condition,
         runner=_run_panel,
     )
 
-    assert result.rate >= 0.8, (
-        f"[{label}] Bxe6 landed {result.passed}/{result.runs} times"
-    )
+    # `blocking=True` for this one alone: TODO.md declares the `long_capture`
+    # regression release-blocking, and an unresolved gate on a release blocker is
+    # not a pass. Everywhere else UNDECIDED is reported and allowed.
+    _assert_floor(result, floor, blocking=True)
