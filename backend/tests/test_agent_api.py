@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from chessapp.agent_api import LOOP_ACTOR, reset_rate_limit
 from chessapp.brain import AgentResponse, ToolCall
+from chessapp.conversation import RECENT_TURNS
 from chessapp.game import GameSession
 from chessapp.provider import ProviderRequestError
 from chessapp.tools import ToolContext
@@ -260,6 +261,29 @@ def test_history_replays_text_turns_only_no_tool_payloads():
     ]
     # Text turns only: no tool payloads smuggled into model context.
     assert all(set(turn) == {"role", "content"} for turn in replayed)
+
+
+def test_the_delegate_wire_condenses_older_turns_like_the_panel_does():
+    """One memory policy, not two: the delegate's replay is `condense`d off its
+    own store, so a long conversation reaches the brain as recent turns behind a
+    digest — same as `/api/command` (`docs/turn-memory.md`)."""
+    turns = RECENT_TURNS + 2
+    brain = ScriptedBrain(*[AgentResponse(text=f"reply {i}") for i in range(turns + 1)])
+    client, _, _ = make_client(brain=brain)
+    conversation_id = new_conversation(client)
+
+    send(client, conversation_id, "tell me about the Sicilian")
+    for i in range(RECENT_TURNS):
+        send(client, conversation_id, f"and what about line {i}")
+    send(client, conversation_id, "so what should I study?")
+
+    replayed = brain.transcripts[-1]
+    assert len(replayed) == 2 + 2 * RECENT_TURNS
+    assert '"tell me about the Sicilian"' in replayed[0]["content"]
+    assert replayed[-2:] == [
+        {"role": "user", "content": f"and what about line {RECENT_TURNS - 1}"},
+        {"role": "assistant", "content": f"reply {RECENT_TURNS}"},
+    ]
 
 
 def test_fast_path_move_skips_the_brain_loop():

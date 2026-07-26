@@ -84,6 +84,7 @@ The board UI (`/`), the delegate API (`/api/agent`, still served but no longer a
 - **Never leave an engine unconfigured:** a real default difficulty tier is applied at app assembly (Stockfish's own default is full strength).
 - **Local-only voice by decision** — no browser Web Speech API path (see `docs/voice-fast-path-evaluation.md`).
 - **Never feed LLM thought blocks back into multi-turn history** — final answers only.
+- **Conversation memory is condensed, and it is code that condenses it** (`conversation.condense`, `docs/turn-memory.md`). A brain gets the last few turns verbatim behind a deterministic digest of what the player asked for earlier; Glitch's older prose is dropped, because personality competing with the tool decision is this project's measured failure mode. The digest holds **no** board facts, settings or saves — those are injected fresh into the state block every turn, and a summary restating them would be the second, ageing copy that caused the self-poisoning bug. No model writes the summary: everything code can verify is already injected, and the residue is the player's own words.
 
 ## Phasing
 

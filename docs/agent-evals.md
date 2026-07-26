@@ -372,7 +372,39 @@ scenario's pass rate therefore mixed "behaved correctly" with "ran out of
 budget", which is part of why it read as noise. Worth a look when that slice
 lands.
 
+## Turn memory: the transcript scenarios now measure a digest (2026-07-25, Sprint 4 slice 1)
+
+`/api/command` no longer hands the model the raw 20-turn window. It hands
+`Transcript.memory()` — the last four turns verbatim behind a deterministic
+digest of what the player asked for earlier (`docs/turn-memory.md`). That
+changes what the `long_transcript_*` conditions above actually put in front of
+the model, so it is worth being precise about what they still measure:
+
+- **`live_like`** is now the digest condition. Its 20-turn thread reaches the
+  model as 10 messages instead of 40 (1,440 → 1,049 chars), with sixteen turns
+  of Glitch's prose replaced by twelve quoted player requests. The probe still
+  answers "does a long thread degrade tool recall?" — it just now measures the
+  thread as the app actually sends it.
+- **`poisoned`** still measures self-poisoning, because every probe's poison
+  turns are appended at the *end* of the thread and therefore land inside the
+  verbatim window. That is deliberate and now load-bearing: a stale assistant
+  line can only poison what it is still quoted in, and the sharpest form of the
+  test is the one where it is.
+
+**Result: no movement.** All nine long-transcript conditions 5/5, including
+`long_capture[poisoned]` — the release-blocking regression — in a run where the
+whole suite came back clean first time. The digest neither fixed anything nor
+broke anything at the tool boundary; what it bought is a memory whose size stops
+growing, and a planner context with sixteen fewer turns of personality in it.
+
 ## Recorded baseline
+
+**Run 2026-07-25 on the turn-memory digest build (Sprint 4, slice 1): 23 passed,
+every pass-rate scenario 5/5, in a single run — the baseline holds.** Third
+clean full-suite pass on record, and the first on the condensed context. Every
+scenario that reads a transcript (`long_resume`, `long_resign`, `long_capture` ×
+fresh/live_like/poisoned) is a direct probe of the change; all nine are 5/5. See
+the section above for what each condition now measures.
 
 **Run 2026-07-25 on the verified-facts guard build (Sprint 3, slice 5): 23
 passed, every pass-rate scenario 5/5, in a single run — the baseline holds.**
