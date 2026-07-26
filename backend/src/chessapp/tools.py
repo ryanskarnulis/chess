@@ -13,6 +13,19 @@ argument JSON Schema is derived from the typed signature via FastMCP's
 `../agent-standard/STANDARD.md` §1). No hand-written schemas, except the one
 documented `parameters=` escape hatch for `set_difficulty`, whose
 exactly-one-of `oneOf` cannot come from a plain signature.
+
+**A refusal carries what recovery needs** (audit item 14). Every "no" this
+layer produces — a schema failure, a domain rejection, a turn-state error, an
+illegal move — comes back with `retry` (`different_args` or `never`: whether
+calling again can possibly help, decided by code rather than inferred from the
+wording) and `board_version` (which board it was about). Where a better call
+exists, the refusal names it: legal `alternatives` for a rejected move, the
+saves that exist for a bad save name (a bad *difficulty* needs no such key —
+the tiers are a schema `enum`, so the validator's own message lists them).
+That is the confirmation gate's pattern — its refusal has always carried the
+exact line to relay — spread across the surface, and it is the difference
+between an agent that corrects itself in one round trip and one that spends its
+whole iteration budget asking what is legal.
 """
 
 import inspect
@@ -46,6 +59,34 @@ GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
 # Save names become filenames: one path segment, no traversal.
 SAVE_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+
+# The two answers to "is calling again worth a round trip?" — the `retry` key on
+# every refusal. Two rather than a scale because the agent only ever does one of
+# two things with the answer: fix the arguments and call again, or stop and tell
+# the player. `never` is the default for an unclassified failure: a loop that
+# does not know why it failed must not spend its budget finding out.
+RETRY_DIFFERENT_ARGS = "different_args"
+RETRY_NEVER = "never"
+
+
+class ToolError(ValueError):
+    """A domain refusal that says how to recover from it.
+
+    A `ValueError` like every other domain rejection here, so nothing about the
+    dispatch path changes — but one the handler can attach recovery data to:
+    `retry` says whether another call could work, and `details` become extra
+    keys on the result (`saved_games`, and whatever a later refusal needs to
+    hand back). A handler that raises a
+    plain `ValueError` still works and gets `RETRY_NEVER`, which is the honest
+    answer for a failure nobody classified.
+    """
+
+    def __init__(
+        self, message: str, *, retry: str = RETRY_NEVER, **details: Any
+    ) -> None:
+        super().__init__(message)
+        self.retry = retry
+        self.details = details
 
 
 @dataclass
@@ -207,7 +248,13 @@ def confirm_pending(
 
 @dataclass
 class ToolRegistry:
+    """The dispatch boundary. `context` is optional and read-only from here —
+    it exists so a refusal can name the board it was about (`board_version`).
+    A registry built without one (unit tests, the schema fixture) simply omits
+    the key rather than inventing a number."""
+
     _tools: dict[str, Tool] = field(default_factory=dict)
+    context: "ToolContext | None" = None
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -270,19 +317,43 @@ class ToolRegistry:
             if tool.name not in excluded
         ]
 
+    def refusal(self, error: str, retry: str, **details: Any) -> dict[str, Any]:
+        """The one shape every "no" from this layer takes.
+
+        Public because the tools that report a refusal *without* raising build
+        it too — a rejected move is result data, not an exception, and it is
+        owed the same `retry`/`board_version` as everything else.
+        """
+        result: dict[str, Any] = {"ok": False, "error": error, "retry": retry}
+        if self.context is not None:
+            result["board_version"] = self.context.board_version
+        result.update(details)
+        return result
+
     def dispatch(self, name: str, args: Any) -> dict[str, Any]:
-        """Run tool `name` with `args`; never raises on agent-caused faults."""
+        """Run tool `name` with `args`; never raises on agent-caused faults.
+
+        The three ways a call can fail are told apart by whether a *different*
+        call could succeed. A name that does not exist cannot be fixed by
+        retrying (the offer is the offer); malformed args can, and that is the
+        whole point of saying so. A handler's `ValueError` is a domain "no" —
+        `never` unless it was raised as a `ToolError` that knows better.
+        """
         tool = self._tools.get(name)
         if tool is None:
-            return {"ok": False, "error": f"unknown tool: {name}"}
+            return self.refusal(f"unknown tool: {name}", RETRY_NEVER)
         try:
             jsonschema.validate(args, tool.parameters)
         except jsonschema.ValidationError as exc:
-            return {"ok": False, "error": f"invalid args for {name}: {exc.message}"}
+            return self.refusal(
+                f"invalid args for {name}: {exc.message}", RETRY_DIFFERENT_ARGS
+            )
         try:
             return tool.handler(**args)
+        except ToolError as exc:
+            return self.refusal(str(exc), exc.retry, **exc.details)
         except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+            return self.refusal(str(exc), RETRY_NEVER)
 
 
 def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
@@ -415,7 +486,7 @@ def build_registry(
     server keeps True, because an MCP call has nothing behind it to collect the
     reply and its game must never stall half-way through a turn.
     """
-    registry = ToolRegistry()
+    registry = ToolRegistry(context=ctx)
     if coordinator is None:
         coordinator = TurnCoordinator(ctx)
 
@@ -550,7 +621,20 @@ def build_registry(
         else:
             result, reply = coordinator.apply_player_move(move), None
         if not result.legal:
-            return {"ok": True, "legal": False, "reason": result.reason}
+            # Still `ok: True` — legality is the engine's answer, not a fault,
+            # and the whole app reads a rejected move as data. What it now
+            # carries is the way out: the legal moves that answer what was
+            # asked for, and the fact that a corrected call is worth making.
+            # Nothing to correct on a finished game, so that one says so.
+            retriable = bool(result.alternatives)
+            return {
+                "ok": True,
+                "legal": False,
+                "reason": result.reason,
+                "alternatives": list(result.alternatives),
+                "retry": RETRY_DIFFERENT_ARGS if retriable else RETRY_NEVER,
+                "board_version": ctx.board_version,
+            }
         payload = {
             "ok": True,
             "legal": True,
@@ -597,7 +681,10 @@ def build_registry(
         coordinator.abandon_turn()
         result = ctx.session.undo(_takeback_plies(ctx) if plies is None else plies)
         if not result.ok:
-            return {"ok": False, "error": result.reason}
+            # Nothing to take back, or a game ended by resignation: asking again
+            # with a different count does not conjure plies that were never
+            # played, so this one is for the player to hear, not to retry.
+            return registry.refusal(result.reason or "cannot undo", RETRY_NEVER)
         return {
             "ok": True,
             "undone": list(result.undone),
@@ -635,13 +722,15 @@ def build_registry(
         if ctx.session.is_game_over() or not _player_has_moved(ctx):
             return None
         ctx.pending = PendingOp(name=name, args=dict(args))
-        return {
-            "ok": False,
-            "error": (
-                f"confirmation required: {name} would end the current game. "
-                "Ask the player to confirm; it runs when they say yes."
-            ),
-        }
+        # `never`, and it is the sharpest example of why the key earns its
+        # place: the refusal is not a failure to fix but a question to relay,
+        # and calling again is the exact wrong move — the docstrings say "do not
+        # call again" and the model obeyed that about half the time.
+        return registry.refusal(
+            f"confirmation required: {name} would end the current game. "
+            "Ask the player to confirm; it runs when they say yes.",
+            RETRY_NEVER,
+        )
 
     @registry.tool()
     def new_game(
@@ -740,7 +829,16 @@ def build_registry(
         "Resume a previously saved game by name (default 'autosave')."
         path = _save_path(ctx, name)
         if not path.exists():
-            raise ValueError(f"no saved game named {name!r}")
+            # The saves that do exist ride along: the request was for a real
+            # capability with the wrong argument, and the right argument is a
+            # fact the app holds. Without it the agent's only recovery was to
+            # guess another name or invent an apology about saving being broken
+            # (the self-poisoning shape `saved_games` in the prompt also fixes).
+            raise ToolError(
+                f"no saved game named {name!r}",
+                retry=RETRY_DIFFERENT_ARGS,
+                saved_games=saved_game_names(ctx),
+            )
         data = json.loads(path.read_text())
         # Validate both parts before touching the context, so a corrupt file
         # can't leave a restored board with someone else's conversation.
