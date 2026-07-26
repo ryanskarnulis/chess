@@ -57,6 +57,9 @@ def _record_fields(**overrides):
         "commentary": "done",
         "stop_reason": "completed",
         "changed": True,
+        "turn_id": 1,
+        "correlation_id": "c0ffee",
+        "mutations": 0,
         "fen_before": "before",
         "fen_after": "after",
         "tool_calls": [],
@@ -89,6 +92,31 @@ def test_turn_record_model_cost_defaults_to_zero():
     assert record["model_calls"] == 0
     assert record["prompt_tokens"] == 0
     assert record["completion_tokens"] == 0
+
+
+def test_turn_record_carries_the_ids_that_locate_the_turn():
+    record = _record_fields(turn_id=7, correlation_id="ab12cd34")
+    assert record["turn_id"] == 7
+    assert record["correlation_id"] == "ab12cd34"
+
+
+def test_turn_record_carries_the_mutation_count():
+    record = _record_fields(mutations=2)
+    assert record["mutations"] == 2
+
+
+def test_turn_record_times_each_model_call_and_sums_them():
+    """Per-call latency is what tells a slow narrator from a slow planner; the
+    total is derived here, so the two can never disagree in a record."""
+    record = _record_fields(model_calls=2, model_latencies_ms=[120, 900])
+    assert record["model_latencies_ms"] == [120, 900]
+    assert record["model_ms"] == 1020
+
+
+def test_turn_record_latency_defaults_to_no_calls():
+    record = _record_fields()
+    assert record["model_latencies_ms"] == []
+    assert record["model_ms"] == 0
 
 
 # --- what a turn records ----------------------------------------------------
@@ -239,6 +267,155 @@ def test_trace_carries_the_position_the_turn_acted_from(trace_path):
     (record,) = read_records(trace_path)
     assert record["fen_before"].startswith("rnbqkbnr/pppppppp")
     assert record["fen_after"] == ctx.session.fen()
+
+
+# --- locating a turn: the ids, the mutations, the latencies -----------------
+
+
+def test_a_move_turn_counts_both_of_its_mutations(trace_path):
+    """A move turn changes the board twice — the player's move and the engine's
+    answer — so two is what a healthy record says. Three is the bug this counts
+    for: a move that landed twice under one turn id."""
+    client, _ = make_client(trace_path, engine=FakeEngine("e7e5"))
+    client.post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["mutations"] == 2
+
+
+def test_an_engineless_move_turn_counts_one(trace_path):
+    client, _ = make_client(trace_path)
+    client.post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["mutations"] == 1
+
+
+def test_a_turn_that_touched_nothing_counts_no_mutations(trace_path):
+    client, _ = make_client(trace_path, AgentResponse(text="Ruy Lopez, obviously."))
+    client.post("/api/command", json={"text": "favorite opening?"})
+    (record,) = read_records(trace_path)
+    assert record["mutations"] == 0
+    assert record["changed"] is False
+
+
+def test_each_turn_records_the_coordinator_turn_it_ran_under(trace_path):
+    """The id the mutation count is read against: two mutations under one turn
+    id is a turn, four under one id is a duplicated move."""
+    client, _ = make_client(trace_path, engine=FakeEngine("e7e5"))
+    client.post("/api/command", json={"text": "e4"})
+    client.post("/api/command", json={"text": "Nf3"})
+    assert [r["turn_id"] for r in read_records(trace_path)] == [1, 2]
+
+
+def test_every_turn_gets_its_own_correlation_id(trace_path):
+    """One id per user interaction, tying the record to the log lines that turn
+    emitted — so two turns are never confused for one."""
+    client, _ = make_client(trace_path, engine=FakeEngine("e7e5"))
+    client.post("/api/command", json={"text": "e4"})
+    client.post("/api/command", json={"text": "Nf3"})
+    ids = [r["correlation_id"] for r in read_records(trace_path)]
+    assert all(ids), "every turn is locatable"
+    assert len(set(ids)) == 2
+
+
+def test_a_dragged_move_is_traced_with_the_same_accounting(trace_path):
+    """The board route is a turn like any other: same ids, same mutation count."""
+    client, _ = make_client(trace_path, engine=FakeEngine("e7e5"))
+    client.post("/api/game/move", json={"move": "e2e4"})
+    (record,) = read_records(trace_path)
+    assert record["route"] == "board"
+    assert record["turn_id"] == 1
+    assert record["mutations"] == 2
+    assert record["correlation_id"]
+
+
+def test_brain_turn_records_a_latency_per_model_call(trace_path):
+    client, _ = make_client(
+        trace_path,
+        AgentResponse(text="done", model_calls=2, model_latencies_ms=(300, 800)),
+    )
+    client.post("/api/command", json={"text": "what should I do?"})
+    (record,) = read_records(trace_path)
+    assert record["model_latencies_ms"] == [300, 800]
+    assert record["model_ms"] == 1100
+
+
+def test_fast_path_records_the_narration_latency(trace_path):
+    ctx = ToolContext(session=GameSession())
+    brain = ScriptedBrain(
+        dispatcher=None, narrations=(Narration(text="e4!", latency_ms=140),)
+    )
+    app, _ = scripted_app(ctx, brain=brain, tracer=JsonlTracer(trace_path))
+    TestClient(app).post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["model_latencies_ms"] == [140]
+    assert record["model_ms"] == 140
+
+
+def test_a_zero_llm_turn_records_no_latencies(trace_path):
+    ctx = ToolContext(session=GameSession(), settings=Settings(verbosity="low"))
+    app, _ = scripted_app(ctx, tracer=JsonlTracer(trace_path))
+    TestClient(app).post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["model_latencies_ms"] == []
+    assert record["model_ms"] == 0
+
+
+# --- the control surface: a destructive op leaves a record either way -------
+
+
+def _in_progress(trace_path, **kwargs):
+    """A client on a game with moves on it — the state where the gate asks."""
+    client, ctx = make_client(trace_path, **kwargs)
+    for san in ("e4", "e5", "Nf3"):
+        ctx.session.submit_move(san)
+    return client, ctx
+
+
+def test_an_armed_reset_button_is_traced_as_asking(trace_path):
+    """The gate refused and asked. Nothing changed — and that is the record's
+    point: it is the half of the interaction the spoken road already traced."""
+    client, _ = _in_progress(trace_path)
+    assert client.post("/api/game/new", json={}).status_code == 409
+    (record,) = read_records(trace_path)
+    assert record["route"] == "control"
+    assert record["utterance"] == "new_game"
+    assert record["mutations"] == 0
+    assert record["changed"] is False
+    assert record["tools"][0]["result"]["ok"] is False
+
+
+def test_a_button_confirmed_reset_is_traced(trace_path):
+    """The gap `docs/turn-coordinator.md` left for this slice: `/api/game/confirm`
+    ran a real destructive op and wrote nothing down."""
+    client, _ = _in_progress(trace_path)
+    client.post("/api/game/new", json={})  # arms it (409 + the question)
+    client.post("/api/game/confirm", json={"confirm": True})
+    asked, confirmed = read_records(trace_path)
+    assert asked["mutations"] == 0
+    assert confirmed["route"] == "control"
+    assert confirmed["utterance"] == "new_game"
+    assert confirmed["changed"] is True
+    assert confirmed["mutations"] == 1
+    assert confirmed["model_calls"] == 0, "no model stands between a yes and a reset"
+
+
+def test_a_declined_reset_is_traced_as_having_run_nothing(trace_path):
+    client, _ = _in_progress(trace_path)
+    client.post("/api/game/new", json={})
+    client.post("/api/game/confirm", json={"confirm": False})
+    _, declined = read_records(trace_path)
+    assert declined["mutations"] == 0
+    assert declined["changed"] is False
+    assert declined["tools"] == [], "nothing was dispatched to report"
+
+
+def test_a_control_record_carries_the_turn_it_answered_in(trace_path):
+    client, _ = _in_progress(trace_path, engine=FakeEngine("e7e5"))
+    client.post("/api/command", json={"text": "Nc6"})  # turn 1, then turn 2 opens
+    client.post("/api/game/resign", json={})
+    _, asked = read_records(trace_path)
+    assert asked["turn_id"] == 2
+    assert asked["correlation_id"]
 
 
 def test_a_failing_tracer_never_costs_the_player_their_turn(tmp_path):

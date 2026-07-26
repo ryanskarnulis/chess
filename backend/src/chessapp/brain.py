@@ -69,6 +69,12 @@ class AgentResponse:
     model_calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # One wall-clock reading per model call, in call order — parallel to
+    # `model_calls` by construction, including the calls that raised (a round
+    # trip that died still spent the time). Empty from a brain that doesn't
+    # measure: an unmeasured turn is not a fast one, so it records no readings
+    # rather than zeros.
+    model_latencies_ms: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,13 @@ class Narration:
     model_calls: int = 1
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    latency_ms: int = 0
+
+    @property
+    def model_latencies_ms(self) -> tuple[int, ...]:
+        """The one call's latency, under the name `AgentResponse` uses — so
+        whatever reads a turn's cost reads both shapes the same way."""
+        return (self.latency_ms,)
 
 
 @dataclass
@@ -93,18 +106,26 @@ class _RunState:
     model_calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    latencies_ms: list[int] = field(default_factory=list)
 
     def record(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
         self.tool_calls.append(ToolCall(name=name, args=args))
         self.tool_results.append({"name": name, "result": result})
 
-    def count_call(self, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
-        """Tally one model round trip and its tokens. Called for every trip —
-        including one that raised before returning a result (it still cost a
-        call), which lands here with zeros."""
+    def count_call(
+        self,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        latency_ms: int = 0,
+    ) -> None:
+        """Tally one model round trip, its tokens and its wall clock. Called for
+        every trip — including one that raised before returning a result (it
+        still cost a call, and usually the most time), which lands here with no
+        tokens but a real latency."""
         self.model_calls += 1
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
+        self.latencies_ms.append(latency_ms)
 
     def response(self, text: str, stop_reason: str) -> AgentResponse:
         return AgentResponse(
@@ -115,6 +136,7 @@ class _RunState:
             model_calls=self.model_calls,
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
+            model_latencies_ms=tuple(self.latencies_ms),
         )
 
 

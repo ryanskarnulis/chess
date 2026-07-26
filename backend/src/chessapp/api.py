@@ -90,9 +90,11 @@ from chessapp.trace import (
     ROUTE_BOARD,
     ROUTE_BRAIN,
     ROUTE_CONFIRMATION,
+    ROUTE_CONTROL,
     ROUTE_FAST_PATH,
     ROUTE_RESIGN,
     Tracer,
+    new_correlation_id,
     turn_record,
 )
 from chessapp.voice import SpeechClient
@@ -678,6 +680,45 @@ def _guarded_commentary(
 
 
 @dataclass(frozen=True)
+class _ModelCost:
+    """What one turn spent at the provider boundary, whichever route spent it.
+
+    The five routes each pay for their own model calls — a narrated
+    confirmation, a fast-path reaction, a resignation's words, the brain's whole
+    loop, or nothing at all — and every one of them owes the trace the same four
+    numbers. Reading them off the `AgentResponse`/`Narration` in one place is
+    what keeps a route from quietly recording three of the four.
+    """
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latencies_ms: tuple[int, ...] = ()
+
+    @classmethod
+    def of(cls, source: Any | None) -> "_ModelCost":
+        """The cost an `AgentResponse` or a `Narration` reports; `None` — a route
+        that never called the model — costs nothing."""
+        if source is None:
+            return cls()
+        return cls(
+            calls=source.model_calls,
+            prompt_tokens=source.prompt_tokens,
+            completion_tokens=source.completion_tokens,
+            latencies_ms=tuple(source.model_latencies_ms),
+        )
+
+    def as_trace(self) -> dict[str, Any]:
+        """These numbers under the names `turn_record` takes them by."""
+        return {
+            "model_calls": self.calls,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "model_latencies_ms": self.latencies_ms,
+        }
+
+
+@dataclass(frozen=True)
 class CommandOutcome:
     """One command-pipeline run, shared by `/api/command` and the delegate
     messages endpoint. `tool_results` is the `{"name", "result"}` list of
@@ -824,7 +865,9 @@ def create_app(
         except WebSocketDisconnect:
             broadcaster.disconnect(websocket)
 
-    def _play_move(move: str, transcript: Sequence[dict[str, str]]) -> _MoveBeats:
+    def _play_move(
+        move: str, transcript: Sequence[dict[str, str]], correlation_id: str
+    ) -> _MoveBeats:
         """One move through the coordinator's beats: apply, observe, close.
 
         The move-turn orchestration, in one place, because two callers own those
@@ -841,6 +884,10 @@ def create_app(
         construction: verbosity=low skips it, and a `ProviderError` costs the
         words and nothing else, because the move it was about is already on the
         board and the engine's answer is not the model's to hold up.
+
+        `correlation_id` is the caller's id for the interaction, carried only so
+        the beat's own warning lands under it: a lost reaction is a thing you
+        find in the log and then want the turn record for.
         """
         assert brain is not None  # both callers are agent-mode only
         result = registry.dispatch("make_move", {"move": move})
@@ -850,7 +897,11 @@ def create_app(
             try:
                 narration = brain.narrate(_agent_state_dict(ctx), changes, transcript)
             except ProviderError:
-                logger.warning("observe_narration_failed", exc_info=True)
+                logger.warning(
+                    "observe_narration_failed",
+                    exc_info=True,
+                    extra={"correlation_id": correlation_id},
+                )
         # The close beat. A turn still mid-sequence is one whose player move
         # landed without its reply — including one *this* call did not open, left
         # owing by a route that raised, which is settled here rather than left to
@@ -887,7 +938,11 @@ def create_app(
         dragged as well as games they talked their way through.
         """
         before = _agent_state_dict(ctx)
-        beats = _play_move(move, ctx.transcript.memory())
+        # A turn like any other, so it is located like one — see `_command_turn`.
+        turn_id = coordinator.turn_id
+        correlation_id = new_correlation_id()
+        version_before = ctx.board_version
+        beats = _play_move(move, ctx.transcript.memory(), correlation_id)
         result = beats.result
         narration = beats.narration
         if result.get("ok") is False:
@@ -924,17 +979,16 @@ def create_app(
             commentary=commentary,
             stop_reason="completed",
             changed=beats.legal,
+            turn_id=turn_id,
+            correlation_id=correlation_id,
+            mutations=ctx.board_version - version_before,
             fen_before=before["fen"],
             fen_after=ctx.session.fen(),
             tool_calls=[{"move": move}],
             tool_results=beats.changes,
             engine_reply=_move_reply_dict(beats.engine_reply),
             guarded=guarded,
-            model_calls=narration.model_calls if narration is not None else 0,
-            prompt_tokens=narration.prompt_tokens if narration is not None else 0,
-            completion_tokens=(
-                narration.completion_tokens if narration is not None else 0
-            ),
+            **_ModelCost.of(narration).as_trace(),
         )
         return {
             "legal": beats.legal,
@@ -987,6 +1041,42 @@ def create_app(
                 "state": _state_dict(ctx),
             }
 
+    def _trace_control(
+        op: str,
+        args: dict[str, Any],
+        result: dict[str, Any] | None,
+        *,
+        turn_id: int,
+        version_before: int,
+        fen_before: str,
+    ) -> None:
+        """Record one board-control interaction — the buttons' half of a turn.
+
+        This surface has no utterance and no commentary (the dialog said what was
+        about to happen, and no model stands between a yes and a reset), so the op
+        name stands in for the words exactly as the structured move does on the
+        board route. It is recorded anyway because it *can change the board*, and
+        the spoken answer to the same question has always left a record: a reset
+        confirmed by voice was diagnosable and the identical reset confirmed by a
+        button was not. `result` is None when nothing was dispatched — a decline —
+        which the record shows as no tools and no mutations rather than a
+        fabricated result.
+        """
+        _trace_turn(
+            utterance=op,
+            route=ROUTE_CONTROL,
+            commentary="",
+            stop_reason="completed",
+            changed=ctx.board_version != version_before,
+            turn_id=turn_id,
+            correlation_id=new_correlation_id(),
+            mutations=ctx.board_version - version_before,
+            fen_before=fen_before,
+            fen_after=ctx.session.fen(),
+            tool_calls=[args] if result is not None else [],
+            tool_results=[{"name": op, "result": result}] if result is not None else [],
+        )
+
     def _run_destructive(
         name: str, args: dict[str, Any]
     ) -> dict[str, Any] | JSONResponse:
@@ -1003,8 +1093,23 @@ def create_app(
         Returns the tool result when the op ran, or the confirm-required response
         when the gate armed it instead. An op that *ran* clears anything else that
         was armed: a pending op is about a game that no longer exists.
+
+        The dispatch is the whole interaction, so it is traced right here — one
+        record whichever of the three ways it ends (ran, armed and asked, refused
+        outright), rather than one per branch that remembered to.
         """
+        turn_id = coordinator.turn_id
+        version_before = ctx.board_version
+        fen_before = ctx.session.fen()
         result = registry.dispatch(name, args)
+        _trace_control(
+            name,
+            args,
+            result,
+            turn_id=turn_id,
+            version_before=version_before,
+            fen_before=fen_before,
+        )
         armed = ctx.pending
         if result.get("ok") is False and armed is not None and armed.name == name:
             return _confirm_required(name)
@@ -1055,8 +1160,19 @@ def create_app(
             armed = ctx.pending
             if armed is None:
                 raise HTTPException(status_code=409, detail="nothing to confirm")
+            turn_id = coordinator.turn_id
+            version_before = ctx.board_version
+            fen_before = ctx.session.fen()
             if not request.confirm:
                 ctx.pending = None
+                _trace_control(
+                    armed.name,
+                    dict(armed.args),
+                    None,  # declined: nothing was dispatched
+                    turn_id=turn_id,
+                    version_before=version_before,
+                    fen_before=fen_before,
+                )
                 return {
                     "op": armed.name,
                     "confirmed": False,
@@ -1065,6 +1181,14 @@ def create_app(
             confirmed = confirm_pending(registry, ctx)
             assert confirmed is not None  # armed above, and only this consumes it
             name, result = confirmed
+            _trace_control(
+                name,
+                dict(armed.args),
+                result,
+                turn_id=turn_id,
+                version_before=version_before,
+                fen_before=fen_before,
+            )
             if result.get("ok") is not True:
                 raise HTTPException(
                     status_code=409, detail=result.get("error", f"cannot {name}")
@@ -1240,6 +1364,14 @@ def create_app(
         """
         assert brain is not None  # both callers guard; documents the invariant
         before = _agent_state_dict(ctx)
+        # What locates this turn afterwards (audit item 18): the coordinator turn
+        # it opened under, an id for this one interaction, and the board version
+        # it started from — the mutation count is that version's delta, so the
+        # number is *derived* from the chokepoint every mutation already passes
+        # through rather than tallied by whichever branch remembered to.
+        turn_id = coordinator.turn_id
+        correlation_id = new_correlation_id()
+        version_before = ctx.board_version
         # The hints setting that governs this turn is the one the player asked
         # under, snapshotted here for the advice guard below. App assembly
         # resolves the tool *offer* off the same instant, and the two must not
@@ -1271,11 +1403,9 @@ def create_app(
             move_beats: _MoveBeats | None = None
             # The turn's cost at the provider boundary, summed across whatever model
             # calls the chosen route made. The deterministic branches (a canned
-            # confirmation, a declined op) leave these at zero — a real, readable
+            # confirmation, a declined op) leave this at zero — a real, readable
             # zero, which is what tells a later cut it changed nothing here.
-            model_calls = 0
-            prompt_tokens = 0
-            completion_tokens = 0
+            cost = _ModelCost()
             # An armed destructive op (the tool gate refused new_game/resign last
             # turn and asked). This turn is its answer — and the answer is ours, not
             # the model's: a bare yes runs it with the gate open, a bare no drops it,
@@ -1313,9 +1443,7 @@ def create_app(
                             )
                         else:
                             commentary = narration.text
-                            model_calls = narration.model_calls
-                            prompt_tokens = narration.prompt_tokens
-                            completion_tokens = narration.completion_tokens
+                            cost = _ModelCost.of(narration)
                 else:
                     # Declined: nothing ran, so there is nothing to narrate from.
                     commentary = _DECLINED_REPLY
@@ -1323,7 +1451,7 @@ def create_app(
                 # The same beats a board drag runs, on the same helper: the parse is
                 # what differs between the two routes, never the sequencing.
                 route = ROUTE_FAST_PATH
-                move_beats = _play_move(fast_san, transcript)
+                move_beats = _play_move(fast_san, transcript, correlation_id)
                 tool_results.extend(move_beats.changes)
                 tool_args.append({"move": fast_san})
                 if not move_beats.legal:
@@ -1335,9 +1463,7 @@ def create_app(
                     commentary = _STUCK_REPLY
                 elif move_beats.narration is not None:
                     commentary = move_beats.narration.text
-                    model_calls = move_beats.narration.model_calls
-                    prompt_tokens = move_beats.narration.prompt_tokens
-                    completion_tokens = move_beats.narration.completion_tokens
+                    cost = _ModelCost.of(move_beats.narration)
             elif parse_resign(text):
                 # An explicit resignation is deterministic text, so the model gets no
                 # vote on whether it happened: live, it took one and answered "Word.
@@ -1372,18 +1498,14 @@ def create_app(
                         )
                     else:
                         commentary = narration.text
-                        model_calls = narration.model_calls
-                        prompt_tokens = narration.prompt_tokens
-                        completion_tokens = narration.completion_tokens
+                        cost = _ModelCost.of(narration)
             else:
                 route = ROUTE_BRAIN
                 response = brain.get_agent_response(before, text, transcript)
                 tool_results = list(response.tool_results)
                 tool_args = [call.args for call in response.tool_calls]
                 stop_reason = response.stop_reason
-                model_calls = response.model_calls
-                prompt_tokens = response.prompt_tokens
-                completion_tokens = response.completion_tokens
+                cost = _ModelCost.of(response)
                 # A budget stop (max_iterations / correction_limit) carries no
                 # commentary: the loop never reached a text turn. A provider
                 # stop is left empty here — what it should say depends on
@@ -1463,7 +1585,10 @@ def create_app(
                 and agent_state == before
                 and names_a_legal_move(commentary, unlicensed)
             ):
-                logger.warning("commentary_leaked_move_advice", extra={"text": text})
+                logger.warning(
+                    "commentary_leaked_move_advice",
+                    extra={"text": text, "correlation_id": correlation_id},
+                )
                 commentary = MOVE_ADVICE_REPLY
                 guarded = True
             # The UI still gets its own full document; a mutation shows up in the
@@ -1479,15 +1604,16 @@ def create_app(
                 commentary=commentary,
                 stop_reason=stop_reason,
                 changed=changed,
+                turn_id=turn_id,
+                correlation_id=correlation_id,
+                mutations=ctx.board_version - version_before,
                 fen_before=before["fen"],
                 fen_after=agent_state["fen"],
                 tool_calls=tool_args,
                 tool_results=tool_results,
                 engine_reply=_move_reply_dict(engine_reply),
                 guarded=guarded,
-                model_calls=model_calls,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
+                **cost.as_trace(),
             )
             return CommandOutcome(
                 commentary=commentary,
