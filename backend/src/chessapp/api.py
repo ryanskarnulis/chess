@@ -634,6 +634,10 @@ def _verified_facts(
         ),
         settings=settings,
         numbers=frozenset(_analysis_numbers(tool_results)),
+        # Board truth, and the one fact here no tool has to have run for: who
+        # is ahead is a piece count, so it is always available and always the
+        # post-reply position, exactly like `check`.
+        material=ctx.session.material_balance(),
     )
 
 
