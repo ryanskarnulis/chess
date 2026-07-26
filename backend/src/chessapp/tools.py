@@ -33,7 +33,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -134,10 +134,17 @@ def _derive_schema(fn: Callable[..., Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class PendingOp:
-    """A destructive call that was refused, held for the player to confirm."""
+    """A destructive call that was refused, held for the player to confirm.
+
+    `board_version` is the board the question is about (see
+    `ToolContext.live_pending`): a "yes" is an answer to a position, and the
+    position is part of the question rather than something the answer has to
+    be trusted to still match.
+    """
 
     name: str
     args: dict[str, Any]
+    board_version: int
 
 
 @dataclass
@@ -152,10 +159,11 @@ class ToolContext:
     its conversational thread.
 
     `pending` is the armed destructive op (see `DESTRUCTIVE_TOOLS`): set by the
-    gate when it refuses a call, consumed by the pipeline on the next user turn.
-    `_confirming` is the gate's only key, and it is deliberately not reachable
-    from a tool argument — `confirm_pending` is the sole thing that turns it on,
-    so nothing the model can emit opens the gate.
+    gate when it refuses a call, consumed by the pipeline on the next user turn,
+    and read through `live_pending` rather than directly. `_confirming` is the
+    gate's only key, and it is deliberately not reachable from a tool argument —
+    `confirm_pending` is the sole thing that turns it on, so nothing the model
+    can emit opens the gate.
 
     `board_version` and `mutation_lock` are the concurrency pair (audit item 7):
     the version says *which* board a client is acting on, the lock is what makes
@@ -194,6 +202,43 @@ class ToolContext:
         `_version_base` is exactly that gap closed.
         """
         return self._version_base + self.session.revision
+
+    def live_pending(self) -> PendingOp | None:
+        """The armed destructive op, if it is still about the board on screen.
+
+        A confirmation is an answer to a *question about a position* — "this
+        game, the one in front of you, thrown away?" — so the position belongs
+        to the question. If the board moved between the two (the player dragged
+        a move, took one back, resumed a save, another client played), the game
+        the player was asked about is gone and their "yes" cannot be an answer
+        to it: the op is dropped here, where the answer is read, rather than by
+        asking every surface that can move a board to remember to clear it. The
+        same move as the board-version precondition one layer up, for the same
+        reason — derive it from the chokepoint, don't maintain it by hand.
+
+        Live, this was reachable in three keystrokes: "I resign" (the gate asks),
+        a dragged move, then "yes" — and a game two plies further on ended.
+        """
+        pending = self.pending
+        if pending is None:
+            return None
+        if pending.board_version != self.board_version:
+            self.pending = None
+            return None
+        return pending
+
+    def restamp_pending(self) -> None:
+        """Point the armed op at the board the player is being asked about.
+
+        The gate arms mid-turn, and the turn can still mutate after it: "play
+        e4 and start over" arms the reset before the engine's reply lands. What
+        the player sees when they hear the question is the board at the *end* of
+        that turn, so that is the board their yes answers — a stamp left at arm
+        time would be stale before they could speak. Called once, where the
+        interaction that armed it finishes.
+        """
+        if self.pending is not None:
+            self.pending = replace(self.pending, board_version=self.board_version)
 
     def replace_session(self, session: GameSession, transcript: Transcript) -> None:
         """Swap in a resumed game — a mutation like any other, version included.
@@ -237,8 +282,13 @@ def confirm_pending(
     player themselves answered yes on a *new* turn — which is what makes the
     confirmation deterministic: by this point there is nothing left to decide,
     so no model call stands between the yes and the reset.
+
+    Reads through `live_pending`, so an op about a board that has since moved is
+    dropped rather than run: this is the last gate before a game is thrown away,
+    and it owes its callers that check rather than trusting each of them to have
+    made it.
     """
-    pending = ctx.pending
+    pending = ctx.live_pending()
     if pending is None:
         return None
     ctx.pending = None
@@ -727,7 +777,8 @@ def build_registry(
 
         Re-arming is not confirming: a second unconfirmed call inside the same
         turn is refused again. Only `confirm_pending`, on a later user turn,
-        opens the gate.
+        opens the gate — and only while the board it armed against is still the
+        board on screen (`ToolContext.live_pending`).
 
         The gate stands aside when there is no game to lose — it guards the
         *player's* investment, not the idea of a game. That is true once it is
@@ -744,7 +795,9 @@ def build_registry(
             return None
         if ctx.session.is_game_over() or not _player_has_moved(ctx):
             return None
-        ctx.pending = PendingOp(name=name, args=dict(args))
+        ctx.pending = PendingOp(
+            name=name, args=dict(args), board_version=ctx.board_version
+        )
         # `never`, and it is the sharpest example of why the key earns its
         # place: the refusal is not a failure to fix but a question to relay,
         # and calling again is the exact wrong move — the docstrings say "do not

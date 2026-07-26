@@ -1275,9 +1275,13 @@ def create_app(
         No commentary: by this point there is nothing left to decide, so no model
         call stands between the yes and the reset (the same reason
         `confirm_pending` exists).
+
+        A click that arrives after the board moved has nothing to confirm (409,
+        like a click with nothing armed at all): the question was about a
+        position, and that position is gone.
         """
         async with _mutation(request.version):
-            armed = ctx.pending
+            armed = ctx.live_pending()
             if armed is None:
                 raise HTTPException(status_code=409, detail="nothing to confirm")
             turn_id = coordinator.turn_id
@@ -1548,7 +1552,11 @@ def create_app(
             # the model's: a bare yes runs it with the gate open, a bare no drops it,
             # and anything else is a new intent that disarms it on the way past. The
             # op never survives the turn, so a stale "yes" can never revive it.
-            armed = ctx.pending
+            # Read through `live_pending`: a question is about a position, so an
+            # op armed against a board that has since moved — the player dragged
+            # a move, undid one, another client played — is not something this
+            # "yes" can be an answer to, and is dropped instead of run.
+            armed = ctx.live_pending()
             ctx.pending = None
             answer = parse_confirmation(text) if armed is not None else None
             route = ROUTE_CONFIRMATION
@@ -1738,6 +1746,12 @@ def create_app(
                 )
                 commentary = MOVE_ADVICE_REPLY
                 guarded = True
+            # If this turn armed a destructive op, the question goes to the
+            # player about the board they can see *now* — this turn's mutations
+            # included, since the gate arms mid-turn and the engine's reply can
+            # land after it ("play e4 and start over"). Their yes next turn is
+            # an answer to that board and no other.
+            ctx.restamp_pending()
             # The UI still gets its own full document; a mutation shows up in the
             # agent view too (any board change moves the fen), so that comparison
             # decides the broadcast.

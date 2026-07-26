@@ -1203,6 +1203,64 @@ def test_a_second_unconfirmed_call_still_does_not_fire(session):
     assert ctx.session.fen() == fen_before
 
 
+def test_an_armed_op_records_the_board_it_is_about(session):
+    """A destructive question is a question about a position, so the position
+    rides along in the armed op."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)
+
+    registry.dispatch("resign", {"color": "white"})
+
+    assert ctx.pending.board_version == ctx.board_version
+
+
+def test_live_pending_drops_an_op_the_board_has_moved_past(session):
+    """The read that makes the stamp matter: once the board moves, the question
+    is about a game that is no longer on it, so there is nothing to confirm."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)
+    registry.dispatch("resign", {"color": "white"})
+    assert ctx.live_pending() is not None, "the same board: still answerable"
+
+    ctx.session.submit_move("Nf3")
+
+    assert ctx.live_pending() is None
+    assert ctx.pending is None, "and it is not left lying around to go stale twice"
+
+
+def test_confirm_pending_will_not_run_an_op_about_another_board(session):
+    """The last gate before a game is thrown away makes the check itself rather
+    than trusting each caller to have made it."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)
+    registry.dispatch("resign", {"color": "white"})
+    ctx.session.submit_move("Nf3")
+
+    assert confirm_pending(registry, ctx) is None
+    assert not ctx.session.is_game_over()
+
+
+def test_restamping_points_the_question_at_the_board_now_on_screen(session):
+    """The gate arms mid-turn and the turn can still mutate after it (the
+    engine's reply to a move played in the same command). What the player is
+    asked about is the board when the turn ends."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)
+    registry.dispatch("resign", {"color": "white"})
+    ctx.session.submit_move("Nf3")
+
+    ctx.restamp_pending()
+
+    assert ctx.live_pending() is not None
+    assert ctx.pending.board_version == ctx.board_version
+
+
+def test_restamping_nothing_is_a_no_op(session):
+    ctx = ToolContext(session=session)
+    ctx.restamp_pending()
+    assert ctx.pending is None
+
+
 def test_new_game_after_game_over_needs_no_confirmation(session, registry):
     """The standing exception: game_over means there is no game left to lose."""
     # Fool's mate — game over, nothing to protect.

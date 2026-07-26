@@ -826,6 +826,24 @@ Standing constraint, met: **`long_capture` green in all three conditions** (5/5
 each in run 1, 20/20 at the cap in run 2). It is the one release-blocking item
 and the only one where an `UNDECIDED` verdict at the cap fails rather than warns.
 
+### Confirmation run — the E2E gap sweep (2026-07-26, Sprint 5 slice 4, audit 22)
+
+Run on `feat/e2e-gap-sweep`, default knobs: **23 items passed in 3 m 22 s, 75
+samples, infra 0/25.** Fourteen of the fifteen pass-rate scenarios measured 5/5;
+`hints_off_no_advice` measured **4/5** with one `INCONCLUSIVE` (a
+`max_iterations` stop — the filed loop defect, reproducing at the rate run 2
+measured), decided ABOVE_FLOOR without escalating. `long_capture` 5/5 in all
+three conditions, so the release-blocking constraint holds. No scenario
+escalated, no sample was retried.
+
+**The gate had nothing to regress, and was run anyway.** The slice touched the
+confirmation gate's *staleness* rule (`ToolContext.live_pending`) plus tests —
+no prompt string, no loop code, and tool schemas byte-identical (the golden
+fixture is the proof, and `git diff --stat` shows the only `src/` files as
+`api.py`'s three edits and `tools.py`'s stamp). It is recorded because the
+confirmation road is one the suite exercises live, and "the gate was green next
+to this change" is cheaper to write down now than to reconstruct later.
+
 ### Pass-rate scenarios — superseded record (5 fixed runs each, floor 80%)
 
 | Scenario | Utterance | Must land | Rate |
