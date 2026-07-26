@@ -68,8 +68,9 @@ Model-specific quirks, split across the two layers:
 """
 
 import json
+import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import jsonschema
@@ -131,6 +132,11 @@ class LlamaBrain:
     # Per-phase sampling: the planner may run cooler than the narrator, which
     # keeps the provider's default. None means "whatever the provider samples at".
     planner_temperature: float | None = None
+    # Wall clock for the per-call latencies the trace records. Injected so the
+    # timing is testable, and read *here* rather than in the provider because a
+    # round trip that raises has a latency too — and only the caller of a raising
+    # call is still around to record it.
+    clock: Callable[[], float] = field(default=time.monotonic)
 
     def _resolve_system_prompt(self) -> str:
         """The narrator's system prompt for this request. A callable is
@@ -160,6 +166,7 @@ class LlamaBrain:
         corrections = 0
 
         for _ in range(self.max_iterations):
+            started = self.clock()
             try:
                 # Planner turns never think: picking (or declining) a tool is a
                 # parse, even when an analysis result is in context — the phase
@@ -170,7 +177,7 @@ class LlamaBrain:
             except ToolCallArgumentsError as exc:
                 # The model was still called and the loop pays for it, so the
                 # round trip counts (with no tokens — nothing came back to read).
-                run.count_call()
+                run.count_call(latency_ms=self._elapsed_ms(started))
                 # Nothing to attach a tool result to (see module docstring):
                 # correct with a user-role message and drop the unusable turn.
                 corrections += 1
@@ -184,9 +191,9 @@ class LlamaBrain:
                 # their own stop so the pipeline can close the turn and tell
                 # the truth, instead of an exception escaping after the board
                 # changed. The round trip is counted like any raised call.
-                run.count_call()
+                run.count_call(latency_ms=self._elapsed_ms(started))
                 return run.response("", "provider_error")
-            run.count_call(*_usage_ints(result.usage))
+            run.count_call(*_usage_ints(result.usage), self._elapsed_ms(started))
 
             if not result.tool_calls:
                 # The planner is done. Its text is a handoff note, never the
@@ -218,11 +225,16 @@ class LlamaBrain:
         # changed, never the raw utterance. Same phase as the loop's closer —
         # same prompt, same absence of tools — with its own brief, because here
         # the move is already on the board and there is no planner note.
-        return self._speak(
+        # Timed here rather than in `_speak` for the same reason the loop times
+        # its own calls: latency belongs wherever the call is *accounted for*,
+        # and this route's accounting is the `Narration` itself.
+        started = self.clock()
+        narration = self._speak(
             _fast_path_brief(board_state, changes),
             transcript,
             thinking=self.enable_thinking,
         )
+        return replace(narration, latency_ms=self._elapsed_ms(started))
 
     def _close(
         self,
@@ -238,6 +250,7 @@ class LlamaBrain:
         for `narrate`. The round trip is counted on the turn, so the split's
         extra call shows up in the trace and the eval baseline.
         """
+        started = self.clock()
         try:
             narration = self._speak(
                 _closing_brief(command, run.tool_results, note),
@@ -247,9 +260,13 @@ class LlamaBrain:
         except ProviderError:
             # The plan finished; the persona call died. Same contract as a
             # mid-loop failure: the verified results come back, the words don't.
-            run.count_call()
+            run.count_call(latency_ms=self._elapsed_ms(started))
             return run.response("", "provider_error")
-        run.count_call(narration.prompt_tokens, narration.completion_tokens)
+        run.count_call(
+            narration.prompt_tokens,
+            narration.completion_tokens,
+            self._elapsed_ms(started),
+        )
         return run.response(narration.text, "completed")
 
     def _speak(
@@ -291,6 +308,15 @@ class LlamaBrain:
         if error is not None:
             return {"ok": False, "error": error}, True
         return self.dispatcher.dispatch(call.name, call.arguments), False
+
+    def _elapsed_ms(self, started: float) -> int:
+        """Whole milliseconds since `started`, never negative.
+
+        Milliseconds because that is the resolution a local 12B's round trips
+        are read at (hundreds to thousands), and an int because a trace record
+        is read by eye.
+        """
+        return max(0, round((self.clock() - started) * 1000))
 
     def _thinking(self, run: _RunState) -> bool:
         """Thinking is off until an analysis tool has answered; from then on

@@ -130,6 +130,14 @@ def make_brain(
     return brain, provider
 
 
+def stub_clock(*seconds: float):
+    """A monotonic clock returning each reading in turn — two per round trip
+    (before and after), so a pair scripts one call's latency. Running out is a
+    `StopIteration`: a test that mistimes its script fails loudly."""
+    readings = iter(seconds)
+    return lambda: next(readings)
+
+
 def system_prompts(provider: ScriptedProvider) -> list[str]:
     """The system prompt every recorded call carried, in order."""
     return [call["messages"][0]["content"] for call in provider.calls]
@@ -439,6 +447,38 @@ def test_missing_usage_counts_the_call_but_adds_no_tokens():
     assert resp.model_calls == 2  # the planner's decline and the narrator
     assert resp.prompt_tokens == 0
     assert resp.completion_tokens == 0
+
+
+def test_each_round_trip_is_timed_on_its_own():
+    # Per-call latency, not just the turn's total: a slow narrator and a slow
+    # planner are different problems, and one number cannot tell them apart.
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+        clock=stub_clock(0.0, 0.4, 1.0, 1.25, 2.0, 2.9),
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert resp.model_latencies_ms == (400, 250, 900)
+    assert len(resp.model_latencies_ms) == resp.model_calls
+
+
+def test_a_raised_round_trip_is_timed_too():
+    # A call that died still spent wall clock — often the most of any of them —
+    # and the count already includes it, so the timing must too.
+    brain, _ = make_brain(
+        ProviderError("llama-server went away"), clock=stub_clock(0.0, 3.5)
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert resp.stop_reason == "provider_error"
+    assert resp.model_latencies_ms == (3500,)
+
+
+def test_narrate_times_its_one_call():
+    brain, _ = make_brain(text_turn("e4!"), clock=stub_clock(0.0, 0.12))
+    narration = brain.narrate(board_state={}, changes=[])
+    assert narration.latency_ms == 120
+    assert narration.model_latencies_ms == (120,), "read as the loop's is"
 
 
 def test_a_raised_round_trip_still_counts_as_a_call():

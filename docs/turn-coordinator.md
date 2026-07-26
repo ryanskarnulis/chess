@@ -66,7 +66,10 @@ instead, and the model got the *slots* rather than the wheel.
 ```
 
 - `turn_id` starts at 1 and counts boundaries, so two mutations under one id is
-  a readable symptom (Sprint 5 threads it into the trace record).
+  a readable symptom — and it is now readable *from one line*: every turn record
+  carries the id it opened under next to the turn's mutation count (`trace.py`,
+  audit item 18). Two is what a healthy move turn spends; a third under the same
+  id is the duplicate the phases exist to refuse.
 - `completed` is a boundary, not a resting state: `complete_turn` passes through
   it and comes back out awaiting the player. There is no idle phase between two
   turns.
@@ -391,11 +394,17 @@ a number it would only be tempted to reason with.
   the next command's `make_move` is refused as turn-state error data and *that*
   turn's close beat plays the owed reply. Self-healing rather than wedged, but the
   player pays an utterance for it — the resumability half of audit item 20.
-- **A button-confirmed destructive op says nothing and is not traced.**
-  `/api/game/confirm` runs the armed op and returns the new state; the spoken
-  "yes" narrates and writes a trace record, this does not. Deliberate for now —
-  the dialog already told the player what was about to happen — but it is a gap
-  in the per-turn record that Sprint 5's trace slice should close.
+- **A button-confirmed destructive op says nothing, but it is now traced.**
+  `/api/game/confirm` still returns only the new state — the dialog already told
+  the player what was about to happen, so no narration and no model call stand
+  between the yes and the reset — but the interaction writes a record on route
+  `control` (armed-and-asked, confirmed, or declined), which closes the gap the
+  trace slice inherited. What is still untraced is the control surface that never
+  passes the gate: `/api/game/undo`, and a dragged move in direct mode. Neither
+  can be an *agent* failure — undo is not a destructive op and reaches the
+  session directly, and direct mode has no agent at all — and an undo is still
+  visible in the next record, whose `fen_before` will not match the previous
+  record's `fen_after`.
 - **A destructive op that runs on a windowless surface is unbudgeted** by design
   (see the mutation limits above). Two MCP calls in a row can still reset a game
   and resign it; what they cannot do is happen inside one command.

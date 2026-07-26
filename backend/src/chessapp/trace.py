@@ -9,16 +9,24 @@ writes one JSONL record per turn holding exactly that, so a bad turn becomes a
 thing you can read (and, with its `fen_before` + `utterance`, replay as an eval
 scenario).
 
+A record also has to say *which* turn it was and how much it moved: the ids
+(`turn_id`, `correlation_id`), the mutation count, and a latency per model call.
+Those are the four things the audit's item 18 found missing, and each answers a
+question the earlier record could not — did this move land twice, is this log
+line from this turn, was the slow part the model or Stockfish.
+
 Tracing is diagnostics and nothing more. It is off unless a path is configured
 (`CHESSAPP_TRACE_PATH`), and a tracer that fails is swallowed by the pipeline —
 losing a diagnostic record must never cost the player their turn.
 """
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 # The four roads an utterance can take through `_run_command`. Three of them are
 # deterministic; only `brain` involves the model in deciding what to do.
@@ -31,12 +39,32 @@ ROUTE_BRAIN = "brain"
 # like a turn — with the structured move (`e2e4`) standing in for the utterance
 # it never had, which is exactly the distinction a reader wants to make.
 ROUTE_BOARD = "board"
+# …and the board UI's control buttons, which are an interaction with no utterance
+# at all: a destructive op armed, confirmed or declined. Traced because it can
+# change the board, and a board change with nothing to explain it is what makes a
+# trace hard to read — the spoken road's answer to the same question has always
+# left a record.
+ROUTE_CONTROL = "control"
 
 
 class Tracer(Protocol):
     """Whatever records a finished turn. Free to fail: the caller swallows it."""
 
     def record(self, turn: dict[str, Any]) -> None: ...
+
+
+def new_correlation_id() -> str:
+    """A fresh id for one user interaction, short enough to grep by eye.
+
+    It is what makes the record findable *from outside itself*: the pipeline
+    stamps the same id on the warnings a turn logs, so a "commentary leaked
+    move advice" line and the record of the turn that leaked it are one search
+    apart rather than a matter of comparing timestamps. Distinct from the turn
+    id on purpose — one interaction can span two coordinator turns (an undo
+    abandons the open one), and two interactions can share one (a turn left
+    open by a route that stopped early).
+    """
+    return uuid4().hex[:12]
 
 
 def turn_record(
@@ -46,6 +74,9 @@ def turn_record(
     commentary: str,
     stop_reason: str,
     changed: bool,
+    turn_id: int,
+    correlation_id: str,
+    mutations: int,
     fen_before: str,
     fen_after: str,
     tool_calls: list[dict[str, Any]],
@@ -55,6 +86,7 @@ def turn_record(
     model_calls: int = 0,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
+    model_latencies_ms: Sequence[int] = (),
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -80,6 +112,26 @@ def turn_record(
     summed across those calls. They default to 0 so a deterministic route (a
     canned confirmation, a declined op) records a real, readable zero rather than
     a gap. This is the number every context-shrinking cut is measured against.
+
+    `model_latencies_ms` is one reading per model call, in call order, and
+    `model_ms` is their sum — derived here rather than passed, so the total and
+    the parts cannot disagree in a record. Per-call rather than per-turn because
+    a slow planner and a slow narrator are different problems, and the turn's
+    total cannot tell them apart.
+
+    The three fields that say *which* turn this was, and how much of the board
+    it moved:
+
+    - `turn_id` is the coordinator's turn counter — the id the interaction
+      opened under.
+    - `correlation_id` identifies this one interaction (see
+      `new_correlation_id`), and is stamped on the log lines the turn emitted.
+    - `mutations` is how many times the board actually changed, counted off
+      `ToolContext.board_version` rather than by hand: the one chokepoint every
+      mutation already passes through. A healthy agent-mode move turn is **2**
+      — the player's move and the engine's answer — so the duplicated-move bug
+      the coordinator exists to prevent reads as a third under one `turn_id`,
+      and a bypass reads as a mutation on a route that should have had none.
     """
     return {
         "utterance": utterance,
@@ -88,9 +140,14 @@ def turn_record(
         "stop_reason": stop_reason,
         "changed": changed,
         "guarded": guarded,
+        "turn_id": turn_id,
+        "correlation_id": correlation_id,
+        "mutations": mutations,
         "model_calls": model_calls,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
+        "model_ms": sum(model_latencies_ms),
+        "model_latencies_ms": list(model_latencies_ms),
         "fen_before": fen_before,
         "fen_after": fen_after,
         "engine_reply": engine_reply,
