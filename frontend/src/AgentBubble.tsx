@@ -22,7 +22,7 @@ export function AgentBubble({ commentary, thinking, progress = null }: AgentBubb
   const text = busy ? (progress ?? 'Thinking…') : (commentary ?? 'Your move.')
   return (
     <div className="agent-bubble">
-      <img className="spider-icon" src="/glitch.png" alt="" />
+      <img className="spider-icon" src="/glitch.png" alt="" aria-hidden="true" />
       <p className={busy ? 'bubble bubble-thinking' : 'bubble'} role="status">
         {text}
       </p>
