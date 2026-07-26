@@ -1,5 +1,3 @@
-import { SpiderIcon } from './SpiderIcon'
-
 export interface AgentBubbleProps {
   /** The agent's latest reply, or null before the first command. */
   commentary: string | null
@@ -24,7 +22,7 @@ export function AgentBubble({ commentary, thinking, progress = null }: AgentBubb
   const text = busy ? (progress ?? 'Thinking…') : (commentary ?? 'Your move.')
   return (
     <div className="agent-bubble">
-      <SpiderIcon />
+      <img className="spider-icon" src="/glitch.png" alt="" />
       <p className={busy ? 'bubble bubble-thinking' : 'bubble'} role="status">
         {text}
       </p>
