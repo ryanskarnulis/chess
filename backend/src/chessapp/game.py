@@ -5,6 +5,7 @@ The agent layer never touches `chess.Board` directly — it goes through
 """
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,15 @@ import chess
 import chess.pgn
 
 _COLOR_NAMES = {chess.WHITE: "white", chess.BLACK: "black"}
+
+# How many `alternatives` a rejected move comes back with. A cap, because the
+# fallback branch is "everything legal here" and a midgame position has forty of
+# them — this is a suggestion list, not the complete set, and it is named
+# `alternatives` rather than `legal_moves` so nothing reads it as one.
+ALTERNATIVES_MAX = 8
+
+_SQUARE = re.compile(r"[a-h][1-8]")
+_SAN_PIECE = re.compile(r"^[KQRBN]")
 
 _TERMINATION_NAMES = {
     chess.Termination.CHECKMATE: "checkmate",
@@ -33,6 +43,12 @@ class MoveResult:
     and those are the two facts a reaction is made of. They are board truth, so
     the session derives them at move time — the caller never re-reads the board
     to work out what just happened, and the model is never asked.
+
+    `alternatives` is the same idea applied to a *rejection* (audit item 14):
+    legal moves that plausibly answer what was asked for, so the agent can
+    correct without a second round trip spent asking what is legal. Empty on a
+    move that landed, and on one refused because the game is already over —
+    there is no alternative to a finished game.
     """
 
     legal: bool
@@ -42,6 +58,7 @@ class MoveResult:
     reason: str | None = None
     capture: str | None = None
     check: bool = False
+    alternatives: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -141,7 +158,7 @@ class GameSession:
 
         move = self._parse(move_str)
         if move is None or move not in self._board.legal_moves:
-            return MoveResult(legal=False, reason=f"illegal move: {move_str}")
+            return self._reject(move_str)
 
         san = self._board.san(move)
         capture = self._captured_symbol(move)
@@ -310,6 +327,96 @@ class GameSession:
             return chess.Move.from_uci(move_str)
         except ValueError:
             return None
+
+    def _reject(self, move_str: str) -> MoveResult:
+        """A refused move, with the legal moves that answer what was asked.
+
+        Two rejections, told apart because the fix differs: an *ambiguous* move
+        names something real that more than one piece can do ("Nd2" with both
+        knights in range), and the alternatives are the disambiguated forms —
+        the answer is one of them. An *illegal* one names something no piece can
+        do, and the alternatives are the nearest thing the position offers.
+
+        Both come from `move_alternatives`, which needs no ambiguity check of
+        its own: the moves matching a square and a piece type *are* the
+        candidates a SAN ambiguity is between.
+        """
+        ambiguous = False
+        try:
+            self._board.parse_san(move_str)
+        except chess.AmbiguousMoveError:
+            ambiguous = True
+        except ValueError:
+            pass
+        reason = (
+            f"ambiguous move: {move_str} — more than one piece can play it"
+            if ambiguous
+            else f"illegal move: {move_str}"
+        )
+        return MoveResult(
+            legal=False,
+            reason=reason,
+            alternatives=tuple(self.move_alternatives(move_str)),
+        )
+
+    def move_alternatives(self, move_str: str) -> list[str]:
+        """Legal moves (SAN) that plausibly answer `move_str`.
+
+        Board truth, so it lives here rather than in the tool that reports it.
+        The request is read for the two things a chess move string always
+        carries — a destination square and, when it says so, a piece type — and
+        the position is filtered by whichever of them it gave:
+
+        - moves to the named square, narrowed to the named piece if both are
+          known (this is the branch that turns "Nd2" into `Nbd2`/`Nfd2`);
+        - failing that, every move by the named piece ("Qh4" with the queen
+          walled in offers the queen nothing, so the whole request was wrong);
+        - failing that, whatever the position allows, capped.
+
+        Capped throughout (`ALTERNATIVES_MAX`) — see the constant. Empty once
+        the game is over, because `legal_moves` is.
+        """
+        legal = self.legal_moves()
+        if not legal:
+            return []
+        squares = _SQUARE.findall(move_str)
+        destination = squares[-1] if squares else None
+        piece = self._requested_piece(move_str, squares)
+
+        def matching(*, by_square: bool, by_piece: bool) -> list[str]:
+            picked = []
+            for move in self._board.legal_moves:
+                if by_square and chess.square_name(move.to_square) != destination:
+                    continue
+                if by_piece and self._board.piece_type_at(move.from_square) != piece:
+                    continue
+                picked.append(self._board.san(move))
+            return picked
+
+        for by_square, by_piece in (
+            (destination is not None, piece is not None),
+            (destination is not None, False),
+            (False, piece is not None),
+        ):
+            if not (by_square or by_piece):
+                continue
+            if found := matching(by_square=by_square, by_piece=by_piece):
+                return found[:ALTERNATIVES_MAX]
+        return legal[:ALTERNATIVES_MAX]
+
+    def _requested_piece(
+        self, move_str: str, squares: list[str]
+    ) -> chess.PieceType | None:
+        """Which piece the request named, from SAN's leading letter or, for a
+        UCI-shaped string, from whatever actually stands on its origin square.
+        None when the string says nothing about a piece (a pawn SAN like 'e5'
+        deliberately included — a bare square is a square, not a claim)."""
+        if letter := _SAN_PIECE.match(move_str):
+            return chess.PIECE_SYMBOLS.index(letter.group().lower())
+        if len(squares) >= 2 and move_str.startswith(squares[0]):
+            origin = chess.parse_square(squares[0])
+            return self._board.piece_type_at(origin)
+        return None
 
     def is_check(self) -> bool:
         """Whether the side to move is in check."""

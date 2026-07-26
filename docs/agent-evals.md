@@ -328,6 +328,42 @@ was a 502; not one was a behavioral miss.** The server flags are owned by
 
 ## Recorded baseline
 
+**Run 2026-07-25 on the structured-tool-errors build (Sprint 3, slice 3):
+22/22 hard scenarios pass; `hints_off_no_advice` measured 2/5 — and it is
+**already red on `main`**, not a regression this slice caused.** The slice's own
+gate is green: all three `long_capture` conditions 5/5, plus `illegal_move_honest`
+and `ambiguous_move`. Everything else in the suite was 5/5 in the same run,
+including `play_as_black` and `undo_and_replace` (the schema-cut tripwire).
+
+The `hints_off` number was A/B'd three ways rather than assumed, because this
+slice touches the planner prompt (one line, replacing the vague "correct it with
+another call" rule with a pointer at the new `retry`/`alternatives` keys).
+Isolated 5-run rates, same GPU session:
+
+| Build | Rates |
+| --- | --- |
+| This slice, whole suite | 2/5 |
+| This slice, isolated | 3/5, 2/5 |
+| This slice with the prompt line reverted | 0/5, 1/5, 1/5 |
+| Clean `main` (aeb1aea, #155) | 2/5, 0/5, 2/5 |
+
+So the prompt line is not the cause — reverting it measures *worse*, and `main`
+measures the same. The recorded 5/5 from slice 1 does not reproduce today at
+all. **Filed as its own backlog item**; the leading hypothesis is #155 (the
+per-turn `settings` block), which landed after slice 1 recorded 5/5 and whose
+merge note does not mention an eval run — but that is untested, and the
+run-to-run spread here (0/5 to 3/5 on one unchanged build) is exactly the floor
+noise the eval-statistics slice exists to fix, so the cause could equally be
+neither.
+
+The mechanism behind every failure is the same and worth writing down: the
+failing runs all call `analyze_last_move` alongside `evaluate_position`, which
+satisfies `api._advice_evidence` and switches the advice guard off, letting the
+narrator name moves. The exemption is meant for analysis the player *asked*
+for — but "what should I play here?" is not a request for mistake analysis, so
+the guard's evidence test is too loose. That is the honesty-guard slice's
+territory (Sprint 3's next item), not this one's.
+
 **Re-confirmed 2026-07-25 on the hints-gating build (Sprint 3, slice 1)**, and
 the suite's last xfail is gone: `hints_off_no_advice` went **0/5 → 5/5** and is
 a hard assert now. Two things did it, both code: with hints off
