@@ -13,12 +13,6 @@ This replaces the 2026-07-14 context-sprint framing. Surviving items from it are
 
 Parked work: branch `chore/clean-tool-schema-noise` holds the uncommitted `make_move` docstring cut (tripwires green). Sprint 1 rewrites the move tools anyway — salvage its docstring lessons there (especially: result-restating prose like "the engine decides legality" is a plausible anti-self-poisoning anchor; don't cut it blindly from `resign`/`new_game`).
 
-### Sprint 4 — P3: context quality (audit 17)
-
-(The planner/narrator split that anchored this sprint moved to Sprint 1 — Ryan rates it among the most important items — taking the sampling experiment with it.)
-
-- [ ] **[S] Grow the honesty guard's next claim class: material** (carried out of Sprint 3, whose slice 5 deliberately left this one class). "You're two pawns down" / "you're up a piece" is an operational claim the *board* can verify — material balance is a piece count, not a Stockfish call — but it needs its own side-aware arithmetic and a wording set ("up/down", "a pawn", "the exchange"), which is a class, not a line. The evidence hook is already there: extend `VerifiedFacts` and add the class next to the others. The bar stays the guard's: a class that cannot tell "you're getting crushed" from "you're two pawns down" doesn't ship.
-
 ### Sprint 5 — P4/P5: observability and eval hardening (audit 18, 19, 21–23)
 
 - [ ] **[S] Close the trace gaps** (audit 18 — most of it already exists: route, FENs, trajectory, stop_reason, guard decision, tokens). Add turn/correlation IDs, per-model-call latency, and an explicit mutation count; thread the turn ID through the coordinator states so a duplicated move is diagnosable from one record.

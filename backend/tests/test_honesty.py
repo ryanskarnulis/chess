@@ -368,13 +368,109 @@ def test_offering_a_setting_change_is_not_a_claim(text):
     assert unverified_claims(text, CASUAL) == ()
 
 
+# --- material: the count the board can do --------------------------------------
+#
+# The class the evaluation one below deliberately left out. "You're two pawns
+# down" is operational — material balance is a piece count, board truth, no
+# Stockfish involved — so it gets verified like every other fact, against
+# `material`: the player's advantage in pawns, positive when they are ahead.
+#
+# The bar the class had to clear to ship: it must tell "you're getting crushed"
+# (an opinion about the position, and the trash talk that makes Glitch worth
+# playing) from "you're two pawns down" (a count). So only a *quantified* claim
+# — a direction and a named amount — is read as one, and the arithmetic is
+# side-aware: "I'm up a piece" is the same fact from the other end.
+#
+# Direction is the fact; magnitude is verified to within a pawn. Material talk
+# names the nominal trade ("up a knight" after winning a knight for a pawn),
+# which is a pawn off the net count and true as anybody plays it — while the
+# lie the class exists for is being told you are ahead when you are behind.
+
+LEVEL = VerifiedFacts(material=0)
+UP_A_KNIGHT = VerifiedFacts(material=3)
+DOWN_TWO_PAWNS = VerifiedFacts(material=-2)
+
+
+@pytest.mark.parametrize(
+    ("text", "facts"),
+    [
+        # Nothing has been traded at all, so no side is up anything.
+        ("You're up a pawn.", LEVEL),
+        ("You're two pawns down.", LEVEL),
+        ("I'm up a rook.", LEVEL),
+        # The direction is the lie, which is the one that matters most.
+        ("You're down a piece.", UP_A_KNIGHT),
+        ("I'm up a knight.", UP_A_KNIGHT),
+        ("You're up the exchange.", DOWN_TWO_PAWNS),
+        # Right direction, invented amount.
+        ("You're up a queen.", UP_A_KNIGHT),
+        ("You're four pawns down.", DOWN_TWO_PAWNS),
+        # No material fact supplied is no material claim allowed — the guard
+        # fails closed on evidence, exactly as every other class does.
+        ("You're two pawns down.", NOTHING),
+    ],
+)
+def test_an_unbacked_material_claim_is_a_claim(text, facts):
+    assert "material" in unverified_claims(text, facts)
+
+
+@pytest.mark.parametrize(
+    ("text", "facts"),
+    [
+        ("You're up a piece.", UP_A_KNIGHT),
+        ("You're a knight up.", UP_A_KNIGHT),
+        ("You're up a knight, so stop panicking.", UP_A_KNIGHT),
+        ("I'm up a piece.", VerifiedFacts(material=-3)),
+        ("You're two pawns down.", DOWN_TWO_PAWNS),
+        ("Two pawns behind and it shows.", DOWN_TWO_PAWNS),
+        ("I'm two pawns ahead.", DOWN_TWO_PAWNS),
+        ("You're up the exchange.", VerifiedFacts(material=2)),
+        # No subject at all: ambiguous, so either reading verifying is enough.
+        ("Up a knight. Cute.", UP_A_KNIGHT),
+    ],
+)
+def test_a_material_count_the_board_backs_is_reportable(text, facts):
+    assert unverified_claims(text, facts) == ()
+
+
+def test_the_nominal_trade_is_reportable_against_the_net_count():
+    """A knight taken for a pawn is "up a knight" to everybody who plays chess,
+    and +2 to the board. Magnitude is verified to within a pawn precisely so
+    that ordinary material talk survives its own guard."""
+    knight_for_a_pawn = VerifiedFacts(material=2)
+    assert unverified_claims("You're up a knight.", knight_for_a_pawn) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The bar for the class: an opinion about the position is not a count,
+        # however brutal it is. These are Glitch, and they must all survive.
+        "You're getting crushed here, just so you know.",
+        "You're winning, obviously.",
+        "That's a losing position and you know it.",
+        "Material's about level.",
+        # Threats, conditions, offers, negations — the usual half of the spec.
+        "One more trade and you're up a pawn.",
+        "Take the knight and you'll be up a piece.",
+        "You're not down a piece, relax.",
+        "If I take that rook I'm up two pawns.",
+        "Want to be a pawn up? Take it.",
+        # Talk that reuses the words without counting anything.
+        "Your knight is up on f3 doing nothing.",
+        "This is not game over — you still have the exchange.",
+    ],
+)
+def test_talking_about_the_position_is_not_a_material_claim(text):
+    assert unverified_claims(text, LEVEL) == ()
+
+
 # --- analysis numbers ----------------------------------------------------------
 #
 # Narrow on purpose: a signed or decimal score and a mate-in-N are shapes only
 # an engine can produce, so they must match a number the turn's analysis
-# actually reported. Material talk ("you're a pawn down") is deliberately left
-# alone — it is derivable from the board, not from Stockfish, and is the next
-# claim class to grow rather than something to fake with this one.
+# actually reported. Material talk is the sibling class above: derivable from
+# the board rather than from Stockfish, so it is counted, not quoted.
 
 EVALUATED = VerifiedFacts(numbers=frozenset({"150", "1.5", "+1.5"}))
 

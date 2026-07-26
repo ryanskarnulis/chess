@@ -24,6 +24,16 @@ ALTERNATIVES_MAX = 8
 _SQUARE = re.compile(r"[a-h][1-8]")
 _SAN_PIECE = re.compile(r"^[KQRBN]")
 
+# Pawn values, the conventional ones, for counting who is ahead. The king is
+# never off the board, so it has no value here.
+_PIECE_VALUES = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+}
+
 _TERMINATION_NAMES = {
     chess.Termination.CHECKMATE: "checkmate",
     chess.Termination.STALEMATE: "stalemate",
@@ -317,6 +327,20 @@ class GameSession:
                 captured[_COLOR_NAMES[board.turn]].append(chess.piece_symbol(symbol))
             board.push(move)
         return captured
+
+    def material_balance(self) -> int:
+        """The player's material advantage in pawns — positive when ahead.
+
+        Counted off the board rather than from `captured_pieces()`, because a
+        promotion adds material nobody captured: the count has to be what is
+        standing there, not the history of what left.
+        """
+        totals = {chess.WHITE: 0, chess.BLACK: 0}
+        for piece_type, value in _PIECE_VALUES.items():
+            for color in (chess.WHITE, chess.BLACK):
+                totals[color] += value * len(self._board.pieces(piece_type, color))
+        player = self.player_color == "white"
+        return totals[player] - totals[not player]
 
     def _parse(self, move_str: str) -> chess.Move | None:
         try:

@@ -15,10 +15,10 @@ the two together.
 
 The ending is where the rule started and it is not where it stops (audit item
 13). `unverified_claims` takes the same shape to every operational fact a turn
-produces — captures, check, draws, moves, saves, settings, engine numbers —
-against a `VerifiedFacts` set the pipeline assembles from the tool results, the
-engine's reply and the board. Personality varies the wording; it does not get
-to vary the facts.
+produces — captures, check, draws, moves, saves, settings, engine numbers, the
+material count — against a `VerifiedFacts` set the pipeline assembles from the
+tool results, the engine's reply and the board. Personality varies the wording;
+it does not get to vary the facts.
 
 The bar is deliberately "asserts", not "mentions". Trash talk, threats,
 questions and hypotheticals are the whole point of the commentary — "one more
@@ -151,6 +151,12 @@ class VerifiedFacts:
     `moves` is every SAN the turn accounts for — played, reported by an
     analysis, or playable now or at the turn's start. The last of those is what
     keeps "Bc4 was right there and you missed it" sayable.
+
+    `material` is the player's advantage in pawns, positive when they are
+    ahead — and `None` rather than `0` for a turn that supplied no count,
+    because a level board is itself a claimable fact ("we're dead even") and
+    the guard fails closed on evidence, never on a default that happens to
+    read as one.
     """
 
     ended: bool = False
@@ -162,6 +168,7 @@ class VerifiedFacts:
     saved: bool = False
     settings: Mapping[str, str] = field(default_factory=dict)
     numbers: frozenset[str] = frozenset()
+    material: int | None = None
 
 
 _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
@@ -290,10 +297,57 @@ _VERBOSITY = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Material: a count, not an opinion. The class ships only because it can tell
+# "you're getting crushed" (an opinion about the position, and the trash talk
+# that makes Glitch worth playing) from "you're two pawns down" (a claim the
+# board settles) — so it reads *quantified* material talk only, a direction
+# plus a named amount, in either order and from either side's mouth.
+#
+# "The exchange" is the one amount with no fixed value in ordinary use — a rook
+# for a minor piece to some players, "won some material" to others — so it
+# claims a direction and nothing more.
+_MATERIAL_UNIT = r"(?: pawn | knight | bishop | piece | rook | queen )"
+_MATERIAL_COUNT = r"(?: a | an | one | two | three | four | five | \d )"
+_AHEAD = r"(?: up | ahead )"
+_BEHIND = r"(?: down | behind )"
+
+_MATERIAL = re.compile(
+    rf"""
+    (?: (?P<subject> \b (?: i | you ) \b ) [^.!?]{{0,16}}? )?
+    (?: \b (?P<direction> {_AHEAD} | {_BEHIND} ) \s+
+          (?: (?P<count> {_MATERIAL_COUNT} ) \s+ (?P<unit> {_MATERIAL_UNIT} ) s?
+            | the \s+ exchange ) \b
+      | \b (?P<count_b> {_MATERIAL_COUNT} ) \s+ (?P<unit_b> {_MATERIAL_UNIT} ) s? \s+
+          (?P<direction_b> {_AHEAD} | {_BEHIND} ) \b
+      | \b the \s+ exchange \s+ (?P<direction_c> {_AHEAD} | {_BEHIND} ) \b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# What each named amount is worth. "A piece" is a minor piece by convention.
+_MATERIAL_VALUES = {
+    "pawn": 1,
+    "knight": 3,
+    "bishop": 3,
+    "piece": 3,
+    "rook": 5,
+    "queen": 9,
+}
+
+_MATERIAL_COUNTS = {
+    "a": 1,
+    "an": 1,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+}
+
 # Numbers only an engine can produce: a signed or decimal score, a centipawn
-# count, a mate-in-N. Material talk ("you're a pawn down") is deliberately not
-# here — it is derivable from the board rather than from Stockfish, and is the
-# next claim class to grow rather than something to fake with this one.
+# count, a mate-in-N. Material talk is the class above rather than a number to
+# quote: the board counts it, so it is checked against the count.
 #
 # The bounds and the lookarounds are what keep the app's own text out. A game
 # result must not read as a score: in "1-0" the minus is preceded by a digit.
@@ -346,6 +400,55 @@ def _capture_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
 def _move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
     claimed = match.group(0).rstrip("+#")
     return any(san.rstrip("+#") == claimed for san in facts.moves)
+
+
+def _material_claimed(match: re.Match[str]) -> tuple[int | None, bool]:
+    """What a material match asserts: how many pawns, and which way.
+
+    The amount is `None` for "the exchange", which names no fixed number.
+    """
+    unit = match.group("unit") or match.group("unit_b")
+    amount = None
+    if unit is not None:
+        count = (match.group("count") or match.group("count_b")).lower()
+        amount = _MATERIAL_COUNTS.get(count, 0) or int(count)
+        amount *= _MATERIAL_VALUES[unit.lower()]
+    for name in ("direction", "direction_b", "direction_c"):
+        if (direction := match.group(name)) is not None:
+            return amount, direction.lower() in ("down", "behind")
+    return amount, False  # unreachable; every branch names a direction
+
+
+def _material_holds(amount: int | None, behind: bool, balance: int) -> bool:
+    """Whether a claim of being `amount` pawns up (or down) fits `balance`.
+
+    Direction is the fact and magnitude is checked to within a pawn. Material
+    talk names the *nominal* trade — "up a knight" after winning a knight for a
+    pawn, which the board counts as two — and that is how everybody who plays
+    chess says it, so a class that called it a lie would be guarding wording.
+    Being told you are ahead when you are behind is the invention that matters.
+    """
+    advantage = -balance if behind else balance
+    if advantage <= 0:
+        return False
+    return amount is None or abs(advantage - amount) <= 1
+
+
+def _material_matches(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    if facts.material is None:
+        return False
+    amount, behind = _material_claimed(match)
+    subject = (match.group("subject") or "").lower()
+    if subject == "i":  # Glitch is the player's opponent: the count flips
+        return _material_holds(amount, behind, -facts.material)
+    if subject == "you":
+        return _material_holds(amount, behind, facts.material)
+    # Nobody named: "Up a knight. Cute." is genuinely ambiguous about whose
+    # knight, so either reading verifying is enough — the guard fails permissive
+    # on ambiguity, and a level board still backs neither.
+    return _material_holds(amount, behind, facts.material) or _material_holds(
+        amount, behind, -facts.material
+    )
 
 
 def _number_reported(match: re.Match[str], facts: VerifiedFacts) -> bool:
@@ -401,6 +504,7 @@ _CLAIM_CLASSES = (
     _ClaimClass("difficulty", _DIFFICULTY, _setting_is("difficulty")),
     _ClaimClass("verbosity", _VERBOSITY, _setting_is("verbosity")),
     _ClaimClass("evaluation", _EVALUATION, _number_reported),
+    _ClaimClass("material", _MATERIAL, _material_matches),
 )
 
 

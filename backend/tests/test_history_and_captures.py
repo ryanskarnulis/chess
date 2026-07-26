@@ -110,3 +110,51 @@ def test_new_game_clears_captures():
     session.submit_move("exd5")
     session.new_game()
     assert session.captured_pieces() == {"white": [], "black": []}
+
+
+# --- material balance -----------------------------------------------------
+#
+# The count behind the honesty guard's material class: who is ahead, by how
+# many pawns, from the *player's* side. Read off the board rather than from
+# `captured_pieces()`, because a promotion adds material nobody captured.
+
+
+def test_a_fresh_board_is_level():
+    assert GameSession().material_balance() == 0
+
+
+def test_a_capture_puts_the_capturing_side_ahead():
+    session = GameSession()
+    for move in ["e4", "d5", "exd5"]:
+        assert session.submit_move(move).legal
+    assert session.material_balance() == 1
+
+
+def test_the_balance_is_read_from_the_players_side():
+    session = GameSession(player_color="black")
+    for move in ["e4", "d5", "exd5"]:
+        assert session.submit_move(move).legal
+    assert session.material_balance() == -1
+
+
+def test_a_trade_of_equal_pieces_is_level_again():
+    session = GameSession()
+    for move in ["e4", "d5", "exd5", "Qxd5"]:
+        assert session.submit_move(move).legal
+    assert session.material_balance() == 0
+
+
+def test_the_nominal_trade_counts_net():
+    """A knight for a pawn is +2, not +3 — which is why the guard verifies
+    material talk's magnitude to within a pawn."""
+    session = GameSession()
+    for move in ["e4", "Nf6", "Nc3", "Nxe4", "Nxe4"]:
+        assert session.submit_move(move).legal
+    assert session.material_balance() == 2
+
+
+def test_a_promotion_lands_in_the_balance():
+    """Material nobody captured: the pawn that walked in is a queen now."""
+    session = GameSession(fen="4k3/2P5/8/8/8/8/8/4K3 w - - 0 1")
+    assert session.submit_move("c8=Q").legal
+    assert session.material_balance() == 9

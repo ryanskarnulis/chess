@@ -1199,6 +1199,32 @@ def test_an_evaluation_the_engine_reported_may_be_quoted():
     assert response["commentary"] == "+1.5 for me. Comfortable."
 
 
+def test_an_invented_material_count_is_guarded():
+    """The claim class the board answers on its own: nothing has been traded in
+    a developed opening, so nobody is up a piece."""
+    client, _, ctx = make_developed_client(AgentResponse(text="You're up a piece."))
+
+    response = client.post("/api/command", json={"text": "how's it look?"}).json()
+
+    assert ctx.session.material_balance() == 0, "a level board"
+    assert response["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+def test_a_material_count_the_board_backs_survives():
+    """The other half of the wiring, and the half a guarded test cannot prove:
+    the balance really reaches the facts, so a true count is still sayable."""
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "Nf6", "Nc3", "Nxe4", "Nxe4", "d5"):
+        assert ctx.session.submit_move(san).legal
+    app, _ = scripted_app(ctx, AgentResponse(text="You're up a knight. Enjoy it."))
+    client = TestClient(app)
+
+    response = client.post("/api/command", json={"text": "how's it look?"}).json()
+
+    assert ctx.session.material_balance() == 2, "a knight for a pawn"
+    assert response["commentary"] == "You're up a knight. Enjoy it."
+
+
 def test_the_ending_class_keeps_its_own_correction():
     """The two substitutions are not interchangeable: an invented ending is
     answered by the line that says the game is still live, which is the fact
