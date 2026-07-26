@@ -32,7 +32,7 @@ CHESSAPP_TRACE_PATH=/tmp/turns.jsonl chessapp        # trace every agent turn
 ## Development Process (required)
 
 - **TDD, strictly:** write the failing test first (red), then minimal code to pass (green), then refactor. No production code without a test that demanded it. The deterministic core (board truth, tools) gets exhaustive unit tests; agent behavior is tested at the tool boundary — never write tests that depend on live LLM output.
-- **Eval gate:** before merging any prompt, model, or loop change, run the opt-in agent eval harness (`cd backend && CHESSAPP_AGENT_EVALS=1 .venv/bin/pytest tests/test_agent_evals.py -v -s`); the recorded baseline in `docs/agent-evals.md` must not regress (it's the only live-model test — default `pytest` skips it).
+- **Eval gate:** before merging any prompt, model, or loop change, run the opt-in agent eval harness (`cd backend && CHESSAPP_AGENT_EVALS=1 .venv/bin/pytest tests/test_agent_evals.py -v -s`); the recorded baseline in `docs/agent-evals.md` must not regress (it's the only live-model test — default `pytest` skips it). **A green means "not statistically below the floor", not "works 80% of the time":** each pass rate is judged against a one-sided Wilson bound with block-sequential sampling (`tests/evalstats.py`, unit-tested off the GPU), infra deaths are retried rather than scored, and the gate resolves ≈0.95 from ≈0.5–0.6 and nothing finer — so a red is strong evidence of harm and a green is weak evidence of health. Never lower a floor for quiet; power depends on it.
 - **Agile:** the phases in BRIEF.md are the epics; work in small vertical slices tracked as GitHub issues, one slice = one branch = one PR.
 
 ## Git Workflow

@@ -63,6 +63,21 @@ Overrides via the standard env vars: `LLAMACPP_BASE_URL`
 (default `http://127.0.0.1:8200/v1`), `LLAMACPP_MODEL` (default `gemma-4-12b`),
 `CHESSAPP_STOCKFISH` (default `/usr/bin/stockfish`).
 
+Sampling and reporting knobs (all optional; the defaults are what a normal gate
+run uses):
+
+| Env var | Default | What it does |
+| --- | --- | --- |
+| `CHESSAPP_EVAL_RUNS` | 5 | Samples per block, and therefore the minimum count. |
+| `CHESSAPP_EVAL_MAX_RUNS` | 20 | Escalation cap. |
+| `CHESSAPP_EVAL_INFRA_RETRIES` | 5 | Provider deaths re-taken per scenario before `INFRA_ABORTED`. |
+| `CHESSAPP_EVAL_INFRA_BUDGET` | 25 | The same ceiling across the whole suite. |
+| `CHESSAPP_EVAL_REPORT` | — | Path to a JSONL report; unset writes none. |
+
+A 20-sample measurement campaign is `CHESSAPP_EVAL_RUNS=20
+CHESSAPP_EVAL_MAX_RUNS=20` — a block equal to the cap forces the full count, so
+there is no separate "force" knob to forget.
+
 ## The gating rule
 
 **Run this harness before merging any prompt, model, or loop change, and the
@@ -70,6 +85,132 @@ baseline must not regress.** A prompt tweak that degrades tool honesty (a
 judgment question answered from vibes, an invented move, a lost clarifying
 question) does not ship. If the baseline legitimately shifts (a better prompt,
 a new model), re-record the table below in the same PR and say why.
+
+**What a green means, precisely: _not statistically below the floor_.** Not "the
+model does this ≥80% of the time" — the gate cannot resolve that from the sample
+sizes a shared 12 GB card affords. See the next section for what it can and
+cannot see.
+
+## The verdict is judged, not compared (2026-07-26, Sprint 5 slice 3, audit 23)
+
+`assert result.rate >= 0.8` is gone, because over five samples it is a coin flip
+at the floor and the record proves it: `long_capture[poisoned]` measured 3/5 then
+4/5 on one build (red once, green once), `main` gave 5/5 then 3/5, and
+`play_as_black` gave 5/5, 2/5, 0/5, 5/5 across four same-build runs. A gate that
+flaps gets re-run until green, which is how the 2026-07-25 baseline came to be a
+hand-assembled composite of re-runs.
+
+**The rule.** Every count is judged against a **one-sided 95% Wilson bound**
+(`z = 1.645`; the FAIL test uses one tail, so calling a two-tailed 1.96 bound
+"95%" would overstate the evidence by a whole tail). `evalstats.decide` returns
+one of three things:
+
+| Decision | When | What the harness does |
+| --- | --- | --- |
+| `BELOW_FLOOR` | Wilson **upper** bound < floor | Red. This is evidence of regression, not a bad sample. |
+| `ABOVE_FLOOR` | point estimate ≥ floor | Green. |
+| `UNDECIDED` | interval straddles the floor, point estimate under it | Take another block of 5, to a cap of 20. |
+
+At the cap, `UNDECIDED` passes but is **flagged** in the printed summary and the
+report — except on a release-blocking item (`long_capture`), where an unresolved
+gate is not a pass.
+
+**At n=5 and floor 0.8 the whole table is six numbers** — the upper bounds for
+0–5 passes: **0.351 / 0.565 / 0.728 / 0.857 / 0.954 / 1.000**. So 0–2 fail
+immediately, **3 escalates**, and 4–5 pass immediately: a healthy suite costs
+exactly what it cost before this slice, and the extra samples are spent only on
+the one count that was genuinely ambiguous. Sampling is in **blocks of five**
+rather than one at a time for three reasons: identical operating
+characteristics, a decision table small enough to unit-test
+(`tests/test_evalstats.py`), and per-block rates — the only measurement in the
+suite that can see the run-order confound below.
+
+**Raising the run count against `rate >= floor` measures _worse_, and this is
+written down so nobody re-proposes it.** At a true rate of exactly 0.80,
+fixed-5 goes green **0.737** of the time and fixed-20 goes green **0.630**: four
+times the GPU for a worse gate. (Both are exact binomial figures, not
+simulations.)
+
+**What the change buys, at the suite level** (15 pass-rate items, exact
+enumeration of the rule above):
+
+| true rates across the suite | today (fixed 5) | sequential, cap 20 |
+| --- | --- | --- |
+| all 0.97 | 0.880 | 0.996 |
+| 12@0.97, 2@0.90, 1@0.85 | 0.636 | 0.939 |
+| 10@0.97, 3@0.90, 2@0.80 | 0.387 | 0.788 |
+
+Roughly **3× fewer spurious reds for ~4% more samples** (78 vs 75 expected on the
+middle row).
+
+### The limits, stated rather than papered over
+
+- **The gate separates ≈0.95 from ≈0.5–0.6 and nothing finer.** Against a true
+  drop from a 0.8 floor to 0.7 / 0.6 / 0.5 it goes red only 0.32 / 0.59 / 0.79 of
+  the time. A green is weak evidence of health; a red is strong evidence of harm.
+- **Never lower a floor for quiet.** Power depends on the floor, so 0.8 → 0.7
+  roughly halves the chance of catching a real drop to 0.6. Moving a floor to
+  make a test green is the move that hollows out a tripwire.
+- **Optional stopping does bias toward false passes, slightly.** At a true rate
+  of 0.60 the sequential rule passes 0.414 against fixed-5's 0.337. The leak is
+  the 4/5 early accept, which fixed-5 has identically; the gate's own power table
+  above is stated *after* that leak, not before it.
+- **The i.i.d. assumption is known false, and this slice does not fix it.**
+  `play_as_black` measured 0/5 only mid-suite and 5/5 in isolation. Twenty
+  consecutive samples of one utterance is a cluster of size 1, so Wilson
+  understates the width. Fixing it means interleaving blocks across scenarios —
+  inverting the suite into a session-scoped sampler — which is **unpaid work,
+  named here as such**. What the slice does instead is make the confound
+  *measurable*: per-block `(passed, runs)` in the report, an `UNSTABLE` flag when
+  the block spread reaches 0.6 (quiet on `long_capture`'s 5/5-vs-3/5), and
+  per-sample `model_ms`, because a prompt-cache hit is fast and correlating
+  outcome with latency tests the hypothesis at zero GPU cost.
+  **What the flag cannot see, stated plainly:** it compares blocks *within* one
+  scenario's sampling, and only where escalation bought a second block. A
+  mid-suite 0/5 decides red on block 1, so it is reported STABLE — correctly,
+  since nothing varied within that run. The 5/5-in-one-run-vs-0/5-in-another
+  shape is therefore found by comparing report lines *across* runs, which is why
+  the campaign below measures a scenario both isolated and mid-suite.
+
+### Infrastructure is retried, not scored
+
+llama-server crash-restarts every 3–8 minutes of sustained generation. Since
+audit item 20 the brain *catches* `ProviderError` and answers **200** with
+`stop_reason="provider_error"`, so a crash stopped looking like a 502 and started
+looking like a silent behavioral miss ("expected a resign call: nothing").
+
+`evalstats.classify` sorts each sample, and the precedence is the point:
+
+| Outcome | From | Scored? |
+| --- | --- | --- |
+| `PASS` / `FAIL` | the check held / raised on a healthy turn | yes |
+| `INFRA` | non-200, **or** 200 + `stop_reason="provider_error"` — including when the check also failed, because it failed *because* the provider died | no: thrown away and re-taken |
+| `INCONCLUSIVE` | a budget stop under a commentary-only check (`_assert_reached_narrator`) | counted as a non-pass, and reported as what it was |
+| `HARNESS` | any non-`AssertionError` exception (a `KeyError` in a check) | never: fails the item at once, after writing the samples already taken |
+
+The harness reads the real stop reason off a `_CollectingTracer` on the app's own
+`tracer` seam — which is why this needed **no** production change: `api._run_command`
+already traces every route, so the harness gets `stop_reason`, `route`,
+`mutations`, `guarded`, `model_calls` and `model_ms` on *both* seams for free.
+Adding `stop_reason` to the panel response instead would have put a production
+edit inside a harness slice, and the harness-bug precedent below (a wrong tool
+offer silently moving a scenario from 5/5 to 0–3/5) is why that is not allowed.
+
+Exhausting the retry budget is `INFRA_ABORTED`: **no rate, a hard failure.** That
+is louder than the old behavior on purpose — it is also what a *deterministic*
+provider error (a context overrun, a malformed request) now looks like, instead
+of a 0/5 blamed on the model.
+
+### The report
+
+`CHESSAPP_EVAL_REPORT=/tmp/evals.jsonl` writes one JSONL line **per scenario as
+it finishes** — crash-survivable, the tracer's own precedent — behind a header
+line carrying the knobs, the floors, the model and the git SHA, and followed by a
+suite line with totals, wall clock and the infra budget consumed. *A baseline
+should say what budget produced it.* Each scenario line carries the counts, the
+blocks, the interval, the decision, the stability flag, the infra retries, the
+failure-mode histogram and the per-sample record. The tables in this file are
+meant to be assembled from that file, not from terminal scrollback.
 
 ## Scenarios — what each pins
 
@@ -100,11 +241,16 @@ being *wrong* rather than on it calling the wrong tool.
 
 **They report a rate, not a boolean.** The model samples at temp 1.0: a single
 assert on a path that works 70% of the time flaps, and a flapping test teaches
-you nothing. `_pass_rate` runs each scenario `_PASS_RATE_RUNS` (5) times on a
-fresh app and prints `PASS_RATE=n/5`; the floor is 80%. This is not theoretical —
+you nothing. `_pass_rate` samples each scenario in blocks of `_BLOCK_RUNS` (5) on
+a fresh app and prints the count, its interval and its verdict; the floors live in
+one table (`_FLOORS`, all 80% today). This is not theoretical —
 `capture_names_victim` ("bishop takes pawn") measured **0/5, 2/5, 3/5 and 5/5**
 across four runs of the same build. A boolean assert there would have told you
 four different things on four days.
+
+**And the rate is judged, not compared to a literal** — see "The verdict is
+judged, not compared" above for the rule, the numbers behind it, and what it
+cannot see. `assert result.rate >= 0.8` was itself a flapping gate.
 
 **There are no xfails left.** The convention, if one is ever needed again: an
 xfail here means known-broken, not flaky-broken (`strict=False`, each carrying
@@ -317,11 +463,20 @@ on vibes. It stays at 1.0 until a measurement says otherwise.
 **One infrastructure caveat on this record.** llama-server crash-restarts under
 sustained suite load (`upstream exited unexpectedly` in the llama-swap log,
 roughly every 3–8 minutes of continuous generation; the 12 GB card sits at
-~10.8 GiB). A crashed run answers 502 and the harness counts it as a failed
+~10.8 GiB). A crashed run answers 502 and the harness counted it as a failed
 sample, so the 2026-07-25 record is a composite of consecutive runs in which
 every 502-hit scenario was re-run to completion. **Every failure in every run
 was a 502; not one was a behavioral miss.** The server flags are owned by
 `../llama-swap/config.yaml`, not this repo; filed there.
+
+> **The manual composite procedure is retired (2026-07-26).** Do not
+> hand-assemble a baseline out of consecutive runs any more: the harness retries
+> an infra death itself, bounded and counted, and reports how much budget it
+> spent (see "Infrastructure is retried, not scored"). A crash is no longer a
+> failed sample, so there is nothing left for a re-run to launder — and a record
+> assembled by hand cannot say how many deaths it took, which is precisely the
+> number a reader of this file needs. Baselines from 2026-07-25 and earlier are
+> composites; every later one carries its infra count.
 
 ## The hints leak, diagnosed (2026-07-25, Sprint 3 slice 4) — 1/5 → 5/5
 
@@ -371,6 +526,19 @@ narrator, so there is no commentary to leak and the run scores as a pass. The
 scenario's pass rate therefore mixed "behaved correctly" with "ran out of
 budget", which is part of why it read as noise. Worth a look when that slice
 lands.
+
+> **Closed (2026-07-26, eval-statistics slice).** Those passes were **vacuous**,
+> and the harness can no longer score one: `hints_off_no_advice` is the suite's
+> one purely-negative check (nothing in it asserts that a tool ran), so it is the
+> one scenario sampled with `requires_narrator=True`. A budget stop there now
+> raises `VacuousRun`, classifies as `INCONCLUSIVE`, counts against the rate and
+> is printed and reported as what it was. Two consequences worth expecting on the
+> next campaign: this scenario's measured rate may read **lower** than the
+> historical numbers above, and that is the vacuity being subtracted rather than
+> a regression — the comparison to make is against a re-measurement, not against
+> a number that counted untested runs as passes. The budget stops themselves are
+> filed as a **separate defect**: a question that should be declined in one turn
+> burning four planner iterations is a loop problem, not a floor to slide.
 
 ## Turn memory: the transcript scenarios now measure a digest (2026-07-25, Sprint 4 slice 1)
 
@@ -506,8 +674,24 @@ slice:** `play_as_black` measured 5/5, 2/5, 0/5, 5/5 across four same-build
 runs — 0/5 only when run mid-suite, 5/5 both times in isolation, failures all
 "asked for black, got white" with no 502s. That is not floor noise (0/5 is not
 a coin flip on a true ~80% rate); it looks run-order / server-state dependent
-(prompt-cache or load effects on the shared GPU). Worth a dedicated look when
-eval statistics land.
+(prompt-cache or load effects on the shared GPU).
+
+> **Picked up (2026-07-26, eval-statistics slice) — measurable, not yet
+> explained.** The slice does not fix the clustering this observation implies
+> (that needs a session-scoped sampler; named as unpaid above), but it puts three
+> instruments on it: per-block `(passed, runs)` in the report, so a 5/5 followed
+> by a 0/5 inside one scenario is visible instead of averaging to 5/10; the
+> `UNSTABLE` flag, which catches that spread *within* a run — but not this
+> observation itself, since a mid-suite 0/5 decides red on its first block and so
+> has no second block to differ from (the cross-run comparison is the report's
+> job, and the order experiment below is how it gets made); and per-sample `model_ms`,
+> because if the mechanism is prompt-cache state then the fast samples and the
+> passing samples should be the same samples. The **order experiment** the
+> campaign owes: run `play_as_black` at forced n=20 both isolated *and* placed
+> after the long-transcript block — the placement is the variable, and the report
+> now records enough per sample to tell which hypothesis it supports. A
+> `deterministic_suspect` flag fires when a scenario goes 0/N with a single
+> failure signature, which is what a 0/5 like this one looks like.
 
 **Re-confirmed 2026-07-25 on the mutation-limits build (#148)**, whose one
 prompt change was deleting the "at most once per player turn" sentence from
@@ -559,8 +743,10 @@ turn is the narrator's, whose reasoning length is sampling-dependent — measure
 3.4–18 s warm with an idle GPU — so the ceiling moved to 30 s. Not a quiet
 loosening: two consecutive over-15s runs on an unchanged path with no competing
 traffic is the tripwire flapping, and the numbers are recorded here where a human
-reads them. Bounding the narrator's thinking budget structurally is a candidate for
-the eval-statistics slice.
+reads them. Bounding the narrator's thinking budget structurally was floated as a
+candidate for the eval-statistics slice and **was not taken by it** — that slice
+changed how counts are judged, not what the loop spends; the latency ceilings are
+still loose tripwires read by a human. Still open.
 
 One harness bug was fixed in the capture slice and it still matters when reading any
 number here: `_build_eval_app` was offering the brain the **full** registry,
@@ -569,7 +755,78 @@ an agent with a different tool list than the one that ships. It now mirrors
 `build_app`. This was not cosmetic: `capture_names_victim` scored 5/5 under the
 full list and 0–3/5 under the real one.
 
-### Pass-rate scenarios (5 runs each, floor 80%)
+### Pass-rate scenarios — new baseline (2026-07-26, Sprint 5 slice 3)
+
+Two runs, both on `feat/eval-statistics` at `6c26b0f`, gemma-4-12b, planner
+temperature unset. Every row below is transcribed from the report JSONL by
+script, not by eye — which is the point of the report existing.
+
+**Run 1 — the whole suite at default knobs** (block 5, cap 20): **23 items
+passed in 3 m 40 s, 75 samples, infra 0/25.** Fourteen of the fifteen pass-rate
+scenarios measured 5/5; `undo_and_replace` measured 4/5, decided ABOVE_FLOOR at
+five samples without escalating. No scenario escalated, no sample was retried,
+and no sample was a budget stop. `long_capture` 5/5 in all three conditions.
+
+**Run 2 — the campaign, forced to 20 samples** (`CHESSAPP_EVAL_RUNS=20
+CHESSAPP_EVAL_MAX_RUNS=20`):
+
+| Scenario | Floor | Samples | Rate | 95% interval (one-sided) | Infra retries | Stability | Failure modes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `undo_and_replace` | 80% | 20 | **20/20** ✓ | [0.88, 1.00] | 0 | STABLE | — |
+| `play_as_black` | 80% | 20 | **20/20** ✓ | [0.88, 1.00] | 0 | STABLE | — |
+| `long_capture[poisoned]` | 80% | 20 | **20/20** ✓ | [0.88, 1.00] | 0 | STABLE | — |
+| `hints_off_no_advice` | 80% | 20 | **17/20** ✓ | [0.68, 0.94] | 0 | STABLE | ×3 `INCONCLUSIVE`: stopped on `max_iterations`, no narrator |
+
+**The floors do not move, and that is a result rather than an omission.** The
+slice's brief said to set them from a measured ~20-run rate; the measurement says
+0.8 is already right. Three scenarios have a lower bound of **0.88**, so for the
+first time the suite *affirmatively* demonstrates its floor instead of merely
+failing to disprove it — n=20 is the smallest sample at which that is possible
+(`wilson_lower(19,20) = 0.804`). Raising a floor to 0.85 on the strength of one
+clean session would be fitting a threshold to a good afternoon, and lowering one
+is forbidden outright, so 0.8 stands with the evidence recorded next to it.
+
+**The one real finding: `hints_off_no_advice` is an 85% scenario, not a 100% one,
+and the old harness could not have told you.** Three of twenty samples stopped on
+`max_iterations` — the planner spent its whole budget on an ask whose right
+answer is "no, hints are off" — and a budget stop reaches no narrator, so there
+was no commentary to leak and the old rule would have scored all three as
+**passes**: `20/20`. Counted honestly they are non-passes, the rate is 17/20, and
+the interval is [0.68, 0.94]. It still clears the floor on the point estimate, so
+the gate is green, and the underlying loop defect is filed as its own TODO line
+rather than absorbed into a number. This is precisely the vacuity the slice was
+written to expose, reproducing at a measured 15% of samples.
+
+**A/B against the old harness — the harness did not move what the model sees.**
+`long_capture[poisoned]` pooled **15/15 → [0.85, 1.00]** across the three
+post-split recorded runs (#160, #161, #162) on the old harness, and **20/20 →
+[0.88, 1.00]** here. The intervals overlap. Corroborating cost pins, all
+unchanged: `fast_path_low` 0 model calls, `fast_path_normal` 1, the agent-path
+move 3, `undo_and_replace` 4.
+
+**Caveats on this session, stated because they limit what the numbers mean.**
+
+- **It was an unusually healthy session.** Zero infra retries across 135 live
+  samples, and llama-server never crash-restarted — against a documented cadence
+  of every 3–8 minutes of sustained generation. The retry machinery was therefore
+  exercised only by its unit tests and a fake-runner pre-flight, never live. Do
+  not read "infra 0/25" as "the crashes are gone".
+- **The `play_as_black` order effect did not reproduce, in either position.** It
+  measured 5/5 mid-suite in run 1 and 20/20 in run 2, against the recorded 5/5,
+  2/5, 0/5, 5/5 spread. The hypothesis is not disproven — the recorded 0/5 was
+  real — but this session cannot reproduce it, so the order experiment is
+  **inconclusive rather than settled**, and the TODO line stays open.
+- **Run 2's `play_as_black` was not cleanly isolated.** For part of its twenty
+  samples a second pytest process was hitting the same llama-server (operator
+  error, not a harness fault). It measured 20/20 regardless, which is weak
+  evidence *against* load-sensitivity, but it is not the clean isolated arm the
+  experiment wants. Re-run it alone before drawing any conclusion.
+
+Standing constraint, met: **`long_capture` green in all three conditions** (5/5
+each in run 1, 20/20 at the cap in run 2). It is the one release-blocking item
+and the only one where an `UNDECIDED` verdict at the cap fails rather than warns.
+
+### Pass-rate scenarios — superseded record (5 fixed runs each, floor 80%)
 
 | Scenario | Utterance | Must land | Rate |
 | --- | --- | --- | --- |
