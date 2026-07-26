@@ -120,7 +120,9 @@ export function newGame(color?: 'white' | 'black' | 'random'): Promise<Lifecycle
 /**
  * Answer the armed destructive op: true runs it, false drops it. Returns the
  * authoritative state either way (unchanged on a cancel), or null if there was
- * nothing armed. Whichever way it is answered, nothing stays armed.
+ * nothing armed — which includes nothing armed *about this board*: the backend
+ * drops a question the board has moved past, so a stale answer leaves the game
+ * alone. Whichever way it is answered, nothing stays armed.
  */
 export async function confirmDestructive(confirm: boolean): Promise<GameState | null> {
   const res = await fetch('/api/game/confirm', {

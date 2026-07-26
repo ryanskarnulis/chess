@@ -395,6 +395,48 @@ schema. It is transport bookkeeping between the app and its clients, and the
 house rule cuts both ways: code owns what code knows, and the model is not handed
 a number it would only be tempted to reason with.
 
+## A question is about a position (Sprint 5 — the E2E gap sweep, audit item 22)
+
+The gap sweep over the audit's eight risks found one hole, and it was in the
+confirmation gate: **an armed destructive op outlived the board it was a question
+about.** `/api/command` disarms a pending op on its way past — an unrelated
+utterance is a new intent, not an answer — but nothing else did, and the other
+surfaces can move the board too. So this was reachable in three keystrokes:
+
+    "I resign"        → the gate arms it and asks
+    drag a move       → the board advances; the question is still armed
+    "yes"             → a game two plies further on ends
+
+Same shape with an undo, a resume, or another client's move in the middle. The
+fix is the board-version machinery above, one layer down: `PendingOp` carries the
+`board_version` it was armed against, and both answering surfaces read the op
+through **`ToolContext.live_pending()`**, which drops one whose version no longer
+matches. `confirm_pending` reads through it too — it is the last gate before a
+game is thrown away, so it makes the check itself rather than trusting each
+caller to have made it. Dropped, not queued: the "yes" then falls through as an
+ordinary utterance, and the brain can ask what they meant.
+
+Deriving it beats clearing it. The alternative was `ctx.pending = None` at every
+surface that mutates — the drag, the undo, the resume, the next one somebody adds
+— which is the "documented in the docstring and hoped for" pattern the house
+rules exist to refuse. One stamp read at one place cannot be forgotten by a
+route that did not exist when the rule was written.
+
+The one wrinkle is *when* the stamp is taken. The gate arms **mid**-turn, and the
+turn can still mutate after it — "play Bc4 and then start over" arms the reset
+before the engine's reply lands — so an arm-time stamp would be stale before the
+player could speak. What they are being asked about is the board at the *end* of
+that interaction, so `ToolContext.restamp_pending()` re-points it there, once,
+where the command closes. The button surface needs no such call: it dispatches
+once and returns.
+
+The sweep's other two additions are coverage rather than code — agent mode had no
+concurrency test of its own (its turn is longer than direct mode's, so the window
+for a second client is wider), and the delegate wire was never asserted to share
+the pipeline's observe split, advice guard and provider recovery. `tests/
+test_risk_sweep.py` holds both, and its docstring maps all eight risks to the
+files that pin them.
+
 ## Saying it out loud: live progress
 
 Once a turn has intentional phases, a spinner is the wrong shape for it — it
