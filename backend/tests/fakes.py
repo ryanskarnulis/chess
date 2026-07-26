@@ -24,17 +24,26 @@ from typing import Any
 from chessapp.api import create_app
 from chessapp.brain import AgentResponse, Narration
 from chessapp.coordinator import TurnCoordinator
+from chessapp.engine import Evaluation
 from chessapp.provider import ChatResult, Usage
 from chessapp.provider import ToolCall as ProviderToolCall
 from chessapp.tools import build_registry
+
+_DEAD_EVEN = Evaluation(score_cp=0, mate_in=None)
 
 
 class FakeEngine:
     """Engine double: scripted reply + recorders for strength and MultiPV."""
 
-    def __init__(self, reply_uci: str = "e7e5", best_moves: tuple = ()):
+    def __init__(
+        self,
+        reply_uci: str = "e7e5",
+        best_moves: tuple = (),
+        evaluation: Evaluation = _DEAD_EVEN,
+    ):
         self.reply_uci = reply_uci
         self.best_moves = list(best_moves)
+        self.evaluation = evaluation
         self.multipv_requests: list[int] = []
         self.skill_levels: list[int] = []
         self.elos: list[int] = []
@@ -49,6 +58,12 @@ class FakeEngine:
     def get_best_moves(self, session, n=3):
         self.multipv_requests.append(n)
         return self.best_moves[:n]
+
+    def evaluate_position(self, session):
+        """One canned score, whatever the position. Enough for the tools that
+        call it as a step (`analyze_last_move`) — the numbers themselves are
+        Stockfish's business and are pinned in test_mistake_analysis.py."""
+        return self.evaluation
 
     def set_skill_level(self, level: int) -> None:
         self.skill_levels.append(level)

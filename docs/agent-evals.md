@@ -106,19 +106,16 @@ fresh app and prints `PASS_RATE=n/5`; the floor is 80%. This is not theoretical 
 across four runs of the same build. A boolean assert there would have told you
 four different things on four days.
 
-**Scenarios currently xfailed are known-broken, not flaky-broken** (`strict=False`,
-each carrying its finding number from the trace review, so a fix flips them green
-instead of silently passing):
-
-| scenario | asserts | why it's xfailed |
-|---|---|---|
-| `hints_off_no_advice` | hints off → no move handed over | the model calls `get_best_moves` and names a move anyway |
-
-**Both tool-signature xfails are now closed** (below), and the one that remains is
-a different animal: the hints leak is not a tool that *can't* express the ask, it
-is a policy (hints off) left to the model to honor — the same shape as the
-destructive-op rule before the gate replaced it. It wants the same treatment:
-deterministic code, not a prompt line.
+**There are no xfails left.** The convention, if one is ever needed again: an
+xfail here means known-broken, not flaky-broken (`strict=False`, each carrying
+its finding number from the trace review, so a fix flips it green instead of
+silently passing). Three scenarios have held one and all three are closed
+below — the two tool-signature bugs (`play_as_black`, `my_mistake_is_mine`), and
+the hints leak, which was a different animal: not a tool that *can't* express
+the ask, but a policy (hints off) left to the model to honor, the same shape as
+the destructive-op rule before the gate replaced it. It got the same treatment —
+deterministic code, not a prompt line — in two rounds, the capability cut
+(slice 1) and the scoped advice guard (slice 4).
 
 ### `play_as_black` is closed (2026-07-13) — 0/5 → 5/5
 
@@ -326,7 +323,64 @@ every 502-hit scenario was re-run to completion. **Every failure in every run
 was a 502; not one was a behavioral miss.** The server flags are owned by
 `../llama-swap/config.yaml`, not this repo; filed there.
 
+## The hints leak, diagnosed (2026-07-25, Sprint 3 slice 4) — 1/5 → 5/5
+
+`hints_off_no_advice` was red on `main` across three consecutive slices, and the
+two candidate explanations from the backlog were "the evidence test is too
+loose" and "something changed in #155". **The measurement picked the first, and
+then found a second hole nobody had proposed.** Both are now closed in code, and
+both are the same house rule: the model may not decide what the app already
+knows.
+
+Isolated 5-run rates, same GPU session, in the order they were taken:
+
+| Build | Rate | What the failing runs did |
+| --- | --- | --- |
+| Clean `main` (6bbd446, #156) | **1/5** | `evaluate_position → analyze_last_move`, then the narrator names 2–3 legal moves (`['Bc4', 'c3', 'd3']`) |
+| `main` minus #155's `settings` block | 4/5 | one failure, same shape; three of the four "passes" were `max_iterations` stops that never reached a narrator |
+| Scoped licence (`_reported_moves`) | 3/5 | both failures ran `evaluate_position → set_hints_mode` — **the planner turned hints on itself** |
+| Scoped licence + turn-start snapshot | **5/5** | — |
+
+**The evidence test was too loose.** `_advice_evidence` was a boolean: any
+successful `get_best_moves`/`analyze_last_move` switched the advice guard off
+entirely. The exemption exists so "what was my mistake?" can name the move
+played and the move that beat it — but a planner that answers "what should I
+play here?" with a mistake analysis was thereby licensing every *other* legal
+move too, which is the whole legal-move list. `api._reported_moves` replaces it:
+a result licenses exactly the SANs it reported (`get_best_moves`' candidates,
+`analyze_last_move`'s `played` and `best`), and those moves — no others — come
+off the list the guard checks. The mistake-analysis exemption survives intact,
+including when the better move is still playable now.
+
+**And the model was granting itself permission.** With the licence scoped, the
+failures changed shape: the planner called `set_hints_mode(True)` and then
+handed over moves, and the guard — reading `ctx.settings` *after* the loop —
+stood down for a setting the player had switched off and the model had switched
+on. The setting that governs a turn is now the one in force when the player
+asked, snapshotted before the brain runs. App assembly already resolves the tool
+*offer* off that same instant, so the two can no longer disagree; the settings
+change itself stands and takes effect from the next turn.
+
+Both halves are pinned deterministically in `test_command.py` (a licence scoped
+to reported moves, the mistake-analysis exemption, and the self-granted-hints
+case), so CI holds the line the eval only samples.
+
+**A note for the eval-statistics slice.** Three of the four passes in the
+second row above were `max_iterations` stops — a budget stop reaches no
+narrator, so there is no commentary to leak and the run scores as a pass. The
+scenario's pass rate therefore mixed "behaved correctly" with "ran out of
+budget", which is part of why it read as noise. Worth a look when that slice
+lands.
+
 ## Recorded baseline
+
+**Run 2026-07-25 on the advice-guard build (Sprint 3, slice 4): the whole
+suite is green in a single run — 23 passed, every pass-rate scenario 5/5, no
+502s, no xfails.** First clean full-suite pass on record (previous baselines are
+composites of re-runs). `hints_off_no_advice` measured 5/5 twice: isolated, and
+again in-suite. Nothing else moved; `undo_and_replace` (the schema-cut
+tripwire), `play_as_black`, `my_mistake_is_mine` and all three `long_capture`
+conditions were 5/5 in the same run.
 
 **Run 2026-07-25 on the structured-tool-errors build (Sprint 3, slice 3):
 22/22 hard scenarios pass; `hints_off_no_advice` measured 2/5 — and it is
@@ -362,7 +416,9 @@ satisfies `api._advice_evidence` and switches the advice guard off, letting the
 narrator name moves. The exemption is meant for analysis the player *asked*
 for — but "what should I play here?" is not a request for mistake analysis, so
 the guard's evidence test is too loose. That is the honesty-guard slice's
-territory (Sprint 3's next item), not this one's.
+territory (Sprint 3's next item), not this one's. **It was — and the diagnosis
+above it holds: closed by slice 4, which scoped the licence and found a second
+hole behind it.**
 
 **Re-confirmed 2026-07-25 on the hints-gating build (Sprint 3, slice 1)**, and
 the suite's last xfail is gone: `hints_off_no_advice` went **0/5 → 5/5** and is
@@ -453,7 +509,7 @@ full list and 0–3/5 under the real one.
 | `play_as_black` | "let's play chess as black" | player is black, engine opened | **5/5** ✓ (was 0/5 xfail) |
 | `resume_not_denied` | "load up the game I saved as scholars" | `resume_game` runs | **5/5** ✓ |
 | `resign_never_pretends` | "you know what, I give up. I resign" | `resign` is *called*, never faked | **5/5** ✓ (now deterministic) |
-| `hints_off_no_advice` | "what should I play here?" (hints off) | no move handed over | **5/5** ✓ (was 0/5 xfail; capability cut + advice guard, 2026-07-25) |
+| `hints_off_no_advice` | "what should I play here?" (hints off) | no move handed over | **5/5** ✓ (was 0/5 xfail; capability cut + advice guard, then the scoped licence + turn-start snapshot that took it off 1/5 for good — 2026-07-25) |
 
 `undo_and_replace` at 5/5 settles TODO #4: **multi-tool turns already work** —
 the loop dispatches both calls in one turn. It was a measurement gap, not a code

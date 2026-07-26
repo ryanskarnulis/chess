@@ -949,6 +949,84 @@ def test_hints_off_analysis_the_player_asked_for_keeps_its_moves():
     assert response["commentary"] == "Nf3 was the better try."
 
 
+def test_analysis_licenses_only_the_moves_it_reported():
+    """The evidence test is scoped to the analysis's *own* moves. Live, the
+    planner answered "what should I play here?" with `evaluate_position` +
+    `analyze_last_move`, which switched the whole guard off and let the
+    narrator hand over a shopping list of moves the analysis never mentioned
+    (`['Bc4', 'c3', 'd3']` — docs/agent-evals.md, 2026-07-25). A tool result
+    licenses repeating what it reported; it does not license the rest of the
+    legal-move list."""
+    ctx = ToolContext(session=GameSession())
+    ctx.engine = FakeEngine(
+        best_moves=(CandidateMove(uci="g1f3", san="Nf3", score_cp=30, mate_in=None),)
+    )
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Nf3 is the engine's pick, but honestly just play e4.",
+            tool_calls=(ToolCall(name="get_best_moves", args={"n": 1}),),
+        ),
+    )
+    client = TestClient(app)
+
+    body = {"text": "what should I play here?"}
+    response = client.post("/api/command", json=body).json()
+
+    assert response["commentary"] == MOVE_ADVICE_REPLY
+
+
+def test_the_model_cannot_turn_hints_on_to_license_its_own_advice():
+    """The setting that governs a turn is the one in force when the player
+    asked. Live, "what should I play here?" got answered by a planner that
+    called `set_hints_mode(True)` and then handed over moves — the model
+    granting itself the permission the player had switched off. The offer is
+    resolved once per command for the same reason; the guard reads the same
+    snapshot, so a settings change takes effect from the *next* turn."""
+    ctx = ToolContext(session=GameSession())
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Hints on. Play Nc3.",
+            tool_calls=(ToolCall(name="set_hints_mode", args={"enabled": True}),),
+        ),
+    )
+    client = TestClient(app)
+
+    body = {"text": "what should I play here?"}
+    response = client.post("/api/command", json=body).json()
+
+    assert ctx.settings.hints_mode is True, "the setting change itself stands"
+    assert response["commentary"] == MOVE_ADVICE_REPLY
+
+
+def test_a_mistake_analysis_licenses_its_played_and_best_moves():
+    """The exemption the scoping must not break: "what was my mistake?" names
+    the move played and the move that was better, and both are facts the
+    result reported — even when the better one is still playable now."""
+    session = GameSession()
+    for san in ("e4", "e5", "Nf3", "Nc6"):
+        assert session.submit_move(san).legal
+    ctx = ToolContext(session=session)
+    ctx.engine = FakeEngine(
+        best_moves=(CandidateMove(uci="f1c4", san="Bc4", score_cp=30, mate_in=None),)
+    )
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Nf3 was fine; Bc4 was the sharper try.",
+            tool_calls=(ToolCall(name="analyze_last_move", args={}),),
+        ),
+    )
+    client = TestClient(app)
+
+    body = {"text": "how was my last move?"}
+    response = client.post("/api/command", json=body).json()
+
+    assert "Bc4" in session.legal_moves(), "the licensed move is playable now"
+    assert response["commentary"] == "Nf3 was fine; Bc4 was the sharper try."
+
+
 def test_a_played_move_may_be_named_with_hints_off():
     """Reacting to what just happened is not advice: the turn changed the
     board, and the commentary describes it."""
