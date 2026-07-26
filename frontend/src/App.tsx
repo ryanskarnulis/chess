@@ -3,6 +3,7 @@ import { AgentBubble } from './AgentBubble'
 import { Board } from './Board'
 import { BottomBar } from './BottomBar'
 import { CapturedPieces } from './CapturedPieces'
+import { GatewayLink } from './GatewayLink'
 import { CommandBox } from './CommandBox'
 import { MoveStrip } from './MoveStrip'
 import { OptionsSheet } from './OptionsSheet'
@@ -99,6 +100,7 @@ function App() {
 
   return (
     <main className="app">
+      <GatewayLink />
       <CommandBox
         onSubmit={sendCommand}
         commentary={commentary}
