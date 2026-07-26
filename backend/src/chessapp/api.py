@@ -473,16 +473,31 @@ class _MoveBeats:
         return self.result.get("legal") is True
 
 
-def _advice_evidence(tool_results: Sequence[dict[str, Any]]) -> bool:
-    """Did a tool that legitimately names moves succeed this turn? Analysis
-    the player explicitly asked for reports moves (`best`, candidate lists),
-    and commentary repeating a reported move is a verified fact, not a leak —
-    "what was my mistake?" works with hints off, and its answer names moves."""
-    return any(
-        r["name"] in ("get_best_moves", "analyze_last_move")
-        and r["result"].get("ok") is True
-        for r in tool_results
-    )
+def _reported_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
+    """The moves the turn's analysis tools actually named, in SAN.
+
+    The advice guard's licence, and it is scoped to these moves rather than
+    switched off wholesale. Analysis the player asked for reports moves, and
+    commentary repeating one is a fact — "what was my mistake?" works with
+    hints off, and its answer names the move played and the move that beat it.
+    What a *successful analysis call* is not is a licence for every other legal
+    move: live, the planner answered "what should I play here?" with
+    `evaluate_position` + `analyze_last_move` and the old boolean test read
+    that as permission, letting the narrator hand over a list of moves no tool
+    had mentioned (docs/agent-evals.md, 2026-07-25).
+    """
+    reported: set[str] = set()
+    for r in tool_results:
+        result = r["result"]
+        if result.get("ok") is not True:
+            continue
+        if r["name"] == "get_best_moves":
+            reported.update(m["san"] for m in result.get("moves", ()) if m.get("san"))
+        elif r["name"] == "analyze_last_move":
+            reported.update(
+                san for san in (result.get("played"), result.get("best")) if san
+            )
+    return reported
 
 
 def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
@@ -1061,6 +1076,14 @@ def create_app(
         """
         assert brain is not None  # both callers guard; documents the invariant
         before = _agent_state_dict(ctx)
+        # The hints setting that governs this turn is the one the player asked
+        # under, snapshotted here for the advice guard below. App assembly
+        # resolves the tool *offer* off the same instant, and the two must not
+        # disagree: live, the planner answered "what should I play here?" by
+        # calling `set_hints_mode(True)` and then naming moves — the model
+        # granting itself the permission the player had switched off. The
+        # change stands; it takes effect from the next turn.
+        hints_at_ask = ctx.settings.hints_mode
         # One user interaction, one destructive op: the brain loop is the only
         # thing in the app that can chain several dispatches inside a single
         # command, so it is the only surface that needs the coordinator's
@@ -1268,14 +1291,15 @@ def create_app(
             # half): with hints off, a currently-playable move in the
             # commentary is a hint whatever prose carries it. It only fires on
             # a turn that changed nothing — reacting to a move just played is
-            # description, not advice — and never over analysis the player
-            # asked for, whose reported moves are verified facts.
+            # description, not advice — and never over the moves an analysis
+            # the player asked for actually reported, which are verified facts.
+            # Those moves, and only those, come off the list the guard checks.
+            unlicensed = set(ctx.session.legal_moves()) - _reported_moves(tool_results)
             if (
                 not guarded
-                and not ctx.settings.hints_mode
+                and not hints_at_ask
                 and agent_state == before
-                and not _advice_evidence(tool_results)
-                and names_a_legal_move(commentary, ctx.session.legal_moves())
+                and names_a_legal_move(commentary, unlicensed)
             ):
                 logger.warning("commentary_leaked_move_advice", extra={"text": text})
                 commentary = MOVE_ADVICE_REPLY
