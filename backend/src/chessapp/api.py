@@ -246,6 +246,14 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     prose — and one stale "saving isn't set up" turn was enough to make it deny
     a save sitting on disk (the self-poisoning bug, trace review 2026-07-13).
     Read fresh every turn, so a game saved this session is visible the next.
+
+    `settings` is here for that same reason. Verbosity and hints re-resolve into
+    the system prompt per command, but difficulty and voice-output appeared
+    nowhere in the agent's per-turn view, so "how hard am I playing?" could only
+    be answered from stale conversation text — the self-poisoning shape again.
+    Kept small (it ships in the prompt every turn on a 12B): only the one
+    difficulty field `Settings` actually has set, so the block can never imply
+    two difficulties are in force at once.
     """
     session = ctx.session
     return {
@@ -259,7 +267,21 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
         "captured": session.captured_pieces(),
         "legal_moves": session.legal_moves(),
         "saved_games": saved_game_names(ctx),
+        "settings": _agent_settings_dict(ctx),
     }
+
+
+def _agent_settings_dict(ctx: ToolContext) -> dict[str, Any]:
+    """The live settings the brain is shown: difficulty (exactly the one field
+    of tier / skill_level / elo that is set) and voice output."""
+    settings = ctx.settings
+    difficulty: dict[str, Any] = {}
+    for field in ("tier", "skill_level", "elo"):
+        value = getattr(settings, field)
+        if value is not None:
+            difficulty = {field: value}
+            break
+    return {"difficulty": difficulty, "voice_output": settings.voice_output}
 
 
 def _move_dict(result: MoveResult) -> dict[str, Any]:
