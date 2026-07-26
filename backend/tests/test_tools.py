@@ -231,6 +231,35 @@ def test_dispatch_rejects_out_of_range_args(registry):
     assert registry.dispatch("get_best_moves", {"n": 11})["ok"] is False
 
 
+def test_dispatch_reports_the_tool_that_is_about_to_run(registry):
+    """Live progress reads the dispatch chokepoint (audit item 19): a tool call
+    the UI hears about is one that really ran, because this is the same road
+    every call takes."""
+    seen: list[str] = []
+    registry.on_tool = seen.append
+    registry.dispatch("get_board_state", {})
+    registry.dispatch("get_legal_moves", {})
+    assert seen == ["get_board_state", "get_legal_moves"]
+
+
+def test_a_call_that_never_runs_is_not_reported(registry):
+    """An unknown name and args the schema rejects never reach a handler, so
+    reporting them would put a label on screen for work nobody did."""
+    seen: list[str] = []
+    registry.on_tool = seen.append
+    registry.dispatch("no_such_tool", {})
+    registry.dispatch("get_best_moves", {"n": "three"})
+    assert seen == []
+
+
+def test_a_failing_tool_observer_never_costs_the_call(registry, session):
+    def explode(_name):
+        raise RuntimeError("socket went away")
+
+    registry.on_tool = explode
+    assert registry.dispatch("get_board_state", {})["ok"] is True
+
+
 def test_legal_moves_after_game_over_is_empty(registry, session):
     session.resign("white")
     result = registry.dispatch("get_legal_moves", {})

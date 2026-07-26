@@ -68,6 +68,7 @@ Model-specific quirks, split across the two layers:
 """
 
 import json
+import logging
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -77,6 +78,7 @@ import jsonschema
 
 from chessapp.brain import AgentResponse, Narration, ToolDispatcher, _RunState
 from chessapp.personality import planner_prompt_for, system_prompt_for
+from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING
 from chessapp.provider import (
     ChatProvider,
     ChatResult,
@@ -86,6 +88,8 @@ from chessapp.provider import (
     Usage,
 )
 from chessapp.provider import ToolCall as ProviderToolCall
+
+logger = logging.getLogger(__name__)
 
 # How many model turns one command gets, and how many of those may be spent
 # correcting a malformed tool call. Chess's tool schemas are small and closed
@@ -137,6 +141,15 @@ class LlamaBrain:
     # round trip that raises has a latency too — and only the caller of a raising
     # call is still around to record it.
     clock: Callable[[], float] = field(default=time.monotonic)
+    # Told which phase is about to run — `planning` before every planner round
+    # trip, `narrating` before the one that writes the words (audit item 19).
+    # The brain's *own* vocabulary: it knows nothing about turns, coordinators
+    # or sockets, and whoever wires this up is free to read more into it than
+    # the brain does. The app reads `narrating` as the observation beat opening,
+    # because a brain that holds no coordinator (by design) cannot say so
+    # itself. Nothing is reported for a phase that does not run: a budget stop
+    # and a dead provider reach no narrator, and must not claim to.
+    on_phase: Callable[[str], None] | None = None
 
     def _resolve_system_prompt(self) -> str:
         """The narrator's system prompt for this request. A callable is
@@ -166,6 +179,7 @@ class LlamaBrain:
         corrections = 0
 
         for _ in range(self.max_iterations):
+            self._report(BRAIN_PLANNING)
             started = self.clock()
             try:
                 # Planner turns never think: picking (or declining) a tool is a
@@ -228,6 +242,7 @@ class LlamaBrain:
         # Timed here rather than in `_speak` for the same reason the loop times
         # its own calls: latency belongs wherever the call is *accounted for*,
         # and this route's accounting is the `Narration` itself.
+        self._report(BRAIN_NARRATING)
         started = self.clock()
         narration = self._speak(
             _fast_path_brief(board_state, changes),
@@ -250,6 +265,7 @@ class LlamaBrain:
         for `narrate`. The round trip is counted on the turn, so the split's
         extra call shows up in the trace and the eval baseline.
         """
+        self._report(BRAIN_NARRATING)
         started = self.clock()
         try:
             narration = self._speak(
@@ -308,6 +324,16 @@ class LlamaBrain:
         if error is not None:
             return {"ok": False, "error": error}, True
         return self.dispatcher.dispatch(call.name, call.arguments), False
+
+    def _report(self, phase: str) -> None:
+        """Say which phase is starting, and never let that cost the turn — the
+        same rule the tracer and the tool observer keep."""
+        if self.on_phase is None:
+            return
+        try:
+            self.on_phase(phase)
+        except Exception:
+            logger.warning("brain_phase_report_failed", exc_info=True)
 
     def _elapsed_ms(self, started: float) -> int:
         """Whole milliseconds since `started`, never negative.
@@ -459,6 +485,7 @@ def create_llama_brain(
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS,
     planner_temperature: float | None = None,
     provider: ChatProvider | None = None,
+    on_phase: Callable[[str], None] | None = None,
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8200/v1).
 
@@ -482,6 +509,11 @@ def create_llama_brain(
     `provider` is injected in tests / alternate backends; otherwise the factory
     builds a real `LlamaCppProvider` against `base_url` + `model` (no API key —
     llama-server needs none).
+
+    `on_phase` is told `planning` / `narrating` as each phase starts — the live
+    progress seam (`progress.py`). Passed at construction rather than assigned
+    later so the brain is complete when it is handed over, and optional because
+    nothing about a turn depends on anyone listening.
     """
     if provider is None:
         provider = LlamaCppProvider(base_url, model)
@@ -505,4 +537,5 @@ def create_llama_brain(
         max_iterations=max_iterations,
         max_corrections=max_corrections,
         planner_temperature=planner_temperature,
+        on_phase=on_phase,
     )

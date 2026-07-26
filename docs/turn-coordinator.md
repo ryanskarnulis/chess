@@ -146,13 +146,26 @@ announcing it (`api._reply_announcement`). No second narration: the reaction has
 already been paid for, and a model turn per engine move is precisely the latency
 this beat is not allowed to add.
 
-One honest gap: nothing calls `begin_observation()` yet, so `agent_observing` is
-still a phase the app never enters. Neither route can bracket its own narration
-from the pipeline — on the fast path it would be a one-line half-measure, and on
-the brain route the reaction happens *inside* `get_agent_response`, which holds no
-coordinator by design. Making the phase real is the live-progress slice's job
-(audit item 19), and it needs a seam for the brain to report through; the collect
-already accepts either phase, so nothing else has to change when it lands.
+**The phase is real as of the live-progress slice** (audit item 19), and it took
+the seam that slice's entry predicted. Two routes, two ways in, one conditional
+method — `mark_observation()`, which opens the beat only when a verified player
+move is actually waiting on one and is otherwise a no-op:
+
+- **the fast path and the board drag** — `api._play_move` calls it directly,
+  just before it narrates. The pipeline can see this beat, so it marks it, and
+  it marks it whatever brain is behind the narration.
+- **the brain route** — the reaction happens *inside* `get_agent_response`,
+  which holds no coordinator by design, so the brain reports its own phase
+  change instead (`LlamaBrain.on_phase` → `narrating`, in the brain's own
+  vocabulary) and app assembly wires that report to `mark_observation`. The
+  brain still knows nothing about turns; the wiring knows that a narrator turn
+  landing mid-move *is* the observation.
+
+`begin_observation()` stays strict — you cannot observe a move that has not been
+made — because that is the rule the machine exists to hold. `mark_observation`
+is the caller-facing form, and it has to be conditional: both narration sites
+are reached on turns where nothing moved (a question, a settings change) and on
+turns where the beat is already open.
 
 It is a phase rather than a callback because the reaction has to be **optional by
 construction**. `collect_engine_reply` is legal from `player_move_applied` *and*
@@ -381,6 +394,52 @@ not expect; what it cannot do is interleave with one.
 schema. It is transport bookkeeping between the app and its clients, and the
 house rule cuts both ways: code owns what code knows, and the model is not handed
 a number it would only be tempted to reason with.
+
+## Saying it out loud: live progress
+
+Once a turn has intentional phases, a spinner is the wrong shape for it — it
+says "waiting" when the question the player has is *what for*. So the phases are
+broadcast as they happen (`progress.py`, audit item 19), on the same websocket
+the state document uses, discriminated by `type`.
+
+Nothing narrates. Each event comes from the chokepoint that already owns the
+thing it reports, which is the same rule that made `mutations` a `board_version`
+delta rather than a tally:
+
+| event | emitted by | reports |
+| --- | --- | --- |
+| `phase` | `TurnCoordinator._enter` — the one writer of `_phase` | `awaiting_player` … `completed` |
+| `tool` | `ToolRegistry.dispatch`, after validation | the tool about to run |
+| `brain` | `LlamaBrain`, per phase | `planning` / `narrating` |
+| `begin` / `end` | the pipeline, bracketing the interaction | — |
+
+Every event carries the interaction's `correlation_id` — the trace record's id —
+so a line the player saw and the record of the turn behind it are one search
+apart. That is what the trace slice minted the id for before anything on the
+wire carried it. Which interaction an event belongs to travels in a
+`ContextVar`, not on the reporter, because of the next paragraph.
+
+**The pipeline's blocking steps run off the event loop, and that is a
+requirement rather than a tuning choice** (`api._offloop`). A loop parked inside
+a model call or a Stockfish search delivers nothing, so every event would arrive
+in a burst after the turn it described had already finished. The model calls,
+the move beats and the reply collection therefore run in worker threads; a
+report crosses back with `call_soon_threadsafe` onto a queue that one pump
+drains, which is also what keeps `begin` in front of `end`. The mutation lock is
+held around all of it either way, so no ordering changes.
+
+Two things deliberately report nothing. **Direct mode**: no brain, no
+multi-phase turn — the one deterministic exchange answers, and the state
+broadcast is the whole story. **The board's control buttons**: each dispatches
+once and answers immediately, so a line that appeared and vanished inside one
+round trip would be noise. Neither is a special case anybody wrote: neither
+opens an interaction, and the reporter's rule is that an event outside one does
+not exist. The same rule is why MCP is silent.
+
+Reporting never costs a turn. Every observer call — the phase setter's, the
+registry's, the brain's — is wrapped and swallowed, and a sink that cannot send
+drops the event, exactly as a failing tracer is swallowed. A lost label is not a
+lost turn.
 
 ## Known edges, deliberately left
 

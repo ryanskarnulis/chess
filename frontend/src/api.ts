@@ -287,7 +287,30 @@ export async function fetchPgn(): Promise<string | null> {
   return data.pgn
 }
 
-/** URL of the backend's one-way state broadcast channel. */
+/**
+ * One thing that happened inside one turn, live (`backend/.../progress.py`).
+ * `name` is read according to `kind`: a tool name, a coordinator phase, or one
+ * of the brain's two phases. `begin`/`end` bracket the turn and carry none.
+ *
+ * `correlation_id` identifies the interaction — the same id the backend's turn
+ * trace records — which is what lets a client tell one turn's events from the
+ * next one's, and ignore a late `end` for a turn it is no longer showing.
+ */
+export interface ProgressEvent {
+  correlation_id: string
+  turn_id: number
+  kind: 'begin' | 'tool' | 'phase' | 'brain' | 'end'
+  name: string
+}
+
+/** What arrives on the broadcast channel: the authoritative board document, or
+ * an ephemeral note about the turn currently changing it. Discriminated by
+ * `type` — a client that only wants the board ignores the rest. */
+export type SocketMessage =
+  | { type: 'state'; state: GameState }
+  | { type: 'progress'; progress: ProgressEvent }
+
+/** URL of the backend's one-way broadcast channel (state + live progress). */
 export function stateSocketUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   return `${proto}://${location.host}/ws`

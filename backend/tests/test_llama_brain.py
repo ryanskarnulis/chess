@@ -1017,3 +1017,77 @@ def test_create_llama_brain_accepts_an_injected_provider():
         provider=fake,
     )
     assert brain.provider is fake
+
+
+# --- the brain reports its own two phases ------------------------------------
+#
+# Live progress (audit item 19) needs to say more than "thinking": a turn's two
+# model phases are different waits, and the narrator one is also the
+# coordinator's observation beat. The brain reports in *its own* vocabulary —
+# planning, narrating — and knows nothing about turns or websockets.
+
+
+def test_the_loop_reports_planning_before_every_planner_call():
+    seen: list[str] = []
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("done"),
+        text_turn("Pawn pushed."),
+        on_phase=seen.append,
+    )
+    brain.get_agent_response({"fen": "x"}, "play e4")
+    assert seen == ["planning", "planning", "narrating"]
+
+
+def test_a_plain_answer_reports_one_plan_and_one_narration():
+    seen: list[str] = []
+    brain, _ = make_brain(
+        text_turn("nothing to do"), text_turn("All quiet."), on_phase=seen.append
+    )
+    brain.get_agent_response({"fen": "x"}, "how's it look?")
+    assert seen == ["planning", "narrating"]
+
+
+def test_a_budget_stop_never_reports_narrating():
+    """No narrator runs on a budget stop, so nothing may claim one did — the
+    observation beat would open on a turn that never speaks."""
+    seen: list[str] = []
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        on_phase=seen.append,
+        max_iterations=2,
+    )
+    response = brain.get_agent_response({"fen": "x"}, "play e4")
+    assert response.stop_reason == "max_iterations"
+    assert set(seen) == {"planning"}
+
+
+def test_a_provider_death_in_the_loop_never_reports_narrating():
+    seen: list[str] = []
+    brain, _ = make_brain(ProviderError("llama-server is down"), on_phase=seen.append)
+    response = brain.get_agent_response({"fen": "x"}, "play e4")
+    assert response.stop_reason == "provider_error"
+    assert seen == ["planning"]
+
+
+def test_the_fast_paths_narration_reports_narrating():
+    """`narrate` is the narrator phase on its own, so it reports the same
+    phase — which is what makes the observation beat real on the fast path
+    whichever brain is behind it."""
+    seen: list[str] = []
+    brain, _ = make_brain(text_turn("Nice."), on_phase=seen.append)
+    brain.narrate({"fen": "x"}, [{"name": "make_move", "result": {"ok": True}}])
+    assert seen == ["narrating"]
+
+
+def test_a_failing_phase_report_never_costs_the_turn():
+    def explode(_name):
+        raise RuntimeError("socket went away")
+
+    brain, _ = make_brain(text_turn("done"), text_turn("Quiet."), on_phase=explode)
+    assert brain.get_agent_response({"fen": "x"}, "hello").text == "Quiet."
+
+
+def test_a_brain_with_no_observer_is_the_default():
+    brain, _ = make_brain(text_turn("done"), text_turn("Quiet."))
+    assert brain.get_agent_response({"fen": "x"}, "hello").text == "Quiet."

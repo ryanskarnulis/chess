@@ -26,7 +26,7 @@ from chessapp.engine import DEFAULT_TIER, CandidateMove, Evaluation
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
 from chessapp.tools import ToolContext
-from fakes import FakeEngine, ScriptedBrain, scripted_app
+from fakes import FakeEngine, ScriptedBrain, receive_state, scripted_app
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -313,9 +313,9 @@ def test_a_budget_stop_still_says_something():
 def test_command_mutation_broadcasts_state_to_ws():
     client, _ = make_client(move("e4"))
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()  # connect snapshot
+        receive_state(ws)  # connect snapshot
         client.post("/api/command", json={"text": "play e4"})
-        message = ws.receive_json()
+        message = receive_state(ws)
     assert message["state"]["history"] == ["e4"]
 
 
@@ -333,9 +333,9 @@ def test_a_move_the_agent_corrected_its_way_to_still_broadcasts():
         )
     )
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()
+        receive_state(ws)
         client.post("/api/command", json={"text": "knight to f6"})
-        message = ws.receive_json()
+        message = receive_state(ws)
     assert message["state"]["history"] == ["Nf3"]
 
 
@@ -348,10 +348,10 @@ def test_read_only_command_does_not_broadcast():
         move("e4", text="done"),
     )
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()
+        receive_state(ws)
         client.post("/api/command", json={"text": "what are my options?"})
         client.post("/api/command", json={"text": "play e4"})
-        message = ws.receive_json()  # first broadcast is the move, not the read
+        message = receive_state(ws)  # first broadcast is the move, not the read
     assert message["state"]["history"] == ["e4"]
 
 
@@ -551,9 +551,9 @@ def test_fast_path_turn_is_recorded_in_the_transcript():
 def test_fast_move_broadcasts_state_to_ws():
     client, _, _ = make_fast_client(narrations=("ok",))
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()  # connect snapshot
+        receive_state(ws)  # connect snapshot
         client.post("/api/command", json={"text": "e4"})
-        message = ws.receive_json()
+        message = receive_state(ws)
     assert message["state"]["history"] == ["e4"]
 
 

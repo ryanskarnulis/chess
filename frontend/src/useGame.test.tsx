@@ -29,6 +29,11 @@ function state(overrides: Partial<GameState> = {}): GameState {
   }
 }
 
+/** One live-progress frame, as the backend broadcasts it. */
+function progressFrame(kind: string, name = '', correlation_id = 'abc123') {
+  return { type: 'progress', progress: { correlation_id, turn_id: 1, kind, name } }
+}
+
 const AFTER_E4_E5_FEN = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2'
 
 /** State two plies in, with the per-ply fens the review arrows walk. */
@@ -120,6 +125,54 @@ describe('useGame', () => {
       })
     })
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
+  })
+
+  // --- live turn progress (audit item 19) ------------------------------------
+  //
+  // The events are *broadcast*, which is the point: a dragged move and a turn
+  // another client started both light this up, and neither goes through
+  // `sendCommand`.
+
+  it('is quiet between turns', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    expect(result.current.agentProgress).toBeNull()
+  })
+
+  it('shows what the turn in flight is doing', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit(progressFrame('begin'))
+      FakeWebSocket.instances[0].emit(progressFrame('tool', 'make_move'))
+    })
+    expect(result.current.agentProgress).toBe('Validating your move')
+    act(() => {
+      FakeWebSocket.instances[0].emit(progressFrame('phase', 'engine_calculating'))
+    })
+    expect(result.current.agentProgress).toBe('Stockfish is calculating')
+  })
+
+  it('clears the line when the turn ends', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit(progressFrame('begin'))
+      FakeWebSocket.instances[0].emit(progressFrame('tool', 'make_move'))
+      FakeWebSocket.instances[0].emit(progressFrame('end'))
+    })
+    expect(result.current.agentProgress).toBeNull()
+  })
+
+  it('leaves the board alone — progress is not state', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const before = result.current.revision
+    act(() => {
+      FakeWebSocket.instances[0].emit(progressFrame('tool', 'make_move'))
+    })
+    expect(result.current.revision).toBe(before)
+    expect(result.current.state?.fen).toBe(START_FEN)
   })
 
   it('applies the new state and clears feedback on a legal move', async () => {

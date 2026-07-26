@@ -576,3 +576,94 @@ def test_engine_reply_is_not_a_callable_tool(session):
     registry = build_registry(ToolContext(session=session, engine=FakeEngine()))
     names = {d["function"]["name"] for d in registry.definitions()}
     assert not names & {"engine_reply", "request_engine_reply", "apply_engine_move"}
+
+
+# --- the phase is observable ------------------------------------------------
+#
+# Live progress (audit item 19) reads the machine rather than being narrated
+# alongside it: every transition goes through one setter, and the observer is
+# what that setter tells. Anything hand-placed would be a second copy of the
+# turn sequence, free to drift from the real one.
+
+
+def observed(coordinator) -> list[str]:
+    seen: list[str] = []
+    coordinator.on_phase = seen.append
+    return seen
+
+
+def test_every_transition_reaches_the_observer(coordinator):
+    seen = observed(coordinator)
+    coordinator.apply_player_move("e4")
+    coordinator.begin_observation()
+    coordinator.collect_engine_reply()
+    coordinator.complete_turn()
+    assert seen == [
+        TurnPhase.PLAYER_MOVE_APPLIED,
+        TurnPhase.AGENT_OBSERVING,
+        TurnPhase.ENGINE_CALCULATING,
+        TurnPhase.ENGINE_MOVE_APPLIED,
+        TurnPhase.COMPLETED,
+        TurnPhase.AWAITING_PLAYER,
+    ]
+
+
+def test_an_illegal_move_moves_no_phase_and_reports_none(coordinator):
+    seen = observed(coordinator)
+    assert coordinator.apply_player_move("e5").legal is False
+    assert seen == []
+
+
+def test_abandoning_a_turn_is_observed_too(coordinator):
+    coordinator.apply_player_move("e4")
+    seen = observed(coordinator)
+    coordinator.abandon_turn()
+    assert seen == [TurnPhase.COMPLETED, TurnPhase.AWAITING_PLAYER]
+
+
+def test_a_failing_observer_never_costs_the_turn(coordinator, session):
+    """Progress is decoration; the turn is not. Same rule the tracer has."""
+
+    def explode(_phase):
+        raise RuntimeError("socket went away")
+
+    coordinator.on_phase = explode
+    coordinator.apply_player_move("e4")
+    coordinator.collect_engine_reply()
+    coordinator.complete_turn()
+    assert session.move_history() == ["e4", "e5"]
+
+
+# --- marking the observe beat -----------------------------------------------
+#
+# `begin_observation` is the strict form and stays strict. `mark_observation`
+# is the conditional one the two narration sites need: both are reached on
+# turns where no move landed (a question, a settings change), and a reaction to
+# nothing is not an observation.
+
+
+def test_mark_observation_opens_the_beat_after_a_player_move(coordinator):
+    coordinator.apply_player_move("e4")
+    assert coordinator.mark_observation() is True
+    assert coordinator.phase == TurnPhase.AGENT_OBSERVING
+
+
+def test_mark_observation_is_a_no_op_when_no_move_is_waiting(coordinator):
+    assert coordinator.mark_observation() is False
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+def test_mark_observation_does_not_re_open_a_beat_already_open(coordinator):
+    coordinator.apply_player_move("e4")
+    coordinator.begin_observation()
+    assert coordinator.mark_observation() is False
+    assert coordinator.phase == TurnPhase.AGENT_OBSERVING
+
+
+def test_mark_observation_after_a_game_ending_move_does_nothing(session):
+    """The move ended the game, so the turn is already closed — there is no
+    beat to open and nothing owes a reply."""
+    ctx = ToolContext(session=GameSession(WHITE_MATE_IN_1), engine=FakeEngine())
+    coordinator = TurnCoordinator(ctx)
+    coordinator.apply_player_move("Qxf7#")
+    assert coordinator.mark_observation() is False

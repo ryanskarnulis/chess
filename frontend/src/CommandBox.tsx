@@ -10,6 +10,9 @@ export interface CommandBoxProps {
   commentary: string | null
   /** A command is in flight — the input locks and a hint replaces the reply. */
   thinking: boolean
+  /** What the turn in flight is doing right now, when it has said. Same
+   * contract as `AgentBubble`'s: the specific line wins over the generic. */
+  progress?: string | null
   /** Whether replies are spoken aloud; null hides the toggle until known. */
   voiceOutput: boolean | null
   /** Ask the parent to turn voice output on/off (the mute toggle). */
@@ -32,6 +35,7 @@ export function CommandBox({
   onSubmit,
   commentary,
   thinking,
+  progress = null,
   voiceOutput,
   onToggleVoice,
   showCommentary = true,
@@ -89,9 +93,9 @@ export function CommandBox({
         </button>
       </form>
       {showCommentary &&
-        (thinking ? (
+        (thinking || progress !== null ? (
           <p className="commentary commentary-thinking" role="status">
-            Thinking…
+            {progress ?? 'Thinking…'}
           </p>
         ) : (
           commentary && (
