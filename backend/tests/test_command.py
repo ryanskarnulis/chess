@@ -20,7 +20,7 @@ from chessapp.api import (
     create_app,
 )
 from chessapp.brain import AgentResponse, ToolCall
-from chessapp.engine import CandidateMove
+from chessapp.engine import DEFAULT_TIER, CandidateMove
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
 from chessapp.tools import ToolContext
@@ -159,6 +159,58 @@ def test_saved_games_is_read_fresh_every_turn(tmp_path):
 
     client.post("/api/command", json={"text": "what have I got saved?"})
     assert brain.calls[1][0]["saved_games"] == ["midgame"]
+
+
+def test_brain_is_told_the_live_settings():
+    """Difficulty and voice-output are facts the app holds. Without them in the
+    state block the model's only source for "how hard am I playing?" is its own
+    past prose — the same self-poisoning shape as `saved_games`."""
+    client, brain = make_client(AgentResponse(text="hi"))
+    client.post("/api/command", json={"text": "how hard are you playing?"})
+    assert brain.calls[0][0]["settings"] == {
+        "difficulty": {"tier": DEFAULT_TIER},
+        "voice_output": False,
+    }
+
+
+def test_settings_block_shows_only_the_difficulty_field_that_is_set():
+    """`Settings` records exactly one of tier / skill_level / elo; the block
+    must not imply two difficulties are in force at once."""
+    ctx = ToolContext(session=GameSession())
+    ctx.settings.tier = None
+    ctx.settings.elo = 1400
+    app, brain = scripted_app(ctx, AgentResponse(text="hi"))
+    TestClient(app).post("/api/command", json={"text": "how does it look?"})
+    assert brain.calls[0][0]["settings"]["difficulty"] == {"elo": 1400}
+
+
+def test_settings_are_read_fresh_every_turn():
+    """Changed mid-session by the agent's own tool call, the *next* turn sees
+    the new value — not the assembly-time one."""
+    app, brain = scripted_app(
+        ToolContext(session=GameSession(), engine=FakeEngine()),
+        AgentResponse(
+            text="ok",
+            tool_calls=(
+                ToolCall(name="set_difficulty", args={"skill_level": 7}),
+                ToolCall(name="set_voice_output", args={"enabled": True}),
+            ),
+        ),
+        AgentResponse(text="hi"),
+    )
+    client = TestClient(app)
+
+    client.post("/api/command", json={"text": "play harder and talk to me"})
+    assert brain.calls[0][0]["settings"] == {
+        "difficulty": {"tier": DEFAULT_TIER},
+        "voice_output": False,
+    }
+
+    client.post("/api/command", json={"text": "how hard are you playing?"})
+    assert brain.calls[1][0]["settings"] == {
+        "difficulty": {"skill_level": 7},
+        "voice_output": True,
+    }
 
 
 def test_one_brain_call_does_the_whole_turn():
