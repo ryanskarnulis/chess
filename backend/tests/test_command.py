@@ -17,10 +17,11 @@ from chessapp.api import (
     PROVIDER_LOST_RETRY,
     PROVIDER_LOST_TURN_STANDS,
     UNTRUE_CLAIM_REPLY,
+    UNVERIFIED_CLAIM_REPLY,
     create_app,
 )
 from chessapp.brain import AgentResponse, ToolCall
-from chessapp.engine import DEFAULT_TIER, CandidateMove
+from chessapp.engine import DEFAULT_TIER, CandidateMove, Evaluation
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
 from chessapp.tools import ToolContext
@@ -1033,6 +1034,136 @@ def test_a_played_move_may_be_named_with_hints_off():
     client, _ = make_client(move("e4", text="e4. Predictable."))
     response = client.post("/api/command", json={"text": "king's pawn"}).json()
     assert response["commentary"].startswith("e4. Predictable.")
+
+
+# --- The honesty guard, generalized: every operational claim needs evidence.
+#
+# Audit item 13. The ending class above is the same rule at its most severe;
+# these are the rest of the facts a turn produces. The evidence is assembled
+# from the turn's tool results, the engine's reply and the board, so the check
+# is against what happened, never against what the model remembers saying.
+
+
+def test_commentary_may_not_announce_a_capture_that_never_happened():
+    client, _, ctx = make_developed_client(AgentResponse(text="Snagged your bishop."))
+
+    response = client.post("/api/command", json={"text": "your move"}).json()
+
+    assert ctx.session.captured_pieces() == {"white": [], "black": []}
+    assert response["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+def test_a_real_capture_is_narrated_as_it_stands():
+    """The guard checks the board, not the vocabulary — the twin of the
+    ending class's test, one claim class down."""
+    client, _, ctx = make_developed_client(narrations=("You took my pawn. Cute.",))
+
+    response = client.post("/api/command", json={"text": "knight takes pawn"}).json()
+
+    assert ctx.session.captured_pieces()["white"] == ["p"]
+    assert response["commentary"].startswith("You took my pawn. Cute.")
+
+
+def test_commentary_may_not_invent_a_move_that_was_never_on_the_board():
+    client, _, _ = make_developed_client(AgentResponse(text="Rough. Qxh7 ends you."))
+
+    response = client.post("/api/command", json={"text": "how bad is it?"}).json()
+
+    assert response["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+def test_the_move_the_player_missed_is_still_sayable():
+    """The false positive that would cost the most: post-hoc commentary about
+    a move that *was* playable when the turn started. The facts hold both
+    positions, so "Bb5 was better" survives a turn that made it illegal."""
+    client, _, ctx = make_developed_client(narrations=("Bb5 was better.",))
+
+    response = client.post("/api/command", json={"text": "bishop to c4"}).json()
+
+    assert "Bb5" not in ctx.session.legal_moves(), "no longer playable"
+    assert response["commentary"].startswith("Bb5 was better.")
+
+
+def test_reading_the_move_list_back_is_not_an_invention():
+    """The other false positive the recorded turns caught: "read me the move
+    list" is answered with moves that are long past being legal. The game's
+    history is board truth, so the facts hold it."""
+    client, _, ctx = make_developed_client(
+        AgentResponse(
+            text="Move list: e4, e5, Nf3, Nc6.",
+            tool_calls=(ToolCall(name="get_move_history", args={}),),
+        )
+    )
+
+    body = {"text": "read me the move list"}
+    response = client.post("/api/command", json=body).json()
+
+    assert "Nf3" not in ctx.session.legal_moves(), "already played, not playable"
+    assert response["commentary"] == "Move list: e4, e5, Nf3, Nc6."
+
+
+def test_a_settings_claim_is_checked_against_the_live_settings():
+    """A setting the model announces must be the setting the app is actually
+    on — the same rule as the board, applied to the other state the agent
+    can change. Nothing set the difficulty to maximum, so nothing may say so."""
+    client, _, ctx = make_developed_client(
+        AgentResponse(text="Difficulty is maximum now.")
+    )
+
+    response = client.post("/api/command", json={"text": "make it harder"}).json()
+
+    assert ctx.settings.tier == DEFAULT_TIER, "the setting never changed"
+    assert response["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+def test_a_settings_change_that_ran_may_be_announced():
+    client, _, ctx = make_developed_client(
+        AgentResponse(
+            text="Difficulty is advanced now.",
+            tool_calls=(ToolCall(name="set_difficulty", args={"tier": "advanced"}),),
+        )
+    )
+
+    response = client.post("/api/command", json={"text": "make it harder"}).json()
+
+    assert ctx.settings.tier == "advanced"
+    assert response["commentary"] == "Difficulty is advanced now."
+
+
+def test_an_unbacked_engine_number_is_guarded():
+    """Engine numbers come from the engine. With no analysis in the turn's
+    results there is nothing for a score to derive from."""
+    client, _, _ = make_developed_client(AgentResponse(text="You're at -3.5 here."))
+
+    response = client.post("/api/command", json={"text": "who's winning?"}).json()
+
+    assert response["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+def test_an_evaluation_the_engine_reported_may_be_quoted():
+    ctx = developed(ToolContext(session=GameSession()))
+    ctx.engine = FakeEngine(evaluation=Evaluation(score_cp=150, mate_in=None))
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="+1.5 for me. Comfortable.",
+            tool_calls=(ToolCall(name="evaluate_position", args={}),),
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/command", json={"text": "who's winning?"}).json()
+
+    assert response["commentary"] == "+1.5 for me. Comfortable."
+
+
+def test_the_ending_class_keeps_its_own_correction():
+    """The two substitutions are not interchangeable: an invented ending is
+    answered by the line that says the game is still live, which is the fact
+    the player most needs back."""
+    client, _, _ = make_developed_client(AgentResponse(text="Word. Game over."))
+    response = client.post("/api/command", json={"text": "i'm done"}).json()
+    assert response["commentary"] == UNTRUE_CLAIM_REPLY
 
 
 # --- The resign route: the player conceding is not the model's call.

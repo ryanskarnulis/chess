@@ -374,6 +374,29 @@ lands.
 
 ## Recorded baseline
 
+**Run 2026-07-25 on the verified-facts guard build (Sprint 3, slice 5): 23
+passed, every pass-rate scenario 5/5, in a single run — the baseline holds.**
+Second clean full-suite pass on record, and the one that matters most for this
+slice: it widens the honesty guard from ending claims to every operational
+fact, so a regression would show up as *suppressed* commentary in any scenario,
+not just the honesty ones. Nothing moved. `long_capture` 5/5 in all three
+conditions (the release-blocking constraint), `hints_off_no_advice` 5/5 (the
+advice guard the new classes sit beside), `undo_and_replace` 5/5. The
+analysis-touching scenarios (`my_mistake_is_mine`, `long_capture` ×3) were
+re-run 5/5 against the final build after a late loosening of the evaluation
+class's number matching.
+
+The guard's own risk is the opposite of a pass-rate: a class that fires on
+honest commentary. That was measured separately and off the GPU, by sweeping
+`unverified_claims` over the **46 recorded live turns** in
+`docs/traces-2026-07-13.jsonl` with facts reconstructed per record. Two false
+positives surfaced and were fixed before merge — reciting the move list tripped
+the `move` class (the game's history is board truth and now rides in the facts)
+and a PGN read-out tripped `evaluation` (a `2023.10.27` date is not a score) —
+leaving **2/46 guarded: exactly the two known lies**, "Word. Game over." and
+"you actually have me in checkmate", both on a live board. Worth re-running
+that sweep against a fresh trace corpus when Sprint 5 re-baselines one.
+
 **Run 2026-07-25 on the advice-guard build (Sprint 3, slice 4): the whole
 suite is green in a single run — 23 passed, every pass-rate scenario 5/5, no
 502s, no xfails.** First clean full-suite pass on record (previous baselines are

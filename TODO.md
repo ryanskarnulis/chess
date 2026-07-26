@@ -13,15 +13,13 @@ This replaces the 2026-07-14 context-sprint framing. Surviving items from it are
 
 Parked work: branch `chore/clean-tool-schema-noise` holds the uncommitted `make_move` docstring cut (tripwires green). Sprint 1 rewrites the move tools anyway — salvage its docstring lessons there (especially: result-restating prose like "the engine decides legality" is a plausible anti-self-poisoning anchor; don't cut it blindly from `resign`/`new_game`).
 
-### Sprint 3 — P2: settings and honesty as enforceable policy (audit 11–14, 16)
-
-- [ ] **[M] Expand the honesty guard to verified reply facts** (audit 13). Today's guard catches false game-over/reset claims only. Build the verified-facts set from the turn's tool results + board (moves, captures, check/mate/draw, saves, settings changes, analysis numbers) and check operational claims in commentary against it — personality varies wording, never facts. Grow it claim-class by claim-class with `test_honesty.py` as the spec; trash talk and hypotheticals must keep surviving.
-
 ### Sprint 4 — P3: context quality (audit 17)
 
 (The planner/narrator split that anchored this sprint moved to Sprint 1 — Ryan rates it among the most important items — taking the sampling experiment with it.)
 
 - [ ] **[M] Turn summaries replace the raw transcript window** (audit 17; the old context-sprint [M], second half). Latest few turns verbatim, older turns summarized into game events / preferences / unresolved requests; board truth always from current state, never history. Design before code — this reshapes what one brain turn contains, and it lands best after the split settles what the planner's context even is.
+
+- [ ] **[S] Grow the honesty guard's next claim class: material** (carried out of Sprint 3, whose slice 5 deliberately left this one class). "You're two pawns down" / "you're up a piece" is an operational claim the *board* can verify — material balance is a piece count, not a Stockfish call — but it needs its own side-aware arithmetic and a wording set ("up/down", "a pawn", "the exchange"), which is a class, not a line. The evidence hook is already there: extend `VerifiedFacts` and add the class next to the others. The bar stays the guard's: a class that cannot tell "you're getting crushed" from "you're two pawns down" doesn't ship.
 
 ### Sprint 5 — P4/P5: observability and eval hardening (audit 18, 19, 21–23)
 

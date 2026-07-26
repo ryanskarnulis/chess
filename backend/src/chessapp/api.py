@@ -46,6 +46,7 @@ object on the context.
 """
 
 import logging
+import math
 import mimetypes
 import random
 from collections.abc import AsyncIterator, Sequence
@@ -74,7 +75,7 @@ from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
-from chessapp.honesty import claims_destructive_outcome, names_a_legal_move
+from chessapp.honesty import VerifiedFacts, names_a_legal_move, unverified_claims
 from chessapp.provider import ProviderError
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
@@ -402,6 +403,27 @@ UNTRUE_CLAIM_REPLY = (
     "Say it again if you meant it."
 )
 
+# What the player hears instead of any *other* invented fact (audit item 13):
+# a capture that never happened, a move that was never on the board, a setting
+# nothing set, an engine number no engine produced. Separate from the line
+# above because the two corrections carry different information and the ending
+# one carries the fact that matters most — the game is still live. Public so
+# tests pin the substitution, not a wording.
+UNVERIFIED_CLAIM_REPLY = (
+    "Scratch that — I said something the board doesn't back up. "
+    "Ask me again and I'll stick to what actually happened."
+)
+
+# Board symbol → the word commentary uses for it, for the capture claim class.
+_PIECE_NAMES = {
+    "p": "pawn",
+    "n": "knight",
+    "b": "bishop",
+    "r": "rook",
+    "q": "queen",
+    "k": "king",
+}
+
 # What the player hears instead of a hint they turned off. The advice guard
 # catches commentary that hands over a currently-playable move when hints are
 # off and no analysis tool the player asked for reported it (audit item 11's
@@ -500,6 +522,121 @@ def _reported_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
     return reported
 
 
+def _analysis_numbers(tool_results: Sequence[dict[str, Any]]) -> set[str]:
+    """Every number the turn's analysis tools reported, in the spellings a
+    commentary might quote them in: raw centipawns, pawns to two places, and
+    both one-place roundings, signed and unsigned. The evaluation claim class
+    checks against this, so a score with no analysis behind it has nothing to
+    derive from.
+
+    Both roundings because the sign and the magnitude are the fact and the
+    rounding is wording — 147 centipawns said as "1.4" is the same report as
+    "1.5", and replacing good commentary over the tenths place would cost more
+    than that lie is worth.
+    """
+    numbers: set[str] = set()
+
+    def record(score_cp: int | None, mate_in: int | None) -> None:
+        if score_cp is not None:
+            numbers.add(str(score_cp))
+            pawns = score_cp / 100
+            tenths = (math.floor(pawns * 10) / 10, math.ceil(pawns * 10) / 10)
+            for text in (f"{pawns:.2f}", *(f"{tenth:.1f}" for tenth in tenths)):
+                numbers.add(text)
+                numbers.add(f"+{text}" if not text.startswith("-") else text)
+        if mate_in is not None:
+            numbers.update({str(mate_in), str(abs(mate_in))})
+
+    for r in tool_results:
+        result = r["result"]
+        if result.get("ok") is not True:
+            continue
+        if r["name"] == "evaluate_position":
+            record(result.get("score_cp"), result.get("mate_in"))
+        elif r["name"] == "get_best_moves":
+            for candidate in result.get("moves", ()):
+                record(candidate.get("score_cp"), candidate.get("mate_in"))
+        elif r["name"] == "analyze_last_move":
+            record(result.get("cp_loss"), None)
+        elif r["name"] == "review_game":
+            for move in result.get("moves", ()):
+                record(move.get("cp_loss"), None)
+            numbers.update(str(value) for value in result.get("accuracy", {}).values())
+            numbers.update(str(value) for value in result.get("counts", {}).values())
+    return numbers
+
+
+def _verified_facts(
+    ctx: ToolContext,
+    tool_results: Sequence[dict[str, Any]],
+    engine_reply: MoveResult | None,
+    fen_before: str,
+) -> VerifiedFacts:
+    """What this turn may honestly say, assembled from the record of it.
+
+    Audit item 13, the pipeline's half. The ending guard's evidence — board plus
+    tool results — generalized to every operational fact a turn produces, and
+    assembled here for the same reason the ending check is: this is the one
+    place that holds the tool results, the engine's reply and the board at once.
+
+    `moves` deliberately spans the whole game rather than this turn's position.
+    A reaction legitimately names the move the player *didn't* play ("Bb5 was
+    better"), which stopped being legal the moment the turn played something
+    else, and reciting the move list or a PGN is a read the tools support —
+    both turn up in the 46 recorded live turns, and both are board truth.
+    """
+    outcome = ctx.session.outcome()
+    captured = ctx.session.captured_pieces()
+    opponent = "black" if ctx.session.player_color == "white" else "white"
+    moves = (
+        set(ctx.session.legal_moves())
+        | set(GameSession(fen=fen_before).legal_moves())
+        | set(ctx.session.move_history())
+    )
+    moves |= _reported_moves(tool_results)
+    if engine_reply is not None and engine_reply.san:
+        moves.add(engine_reply.san)
+    checked = ctx.session.is_check()
+    for r in tool_results:
+        result = r["result"]
+        if result.get("ok") is not True:
+            continue
+        if san := result.get("san"):
+            moves.add(san)
+        moves.update(result.get("undone", ()))
+        if played := result.get("engine_move"):
+            moves.add(played["san"])
+        checked = checked or result.get("check") is True
+    settings = {
+        "hints": "on" if ctx.settings.hints_mode else "off",
+        "voice": "on" if ctx.settings.voice_output else "off",
+        "verbosity": ctx.settings.verbosity,
+    }
+    if ctx.settings.tier is not None:
+        # Only a named tier is a claimable difficulty. A session dialed in by
+        # elo or skill level has no tier to be honest about, and mapping one
+        # back would be the code inventing the fact instead of the model.
+        settings["difficulty"] = ctx.settings.tier
+    return VerifiedFacts(
+        ended=ctx.session.is_game_over() or _destructive_succeeded(tool_results),
+        drawn=outcome is not None and outcome.winner is None,
+        check=checked,
+        captured_by_player=frozenset(
+            _PIECE_NAMES[symbol] for symbol in captured[ctx.session.player_color]
+        ),
+        captured_by_opponent=frozenset(
+            _PIECE_NAMES[symbol] for symbol in captured[opponent]
+        ),
+        moves=frozenset(moves),
+        saved=any(
+            r["name"] in ("save_game", "resume_game") and r["result"].get("ok") is True
+            for r in tool_results
+        ),
+        settings=settings,
+        numbers=frozenset(_analysis_numbers(tool_results)),
+    )
+
+
 def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
     """Did a destructive op actually run this turn? A gate refusal is `ok:
     False`, so an armed-but-unconfirmed resign correctly counts as nothing
@@ -508,6 +645,32 @@ def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
         r["name"] in DESTRUCTIVE_TOOLS and r["result"].get("ok") is True
         for r in tool_results
     )
+
+
+def _guarded_commentary(
+    commentary: str, facts: VerifiedFacts, logged: dict[str, Any]
+) -> tuple[str, bool]:
+    """The commentary the turn's facts support, and whether a claim was cut.
+
+    Every route converges here. The model may neither *do* an unasked
+    destructive op (the gate) nor *say* it did (the ending class) nor announce
+    any other fact the turn cannot back (the rest of them). Which class fired
+    is logged, because that is the thing worth knowing when a guarded turn
+    turns up in a trace.
+    """
+    claims = unverified_claims(commentary, facts)
+    if not claims:
+        return commentary, False
+    if "ending" in claims:
+        # The worst one keeps its own event name and its own correction: the
+        # player has just been told the game ended, and the fact they need
+        # back is that it didn't.
+        logger.warning("commentary_claimed_untrue_outcome", extra=logged)
+        return UNTRUE_CLAIM_REPLY, True
+    logger.warning(
+        "commentary_claimed_unverified_fact", extra={**logged, "claims": list(claims)}
+    )
+    return UNVERIFIED_CLAIM_REPLY, True
 
 
 @dataclass(frozen=True)
@@ -742,16 +905,13 @@ def create_app(
                 beats.owed_reply,
                 ctx.session,
             )
-            # The honesty guard, on this road too: a reaction that announces an
-            # ending the board never reached is replaced with the truth.
-            if not ctx.session.is_game_over() and claims_destructive_outcome(
-                commentary
-            ):
-                logger.warning(
-                    "commentary_claimed_untrue_outcome", extra={"move": move}
-                )
-                commentary = UNTRUE_CLAIM_REPLY
-                guarded = True
+            # The honesty guard, on this road too: a reaction that announces
+            # something the drag did not actually do is replaced with the truth.
+            commentary, guarded = _guarded_commentary(
+                commentary,
+                _verified_facts(ctx, beats.changes, beats.engine_reply, before["fen"]),
+                {"move": move},
+            )
             ctx.transcript.record(result["san"], commentary)
             await _broadcast_state()
         _trace_turn(
@@ -1271,21 +1431,19 @@ def create_app(
                     else PROVIDER_LOST_RETRY
                 )
                 commentary = f"{lost}\n\n{commentary}" if commentary else lost
-            # The honesty guard, at the one point every route converges: commentary
-            # that announces the game ended (or restarted) when nothing ended it is
-            # not shown to the player. The board and the tool results are the record
-            # of what happened; the model's prose is not, and live it has claimed
-            # resignations and checkmates that never occurred (trace review, finding
-            # 6). This is the same rule as the gate, applied one step later — the
-            # model may neither *do* a destructive op unasked nor *say* it did.
-            guarded = False
-            ended = ctx.session.is_game_over() or _destructive_succeeded(tool_results)
-            if not ended and claims_destructive_outcome(commentary):
-                logger.warning(
-                    "commentary_claimed_untrue_outcome", extra={"text": text}
-                )
-                commentary = UNTRUE_CLAIM_REPLY
-                guarded = True
+            # The honesty guard, at the one point every route converges: an
+            # operational claim the turn cannot back is not shown to the player.
+            # The board, the engine's reply and the tool results are the record of
+            # what happened; the model's prose is not, and live it has claimed
+            # resignations and checkmates that never occurred (trace review,
+            # finding 6). This is the same rule as the gate, applied one step
+            # later — the model may neither *do* a destructive op unasked nor
+            # *say* it did, nor announce any other fact it invented.
+            commentary, guarded = _guarded_commentary(
+                commentary,
+                _verified_facts(ctx, tool_results, engine_reply, before["fen"]),
+                {"text": text},
+            )
             agent_state = _agent_state_dict(ctx)
             # The advice guard, same convergence point (audit item 11's second
             # half): with hints off, a currently-playable move in the

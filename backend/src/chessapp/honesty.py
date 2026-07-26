@@ -9,20 +9,28 @@ have me in checkmate" after a quiet rook move (trace review 2026-07-13, finding
 ended. A prompt rule is no defense: a 12B follows one about half the time.
 
 So the pipeline checks the claim against the board before it emits it. This
-module owns only the string half of that check — does this text *assert* that
-the game ended or that a new one began? Whether it actually did is the session's
-answer, and `api._run_command` puts the two together.
+module owns only the string half of that check — does this text *assert* an
+event? Whether it happened is the session's answer, and `api._run_command` puts
+the two together.
+
+The ending is where the rule started and it is not where it stops (audit item
+13). `unverified_claims` takes the same shape to every operational fact a turn
+produces — captures, check, draws, moves, saves, settings, engine numbers —
+against a `VerifiedFacts` set the pipeline assembles from the tool results, the
+engine's reply and the board. Personality varies the wording; it does not get
+to vary the facts.
 
 The bar is deliberately "asserts", not "mentions". Trash talk, threats,
 questions and hypotheticals are the whole point of the commentary — "one more
-move and it's checkmate", "want a new game?", "that's nearly mate" — and
+move and it's checkmate", "want a new game?", "I'll take that knight" — and
 suppressing those would cost far more than the lie does. So a claim must be an
-unhedged assertion in its own sentence, and the tests in `test_honesty.py` are
-the spec.
+unhedged assertion in its own sentence, a class that cannot tell a threat from
+a report does not belong here, and the tests in `test_honesty.py` are the spec.
 """
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 
 # Unhedged assertions that the game just ended, or that a new one just began.
 # `resign` counts when it is inflected ("resigning now", "you resigned") or owned
@@ -51,7 +59,28 @@ _HEDGES = re.compile(
     | \b(?: if | unless | when | once | almost | nearly | close \s+ to
           | not | no | never | yet | maybe | might | could | would | should
           | want | wanna | threat | threats | threatening | one \s+ more
-          | about \s+ to | next \s+ move | avoid | prevent )\b
+          | about \s+ to | next \s+ move | avoid | prevent
+          # Evaluative talk about how a position *looks*. A live position
+          # called "basically a draw" is trash talk about the board, not a
+          # report that the game ended in one.
+          | basically | practically | essentially | pretty \s+ much
+          | heading | headed | toward | towards | probably | likely
+          | looks \s+ like | looked \s+ like | feels \s+ like | dead \s+ drawn )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# The extra hedges every class *except* the ending one carries: intention,
+# prediction, permission. "I'll take your knight" is the threat that makes
+# Glitch worth playing; "I took your knight" is the claim. The ending class is
+# deliberately left out — it is pinned to today's behavior, where "You
+# resigned — I'll take it." is an assertion about an event that already
+# happened, and reading `'ll` there as a hedge would let the worst lie through.
+_FUTURE = re.compile(
+    r"""
+    '(?: ll | d )
+    | \b(?: will | gonna | going \s+ to | plan | planning | plans
+          | next | soon | after | then | let \s+ me | can | say \s+ the \s+ word )\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -91,3 +120,315 @@ def names_a_legal_move(text: str, legal_moves: Iterable[str]) -> bool:
     """
     legal = set(legal_moves)
     return any(token.strip(_TOKEN_WRAPPING) in legal for token in text.split())
+
+
+# --- the verified facts, and the claims that must derive from them -------------
+#
+# Audit item 13. The ending guard proved the shape and the shape generalizes:
+# assemble what deterministically happened this turn, then require the
+# *operational* claims in the commentary to derive from it. Personality varies
+# the wording; it does not get to vary the facts.
+#
+# The evidence is assembled by the pipeline (`api._verified_facts`), because
+# that is where the tool results, the engine's reply and the board all are.
+# This module still owns only the reading of the string.
+
+
+@dataclass(frozen=True)
+class VerifiedFacts:
+    """What the turn can honestly say, as the board and the tools left it.
+
+    Every field defaults to "nothing happened", so a fact the pipeline does not
+    supply is a fact the commentary may not assert — the guard fails closed on
+    evidence, exactly as the ending check does.
+
+    Captures are split by side because who took what is a fact too, and they
+    hold the *game's* captured pieces rather than only this turn's: a capture
+    that really happened ten moves ago is a true fact awkwardly placed, and
+    guarding tense would cost far more than it saves. What the class is for is
+    the piece that was never taken at all.
+
+    `moves` is every SAN the turn accounts for — played, reported by an
+    analysis, or playable now or at the turn's start. The last of those is what
+    keeps "Bc4 was right there and you missed it" sayable.
+    """
+
+    ended: bool = False
+    drawn: bool = False
+    check: bool = False
+    captured_by_player: frozenset[str] = frozenset()
+    captured_by_opponent: frozenset[str] = frozenset()
+    moves: frozenset[str] = frozenset()
+    saved: bool = False
+    settings: Mapping[str, str] = field(default_factory=dict)
+    numbers: frozenset[str] = frozenset()
+
+
+_PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
+
+# The verbs that report a capture as done. Deliberately missing: "taken", which
+# is nearly always passive and predictive ("that knight is going to get taken").
+_TAKE_VERBS = (
+    r"(?: took | takes | taking | take | grabbed | grabs | grabbing | grab "
+    r"| captured | captures | capturing | snagged | snags | snatched | nabbed "
+    r"| ate | eats | eating )"
+)
+
+_CAPTURE = re.compile(
+    rf"""
+    (?: (?P<subject> \b (?: i | you ) \b ) [^.!?]{{0,24}}? )?
+    \b {_TAKE_VERBS} \b [^.!?]{{0,24}}? \b (?P<piece> {_PIECE_WORDS} ) s? \b
+    |
+    \b (?P<gone_piece> {_PIECE_WORDS} ) s? \b \s* (?: is | 's | are ) \s+
+    (?: gone | dead | history | mine | yours | toast | off \s+ the \s+ board )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_CHECK = re.compile(
+    r"""
+    \b in \s+ check \b
+    | \b (?: that | this | it ) (?: 's | \s+ is ) \s+ check \b
+    | \b check \s+ on \s+ (?: your | the | my ) \s+ king \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# A draw is its own fact, not a flavour of the ending class: a game that ended
+# in mate did not end in a draw either, and the ending class would wave that
+# through.
+_DRAW = re.compile(
+    r"""
+    \b(?: stalemate
+        | (?: a | the ) \s+ draw
+        | drawn
+        | (?: we | it ) \s+ (?: drew | tied )
+        | split (?: ting )? \s+ (?: it | the \s+ point )
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Unambiguous move notation only. A bare pawn push is spelled exactly like a
+# square ("the pawn on e4") and squares are discussed constantly, so `e4` alone
+# is never read as a claim that a move was played — the class exists for the
+# invented piece move ("you took it with Bxc6"), not for square talk. Case
+# matters: SAN piece letters are capitals.
+_SAN_CLAIM = re.compile(
+    r"""
+    (?<! [\w-] )
+    (?: O-O (?: -O )?
+      | [KQRBN] [a-h]? [1-8]? x? [a-h] [1-8]
+      | [a-h] x [a-h] [1-8]
+    ) (?: = [QRBN] )? [+#]?
+    (?! [\w-] )
+    """,
+    re.VERBOSE,
+)
+
+_SAVE = re.compile(
+    r"""
+    \b sav (?: ed | ing ) \s+
+        (?: it | that | this | the \s+ game | your \s+ game | the \s+ position )\b
+    | \b (?: game | position | progress ) \s+ (?: is \s+ )? saved \b
+    | \b saved \s+ (?: it \s+ )? (?: as | under )\b
+    | \b (?: resumed | restored | reloaded | loaded ) \s+
+        (?: it | that | this | the \s+ game | your \s+ game )\b
+    | \b (?: game | position ) \s+ (?: is \s+ )?
+        (?: resumed | restored | reloaded | loaded )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# The settings classes. Each match names a value; the fact it is checked
+# against is the *live* setting, not a tool call, because the live setting is
+# the truth either way — one the player changed three turns ago is as true as
+# one changed this turn, and a value nothing ever set is a lie however
+# confidently it is announced.
+_HINTS = re.compile(
+    r"""
+    \b hints? \s+ (?: are | is | 're | 's ) \s+ (?: now \s+ )?
+        (?P<value> on | off | enabled | disabled )\b
+    | \b (?: turn | turned | turning | switch | switched | switching ) \s+
+        (?: the \s+ )? hints? \s+ (?P<value_b> on | off )\b
+    | \b (?: turned | switched ) \s+ (?P<value_c> on | off ) \s+
+        (?: the \s+ )? hints? \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_VOICE = re.compile(
+    r"""
+    \b voice (?: \s+ output )? \s+ (?: is | 's | are ) \s+ (?: now \s+ )?
+        (?P<value> on | off | muted | unmuted | enabled | disabled )\b
+    | \b (?: turn | turned | turning | switch | switched | switching ) \s+
+        (?P<value_b> on | off ) \s+ (?: your | the | my ) \s+
+        voice (?: \s+ output )? \b
+    | \b (?: turned | switched ) \s+ (?: your | the | my ) \s+
+        voice (?: \s+ output )? \s+ (?P<value_c> on | off )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_TIERS = r"(?: beginner | casual | intermediate | advanced | maximum )"
+
+_DIFFICULTY = re.compile(
+    rf"""
+    \b (?: difficulty | strength | tier ) \b [^.!?]{{0,20}}? \b (?P<value> {_TIERS} )\b
+    | \b (?P<value_b> {_TIERS} ) \b [^.!?]{{0,20}}?
+        \b (?: difficulty | strength | tier )\b
+    | \b (?: playing | set \s+ to ) \s+ (?P<value_c> {_TIERS} )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_VERBOSITY = re.compile(
+    r"""
+    \b verbosity \b [^.!?]{0,16}? \b (?P<value> low | normal | high )\b
+    | \b (?P<value_b> low | normal | high ) \s+ verbosity \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Numbers only an engine can produce: a signed or decimal score, a centipawn
+# count, a mate-in-N. Material talk ("you're a pawn down") is deliberately not
+# here — it is derivable from the board rather than from Stockfish, and is the
+# next claim class to grow rather than something to fake with this one.
+#
+# The bounds and the lookarounds are what keep the app's own text out. A game
+# result must not read as a score: in "1-0" the minus is preceded by a digit.
+# Neither must a PGN, which Glitch legitimately reads out whole — a scoreless
+# `1.` move number has no digit after the point, and a `2023.10.27` date is too
+# long on both sides of it (a real evaluation is one or two digits either way).
+_EVALUATION = re.compile(
+    r"""
+    (?<! [\w/.-] ) (?P<score> [+-] \d{1,2} (?: \. \d{1,2} )? ) (?! [\w/-] )
+    | (?<! [\w/.-] ) (?P<decimal> \d{1,2} \. \d{1,2} ) (?! [\w/-] )
+    | \b (?P<centipawns> \d+ ) \s* (?: centipawns? | cp )\b
+    | \b mate \s+ in \s+ (?P<mate> \d+ )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# How a matched setting value is spelled in `VerifiedFacts.settings`.
+_SETTING_SYNONYMS = {
+    "enabled": "on",
+    "disabled": "off",
+    "unmuted": "on",
+    "muted": "off",
+}
+
+
+def _matched_value(match: re.Match[str]) -> str:
+    """The value a settings match named, whichever alternative caught it."""
+    for name in ("value", "value_b", "value_c"):
+        if (value := match.group(name)) is not None:
+            return _SETTING_SYNONYMS.get(value.lower(), value.lower())
+    return ""
+
+
+def _setting_is(key: str) -> Callable[[re.Match[str], VerifiedFacts], bool]:
+    return lambda match, facts: facts.settings.get(key) == _matched_value(match)
+
+
+def _capture_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    piece = match.group("piece") or match.group("gone_piece")
+    # "horse" is a knight; the board only knows the one word for it.
+    name = "knight" if piece.lower() == "horse" else piece.lower()
+    subject = (match.group("subject") or "").lower()
+    if subject == "i":  # Glitch is the player's opponent
+        return name in facts.captured_by_opponent
+    if subject == "you":
+        return name in facts.captured_by_player
+    return name in (facts.captured_by_player | facts.captured_by_opponent)
+
+
+def _move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    claimed = match.group(0).rstrip("+#")
+    return any(san.rstrip("+#") == claimed for san in facts.moves)
+
+
+def _number_reported(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    number = match.group(0) if match.group("score") else None
+    for name in ("score", "decimal", "centipawns", "mate"):
+        if (value := match.group(name)) is not None:
+            number = value
+            break
+    if number is None:  # unreachable; the pattern always fills one group
+        return True
+    # The sign is part of the fact — who is winning is exactly what it says —
+    # so only a redundant leading "+" is negotiable.
+    return number in facts.numbers or number.lstrip("+") in facts.numbers
+
+
+# A takeback is not a capture, however much it sounds like one: "took your
+# knight back" is undo talk, and the piece it names is going back *on* the
+# board. Only the capture class needs to know that.
+_CAPTURE_HEDGES = re.compile(
+    _FUTURE.pattern
+    + r"""
+    | \b(?: undo | undid | undone | takeback | back )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+@dataclass(frozen=True)
+class _ClaimClass:
+    """One kind of operational claim: how to spot it, and what makes it true.
+
+    `hedges` is per class rather than global: the ending class is pinned to
+    the behavior the traces demanded of it and reads no tense at all (see
+    `_FUTURE`), and the capture class has a wrinkle of its own. The shared
+    `_HEDGES` apply to every class on top of these.
+    """
+
+    name: str
+    pattern: re.Pattern[str]
+    verified: Callable[[re.Match[str], VerifiedFacts], bool]
+    hedges: re.Pattern[str] | None = _FUTURE
+
+
+_CLAIM_CLASSES = (
+    _ClaimClass("ending", _CLAIMS, lambda match, facts: facts.ended, hedges=None),
+    _ClaimClass("draw", _DRAW, lambda match, facts: facts.drawn),
+    _ClaimClass("capture", _CAPTURE, _capture_happened, hedges=_CAPTURE_HEDGES),
+    _ClaimClass("check", _CHECK, lambda match, facts: facts.check),
+    _ClaimClass("move", _SAN_CLAIM, _move_happened),
+    _ClaimClass("save", _SAVE, lambda match, facts: facts.saved),
+    _ClaimClass("hints", _HINTS, _setting_is("hints")),
+    _ClaimClass("voice", _VOICE, _setting_is("voice")),
+    _ClaimClass("difficulty", _DIFFICULTY, _setting_is("difficulty")),
+    _ClaimClass("verbosity", _VERBOSITY, _setting_is("verbosity")),
+    _ClaimClass("evaluation", _EVALUATION, _number_reported),
+)
+
+
+def unverified_claims(text: str, facts: VerifiedFacts) -> tuple[str, ...]:
+    """The claim classes this commentary asserts that the facts don't support.
+
+    Empty for commentary that claims nothing operational, which is most of it.
+    Sentence by sentence and hedge by hedge, on the same bar the ending class
+    set: an assertion in its own sentence, never a mention. Trash talk, threats,
+    questions and hypotheticals are the whole point of the commentary, so a
+    class that cannot tell them from a report does not belong here.
+
+    Returned as an ordered list of class names rather than a bool so the
+    pipeline can log *which* fact the model invented — that is the thing worth
+    knowing when a guarded turn shows up in a trace.
+    """
+    found: list[str] = []
+    for sentence in _SENTENCES.split(text):
+        if _HEDGES.search(sentence):
+            continue
+        for claim in _CLAIM_CLASSES:
+            if claim.name in found:
+                continue
+            if claim.hedges is not None and claim.hedges.search(sentence):
+                continue
+            if any(
+                not claim.verified(match, facts)
+                for match in claim.pattern.finditer(sentence)
+            ):
+                found.append(claim.name)
+    return tuple(found)

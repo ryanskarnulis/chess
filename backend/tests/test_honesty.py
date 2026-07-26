@@ -17,7 +17,12 @@ agent's whole personality, and suppressing those would cost more than the lie.
 
 import pytest
 
-from chessapp.honesty import claims_destructive_outcome, names_a_legal_move
+from chessapp.honesty import (
+    VerifiedFacts,
+    claims_destructive_outcome,
+    names_a_legal_move,
+    unverified_claims,
+)
 
 
 @pytest.mark.parametrize(
@@ -111,3 +116,305 @@ def test_naming_a_playable_move_is_advice(text):
 )
 def test_commentary_without_a_playable_move_is_not_advice(text):
     assert names_a_legal_move(text, LEGAL) is False
+
+
+# --- verified facts: every operational claim, not just the ending -------------
+#
+# Audit item 13. The ending guard above proved the shape works, and the shape
+# generalizes: build the turn's facts deterministically (tool results + board),
+# then require the *operational* claims in commentary to derive from them.
+# Personality varies the wording; it does not get to vary the facts.
+#
+# `unverified_claims` returns the claim classes the text asserts and the facts
+# don't support — a list rather than a bool, so a guarded turn can say which
+# class failed. Every class keeps the ending guard's bar: an unhedged assertion
+# in its own sentence. Trash talk, threats, questions and hypotheticals are the
+# whole point of the commentary and must keep surviving, which is why roughly
+# half the cases below are the ones that must come back empty.
+
+# A quiet turn on a live, level board: nothing happened, so nothing is claimable.
+NOTHING = VerifiedFacts()
+
+
+def test_a_turn_with_no_facts_supports_no_operational_claim():
+    assert unverified_claims("I took your knight.", NOTHING) == ("capture",)
+
+
+def test_ordinary_commentary_claims_nothing_to_verify():
+    assert unverified_claims("Bold. That hangs your knight, but bold.", NOTHING) == ()
+
+
+# --- captures ------------------------------------------------------------------
+#
+# Verified against the board's captured-piece record, per side: "I" is Glitch,
+# "you" is the player. Existence, not tense — a capture that really happened
+# ten moves ago is a true fact awkwardly placed, and guarding *that* would cost
+# more than it saves. What the class is for is the piece that was never taken.
+
+TOOK_A_KNIGHT = VerifiedFacts(captured_by_opponent=frozenset({"knight"}))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I took your knight.",
+        "Grabbed your queen, thanks.",
+        "That bishop is gone.",
+        "Your rook is mine now.",
+        "Snagged the pawn.",
+    ],
+)
+def test_an_unbacked_capture_is_a_claim(text):
+    assert "capture" in unverified_claims(text, NOTHING)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I took your knight.",
+        "Knight's off the board.",
+        "captured your knight, obviously",
+    ],
+)
+def test_a_capture_that_happened_is_reportable(text):
+    assert unverified_claims(text, TOOK_A_KNIGHT) == ()
+
+
+def test_a_capture_is_verified_per_side():
+    """Who took what is a fact too: Glitch took the knight, so the player did
+    not, and saying they did is the same invention in the other direction."""
+    assert "capture" in unverified_claims("You took my knight.", TOOK_A_KNIGHT)
+
+
+def test_the_wrong_piece_is_still_an_invention():
+    assert "capture" in unverified_claims("I took your queen.", TOOK_A_KNIGHT)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Threats and offers, which is most of what Glitch says about captures.
+        "I'll take your knight next move.",
+        "That knight is going to get taken.",
+        "Want to trade queens?",
+        "If you leave the rook there I'm taking it.",
+        "Your bishop is not gone yet.",
+        "Nothing gets taken this move.",
+        # A takeback puts a piece back on the board; it never takes one off.
+        "Took your knight back. Try again.",
+    ],
+)
+def test_a_threatened_capture_is_not_a_claim(text):
+    assert unverified_claims(text, NOTHING) == ()
+
+
+# --- check, and the draw the ending class does not cover ------------------------
+
+
+def test_an_unbacked_check_is_a_claim():
+    assert "check" in unverified_claims("You're in check, by the way.", NOTHING)
+
+
+def test_a_real_check_is_reportable():
+    assert unverified_claims("You're in check.", VerifiedFacts(check=True)) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "One more move and you're in check.",
+        "You're not in check, relax.",
+        "Check this out.",
+    ],
+)
+def test_talking_about_check_is_not_a_claim(text):
+    assert unverified_claims(text, NOTHING) == ()
+
+
+def test_an_unbacked_draw_is_a_claim():
+    """The ending class knows game-over and checkmate; a draw is its own fact,
+    because a game that ended in *mate* did not end in a draw either."""
+    assert "draw" in unverified_claims("That's a draw.", NOTHING)
+    assert "draw" in unverified_claims("Stalemate.", VerifiedFacts(ended=True))
+
+
+def test_a_real_draw_is_reportable():
+    facts = VerifiedFacts(ended=True, drawn=True)
+    assert unverified_claims("Stalemate. We're splitting it.", facts) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "This is basically a draw.",
+        "Heading for a draw unless one of us blunders.",
+        "Take the draw?",
+    ],
+)
+def test_calling_a_position_drawish_is_not_a_claim(text):
+    assert unverified_claims(text, NOTHING) == ()
+
+
+# --- moves that were never on the board ----------------------------------------
+#
+# Only unambiguous move notation counts: a bare pawn push is spelled like a
+# square ("the pawn on e4"), and squares are discussed constantly, so `e4` alone
+# is never read as a move claim. A move played this turn, reported by an
+# analysis, or playable now or at the turn's start is all fair game — including
+# the move the player missed, which is commentary, not invention.
+
+PLAYED_NF3 = VerifiedFacts(moves=frozenset({"Nf3", "Nc6", "Bc4"}))
+
+
+def test_a_move_that_was_never_playable_is_a_claim():
+    assert "move" in unverified_claims("Nice, you took it with Bxc6.", PLAYED_NF3)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Nf3. Your move.",
+        "Nc6 was the reply.",
+        "Bc4 was right there and you missed it.",
+        "The pawn on e4 is doing a lot of work.",  # a square, not a move claim
+    ],
+)
+def test_a_move_the_turn_accounts_for_is_not_a_claim(text):
+    assert unverified_claims(text, PLAYED_NF3) == ()
+
+
+# --- saves ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Saved it.",
+        "Game saved.",
+        "Saved as tuesday-night.",
+        "Restored the game. Your move.",
+    ],
+)
+def test_an_unbacked_save_is_a_claim(text):
+    assert "save" in unverified_claims(text, NOTHING)
+
+
+def test_a_real_save_is_reportable():
+    assert (
+        unverified_claims("Saved it as tuesday-night.", VerifiedFacts(saved=True)) == ()
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Want me to save this?",
+        "That bishop saved you.",
+        "I can save it if you want.",
+    ],
+)
+def test_talking_about_saving_is_not_a_claim(text):
+    assert unverified_claims(text, NOTHING) == ()
+
+
+# --- settings ------------------------------------------------------------------
+#
+# Verified against the live settings rather than against a tool call, because
+# the live settings are the truth either way: a setting the player changed three
+# turns ago is as true as one changed this turn, and a value nothing ever set is
+# a lie however confidently it is announced.
+
+CASUAL = VerifiedFacts(
+    settings={"difficulty": "casual", "hints": "off", "voice": "on", "verbosity": "low"}
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "claim"),
+    [
+        ("Difficulty's on advanced now.", "difficulty"),
+        ("You're playing maximum strength.", "difficulty"),
+        ("Hints are on.", "hints"),
+        ("Turned off your voice.", "voice"),
+        ("Verbosity is high now.", "verbosity"),
+    ],
+)
+def test_a_setting_that_is_not_set_is_a_claim(text, claim):
+    assert claim in unverified_claims(text, CASUAL)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Difficulty is casual.",
+        "Hints are off, so you're on your own.",
+        "Voice output is on.",
+        "Verbosity is low. Keeping it short.",
+    ],
+)
+def test_a_setting_that_is_set_is_reportable(text):
+    assert unverified_claims(text, CASUAL) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Want hints on?",
+        "Say the word and I'll turn the difficulty up to advanced.",
+        "Turn hints on if you want help.",
+    ],
+)
+def test_offering_a_setting_change_is_not_a_claim(text):
+    assert unverified_claims(text, CASUAL) == ()
+
+
+# --- analysis numbers ----------------------------------------------------------
+#
+# Narrow on purpose: a signed or decimal score and a mate-in-N are shapes only
+# an engine can produce, so they must match a number the turn's analysis
+# actually reported. Material talk ("you're a pawn down") is deliberately left
+# alone — it is derivable from the board, not from Stockfish, and is the next
+# claim class to grow rather than something to fake with this one.
+
+EVALUATED = VerifiedFacts(numbers=frozenset({"150", "1.5", "+1.5"}))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You're at -2.4 here.",
+        "Mate in 4, by the way.",
+        "That's 320 centipawns of damage.",
+    ],
+)
+def test_an_unbacked_number_is_a_claim(text):
+    assert "evaluation" in unverified_claims(text, EVALUATED)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "+1.5 for me.",
+        "Stockfish says 150 centipawns.",
+        "1.5 and climbing.",
+    ],
+)
+def test_a_reported_number_is_reportable(text):
+    assert unverified_claims(text, EVALUATED) == ()
+
+
+def test_a_pgn_read_out_loud_is_not_an_evaluation_claim():
+    """From the recorded turns: "give me the pgn" gets the whole thing back,
+    headers and move numbers included. A date is not a score and `1.` is not
+    a decimal — the app's own exports must survive their own guard."""
+    text = '[Date "2023.10.27"]\n[Result "*"]\n\n1. e4 b6 2. Nf3 h6 3. d4 a5'
+    facts = VerifiedFacts(moves=frozenset({"e4", "b6", "Nf3", "h6", "d4", "a5"}))
+    assert unverified_claims(text, facts) == ()
+
+
+def test_a_game_result_is_not_an_evaluation_claim():
+    """The app's own closing line carries a result score, and `1-0` must not
+    read as the number `-0`. It is the pipeline's own deterministic text, so
+    guarding it would suppress the truth on every game that ends."""
+    facts = VerifiedFacts(ended=True)
+    assert unverified_claims("Game over: 1-0 (checkmate).", facts) == ()
