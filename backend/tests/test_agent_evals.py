@@ -679,8 +679,12 @@ def _run_panel(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
     The difference is the transcript, and it is the whole point of the
     long-transcript scenarios. The delegate endpoint carries its own
     per-conversation history (`_run` above opens a fresh one every time, so the
-    model sees an empty thread); `/api/command` reads `ctx.transcript.window()`,
-    the running conversation the player has actually been having. Every failure
+    model sees an empty thread); `/api/command` reads `ctx.transcript.memory()`,
+    the running conversation the player has actually been having — recent turns
+    verbatim behind a digest of the older asks (`docs/turn-memory.md`), which is
+    why the `poisoned` conditions below seed their poison at the *end* of the
+    thread: a stale assistant line only poisons what it is still quoted in.
+    Every failure
     in the 2026-07-13 trace review happened on *this* seam, deep into a thread —
     and none of them reproduce on a fresh delegate conversation.
 

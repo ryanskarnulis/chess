@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from chessapp.conversation import DEFAULT_WINDOW_TURNS
+from chessapp.conversation import DEFAULT_WINDOW_TURNS, condense
 from chessapp.provider import ProviderError
 
 if TYPE_CHECKING:
@@ -261,16 +261,18 @@ class ConversationStore:
         """Prior turns as chat messages for the pipeline's ``transcript``.
 
         Text turns only — persisted tool trajectories are for display/audit and
-        are deliberately never round-tripped into model context. Windowed to
-        the same recent-turns budget the web panel uses so prompt growth stays
-        bounded.
+        are deliberately never round-tripped into model context. Condensed by
+        the same policy the web panel uses (`conversation.condense`) so the two
+        entry points have one memory, not two: recent turns verbatim behind a
+        digest of what the caller asked for earlier. The store keeps everything;
+        only the model's view is reduced.
         """
         text_turns = [
             {"role": m.role, "content": m.content}
             for m in conversation.messages
             if m.content is not None
         ]
-        return text_turns[-2 * DEFAULT_WINDOW_TURNS :]
+        return condense(text_turns[-2 * DEFAULT_WINDOW_TURNS :])
 
 
 def _derive_title(content: str) -> str:

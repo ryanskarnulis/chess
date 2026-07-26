@@ -21,6 +21,7 @@ from chessapp.api import (
     create_app,
 )
 from chessapp.brain import AgentResponse, ToolCall
+from chessapp.conversation import RECENT_TURNS
 from chessapp.engine import DEFAULT_TIER, CandidateMove, Evaluation
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
@@ -390,6 +391,47 @@ def test_the_transcript_records_the_users_words_and_the_closing_comment():
     assert brain.transcripts[1] == [
         {"role": "user", "content": "play e4"},
         {"role": "assistant", "content": "A bold king's pawn!"},
+    ]
+
+
+def test_older_turns_reach_the_brain_condensed_not_verbatim():
+    """The memory policy at the boundary (`docs/turn-memory.md`): what the brain
+    is handed is the last few turns verbatim behind a digest of what the player
+    asked for earlier — not twenty turns of Glitch's prose."""
+    ctx = ToolContext(session=GameSession())
+    ctx.transcript.record("save this as testgame", "I can't save right now, bro.")
+    app, brain = scripted_app(
+        ctx, *[AgentResponse(text=f"reply {i}") for i in range(7)]
+    )
+    client = TestClient(app)
+    for i in range(RECENT_TURNS):
+        client.post("/api/command", json={"text": f"filler {i}"})
+    client.post("/api/command", json={"text": "load the game I saved"})
+
+    transcript = brain.transcripts[-1]
+    assert len(transcript) == 2 + 2 * RECENT_TURNS
+    digest = transcript[0]["content"]
+    assert '"save this as testgame"' in digest
+    # The stale claim itself is gone — that sentence is precisely what taught the
+    # model a save it had made didn't exist (trace review 2026-07-13).
+    assert "can't save right now" not in digest
+    assert transcript[-2:] == [
+        {"role": "user", "content": f"filler {RECENT_TURNS - 1}"},
+        {"role": "assistant", "content": f"reply {RECENT_TURNS - 1}"},
+    ]
+
+
+def test_a_recent_turn_still_reaches_the_brain_word_for_word():
+    """The digest must not eat the turns references point at: "the queenside
+    one" only resolves against the question that prompted it."""
+    client, brain = make_client(*[AgentResponse(text=f"reply {i}") for i in range(9)])
+    for i in range(6):
+        client.post("/api/command", json={"text": f"filler {i}"})
+    client.post("/api/command", json={"text": "move the knight"})
+    client.post("/api/command", json={"text": "the queenside one"})
+    assert brain.transcripts[-1][-2:] == [
+        {"role": "user", "content": "move the knight"},
+        {"role": "assistant", "content": "reply 6"},
     ]
 
 

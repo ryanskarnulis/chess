@@ -134,9 +134,12 @@ class Brain(Protocol):
         in_check, SAN history, captured, legal_moves, game_over/outcome — not
         the UI state document), captured before the loop runs; the loop reads
         every later state change from the tool results themselves.
-        `transcript` is the prior conversation as chat messages (a `Transcript`
-        window: user commands + the commentary the user actually saw, final
-        answers only) so the agent can follow references to earlier turns."""
+        `transcript` is the prior conversation as chat messages (final answers
+        only) so the agent can follow references to earlier turns. How far back
+        it reaches and in what form is the app's memory policy, not the brain's:
+        what actually arrives is `Transcript.memory()` — the last few turns
+        verbatim behind a digest of the older asks (`docs/turn-memory.md`) — and
+        a brain neither knows nor needs to know which of them were condensed."""
         ...
 
     def narrate(

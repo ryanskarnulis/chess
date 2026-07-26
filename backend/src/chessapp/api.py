@@ -883,7 +883,7 @@ def create_app(
         dragged as well as games they talked their way through.
         """
         before = _agent_state_dict(ctx)
-        beats = _play_move(move, ctx.transcript.window())
+        beats = _play_move(move, ctx.transcript.memory())
         result = beats.result
         narration = beats.narration
         if result.get("ok") is False:
@@ -1500,10 +1500,12 @@ def create_app(
     async def command(request: CommandRequest) -> dict[str, Any]:
         """User string → brain → tool call(s) → new state, for the web panel.
         A thin wrapper over `_run_command` that supplies the panel's own
-        transcript window and records the settled turn back onto it."""
+        conversation memory and records the settled turn back onto it. Memory,
+        not the raw window: recent turns verbatim behind a digest of what the
+        player asked for earlier (`docs/turn-memory.md`)."""
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
-        transcript = ctx.transcript.window()
+        transcript = ctx.transcript.memory()
         outcome = await _run_command(request.text, transcript, request.version)
         # Record on the context, not a captured reference: resume_game may
         # have just swapped in the saved game's transcript, and this turn
