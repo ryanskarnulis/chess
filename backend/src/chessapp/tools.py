@@ -30,6 +30,7 @@ whole iteration budget asking what is legal.
 
 import inspect
 import json
+import logging
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -54,6 +55,8 @@ from chessapp.engine import (
     EnginePlayer,
 )
 from chessapp.game import GameSession, MoveResult
+
+logger = logging.getLogger(__name__)
 
 GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
@@ -251,10 +254,16 @@ class ToolRegistry:
     """The dispatch boundary. `context` is optional and read-only from here —
     it exists so a refusal can name the board it was about (`board_version`).
     A registry built without one (unit tests, the schema fixture) simply omits
-    the key rather than inventing a number."""
+    the key rather than inventing a number.
+
+    `on_tool` is told the name of each call that is about to *run* — the live
+    progress seam (`progress.py`). It hangs off dispatch rather than off the
+    callers because this is the one road every tool call takes, whoever made
+    it, so a label the player sees is always a tool that really ran."""
 
     _tools: dict[str, Tool] = field(default_factory=dict)
     context: "ToolContext | None" = None
+    on_tool: "Callable[[str], None] | None" = None
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -348,12 +357,26 @@ class ToolRegistry:
             return self.refusal(
                 f"invalid args for {name}: {exc.message}", RETRY_DIFFERENT_ARGS
             )
+        # Reported here rather than at the top: a name that does not exist and
+        # args the schema rejects never reach a handler, and a progress line for
+        # work nobody did is worse than none.
+        self._report(name)
         try:
             return tool.handler(**args)
         except ToolError as exc:
             return self.refusal(str(exc), exc.retry, **exc.details)
         except ValueError as exc:
             return self.refusal(str(exc), RETRY_NEVER)
+
+    def _report(self, name: str) -> None:
+        """Tell the observer, and never let that cost the call. Same rule the
+        tracer has: a lost label is not a lost tool call."""
+        if self.on_tool is None:
+            return
+        try:
+            self.on_tool(name)
+        except Exception:
+            logger.warning("tool_observer_failed", exc_info=True)
 
 
 def _outcome_dict(session: GameSession) -> dict[str, Any] | None:

@@ -45,12 +45,13 @@ Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
 """
 
+import asyncio
 import logging
 import math
 import mimetypes
 import random
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,7 @@ from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
 from chessapp.honesty import VerifiedFacts, names_a_legal_move, unverified_claims
+from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
@@ -741,16 +743,55 @@ class CommandOutcome:
 
 
 class StateBroadcaster:
-    """Fans the state document out to every connected board UI.
+    """Fans the state document out to every connected board UI — and, on the
+    same channel, the live progress of the turn producing it.
 
-    Send failures mean the client went away; the socket is dropped, never
-    allowed to fail the mutation that triggered the broadcast.
+    Two kinds of message, one socket, told apart by `type`. That envelope was
+    always there for this: the board document is authoritative and the progress
+    events are ephemera about how it came to change, and a client that wants
+    one wants the other. Send failures mean the client went away; the socket is
+    dropped, never allowed to fail the mutation that triggered the broadcast.
+
+    **`publish` is callable from any thread, and has to be.** The pipeline's
+    blocking steps run in worker threads on purpose — a progress event is worth
+    nothing if it arrives after the turn it describes, and a blocked event loop
+    delivers nothing at all — so a report crosses back onto the loop through
+    `call_soon_threadsafe` and lands on a queue. One pump drains it, which is
+    what keeps `begin` in front of `end`: several `ensure_future`d sends could
+    interleave at their first await, a single consumer cannot.
+
+    Unstarted is a working state, not a broken one: `publish` drops the event.
+    A process with no UI attached (a unit test, an MCP session) still runs its
+    turns; it just has nobody to tell.
     """
 
     def __init__(self) -> None:
         self._clients: set[WebSocket] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._queue: asyncio.Queue[dict[str, Any]] | None = None
+        self._pump: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        """Bind to the running loop and start the pump. Idempotent, and called
+        from both ends — app startup, and a client connecting — because the
+        second is the one that runs when a test drives the app without its
+        lifespan."""
+        if self._pump is not None:
+            return
+        self._loop = asyncio.get_running_loop()
+        self._queue = asyncio.Queue()
+        self._pump = asyncio.create_task(self._drain())
+
+    async def stop(self) -> None:
+        pump, self._pump = self._pump, None
+        if pump is None:
+            return
+        pump.cancel()
+        with suppress(asyncio.CancelledError):
+            await pump
 
     async def connect(self, websocket: WebSocket) -> None:
+        self.start()
         await websocket.accept()
         self._clients.add(websocket)
 
@@ -758,7 +799,26 @@ class StateBroadcaster:
         self._clients.discard(websocket)
 
     async def broadcast(self, state: dict[str, Any]) -> None:
-        message = {"type": "state", "state": state}
+        await self._send({"type": "state", "state": state})
+
+    def publish(self, message: dict[str, Any]) -> None:
+        """Queue a message from any thread. Never raises: the caller is in the
+        middle of a turn, and losing a progress line is not losing a turn."""
+        loop, queue = self._loop, self._queue
+        if loop is None or queue is None:
+            return
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, message)
+        except RuntimeError:
+            # The loop is closing under us (shutdown, a torn-down test client).
+            pass
+
+    async def _drain(self) -> None:
+        assert self._queue is not None
+        while True:
+            await self._send(await self._queue.get())
+
+    async def _send(self, message: dict[str, Any]) -> None:
         for client in list(self._clients):
             try:
                 await client.send_json(message)
@@ -774,6 +834,7 @@ def create_app(
     registry: ToolRegistry | None = None,
     tracer: Tracer | None = None,
     coordinator: TurnCoordinator | None = None,
+    progress: ProgressReporter | None = None,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
     does), so what the agent is offered is exactly what the app runs; omit it
@@ -785,14 +846,58 @@ def create_app(
     two that can disagree; omit both and the app builds a matched pair itself.
 
     `tracer` records one JSONL row per command (route taken, tool trajectory,
-    stop reason) for review; omit it and nothing is traced."""
-    app = FastAPI(title="chessapp")
+    stop reason) for review; omit it and nothing is traced.
+
+    `progress` is the live-progress reporter (audit item 19). Pass the one app
+    assembly built — it is the only place that can reach the *brain*, whose two
+    phases nothing else can see — and this binds it to the websocket and points
+    the coordinator and the registry at it. Omit it and the app builds one, so a
+    turn's phases and tool calls are reported whoever assembled the app; only
+    the brain's own two phases go unheard."""
+    app = FastAPI(title="chessapp", lifespan=lambda _app: _lifespan())
     broadcaster = StateBroadcaster()
     if coordinator is None:
         coordinator = TurnCoordinator(ctx)
     if registry is None:
         registry = build_registry(ctx, coordinator)
+    if progress is None:
+        progress = ProgressReporter()
+
+    # The two chokepoints are pointed at the reporter *here* rather than at
+    # construction, so nothing that reports has to be built after the thing it
+    # reports to — and so the wiring is one place to read.
+    def _publish_progress(event: ProgressEvent) -> None:
+        broadcaster.publish({"type": "progress", "progress": event.as_dict()})
+
+    progress.bind(_publish_progress)
+    coordinator.on_phase = progress.phase
+    registry.on_tool = progress.tool
     store = ConversationStore()
+
+    @asynccontextmanager
+    async def _lifespan() -> AsyncIterator[None]:
+        broadcaster.start()
+        try:
+            yield
+        finally:
+            await broadcaster.stop()
+
+    async def _offloop[T](fn: Callable[..., T], *args: Any) -> T:
+        """Run one blocking step of a turn in a worker thread.
+
+        Not an optimization — a requirement of saying anything *live*. A turn
+        spends seconds inside the model and Stockfish, and while the event loop
+        sits inside one of those calls it cannot deliver a websocket frame, so
+        every progress event would arrive in a burst after the turn it was
+        describing had finished. Off the loop, the pump is free to send as the
+        turn runs.
+
+        Cancellation is deliberately not abandoned: a step that mutates the
+        board must finish rather than be left running behind a disconnected
+        client. The mutation lock is held around all of this either way, so the
+        extra thread hop changes no ordering.
+        """
+        return await anyio.to_thread.run_sync(fn, *args)
 
     async def _broadcast_state() -> None:
         await broadcaster.broadcast(_state_dict(ctx))
@@ -894,6 +999,12 @@ def create_app(
         changes = [{"name": "make_move", "result": result}]
         narration: Narration | None = None
         if result.get("legal") is True and ctx.settings.verbosity != "low":
+            # This is the observe beat, so the machine is told so — the phase
+            # the coordinator has always had a slot for, finally entered
+            # (`docs/turn-coordinator.md`). Conditional because the move may
+            # have ended the game, which closes the turn where it stands; the
+            # collect below accepts either phase, so nothing else changes.
+            coordinator.mark_observation()
             try:
                 narration = brain.narrate(_agent_state_dict(ctx), changes, transcript)
             except ProviderError:
@@ -942,70 +1053,79 @@ def create_app(
         turn_id = coordinator.turn_id
         correlation_id = new_correlation_id()
         version_before = ctx.board_version
-        beats = _play_move(move, ctx.transcript.memory(), correlation_id)
-        result = beats.result
-        narration = beats.narration
-        if result.get("ok") is False:
-            # A turn-state rejection: 409 on the trusted path, exactly as direct
-            # mode answers it (the agent reads the same refusal as result data).
-            # The drag played nothing, but the beats may have settled a turn that
-            # was left open — that reply is on the board now, so every client
-            # hears about it before the refusal goes back.
-            if ctx.session.fen() != before["fen"]:
+        # A drag is one interaction like a command, so its phases and tool
+        # calls are bracketed the same way — but *without* a command window:
+        # a drag dispatches once by construction and is deliberately
+        # unbudgeted (see `TurnCoordinator.begin_command`).
+        with progress.interaction(correlation_id, turn_id):
+            beats = await _offloop(
+                _play_move, move, ctx.transcript.memory(), correlation_id
+            )
+            result = beats.result
+            narration = beats.narration
+            if result.get("ok") is False:
+                # A turn-state rejection: 409 on the trusted path, exactly as direct
+                # mode answers it (the agent reads the same refusal as result data).
+                # The drag played nothing, but the beats may have settled a turn that
+                # was left open — that reply is on the board now, so every client
+                # hears about it before the refusal goes back.
+                if ctx.session.fen() != before["fen"]:
+                    await _broadcast_state()
+                raise HTTPException(status_code=409, detail=result["error"])
+            commentary = ""
+            guarded = False
+            if beats.legal:
+                commentary = _move_commentary(
+                    narration.text if narration is not None else "",
+                    result,
+                    beats.engine_reply,
+                    beats.owed_reply,
+                    ctx.session,
+                )
+                # The honesty guard, on this road too: a reaction that announces
+                # something the drag did not actually do is replaced with the truth.
+                commentary, guarded = _guarded_commentary(
+                    commentary,
+                    _verified_facts(
+                        ctx, beats.changes, beats.engine_reply, before["fen"]
+                    ),
+                    {"move": move},
+                )
+                ctx.transcript.record(result["san"], commentary)
                 await _broadcast_state()
-            raise HTTPException(status_code=409, detail=result["error"])
-        commentary = ""
-        guarded = False
-        if beats.legal:
-            commentary = _move_commentary(
-                narration.text if narration is not None else "",
-                result,
-                beats.engine_reply,
-                beats.owed_reply,
-                ctx.session,
+            _trace_turn(
+                utterance=move,
+                route=ROUTE_BOARD,
+                commentary=commentary,
+                stop_reason="completed",
+                changed=beats.legal,
+                turn_id=turn_id,
+                correlation_id=correlation_id,
+                mutations=ctx.board_version - version_before,
+                fen_before=before["fen"],
+                fen_after=ctx.session.fen(),
+                tool_calls=[{"move": move}],
+                tool_results=beats.changes,
+                engine_reply=_move_reply_dict(beats.engine_reply),
+                guarded=guarded,
+                **_ModelCost.of(narration).as_trace(),
             )
-            # The honesty guard, on this road too: a reaction that announces
-            # something the drag did not actually do is replaced with the truth.
-            commentary, guarded = _guarded_commentary(
-                commentary,
-                _verified_facts(ctx, beats.changes, beats.engine_reply, before["fen"]),
-                {"move": move},
-            )
-            ctx.transcript.record(result["san"], commentary)
-            await _broadcast_state()
-        _trace_turn(
-            utterance=move,
-            route=ROUTE_BOARD,
-            commentary=commentary,
-            stop_reason="completed",
-            changed=beats.legal,
-            turn_id=turn_id,
-            correlation_id=correlation_id,
-            mutations=ctx.board_version - version_before,
-            fen_before=before["fen"],
-            fen_after=ctx.session.fen(),
-            tool_calls=[{"move": move}],
-            tool_results=beats.changes,
-            engine_reply=_move_reply_dict(beats.engine_reply),
-            guarded=guarded,
-            **_ModelCost.of(narration).as_trace(),
-        )
-        return {
-            "legal": beats.legal,
-            "san": result.get("san"),
-            "uci": result.get("uci"),
-            "reason": result.get("reason"),
-            "engine_move": (
-                _move_dict(beats.engine_reply)
-                if beats.engine_reply is not None
-                else None
-            ),
-            "state": _state_dict(ctx),
-            "commentary": commentary,
-            # Whether the client should voice it — the user's voice_output
-            # setting, the same contract `/api/command` has.
-            "speak": ctx.settings.voice_output,
-        }
+            return {
+                "legal": beats.legal,
+                "san": result.get("san"),
+                "uci": result.get("uci"),
+                "reason": result.get("reason"),
+                "engine_move": (
+                    _move_dict(beats.engine_reply)
+                    if beats.engine_reply is not None
+                    else None
+                ),
+                "state": _state_dict(ctx),
+                "commentary": commentary,
+                # Whether the client should voice it — the user's voice_output
+                # setting, the same contract `/api/command` has.
+                "speak": ctx.settings.voice_output,
+            }
 
     @app.post("/api/game/move")
     async def submit_move(request: MoveRequest) -> dict[str, Any]:
@@ -1026,7 +1146,7 @@ def create_app(
             # reply if one is owed. Trusted path, so a turn-state rejection is a
             # 409 rather than the error *result* the agent gets for the same thing.
             try:
-                result, reply = coordinator.play_exchange(request.move)
+                result, reply = await _offloop(coordinator.play_exchange, request.move)
             except TurnStateError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             engine_move = _move_dict(reply) if reply is not None else None
@@ -1291,6 +1411,25 @@ def create_app(
         except Exception:
             logger.warning("trace_failed", exc_info=True)
 
+    @contextmanager
+    def _command_window(correlation_id: str, turn_id: int) -> Iterator[None]:
+        """One user interaction, opened and closed at both ends at once.
+
+        The coordinator's destructive budget and the progress stream's brackets
+        are the same interaction seen from two sides — what may happen inside
+        it, and what the player is told is happening inside it — so they are
+        opened together and, more to the point, closed together in the same
+        `finally`. A command that raises half-way must neither leak an open
+        window into the next one nor leave a progress line spinning.
+        """
+        assert progress is not None  # bound above; narrows for the type checker
+        with progress.interaction(correlation_id, turn_id):
+            coordinator.begin_command()
+            try:
+                yield
+            finally:
+                coordinator.end_command()
+
     async def _run_command(
         text: str,
         transcript: Sequence[dict[str, str]],
@@ -1384,11 +1523,9 @@ def create_app(
         # thing in the app that can chain several dispatches inside a single
         # command, so it is the only surface that needs the coordinator's
         # destructive budget (the buttons and the confirm endpoint dispatch once
-        # by construction). The `finally` is the point of the window as much as
-        # the budget is: a command that raises half-way must not leak an open
-        # window into the next one.
-        coordinator.begin_command()
-        try:
+        # by construction). The window also brackets the turn's progress stream
+        # — same interaction, both ends closed in the same `finally`.
+        with _command_window(correlation_id, turn_id):
             # `tool_results` is the {"name", "result"} list the UI sees; `tool_args`
             # mirrors it with each call's arguments, for the delegate wire — kept
             # parallel so the UI-facing shape stays untouched.
@@ -1418,7 +1555,7 @@ def create_app(
             if armed is not None and answer is not None:
                 if answer:
                     ctx.pending = armed  # confirm_pending consumes it
-                    confirmed = confirm_pending(registry, ctx)
+                    confirmed = await _offloop(confirm_pending, registry, ctx)
                     assert confirmed is not None
                     name, result = confirmed
                     tool_results.append({"name": name, "result": result})
@@ -1433,8 +1570,11 @@ def create_app(
                         # words and degrades to the canned line — never a 500
                         # after the mutation, before the broadcast.
                         try:
-                            narration = brain.narrate(
-                                _agent_state_dict(ctx), tool_results, transcript
+                            narration = await _offloop(
+                                brain.narrate,
+                                _agent_state_dict(ctx),
+                                tool_results,
+                                transcript,
                             )
                         except ProviderError:
                             logger.warning("close_narration_failed", exc_info=True)
@@ -1451,7 +1591,9 @@ def create_app(
                 # The same beats a board drag runs, on the same helper: the parse is
                 # what differs between the two routes, never the sequencing.
                 route = ROUTE_FAST_PATH
-                move_beats = _play_move(fast_san, transcript, correlation_id)
+                move_beats = await _offloop(
+                    _play_move, fast_san, transcript, correlation_id
+                )
                 tool_results.extend(move_beats.changes)
                 tool_args.append({"move": fast_san})
                 if not move_beats.legal:
@@ -1488,8 +1630,11 @@ def create_app(
                     # resignation is already on the record, so the words are
                     # the only thing a dead provider may cost.
                     try:
-                        narration = brain.narrate(
-                            _agent_state_dict(ctx), tool_results, transcript
+                        narration = await _offloop(
+                            brain.narrate,
+                            _agent_state_dict(ctx),
+                            tool_results,
+                            transcript,
                         )
                     except ProviderError:
                         logger.warning("close_narration_failed", exc_info=True)
@@ -1501,7 +1646,9 @@ def create_app(
                         cost = _ModelCost.of(narration)
             else:
                 route = ROUTE_BRAIN
-                response = brain.get_agent_response(before, text, transcript)
+                response = await _offloop(
+                    brain.get_agent_response, before, text, transcript
+                )
                 tool_results = list(response.tool_results)
                 tool_args = [call.args for call in response.tool_calls]
                 stop_reason = response.stop_reason
@@ -1534,7 +1681,7 @@ def create_app(
                 TurnPhase.AGENT_OBSERVING,
             ):
                 owed_reply = True
-                engine_reply = coordinator.collect_engine_reply()
+                engine_reply = await _offloop(coordinator.collect_engine_reply)
                 coordinator.complete_turn()
             if move_beats is not None and move_beats.legal:
                 commentary = _move_commentary(
@@ -1623,8 +1770,6 @@ def create_app(
                 changed=changed,
                 stop_reason=stop_reason,
             )
-        finally:
-            coordinator.end_command()
 
     @app.post("/api/command")
     async def command(request: CommandRequest) -> dict[str, Any]:

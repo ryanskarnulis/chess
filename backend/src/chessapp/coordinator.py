@@ -44,13 +44,23 @@ dispatches inside a single interaction (the brain loop); the board buttons, the
 confirm endpoint and MCP dispatch once per interaction by construction, so they
 stay unconstrained — an MCP client may start game after game across a session.
 
+**The phase is observable, and only through one door.** Every transition goes
+through `_enter`, which is what `on_phase` is told — so the live progress the UI
+shows (`progress.py`, audit item 19) reads the machine instead of being narrated
+alongside it. A hand-placed "now we are calculating" would be a second copy of
+this sequence, free to drift from the real one; the same reason `mutations` is a
+`board_version` delta rather than a tally. Observing is decoration, so an
+observer that raises is swallowed: nothing about watching a turn may cost one.
+
 State lives on the coordinator, board truth stays in `GameSession`: the phases
 say what may happen next, never what is on the board. `ctx.session` and
 `ctx.engine` are read live on every call because `resume_game` swaps the session
 object on the context.
 """
 
+import logging
 import threading
+from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -58,6 +68,8 @@ from chessapp.game import GameSession, MoveResult
 
 if TYPE_CHECKING:  # tools.py imports this module; don't import it back.
     from chessapp.tools import ToolContext
+
+logger = logging.getLogger(__name__)
 
 
 class TurnPhase(StrEnum):
@@ -134,6 +146,10 @@ class TurnCoordinator:
         self._ctx = ctx
         self._turn_id = 1
         self._phase = TurnPhase.AWAITING_PLAYER
+        # Told every transition, by `_enter` and nothing else. Assigned after
+        # construction (`create_app` does it) so the machine can be built before
+        # whatever watches it; None is the ordinary unwatched state.
+        self.on_phase: Callable[[TurnPhase], None] | None = None
         self._pending: _PendingReply | None = None
         # The command window (see the module docstring). Deliberately not phase
         # state: the ops it budgets abandon the turn as part of running.
@@ -149,6 +165,22 @@ class TurnCoordinator:
         """Counts turn boundaries, from 1. Bumped when a turn completes, so a
         duplicated move is visible as two mutations under one id."""
         return self._turn_id
+
+    def _enter(self, phase: TurnPhase) -> None:
+        """Move to `phase` and tell the observer. The only writer of `_phase`.
+
+        One door so that what is watched and what is enforced are the same
+        thing. The observer runs *after* the move, so anything it triggers
+        (opening the observe beat, sending a progress event) reads a machine
+        that is already where it says it is.
+        """
+        self._phase = phase
+        if self.on_phase is None:
+            return
+        try:
+            self.on_phase(phase)
+        except Exception:
+            logger.warning("phase_observer_failed", exc_info=True)
 
     def _require(self, action: str, *allowed: TurnPhase) -> None:
         if self._phase not in allowed:
@@ -176,7 +208,7 @@ class TurnCoordinator:
         result = self._ctx.session.submit_move(move)
         if not result.legal:
             return result
-        self._phase = TurnPhase.PLAYER_MOVE_APPLIED
+        self._enter(TurnPhase.PLAYER_MOVE_APPLIED)
         if self._ctx.session.is_game_over():
             self.complete_turn()
             return result
@@ -213,7 +245,26 @@ class TurnCoordinator:
         thinking either way.
         """
         self._require("begin observation", TurnPhase.PLAYER_MOVE_APPLIED)
-        self._phase = TurnPhase.AGENT_OBSERVING
+        self._enter(TurnPhase.AGENT_OBSERVING)
+
+    def mark_observation(self) -> bool:
+        """Open the beat *if* a verified player move is waiting on one.
+
+        The conditional form of `begin_observation`, and the one the app's two
+        narration sites actually reach for. Both of them run on turns where no
+        move landed — a question, a settings change, a refused op — and a
+        reaction to nothing is not an observation; both also run on turns where
+        the beat is already open. Neither is an error, so neither may raise.
+        `begin_observation` stays strict: the rule is still that you cannot
+        observe a move that hasn't been made.
+
+        Returns whether it opened one, which is how a caller can tell "I am the
+        observation" from "I am just talking".
+        """
+        if self._phase is not TurnPhase.PLAYER_MOVE_APPLIED:
+            return False
+        self.begin_observation()
+        return True
 
     def collect_engine_reply(self) -> MoveResult | None:
         """Take the engine's answer and put it on the board.
@@ -239,9 +290,9 @@ class TurnCoordinator:
         engine = self._ctx.engine
         session = self._ctx.session
         if engine is None or session.is_game_over():
-            self._phase = TurnPhase.ENGINE_MOVE_APPLIED
+            self._enter(TurnPhase.ENGINE_MOVE_APPLIED)
             return None
-        self._phase = TurnPhase.ENGINE_CALCULATING
+        self._enter(TurnPhase.ENGINE_CALCULATING)
         uci = pending.result_for(session.fen()) if pending is not None else None
         if uci is None:
             uci = engine.choose_move(session)
@@ -249,7 +300,7 @@ class TurnCoordinator:
         # gate — background computation changes when it is decided, never who
         # decides whether it is legal.
         reply = session.submit_move(uci)
-        self._phase = TurnPhase.ENGINE_MOVE_APPLIED
+        self._enter(TurnPhase.ENGINE_MOVE_APPLIED)
         return reply
 
     def abandon_turn(self) -> None:
@@ -272,9 +323,9 @@ class TurnCoordinator:
         # answer goes nowhere. Waiting for it would make an undo pay for a
         # calculation it just made irrelevant.
         self._pending = None
-        self._phase = TurnPhase.COMPLETED
+        self._enter(TurnPhase.COMPLETED)
         self._turn_id += 1
-        self._phase = TurnPhase.AWAITING_PLAYER
+        self._enter(TurnPhase.AWAITING_PLAYER)
 
     def begin_command(self) -> None:
         """Open a command window: one user interaction, one destructive op.
@@ -348,11 +399,11 @@ class TurnCoordinator:
         engine = self._ctx.engine
         if engine is None or self._ctx.session.player_color != "black":
             return None
-        self._phase = TurnPhase.ENGINE_CALCULATING
+        self._enter(TurnPhase.ENGINE_CALCULATING)
         try:
             return engine.play_move(self._ctx.session)
         finally:
-            self._phase = TurnPhase.AWAITING_PLAYER
+            self._enter(TurnPhase.AWAITING_PLAYER)
 
     def complete_turn(self) -> None:
         """Close the turn and roll straight into the next one.
@@ -374,9 +425,9 @@ class TurnCoordinator:
                 )
         else:
             self._require("complete the turn", TurnPhase.ENGINE_MOVE_APPLIED)
-        self._phase = TurnPhase.COMPLETED
+        self._enter(TurnPhase.COMPLETED)
         self._turn_id += 1
-        self._phase = TurnPhase.AWAITING_PLAYER
+        self._enter(TurnPhase.AWAITING_PLAYER)
 
     def play_exchange(self, move: str) -> tuple[MoveResult, MoveResult | None]:
         """The whole sequence in one call: player move, engine reply, close.

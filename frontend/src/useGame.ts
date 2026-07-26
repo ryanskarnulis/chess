@@ -15,7 +15,9 @@ import {
   type ConfirmQuestion,
   type GameState,
   type LifecycleOutcome,
+  type SocketMessage,
 } from './api'
+import { NO_PROGRESS, applyProgress, type TurnProgress } from './progress'
 import { isPromotion, type PromotionPiece } from './promotion'
 import { playText } from './tts'
 
@@ -64,6 +66,13 @@ export interface UseGame {
   agentAvailable: boolean | null
   /** True while a command is in flight with the agent. */
   agentThinking: boolean
+  /**
+   * What the current turn is doing right now ("Stockfish is calculating"), or
+   * null between turns. Fed by the backend's live progress events, which are
+   * broadcast — so it fills in for a dragged move and for a turn another
+   * client started, neither of which `agentThinking` knows about.
+   */
+  agentProgress: string | null
   /** Send a free-form command to the agent. */
   sendCommand: (text: string) => Promise<void>
   /** Whether agent replies are spoken aloud; null until settings load. */
@@ -107,6 +116,7 @@ export function useGame(): UseGame {
   )
   const [commentary, setCommentary] = useState<string | null>(null)
   const [agentThinking, setAgentThinking] = useState(false)
+  const [progress, setProgress] = useState<TurnProgress>(NO_PROGRESS)
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
   const [voiceOutput, setVoiceOutputState] = useState<boolean | null>(null)
   const [tier, setTierState] = useState<string | null>(null)
@@ -152,8 +162,13 @@ export function useGame(): UseGame {
     })
     const socket = new WebSocket(stateSocketUrl())
     socket.onmessage = (ev) => {
-      const message = JSON.parse(ev.data) as { type: string; state: GameState }
+      const message = JSON.parse(ev.data) as SocketMessage
+      // Two kinds of message on the one channel: the authoritative board, and
+      // what the turn changing it is doing at this moment.
       if (message.type === 'state') apply(message.state)
+      else if (message.type === 'progress') {
+        setProgress((current) => applyProgress(current, message.progress))
+      }
     }
     return () => {
       live = false
@@ -350,6 +365,7 @@ export function useGame(): UseGame {
     commentary,
     agentAvailable,
     agentThinking,
+    agentProgress: progress.label,
     sendCommand,
     voiceOutput,
     setVoiceOutput,

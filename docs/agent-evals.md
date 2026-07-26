@@ -399,6 +399,20 @@ growing, and a planner context with sixteen fewer turns of personality in it.
 
 ## Recorded baseline
 
+**Run 2026-07-25 on the live-progress build (Sprint 5, slice 2): the standing
+release-blocker holds — `long_capture` 5/5 in all three conditions (fresh,
+live_like, poisoned), plus the three cost scenarios the slice could plausibly
+have disturbed: `fast_path_low` **0 model calls** (a plain move is still
+zero-LLM), `fast_path_normal` 1, `plain_move` 3.** Not a full-suite run, and by
+the #148/#149/#153/#160/#161 precedent the gate is not strictly triggered — no
+prompt, model, tool-schema or control-flow change; what the model sees is
+byte-identical. But the slice touches the loop file (the brain now reports which
+phase it is entering) and moves the pipeline's blocking steps into worker
+threads, so the sequencing was measured rather than argued: the phase reports
+are side effects around the existing calls, and the thread hop changes when the
+loop is free, never the order anything happens in. The two cost scenarios are
+the ones that would notice if it had.
+
 **Run 2026-07-25 on the turn-memory digest build (Sprint 4, slice 1): 23 passed,
 every pass-rate scenario 5/5, in a single run — the baseline holds.** Third
 clean full-suite pass on record, and the first on the condensed context. Every

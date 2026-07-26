@@ -15,7 +15,6 @@ Parked work: branch `chore/clean-tool-schema-noise` holds the uncommitted `make_
 
 ### Sprint 5 — P4/P5: observability and eval hardening (audit 18, 19, 21–23)
 
-- [ ] **[M] Live phase progress in the UI** (audit 19; absorbs the old "show tool calls live" item). Surface "validating your move" / "Glitch is reacting" / "Stockfish is calculating" as the coordinator moves through states, plus the tool calls as they happen — essential once a turn has multiple intentional phases. The trace slice's `correlation_id` is the natural key for the event stream (nothing on the wire carries it yet — that decision is this slice's).
 - [ ] **[S] Eval statistics worth trusting** (audit 23; the old flaky-floor item). 5-run pass rates flip on a coin at the floor — raise repetitions or use confidence intervals, decided from a measured ~20-run rate; report deterministic failures separately from model variance. Add a scheduled eval run (audit 21's one new bit — the CI/eval split already exists).
 - [ ] **[S] E2E gap sweep against the audit's risk list** (audit 22). Most of its eight scenarios land as acceptance tests inside the slices above; this closes whatever's left (drag-through-Glitch, observe-before-reply, no duplicate moves, hints-off, pending-op safety, provider-failure resumability, stale-version rejection, concurrent clients) as deterministic CI tests at the tool boundary.
 - [ ] **[S] Fresh traced session on the new architecture** (old audit finding 10, still right). The 46 traced turns predate everything above; re-baseline with token counts once Sprint 1–2 land.

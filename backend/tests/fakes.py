@@ -171,6 +171,23 @@ def scripted_app(ctx, *responses: AgentResponse, brain=None, **create_kwargs):
     )
 
 
+def receive_state(ws) -> dict:
+    """The next *state* document off the websocket, skipping progress frames.
+
+    One channel carries two kinds of message (`api.StateBroadcaster`): the
+    authoritative board document, and the live progress of the turn that is
+    changing it. A test that is about the board says so by asking for the board;
+    what it must never do is silently accept a progress frame as one, which is
+    what a bare `receive_json` would now do. Blocks until a state arrives, so a
+    test asserting a broadcast *happened* still fails (by hanging out to the
+    suite's own limits) when it did not.
+    """
+    while True:
+        message = ws.receive_json()
+        if message["type"] == "state":
+            return message
+
+
 def text_turn(
     content: str | None,
     *,

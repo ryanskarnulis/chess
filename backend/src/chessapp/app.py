@@ -30,6 +30,7 @@ from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
 from chessapp.personality import planner_prompt_for, system_prompt_for
+from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider
 from chessapp.tools import BOARD_STATE_TOOLS, ToolContext, build_registry
 from chessapp.trace import JsonlTracer, Tracer
@@ -83,6 +84,14 @@ def build_app(
     # one machine's, so a dragged move and a typed move cannot disagree about
     # which turn the game is on.
     coordinator = TurnCoordinator(ctx)
+    # Live progress (audit item 19). Built here, before the things that report
+    # through it, because the *brain* is one of them and only assembly can reach
+    # it: the coordinator and the registry are wired by `create_app`, but a
+    # brain is constructed complete. `on_narrating` is why this is not merely
+    # decoration — the narrator turn *is* the coordinator's observation beat,
+    # and the brain, holding no coordinator by design, can only report that it
+    # started; marking the phase is this wire's job.
+    progress = ProgressReporter(on_narrating=coordinator.mark_observation)
     # One registry for the whole app: the brain dispatches its tool calls
     # through it and the pipeline runs the fast path through it, so the tools
     # the agent is offered are exactly the tools that execute.
@@ -127,6 +136,10 @@ def build_app(
             planner_prompt_provider=lambda: planner_prompt_for(ctx.settings.hints_mode),
             planner_temperature=planner_temperature,
             provider=provider,
+            # The brain's own two phases, live (`progress.py`). Nothing else
+            # can see inside `get_agent_response`, and the narrator half of it
+            # is the observe beat.
+            on_phase=progress.brain,
         )
     return create_app(
         ctx,
@@ -136,6 +149,7 @@ def build_app(
         registry=registry,
         tracer=tracer,
         coordinator=coordinator,
+        progress=progress,
     )
 
 

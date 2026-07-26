@@ -20,7 +20,7 @@ from chessapp.conversation import RECENT_TURNS
 from chessapp.game import GameSession
 from chessapp.provider import ProviderRequestError
 from chessapp.tools import ToolContext
-from fakes import ScriptedBrain, scripted_app
+from fakes import ScriptedBrain, receive_state, scripted_app
 
 
 @pytest.fixture(autouse=True)
@@ -302,9 +302,9 @@ def test_delegate_move_broadcasts_to_the_web_board():
     client, _, _ = make_client(narrations=("ok",))
     conversation_id = new_conversation(client)
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()  # connect snapshot
+        receive_state(ws)  # connect snapshot
         send(client, conversation_id, "e4")
-        message = ws.receive_json()
+        message = receive_state(ws)
     assert message["state"]["history"] == ["e4"]
 
 

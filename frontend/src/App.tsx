@@ -32,6 +32,7 @@ function App() {
     commentary,
     agentAvailable,
     agentThinking,
+    agentProgress,
     sendCommand,
     voiceOutput,
     setVoiceOutput,
@@ -102,6 +103,7 @@ function App() {
         onSubmit={sendCommand}
         commentary={commentary}
         thinking={agentThinking}
+        progress={agentProgress}
         voiceOutput={voiceOutput}
         onToggleVoice={setVoiceOutput}
         showCommentary={false}
@@ -116,7 +118,11 @@ function App() {
           Direct mode — Stockfish only, no agent
         </p>
       )}
-      <AgentBubble commentary={commentary} thinking={agentThinking} />
+      <AgentBubble
+        commentary={commentary}
+        thinking={agentThinking}
+        progress={agentProgress}
+      />
       {board ?? <p className="status">Connecting…</p>}
       {moveError && (
         <p className="move-error" role="alert">

@@ -29,7 +29,7 @@ from chessapp.game import GameSession
 from chessapp.provider import ProviderError
 from chessapp.tools import ToolContext, build_registry
 from chessapp.trace import JsonlTracer
-from fakes import FakeEngine, ScriptedBrain, scripted_app
+from fakes import FakeEngine, ScriptedBrain, receive_state, scripted_app
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -130,11 +130,11 @@ def test_a_drag_out_of_turn_is_409_and_settles_the_open_turn():
     coordinator.apply_player_move("e4")  # a turn is open, mid-sequence
 
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()  # connect snapshot
+        receive_state(ws)  # connect snapshot
         response = client.post("/api/game/move", json={"move": "d2d4"})
         # The settled reply is on the board, so the clients are told even though
         # the request itself was refused.
-        assert ws.receive_json()["state"]["history"] == ["e4", "e5"]
+        assert receive_state(ws)["state"]["history"] == ["e4", "e5"]
 
     assert response.status_code == 409
     assert "d4" not in ctx.session.move_history(), "the refused drag played nothing"
@@ -229,9 +229,9 @@ def test_a_drag_records_the_turn_on_the_transcript():
 def test_a_drag_broadcasts_the_new_state():
     client, _, _ = agent_client(narrations=("ok",), engine=FakeEngine())
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()  # connect snapshot
+        receive_state(ws)  # connect snapshot
         client.post("/api/game/move", json={"move": "e2e4"})
-        message = ws.receive_json()
+        message = receive_state(ws)
     assert message["state"]["history"] == ["e4", "e5"]
 
 
