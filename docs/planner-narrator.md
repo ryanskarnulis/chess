@@ -63,8 +63,12 @@ rejection). Both are contract lines, not tone — the compactness tripwire in
 
 …and drops everything about **speaking**, including the verbosity layer: the
 planner has no words to lengthen or shorten. Hints mode still reaches it, as one
-line about `get_best_moves` — permission is a tool question, not a tone
-question. The same setting reaches the narrator too, as tone.
+line about `get_best_moves` when hints are on — but since the Sprint 3 gating
+slice the *permission* itself is not the prompt's: with hints off the tool is
+withheld from the offer entirely (the offer, like the prompts, resolves per
+command off live settings), so a call at it is a schema-level unknown that never
+dispatches. The prompt line is orientation; the code is the gate. The same
+setting reaches the narrator too, as tone.
 
 Its closing instruction is the handoff: one short factual line about what
 happened or what needs answering, *never* addressed to the player.

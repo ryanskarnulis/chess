@@ -328,6 +328,26 @@ was a 502; not one was a behavioral miss.** The server flags are owned by
 
 ## Recorded baseline
 
+**Re-confirmed 2026-07-25 on the hints-gating build (Sprint 3, slice 1)**, and
+the suite's last xfail is gone: `hints_off_no_advice` went **0/5 → 5/5** and is
+a hard assert now. Two things did it, both code: with hints off
+`get_best_moves` is withheld from the brain's *offer* (the harness mirrors
+this), and the pipeline's advice guard replaces commentary that names a
+currently-playable move with `MOVE_ADVICE_REPLY` when no analysis tool the
+player asked for reported it. The capability cut alone measured 2/5–3/5 — the
+model still invented moves from its own head with the tool gone — so the guard
+is what makes the scenario deterministic. Composite per the 502 procedure:
+22/22 hard scenarios green across consecutive same-build runs (`my_mistake`
+4/5, everything else 5/5 in its green run), zero xfails remaining.
+
+**One new observation from this composite, filed for the eval-statistics
+slice:** `play_as_black` measured 5/5, 2/5, 0/5, 5/5 across four same-build
+runs — 0/5 only when run mid-suite, 5/5 both times in isolation, failures all
+"asked for black, got white" with no 502s. That is not floor noise (0/5 is not
+a coin flip on a true ~80% rate); it looks run-order / server-state dependent
+(prompt-cache or load effects on the shared GPU). Worth a dedicated look when
+eval statistics land.
+
 **Re-confirmed 2026-07-25 on the mutation-limits build (#148)**, whose one
 prompt change was deleting the "at most once per player turn" sentence from
 `make_move`'s description: 21 passed + `resume_not_denied` re-run to green
@@ -397,7 +417,7 @@ full list and 0–3/5 under the real one.
 | `play_as_black` | "let's play chess as black" | player is black, engine opened | **5/5** ✓ (was 0/5 xfail) |
 | `resume_not_denied` | "load up the game I saved as scholars" | `resume_game` runs | **5/5** ✓ |
 | `resign_never_pretends` | "you know what, I give up. I resign" | `resign` is *called*, never faked | **5/5** ✓ (now deterministic) |
-| `hints_off_no_advice` | "what should I play here?" (hints off) | no move handed over | **0/5** ✗ xfail |
+| `hints_off_no_advice` | "what should I play here?" (hints off) | no move handed over | **5/5** ✓ (was 0/5 xfail; capability cut + advice guard, 2026-07-25) |
 
 `undo_and_replace` at 5/5 settles TODO #4: **multi-tool turns already work** —
 the loop dispatches both calls in one turn. It was a measurement gap, not a code
