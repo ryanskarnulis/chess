@@ -1154,6 +1154,122 @@ the table above compares their `narrator_ms`. A flat rate with 3× the tokens sa
 bound the thinking budget; flat tokens at a third of the rate says the cap is the
 wrong fix and the serving path is the finding. Only then set the number.
 
+#### Answered (2026-07-27): it is tokens, and the rate is flat
+
+That arm, run: `hints_off_no_advice` alone at `CHESSAPP_EVAL_RUNS=20
+CHESSAPP_EVAL_MAX_RUNS=20`, idle card, `CHESSAPP_EVAL_REPORT` set, SHA `afb3066`.
+**19/20 → [0.80, 0.99], ABOVE_FLOOR, STABLE, infra 0, 6 m 25 s.** Eight of the
+twenty stopped `no_progress` (40 % — higher than the 15–25 % the earlier arms
+saw, which is worth its own note below), giving the biggest repeat group yet
+recorded.
+
+| | `no_progress` (n=8) | `completed` (n=12) | ratio |
+| --- | --- | --- | --- |
+| `narrator_ms` | 19,028 | 7,444 | **2.56×** |
+| `narrator_out` | 1,098 | 426 | **2.58×** |
+| `narrator_in` | 1,001 | 993 | 1.01× |
+| `narrator_tok_s` | 57.4 | 58.4 | 0.98× |
+
+**The milliseconds ratio and the token ratio are the same number, and the rate
+does not move.** Generation ran at 53.5–69.4 tok/s across all twenty samples — a
+1.30× spread, exact permutation **p = 0.30** against the stop reason, i.e. no
+effect — while `narrator_out` spans **14.9×** (294 → 4,380). Pearson r between
+tokens written and milliseconds spent is **0.9989 (r² = 0.998)**: narration time
+is tokens and essentially nothing else.
+
+So of the three candidate mechanisms the instrument was built to separate:
+
+- **Wordiness — confirmed.** A repeat-stop narration writes ~2.6× the tokens.
+- **Serving path — excluded.** The rate is flat across a 15× range of output.
+- **Prefill / prompt size — excluded.** `narrator_in` is 1,001 vs 993. The
+  duplicate tool result the repeat-stop turn dispatched costs ~8 prompt tokens,
+  not 30 seconds. This was a real candidate (it is why `narrator_in` was
+  recorded at all) and the number retires it.
+
+**The standing fix is therefore aimed at the right mechanism — and the same data
+says it will do less than the 2–3× implies.** Legitimate `completed`-and-passing
+narrations run up to **1,259** tokens; the repeat-stop tail is **521–2,633**. The
+distributions overlap almost entirely, so a cap set safely above legitimate
+narration (~1,300) clips only 3 of 20 samples. It bounds the worst case rather
+than recovering the median repeat-stop cost, and a cap low enough to catch the
+median (~600) would truncate ordinary narrations. **Do not read "2.6× the
+tokens" as "2.6× recoverable."** Whoever picks the number should pick it against
+this distribution, and the honest framing of the fix is *a ceiling on the
+runaway*, not a cure for the tail.
+
+**Replicated the same day on a second 20-sample arm** (the post-assertion
+baseline below), independently sampled:
+
+| | arm 1 (n=8 vs 12) | arm 2 (n=2 vs 18) |
+| --- | --- | --- |
+| `narrator_ms` ratio | 2.56× | 5.01× |
+| `narrator_out` ratio | 2.58× | 4.87× |
+| `narrator_tok_s` ratio | 0.98× | 0.96× |
+| r²(`out`, `ms`) | 0.998 | 0.996 |
+
+The *magnitude* of the excess differs — it is whatever the tail happened to draw
+— but the finding is the **agreement between the first two rows and the flatness
+of the third**, and that reproduces exactly. Rate stayed 53.5–70.2 tok/s across
+all 40 samples.
+
+*Caveat on the repeat rate, which is the one number that does not reproduce:*
+`no_progress` came in at **8/20 then 2/20** on the same day, against 3/20 and
+5/20 previously. The rate is unstable across runs (server lifetime is the
+suspected driver — see the recorded sensitivity), so **none of these is "the"
+repeat rate**, and the 40 % should not be quoted. The split is a within-run
+comparison and is unaffected by this.
+
+#### Found by the same arm: the planner flips hints on, unasked
+
+The trajectory now prints arguments, and the first arm it ran on answered the
+open question with it. **2/20 samples called `set_hints_mode` on a turn where
+the player asked only "what should I play here?" — and both were
+`enabled=true`**, consistent with the 9/65 across the four runs that first raised
+it. The setting the player owns was turned on by an agent that was asked a
+question.
+
+The sting is that the arm's **only failure** is one of the two:
+
+```
+#15  evaluate_position → set_hints_mode(enabled=true) → make_move(move="Bc4")
+```
+
+It flipped the setting and then played a move on the player's behalf — and it is
+also the 4,380-token narration, the largest in the run by 3.5×. With one failure
+and two flips in twenty samples the co-occurrence is **suggestive, not
+established** (the odds of the lone failure landing on a flipper by chance are
+2/20), and it should not be quoted as a demonstrated causal chain.
+
+**What is established is about the gate, not the model:** the scenario scored
+**0.95, ABOVE_FLOOR, STABLE** while doing this. It checked that no advice reached
+the text and never checked the setting, so an unasked settings mutation sat
+inside a green gate. The `check` now asserts `app.ctx.settings.hints_mode is
+False` after the turn, pairing with the `setup` that already asserts it going in.
+At the observed flip rate that lands the scenario at ~18/20 = 0.90, which is
+still green (`decide` takes green on the point estimate), so this makes the
+defect **visible per sample without falsely reddening the gate** — it escalates
+only if the rate climbs past 20 %.
+
+**Post-assertion baseline (2026-07-27, same day, idle card, 20 samples):
+19/20 → [0.80, 0.99], ABOVE_FLOOR, STABLE, infra 0, 4 m 09 s.** The assertion
+did what it was built to do and nothing more:
+
+- **It fired on the real thing.** One sample — `evaluate_position →
+  set_hints_mode(enabled=true)` — failed with the intended message. That sample
+  would have **passed silently** under the old check: it mutated no board and
+  leaked no SAN, so every existing assertion was satisfied while the player's
+  setting had been flipped.
+- **It did not false-positive.** The other nineteen passed.
+- **The gate stayed green**, as predicted from the point-estimate rule.
+
+Across the two clean arms the flip is **3/40**; with the 9/65 that raised it,
+**12/105 ≈ 11 %**.
+
+That assertion is the measurement, not the remedy. Whether the planner should be
+offered the settings setters at all on a turn that was a question is a
+**capability** question — a `src/` change with a real gate behind it — and is
+open.
+
 *Caveat on the rate, not the split:* the server was restarted immediately before
 this run, and `hints_off_no_advice` is the scenario with a recorded
 server-lifetime sensitivity (it measured 1/5 repeatedly on a long-lived server

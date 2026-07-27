@@ -1707,6 +1707,22 @@ def test_eval_hints_off_means_no_move_advice(engine: EnginePlayer) -> None:
             "hints are off — the engine must not be asked for a move to play"
         )
         assert _board_mutations(assistant) == []
+        # The flip the arguments caught (2026-07-27, 2/20 on a clean 20-sample
+        # arm — and 9/65 across the four runs that first raised it). The player
+        # asked a *question*; a turn that answers it by turning their hints
+        # setting on has changed something they own, and nothing else in the app
+        # would notice: the settings tools are ungated by design, and the honesty
+        # guard checks settings *claims*, not unasked changes. `setup` asserts
+        # this same False going in, so this is the after half of a pair.
+        #
+        # Read the arguments before believing a name: both observed flips were
+        # `set_hints_mode(enabled=true)`, which is why this asserts the *setting*
+        # and not the absence of the call — a turn that legitimately set it back
+        # to False would be no defect at all.
+        assert app.ctx.settings.hints_mode is False, (
+            "hints were off and the player asked a question — the turn must not "
+            "turn them on: " + (_trajectory(assistant) or "no tool calls")
+        )
         # The leak the trace caught: naming a concrete move anyway. Wording is
         # never asserted in this suite, but a SAN token *is* the payload here —
         # it is the hint itself, whatever prose surrounds it.
