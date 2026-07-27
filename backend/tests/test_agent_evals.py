@@ -101,6 +101,14 @@ same `model_ms`. Nothing in `src/` changed to get this — the readings were
 already on the record, and the harness-bug precedent (a wrong tool offer silently
 moving a scenario from 5/5 to 0–3/5) is why a diagnostic slice does not touch
 production.
+
+**And the trajectory says what each call asked for** (Sprint 5) — `make_move` on
+the line is now `make_move(move="e2e4")`, arguments sorted, values as JSON,
+long ones cut. Same rule as above: the arguments were already on the wire and
+only the reporting path dropped them. The blind spot was live — a `set_hints_mode`
+call turns up on 9/65 `hints_off_no_advice` samples where the player asked only
+"what should I play here?", and the old line could not say which way it flipped
+a setting the player owns.
 """
 
 from __future__ import annotations
@@ -511,10 +519,46 @@ def _board_mutations(assistant: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+_MAX_ARG_CHARS = 24
+
+
+def _arguments(arguments: dict[str, Any]) -> str:
+    """What one call asked for, as `(name=value, …)` — or nothing at all when it
+    asked for nothing, because empty parens on every read tool would be noise on
+    every line.
+
+    Values are compact JSON rather than bare text so a string and a boolean stay
+    apart (`enabled="true"` is a mis-invocation; `enabled=true` is the call), and
+    keys are sorted so the same call renders the same way in every sample: the
+    line is read by scanning for differences between samples, and an ordering
+    that tracked the model's emission order would manufacture them. Long values
+    are cut visibly — one trajectory shares a terminal line with eleven other
+    clauses, and a pasted PGN would cost the whole record.
+    """
+    rendered: list[str] = []
+    for name in sorted(arguments):
+        value = json.dumps(arguments[name], separators=(",", ":"), default=str)
+        if len(value) > _MAX_ARG_CHARS:
+            value = value[: _MAX_ARG_CHARS - 1] + "…"
+        rendered.append(f"{name}={value}")
+    return f"({', '.join(rendered)})" if rendered else ""
+
+
 def _trajectory(assistant: dict[str, Any]) -> str:
+    """The turn's calls in order, each with the arguments it carried.
+
+    The arguments are the point (TODO.md's "does the planner flip hints on when
+    nobody asked?"): `set_hints_mode` on the line said a setting had been
+    changed and could not say which way. They ride on the wire already, so
+    reading them costs nothing but this rendering.
+
+    Both failure markers are `!` suffixes *after* the arguments — the rejected
+    move's used to be `make_move(illegal)`, which alongside real arguments would
+    read as an argument named `illegal`.
+    """
     tokens: list[str] = []
     for call in _tool_calls(assistant):
-        token = call["tool"]
+        token = call["tool"] + _arguments(call.get("arguments") or {})
         if call["error"] is not None:
             token += "!"
         elif (
@@ -522,7 +566,7 @@ def _trajectory(assistant: dict[str, Any]) -> str:
             and call["result"]
             and json.loads(call["result"]).get("legal") is not True
         ):
-            token += "(illegal)"
+            token += "!illegal"
         tokens.append(token)
     return " → ".join(tokens)
 
@@ -1273,6 +1317,11 @@ def _pass_rate(
                     # records side by side, per sample, can.
                     **run.tokens.as_record(),
                     "narrator_tok_s": run.narrator_tok_s,
+                    # And what it did, with the arguments. A per-run count of
+                    # "how many samples called `set_hints_mode`, and which way"
+                    # is the question this record answers off the report file;
+                    # off scrollback it is a hand tally across four runs.
+                    "trajectory": _trajectory(run.assistant),
                     "error": str(error) if error is not None else None,
                 }
             )
