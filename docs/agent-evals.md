@@ -1006,8 +1006,66 @@ the other.
 > and per phase* above), so the next run of either arm answers this directly —
 > if the gap is the narrator's own round trip, `planner_ms` on the `no_progress`
 > samples matches the `completed` ones and `narrator_ms` does not; if the sample
-> was simply hard, both are up. **Not yet measured** — the instrument landed
-> without a GPU run, and no number here has changed.
+> was simply hard, both are up.
+
+#### Measured (2026-07-26): the excess is the narrator's round trip
+
+`hints_off_no_advice` alone, `CHESSAPP_EVAL_RUNS=20 CHESSAPP_EVAL_MAX_RUNS=20`, on
+a **freshly restarted** llama-server with nothing else on the GPU (the previous
+attempt was abandoned: another client held a single 4-minute generation, and a
+latency comparison under contention measures the contention). **20/20 →
+[0.88, 1.00], ABOVE_FLOOR, STABLE, infra 0, inconclusive 0, 4 m 21 s.** Three of
+the twenty stopped `no_progress` — 15%, matching the 3/20 and 5/20 the earlier
+arms saw, so the repeat rate is stable across runs.
+
+All three repeat-stops cost **4 model calls**, so the comparison is against the
+twelve `completed` samples at the same count:
+
+| | planner_ms | narrator_ms |
+| --- | --- | --- |
+| `no_progress` (n=3) | 1.000 / 1.005 / 1.007 s | 17.3 / 19.4 / 38.6 s |
+| `completed` @ 4 calls (n=12) | median **1.9 s** | median **8.3 s** (range 5.2–14.6) |
+
+**Every one of the three repeat-stop narrations exceeds every one of the
+seventeen `completed` narrations in the run.** Under exchangeability the chance
+of that is `1/C(20,3)` — an exact one-sided permutation **p = 0.00088** — so the
+gap is not three unlucky draws. The excess is confined to the single narrator
+call, and it is *not* paid in extra model calls.
+
+**The planner is cheaper on those turns, and that is structural rather than
+evidence about difficulty.** The per-call readings show where the two arms part:
+a repeat-stop turn's planner calls run `[237, 417, 353]` ms against a completed
+turn's `[255, 428, 1035]` — the first two are indistinguishable and only the
+*third* diverges, which is exactly the call whose job differs. On a completed
+turn the third planner call writes the handoff note (text); on a repeat-stop turn
+it re-emits a duplicate tool call and the loop ends the phase. So `planner_ms`
+is **not** a clean probe for "was this sample hard" — the two arms' planners are
+doing different work, and the earlier framing of this note overstated what a
+matching planner would have proved.
+
+**What is therefore established:** the 2–3× is one model call, the narrator's,
+and bounding *that* round trip is the fix-shaped question. **What is not:**
+whether the narrator is slow because its brief genuinely differs on a repeat-stop
+turn (more tool results, one of them redundant, plus `_NO_PROGRESS_NOTE`, with
+thinking ON) or because those samples are intrinsically harder to narrate. Three
+near-identical planner times (1.000–1.007 s) against narrator times spanning
+17.3–38.6 s lean structural — a stereotyped path producing wildly varying
+reasoning lengths — but that is inference, not measurement.
+
+**The next instrument, and it is again harness-only.** Latency alone cannot
+separate "the narrator emitted more reasoning tokens" from "generation was
+slower"; that needs per-call **token** counts, and `CountingProvider` already
+observes every round trip individually, so recording usage on `ModelCall` answers
+it with no `src/` change. Worth doing before bounding the narrator's thinking
+budget — a cap set against an unexplained latency is a guess with a number on it.
+
+*Caveat on the rate, not the split:* the server was restarted immediately before
+this run, and `hints_off_no_advice` is the scenario with a recorded
+server-lifetime sensitivity (it measured 1/5 repeatedly on a long-lived server
+against 5/5 on a crash-cycling one — suspected q8 prefix-KV reuse). So the 20/20
+is consistent with the post-fix arms but is not a like-for-like comparison to a
+number taken on a long-uptime server. The latency split is unaffected: it is a
+within-run comparison.
 
 **Gate — full suite, default knobs, `fix/planner-repeat-stop`: 23 items passed
 in 3 m 09 s, 75 samples, infra 0/25.** All **fifteen** pass-rate scenarios
