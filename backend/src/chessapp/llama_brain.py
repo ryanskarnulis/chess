@@ -119,6 +119,18 @@ _ANALYSIS_TOOLS = frozenset(
     {"evaluate_position", "get_best_moves", "analyze_last_move"}
 )
 
+# The handoff note for a turn the *loop* ended (`no_progress`) rather than the
+# planner. The planner never reached the turn that writes one, and handing the
+# narrator a brief with no note at all was measured to cost real seconds: with
+# nothing saying the work was finished, it reasoned about what to do next
+# instead of what to say (`docs/agent-evals.md`). So the loop supplies the one
+# fact it owns. Deliberately about the *work* and not the machinery: how the
+# planning phase ended is nobody's business but the trace's, and a note that
+# mentioned repeated calls would invite commentary about the loop.
+_NO_PROGRESS_NOTE = (
+    "Nothing further was done — the results above are everything this turn has."
+)
+
 
 @dataclass
 class LlamaBrain:
@@ -259,9 +271,12 @@ class LlamaBrain:
                 # planner has stopped making progress and this turn is its last.
                 # Not a budget stop: results *did* come back, so the narrator
                 # closes the turn from them and the player gets an answer
-                # instead of the pipeline's canned stuck line. There is no
-                # handoff note — the planner never got to write one.
-                return self._close(run, command, "", transcript, "no_progress")
+                # instead of the pipeline's canned stuck line. The note is the
+                # loop's own, because the planner never reached the turn that
+                # writes one — see `_NO_PROGRESS_NOTE`.
+                return self._close(
+                    run, command, _NO_PROGRESS_NOTE, transcript, "no_progress"
+                )
 
         return run.response("", "max_iterations")
 

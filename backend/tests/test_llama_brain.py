@@ -22,7 +22,7 @@ import pytest
 
 from chessapp.brain import AgentResponse
 from chessapp.game import GameSession
-from chessapp.llama_brain import LlamaBrain, create_llama_brain
+from chessapp.llama_brain import _NO_PROGRESS_NOTE, LlamaBrain, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, planner_prompt_for, system_prompt_for
 from chessapp.provider import (
     ProviderError,
@@ -521,15 +521,32 @@ def test_a_repeat_stop_reaches_the_narrator_with_what_the_turn_verified():
     )
 
 
-def test_a_repeat_stop_writes_no_note_into_the_narrators_brief():
-    # There is no planner note on this stop — the planner never got to write
-    # one — and the brief must not pretend otherwise with an empty heading.
+def test_a_repeat_stop_hands_the_narrator_the_loops_own_note():
+    # The planner never reached the turn that writes a note, so the loop
+    # supplies one — a brief with no note at all measured slower live, the
+    # narrator reasoning about what to do next instead of what to say. It says
+    # the work is finished and nothing about the loop that finished it.
     brain, provider = make_brain(
         tool_calls_turn(("evaluate_position", {})),
         tool_calls_turn(("evaluate_position", {})),
         text_turn("reply"),
     )
     brain.get_agent_response(board_state={}, command="what should I play?")
+
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert _NO_PROGRESS_NOTE in brief
+    assert "repeat" not in brief.lower()  # the machinery stays in the trace
+
+
+def test_an_empty_planner_note_leaves_the_heading_out_of_the_brief():
+    # The planner *can* hand off with nothing to say. An empty heading would
+    # read as a note that said nothing, which is a different claim.
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn(""),  # the planner's handoff, wordless
+        text_turn("reply"),
+    )
+    brain.get_agent_response(board_state={}, command="how's it looking?")
 
     brief = provider.calls[-1]["messages"][-1]["content"]
     assert "Note from the layer that did it" not in brief
