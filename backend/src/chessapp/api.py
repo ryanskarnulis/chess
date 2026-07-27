@@ -482,12 +482,19 @@ class _MoveBeats:
     one was ever owed — `owed_reply` is False both when the game ended on the
     player's own move and when the coordinator had nothing open, and the
     commentary needs to tell those apart from "the engine passed".
+
+    `observed_fen` is the board the narration was written from — the position
+    after the player's move, before the reply. The honesty guard needs it:
+    checking a reaction against the position that came *after* the one it
+    reacted to is how ordinary trades came to be guarded as lies. `None` when
+    no narration ran, because then there is nothing that saw a board.
     """
 
     changes: list[dict[str, Any]]
     narration: Narration | None
     engine_reply: MoveResult | None
     owed_reply: bool
+    observed_fen: str | None = None
 
     @property
     def result(self) -> dict[str, Any]:
@@ -575,6 +582,7 @@ def _verified_facts(
     tool_results: Sequence[dict[str, Any]],
     engine_reply: MoveResult | None,
     fen_before: str,
+    fen_observed: str | None = None,
 ) -> VerifiedFacts:
     """What this turn may honestly say, assembled from the record of it.
 
@@ -588,15 +596,33 @@ def _verified_facts(
     better"), which stopped being legal the moment the turn played something
     else, and reciting the move list or a PGN is a read the tools support —
     both turn up in the 46 recorded live turns, and both are board truth.
+
+    `fen_observed` is the board the *narrator* was looking at: the observation
+    beat hands it the position after the player's move, while Stockfish is
+    still computing the answer this function is standing behind. Without it the
+    turn is checked from a board its own commentary never saw — a recapture
+    flips the material count between the two, and the mid-turn legal moves the
+    state block itself hands the narrator appear in neither `fen_before` nor
+    now. Both are boards this turn really held, so both count; an invented fact
+    is invented from all of them. `None` for a route that produced no
+    observation, and unnecessary on the brain route, whose narrator saw
+    `fen_before`.
     """
     outcome = ctx.session.outcome()
     captured = ctx.session.captured_pieces()
     opponent = "black" if ctx.session.player_color == "white" else "white"
-    moves = (
-        set(ctx.session.legal_moves())
-        | set(GameSession(fen=fen_before).legal_moves())
-        | set(ctx.session.move_history())
-    )
+    # Every position this turn held, the player's side carried along: whose
+    # advantage the count is measured from is session state, and a session
+    # rebuilt from a FEN alone would default it to white and silently invert
+    # the material fact for a player playing black.
+    boards = [ctx.session] + [
+        GameSession(fen=fen, player_color=ctx.session.player_color)
+        for fen in (fen_before, fen_observed)
+        if fen is not None
+    ]
+    moves = set(ctx.session.move_history())
+    for board in boards:
+        moves |= set(board.legal_moves())
     moves |= _reported_moves(tool_results)
     if engine_reply is not None and engine_reply.san:
         moves.add(engine_reply.san)
@@ -639,9 +665,9 @@ def _verified_facts(
         settings=settings,
         numbers=frozenset(_analysis_numbers(tool_results)),
         # Board truth, and the one fact here no tool has to have run for: who
-        # is ahead is a piece count, so it is always available and always the
-        # post-reply position, exactly like `check`.
-        material=ctx.session.material_balance(),
+        # is ahead is a piece count, so it is always available on every board
+        # the turn held — including the one the reaction was written from.
+        material=tuple(dict.fromkeys(board.material_balance() for board in boards)),
     )
 
 
@@ -1000,6 +1026,7 @@ def create_app(
         result = registry.dispatch("make_move", {"move": move})
         changes = [{"name": "make_move", "result": result}]
         narration: Narration | None = None
+        observed_fen: str | None = None
         if result.get("legal") is True and ctx.settings.verbosity != "low":
             # This is the observe beat, so the machine is told so — the phase
             # the coordinator has always had a slot for, finally entered
@@ -1007,8 +1034,13 @@ def create_app(
             # have ended the game, which closes the turn where it stands; the
             # collect below accepts either phase, so nothing else changes.
             coordinator.mark_observation()
+            observed = _agent_state_dict(ctx)
             try:
-                narration = brain.narrate(_agent_state_dict(ctx), changes, transcript)
+                narration = brain.narrate(observed, changes, transcript)
+                # Kept only once something was actually said from it: this is
+                # "the board the reaction was written from", and a beat the
+                # provider killed wrote no reaction.
+                observed_fen = observed["fen"]
             except ProviderError:
                 logger.warning(
                     "observe_narration_failed",
@@ -1039,6 +1071,7 @@ def create_app(
             narration=narration,
             engine_reply=engine_reply,
             owed_reply=owed_reply,
+            observed_fen=observed_fen,
         )
 
     async def _agent_move(move: str) -> dict[str, Any]:
@@ -1089,7 +1122,11 @@ def create_app(
                 commentary, guarded = _guarded_commentary(
                     commentary,
                     _verified_facts(
-                        ctx, beats.changes, beats.engine_reply, before["fen"]
+                        ctx,
+                        beats.changes,
+                        beats.engine_reply,
+                        before["fen"],
+                        beats.observed_fen,
                     ),
                     {"move": move},
                 )
@@ -1729,7 +1766,16 @@ def create_app(
             # *say* it did, nor announce any other fact it invented.
             commentary, guarded = _guarded_commentary(
                 commentary,
-                _verified_facts(ctx, tool_results, engine_reply, before["fen"]),
+                _verified_facts(
+                    ctx,
+                    tool_results,
+                    engine_reply,
+                    before["fen"],
+                    # Only the fast path observes a mid-turn board. The brain
+                    # route's narrator ran inside the loop, off `before`, which
+                    # is already one of the positions checked.
+                    move_beats.observed_fen if move_beats is not None else None,
+                ),
                 {"text": text},
             )
             agent_state = _agent_state_dict(ctx)
