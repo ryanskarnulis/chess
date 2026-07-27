@@ -12,6 +12,7 @@ import pytest
 
 from chessapp.conversation import (
     DEFAULT_WINDOW_TURNS,
+    DIGEST_ACK,
     DIGEST_MAX_REQUESTS,
     RECENT_TURNS,
     Transcript,
@@ -164,6 +165,38 @@ def test_the_ack_is_dropped_when_it_would_be_the_thing_that_breaks_alternation()
     roles = [m["role"] for m in condensed]
     assert roles[0] == "user"
     assert all(a != b for a, b in zip(roles, roles[1:], strict=False))
+
+
+# A turn where the app spoke instead of Glitch records no Glitch utterance
+# (`api.CommandOutcome.memory`), because a canned correction fed back as his own
+# words is a voice he imitates — live, one guarded turn was enough to have him
+# apologising for things he never said. The raw record keeps that turn honest by
+# holding an empty assistant message; the model's view may not ship one, because
+# the chat template alternates. So it becomes the same inert ack the digest uses.
+
+
+def test_an_unspoken_turn_becomes_the_inert_ack_in_the_models_view():
+    messages = _turns(("take the knight", ""), ("and now?", "yep"))
+    condensed = condense(messages)
+    assert condensed[1] == {"role": "assistant", "content": DIGEST_ACK}
+    assert condensed[0]["content"] == "take the knight", "the ask is still there"
+
+
+def test_an_unspoken_turn_does_not_break_alternation():
+    messages = _turns(
+        ("who's winning?", "you are"),
+        *[(f"command {i}", "") for i in range(RECENT_TURNS)],
+    )
+    roles = [m["role"] for m in condense(messages)]
+    assert all(a != b for a, b in zip(roles, roles[1:], strict=False))
+
+
+def test_the_raw_window_still_records_that_nothing_was_said():
+    """`window()` is the record of what was actually said, and what was actually
+    said is nothing. Only the model's view substitutes."""
+    transcript = Transcript()
+    transcript.record("take the knight", "")
+    assert transcript.window()[1] == {"role": "assistant", "content": ""}
 
 
 def test_the_digest_says_board_truth_does_not_come_from_it():

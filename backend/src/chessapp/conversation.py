@@ -59,7 +59,12 @@ _DIGEST_HEADER = (
 )
 # The digest rides as a user message; this keeps the user/assistant alternation
 # the chat template expects. Deliberately inert — it becomes model context.
-_DIGEST_ACK = "Noted."
+# It does a second job for the same reason: standing in for a turn the app
+# spoke on Glitch's behalf, which the record holds as an empty assistant
+# message (`api.CommandOutcome.memory`). Something has to occupy that slot or
+# the template sees two user turns in a row, and this is the one line in the
+# app already chosen for having no voice to imitate.
+DIGEST_ACK = "Noted."
 
 # A command that is nothing but a move: how a board drag records itself, and how
 # a typed "e4" arrives. That turn's content is already in the state block's
@@ -133,11 +138,17 @@ def condense(
     this is unit-testable without a provider and cannot drift under sampling.
     The synthetic pair is built here and never recorded, so `Transcript`'s role
     whitelist stays the only thing that decides what a save file may contain.
+
+    A turn Glitch did not speak on — one the app substituted its own words for,
+    recorded as an empty assistant message — is shown as the inert ack. The
+    record keeps the emptiness because that is what happened; the model's view
+    cannot ship it, because the chat template alternates.
     """
+    messages = [_spoken(m) for m in messages]
     split = len(messages) - 2 * recent_turns
     if split <= 0:
-        return [dict(m) for m in messages]
-    older, recent = messages[:split], [dict(m) for m in messages[split:]]
+        return messages
+    older, recent = messages[:split], messages[split:]
 
     requests = [
         collapsed
@@ -160,7 +171,15 @@ def condense(
 
 
 def _ack() -> dict[str, str]:
-    return {"role": "assistant", "content": _DIGEST_ACK}
+    return {"role": "assistant", "content": DIGEST_ACK}
+
+
+def _spoken(message: dict[str, str]) -> dict[str, str]:
+    """One message as the model may see it: a copy, with an assistant turn
+    nobody spoke on standing in as the ack."""
+    if message["role"] == "assistant" and not message["content"]:
+        return _ack()
+    return dict(message)
 
 
 def _digest(requests: list[str]) -> str:

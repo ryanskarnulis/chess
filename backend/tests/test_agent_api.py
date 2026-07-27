@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.agent_api import LOOP_ACTOR, reset_rate_limit
+from chessapp.api import UNVERIFIED_CLAIM_REPLY
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.conversation import RECENT_TURNS
 from chessapp.game import GameSession
@@ -261,6 +262,32 @@ def test_history_replays_text_turns_only_no_tool_payloads():
     ]
     # Text turns only: no tool payloads smuggled into model context.
     assert all(set(turn) == {"role", "content"} for turn in replayed)
+
+
+def test_the_caller_sees_the_correction_but_the_loop_never_replays_it():
+    """The delegate store is one field doing two jobs — the wire record and the
+    loop's memory — and a guarded turn needs them to differ. The caller is told
+    the claim was pulled; the brain is given the facts, because a canned
+    first-person correction replayed as its own words is a register it imitates
+    (`api._remembered_facts`)."""
+    brain = ScriptedBrain(
+        AgentResponse(  # invents a capture on an opening move
+            text="Took your knight. Easy.",
+            tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
+        ),
+        AgentResponse(text="Nothing much."),
+    )
+    client, _, _ = make_client(brain=brain)
+    conversation_id = new_conversation(client)
+
+    body = send(client, conversation_id, "start with the king's pawn").json()
+    send(client, conversation_id, "what did you play?")
+
+    assert body["assistant_message"]["content"] == UNVERIFIED_CLAIM_REPLY
+    assert brain.transcripts[-1] == [
+        {"role": "user", "content": "start with the king's pawn"},
+        {"role": "assistant", "content": "e4."},
+    ]
 
 
 def test_the_delegate_wire_condenses_older_turns_like_the_panel_does():
