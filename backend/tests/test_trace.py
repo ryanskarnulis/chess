@@ -247,8 +247,8 @@ def test_resign_turn_is_traced_as_its_own_route(trace_path):
 
 
 def test_a_suppressed_claim_is_a_countable_event(trace_path):
-    """The guard swaps the lie for the truth, so the record keeps the *event*
-    (something tried to fake an ending) even though the lie itself is gone."""
+    """The guard swaps the lie for the truth, so `commentary` is what the player
+    saw — and the record keeps the event beside it."""
     client, _ = make_client(trace_path, AgentResponse(text="Word. Game over."))
 
     client.post("/api/command", json={"text": "i'm bored of this"})
@@ -258,11 +258,46 @@ def test_a_suppressed_claim_is_a_countable_event(trace_path):
     assert "Game over" not in record["commentary"]
 
 
+def test_a_suppressed_claim_records_what_it_was_and_why(trace_path):
+    """A guard that eats its own evidence is a guard nobody can debug. Twice now
+    a live misfire has been diagnosed by guessing, because the suppressed text
+    survived nowhere: not in `commentary` (replaced), not in the transcript
+    (`api._remembered_facts` keeps it out on purpose) and not in the log (the
+    classes rode in `extra`, which the default formatter drops). So the record
+    keeps both halves — what was said, and which classes the facts didn't
+    back."""
+    client, _ = make_client(trace_path, AgentResponse(text="Word. Game over."))
+
+    client.post("/api/command", json={"text": "i'm bored of this"})
+
+    (record,) = read_records(trace_path)
+    assert record["guarded_claims"] == ["ending"]
+    assert record["suppressed"] == "Word. Game over."
+
+
+def test_a_leaked_hint_records_what_it_was_too(trace_path):
+    """The advice guard is a suppression like any other, and it named nothing in
+    the record at all — a turn cut for leaking a move looked identical to one cut
+    for inventing a capture."""
+    client, _ = make_client(
+        trace_path, AgentResponse(text="Easy: play Nf3 and thank me later.")
+    )
+
+    client.post("/api/command", json={"text": "what should I play?"})
+
+    (record,) = read_records(trace_path)
+    assert record["guarded"] is True
+    assert record["guarded_claims"] == ["move_advice"]
+    assert record["suppressed"] == "Easy: play Nf3 and thank me later."
+
+
 def test_an_ordinary_turn_is_not_guarded(trace_path):
     client, _ = make_client(trace_path)
     client.post("/api/command", json={"text": "e4"})
     (record,) = read_records(trace_path)
     assert record["guarded"] is False
+    assert record["guarded_claims"] == []
+    assert record["suppressed"] == ""
 
 
 def test_trace_records_a_budget_stop(trace_path):

@@ -58,6 +58,13 @@ services:
       # Stockfish path + host/port are baked into the image ENV; saved games
       # persist to a named volume so they survive `compose down`.
       CHESSAPP_SAVE_DIR: /data/saves
+      # One JSONL record per agent turn, onto the same volume the saves ride.
+      # On by default here and nowhere else: this is a single-user home
+      # deployment, the record never leaves the box, and the alternative is
+      # what actually happened — a live misfire reported from a phone, with
+      # the only evidence of it already replaced by the correction the player
+      # saw. Comment out to run untraced.
+      CHESSAPP_TRACE_PATH: /data/saves/turns.jsonl
     volumes:
       - chess-saves:/data/saves
     # host.docker.internal → the host, where llama-swap publishes :8200. Same
