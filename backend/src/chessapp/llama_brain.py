@@ -199,14 +199,16 @@ class LlamaBrain:
                     return run.response("", "correction_limit")
                 messages.append({"role": "user", "content": _wire_correction(exc)})
                 continue
-            except ProviderError:
+            except ProviderError as exc:
                 # The provider died mid-turn (audit item 20). Whatever tools
                 # already ran are real board history — hand them back under
                 # their own stop so the pipeline can close the turn and tell
                 # the truth, instead of an exception escaping after the board
                 # changed. The round trip is counted like any raised call.
+                # `exc.failure` rides along: the stop says the turn died, the
+                # kind says whether asking again is worth anything.
                 run.count_call(latency_ms=self._elapsed_ms(started))
-                return run.response("", "provider_error")
+                return run.response("", "provider_error", str(exc.failure))
             run.count_call(*_usage_ints(result.usage), self._elapsed_ms(started))
 
             if not result.tool_calls:
@@ -273,11 +275,14 @@ class LlamaBrain:
                 transcript,
                 thinking=self._thinking(run),
             )
-        except ProviderError:
+        except ProviderError as exc:
             # The plan finished; the persona call died. Same contract as a
-            # mid-loop failure: the verified results come back, the words don't.
+            # mid-loop failure: the verified results come back, the words don't,
+            # and the kind of death comes back with them. This is the call a
+            # context overrun reaches first — the narrator carries the whole
+            # conversation, so it is the longest prompt of the turn.
             run.count_call(latency_ms=self._elapsed_ms(started))
-            return run.response("", "provider_error")
+            return run.response("", "provider_error", str(exc.failure))
         run.count_call(
             narration.prompt_tokens,
             narration.completion_tokens,

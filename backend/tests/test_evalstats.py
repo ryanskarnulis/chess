@@ -18,7 +18,8 @@ Three things are pinned here that the harness previously left to a literal:
   floor) versus merely a bad sample (`decide`),
 - **what kind of sample it was** (`classify`) — a crashed llama-server is
   infrastructure, not behavior, and the harness must retry it rather than score
-  it,
+  it, while a request the server *rejects* is neither and must not be retried at
+  all,
 - **what the failures had in common** (`failure_signature`, `block_stability`,
   `RateResult.deterministic_suspect`) — five identical failures are a bug and
   five different ones are variance, and today's harness prints both as "2/5".
@@ -29,6 +30,7 @@ import json
 import pytest
 
 from evalstats import (
+    DETERMINISTIC_FAILURES,
     Z_ONE_SIDED_95,
     Decision,
     Outcome,
@@ -263,6 +265,94 @@ def test_vacuous_still_fails_if_nobody_classifies_it() -> None:
     # `VacuousRun` subclasses AssertionError deliberately: a caller that skips
     # `classify` gets a failed sample rather than a silent pass.
     assert issubclass(VacuousRun, AssertionError)
+
+
+# --- classify: a death the retry cannot fix -----------------------------------
+#
+# INFRA is "ask again" — the crash cadence llama-server has under sustained
+# load. But a `provider_error` can equally be a request the server refuses
+# identically every time (an HTTP 400: a context overrun on a long transcript),
+# and asking again just spends the infra budget to arrive at the same place five
+# samples later. The brain now names which one it was
+# (`AgentResponse.provider_failure`), so `classify` can stop guessing.
+
+
+def test_a_rejected_request_is_not_retried() -> None:
+    assert (
+        classify(
+            status_code=200,
+            stop_reason="provider_error",
+            error=None,
+            provider_failure="rejected",
+        )
+        == Outcome.PROVIDER_REJECTED
+    )
+
+
+def test_a_malformed_response_is_not_retried_either() -> None:
+    """A 200 whose body fails wire validation is a version skew between this
+    app and llama-server, not a crash — the next request gets the same body."""
+    assert (
+        classify(
+            status_code=200,
+            stop_reason="provider_error",
+            error=None,
+            provider_failure="malformed_response",
+        )
+        == Outcome.PROVIDER_REJECTED
+    )
+
+
+def test_a_dead_server_is_still_retried() -> None:
+    for failure in ("unreachable", "server_error"):
+        assert (
+            classify(
+                status_code=200,
+                stop_reason="provider_error",
+                error=None,
+                provider_failure=failure,
+            )
+            == Outcome.INFRA
+        ), failure
+
+
+def test_an_unnamed_provider_death_is_retried() -> None:
+    """The pre-existing shape, and every non-200 (which carries no failure kind
+    at all — the app answered, not the provider). Unknown means retry: the
+    expensive mistake is aborting a suite on a server that was merely
+    restarting."""
+    assert (
+        classify(status_code=200, stop_reason="provider_error", error=None)
+        == Outcome.INFRA
+    )
+    assert classify(status_code=502, stop_reason=None, error=None) == Outcome.INFRA
+
+
+def test_a_harness_bug_still_outranks_a_rejected_request() -> None:
+    # Same precedence as INFRA: a KeyError in a check is not evidence about
+    # anything the provider did.
+    assert (
+        classify(
+            status_code=200,
+            stop_reason="provider_error",
+            error=TypeError("nope"),
+            provider_failure="rejected",
+        )
+        == Outcome.HARNESS
+    )
+
+
+def test_the_two_failure_vocabularies_agree() -> None:
+    """`evalstats` names the non-transient kinds itself rather than importing
+    them — it must stay importable with nothing installed, the same reason
+    `STOP_PROVIDER_ERROR` is a literal here. That buys a drift risk, so this
+    test is the thing that pays for it: the set this module refuses to retry is
+    exactly the set `provider.py` calls non-transient, by construction."""
+    from chessapp.provider import ProviderFailure
+
+    assert DETERMINISTIC_FAILURES == {
+        str(failure) for failure in ProviderFailure if not failure.transient
+    }
 
 
 # --- failure_signature --------------------------------------------------------

@@ -184,22 +184,50 @@ looking like a silent behavioral miss ("expected a resign call: nothing").
 | Outcome | From | Scored? |
 | --- | --- | --- |
 | `PASS` / `FAIL` | the check held / raised on a healthy turn | yes |
-| `INFRA` | non-200, **or** 200 + `stop_reason="provider_error"` — including when the check also failed, because it failed *because* the provider died | no: thrown away and re-taken |
+| `INFRA` | non-200, **or** 200 + `stop_reason="provider_error"` naming a *transient* failure — including when the check also failed, because it failed *because* the provider died | no: thrown away and re-taken |
+| `PROVIDER_REJECTED` | 200 + `stop_reason="provider_error"` naming a **non-transient** failure — llama-server answered, just not with a completion | never: fails the item on the **first** one |
 | `INCONCLUSIVE` | a budget stop under a commentary-only check (`_assert_reached_narrator`) | counted as a non-pass, and reported as what it was |
 | `HARNESS` | any non-`AssertionError` exception (a `KeyError` in a check) | never: fails the item at once, after writing the samples already taken |
 
 The harness reads the real stop reason off a `_CollectingTracer` on the app's own
-`tracer` seam — which is why this needed **no** production change: `api._run_command`
-already traces every route, so the harness gets `stop_reason`, `route`,
-`mutations`, `guarded`, `model_calls` and `model_ms` on *both* seams for free.
-Adding `stop_reason` to the panel response instead would have put a production
-edit inside a harness slice, and the harness-bug precedent below (a wrong tool
-offer silently moving a scenario from 5/5 to 0–3/5) is why that is not allowed.
+`tracer` seam — which is why the *sorting* needed no production change:
+`api._run_command` already traces every route, so the harness gets `stop_reason`,
+`route`, `mutations`, `guarded`, `model_calls` and `model_ms` on *both* seams for
+free. Adding `stop_reason` to the panel response instead would have put a
+production edit inside a harness slice, and the harness-bug precedent below (a
+wrong tool offer silently moving a scenario from 5/5 to 0–3/5) is why that is not
+allowed.
 
-Exhausting the retry budget is `INFRA_ABORTED`: **no rate, a hard failure.** That
-is louder than the old behavior on purpose — it is also what a *deterministic*
-provider error (a context overrun, a malformed request) now looks like, instead
-of a 0/5 blamed on the model.
+#### Which death it was (2026-07-26)
+
+`provider_error` alone said the turn died, not why, and the loop's two
+`except ProviderError` clauses discarded the exception — so a crashed socket and
+an HTTP 400 arrived here identically and the harness retried both. It now carries
+`provider_failure`, a **field** naming the kind
+(`provider.ProviderFailure` → `AgentResponse.provider_failure` → the trace
+record), and `classify` splits on it:
+
+| Kind | Is | Retried? |
+| --- | --- | --- |
+| `unreachable` | connect refused, reset, timeout — the socket never answered | yes |
+| `server_error` | a 5xx; llama-swap mid-restart, the crash cadence | yes |
+| `rejected` | a 4xx — **a context overrun on a long transcript is this one** | no |
+| `malformed_response` | 200, body failed wire validation; version skew | no |
+| `bad_tool_arguments` | arguments that aren't a JSON object (the brain corrects this inside the turn, so it never reaches a stop) | no |
+
+Unknown means retry, deliberately: an unclassified death (and every non-200,
+which carries no kind because the *app* answered, not the provider) stays
+`INFRA`. Spending a few samples on a deterministic failure is cheap; calling a
+restarting server deterministic would abort a whole suite on the first crash.
+Code owns that answer rather than a caller inferring it from a message — the same
+rule the tool layer's `retry` field keeps. `evalstats` re-declares the
+non-transient set as literals (it must stay importable with nothing installed,
+like `STOP_PROVIDER_ERROR`), and `test_evalstats` pins the two vocabularies
+against each other so the duplication cannot drift.
+
+Exhausting the retry budget is `INFRA_ABORTED`: **no rate, a hard failure**, and
+it now means only what it says — llama-server is not staying up. The
+deterministic case is no longer folded into it after five wasted retries.
 
 ### The report
 
@@ -843,6 +871,29 @@ fixture is the proof, and `git diff --stat` shows the only `src/` files as
 `api.py`'s three edits and `tools.py`'s stamp). It is recorded because the
 confirmation road is one the suite exercises live, and "the gate was green next
 to this change" is cheaper to write down now than to reconstruct later.
+
+### Confirmation run — the provider-failure kind (2026-07-26, Sprint 5)
+
+Run on `feat/provider-failure-kind`, default knobs: **23 items passed in
+3 m 40 s, 75 samples, infra 0/25.** Identical shape to the sweep above —
+fourteen of fifteen pass-rate scenarios 5/5, `hints_off_no_advice` **4/5** with
+one `INCONCLUSIVE` `max_iterations` stop (the same filed loop defect, at the
+same rate for the third measurement running), `long_capture` 5/5 in all three
+conditions, nothing escalated, nothing retried.
+
+**Why it was run, and what it could not measure.** The slice changed the loop
+file (`llama_brain`'s two `except ProviderError` clauses), which is enough to
+trigger the gate on its own terms — but a healthy turn is byte-identical
+through it: `provider_failure` is the empty string unless the provider died,
+and no prompt, schema or tool offer moved. What the run *does* buy is the
+harness edits, which cannot be unit-tested: `_measured` reading
+`provider_failure` off the trace and `_sample` passing it to `classify` ran 75
+times without disturbing a single classification. **The new branch itself went
+unexercised again** — this session, like the 2026-07-26 campaign before it, saw
+zero provider deaths across 75 samples, so `PROVIDER_REJECTED` is covered by
+unit tests and nothing else. That is the same caveat the retry path carries and
+it is recorded for the same reason: a healthy-server session says little about
+the bad ones.
 
 ### Pass-rate scenarios — superseded record (5 fixed runs each, floor 80%)
 

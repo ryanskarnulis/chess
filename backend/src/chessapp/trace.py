@@ -83,6 +83,7 @@ def turn_record(
     tool_results: list[dict[str, Any]],
     engine_reply: dict[str, Any] | None = None,
     guarded: bool = False,
+    provider_failure: str = "",
     model_calls: int = 0,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
@@ -101,6 +102,14 @@ def turn_record(
     observation beat. Without it a traced move turn would show a move with no
     answer to it — and a missing or duplicated engine move is one of the main
     things a trace is read to find.
+
+    `provider_failure` is the empty string on every turn that did not die, and
+    on one that did (`stop_reason="provider_error"`) it names the kind —
+    `provider.ProviderFailure`'s vocabulary. The stop reason alone cannot tell
+    "llama-server is crash-looping again" from "this prompt no longer fits the
+    context", and those want opposite fixes; it is also what the eval harness
+    classifies a sample by, so a retryable death is retried and a refusal is
+    reported rather than re-sent five times.
 
     `guarded` marks a turn whose commentary was suppressed by the honesty guard
     (it announced an ending no tool produced). `commentary` is what the player
@@ -138,6 +147,7 @@ def turn_record(
         "route": route,
         "commentary": commentary,
         "stop_reason": stop_reason,
+        "provider_failure": provider_failure,
         "changed": changed,
         "guarded": guarded,
         "turn_id": turn_id,
