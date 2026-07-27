@@ -714,28 +714,42 @@ def _remembered_facts(
 
 def _guarded_commentary(
     commentary: str, facts: VerifiedFacts, logged: dict[str, Any]
-) -> tuple[str, bool]:
-    """The commentary the turn's facts support, and whether a claim was cut.
+) -> tuple[str, tuple[str, ...]]:
+    """The commentary the turn's facts support, and the classes that were cut.
 
     Every route converges here. The model may neither *do* an unasked
     destructive op (the gate) nor *say* it did (the ending class) nor announce
-    any other fact the turn cannot back (the rest of them). Which class fired
-    is logged, because that is the thing worth knowing when a guarded turn
-    turns up in a trace.
+    any other fact the turn cannot back (the rest of them).
+
+    The classes come back rather than a bare "yes it fired", and both they and
+    the suppressed text go into the log *message* rather than `extra`: with
+    twelve classes a false positive is the likelier failure, and the two live
+    misfires so far were both diagnosed by guessing at phrasings because
+    nothing kept what the guard ate. The default formatter drops `extra`, so a
+    field nobody sees is a field that does not exist.
     """
     claims = unverified_claims(commentary, facts)
     if not claims:
-        return commentary, False
+        return commentary, ()
+    said = commentary.replace("\n", " ")
     if "ending" in claims:
         # The worst one keeps its own event name and its own correction: the
         # player has just been told the game ended, and the fact they need
         # back is that it didn't.
-        logger.warning("commentary_claimed_untrue_outcome", extra=logged)
-        return UNTRUE_CLAIM_REPLY, True
+        logger.warning(
+            "commentary_claimed_untrue_outcome claims=%s suppressed=%r",
+            ",".join(claims),
+            said,
+            extra=logged,
+        )
+        return UNTRUE_CLAIM_REPLY, claims
     logger.warning(
-        "commentary_claimed_unverified_fact", extra={**logged, "claims": list(claims)}
+        "commentary_claimed_unverified_fact claims=%s suppressed=%r",
+        ",".join(claims),
+        said,
+        extra={**logged, "claims": list(claims)},
     )
-    return UNVERIFIED_CLAIM_REPLY, True
+    return UNVERIFIED_CLAIM_REPLY, claims
 
 
 @dataclass(frozen=True)
@@ -1147,7 +1161,8 @@ def create_app(
                     await _broadcast_state()
                 raise HTTPException(status_code=409, detail=result["error"])
             commentary = ""
-            guarded = False
+            claims: tuple[str, ...] = ()
+            suppressed = ""
             if beats.legal:
                 # The honesty guard, on this road too: a reaction that announces
                 # something the drag did not actually do is replaced with the
@@ -1155,8 +1170,9 @@ def create_app(
                 # around it below is the app's own deterministic line, so there
                 # is nothing in it to guard and everything to lose by taking it
                 # back with the reaction.
-                reaction, guarded = _guarded_commentary(
-                    narration.text if narration is not None else "",
+                said = narration.text if narration is not None else ""
+                reaction, claims = _guarded_commentary(
+                    said,
                     _verified_facts(
                         ctx,
                         beats.changes,
@@ -1178,9 +1194,10 @@ def create_app(
                 ctx.transcript.record(
                     result["san"],
                     _remembered_facts(beats.changes, beats.engine_reply, ctx.session)
-                    if guarded
+                    if claims
                     else commentary,
                 )
+                suppressed = said if claims else ""
                 await _broadcast_state()
             _trace_turn(
                 utterance=move,
@@ -1196,7 +1213,9 @@ def create_app(
                 tool_calls=[{"move": move}],
                 tool_results=beats.changes,
                 engine_reply=_move_reply_dict(beats.engine_reply),
-                guarded=guarded,
+                guarded=bool(claims),
+                guarded_claims=claims,
+                suppressed=suppressed,
                 **_ModelCost.of(narration).as_trace(),
             )
             return {
@@ -1815,7 +1834,8 @@ def create_app(
             # the engine's move along with the lie, which is the one fact a
             # guarded turn cannot afford to drop (the board moved under the
             # player and the correction says nothing about how).
-            commentary, guarded = _guarded_commentary(
+            said = commentary
+            commentary, claims = _guarded_commentary(
                 commentary,
                 _verified_facts(
                     ctx,
@@ -1829,6 +1849,8 @@ def create_app(
                 ),
                 {"text": text},
             )
+            guarded = bool(claims)
+            suppressed = said if claims else ""
             if guarded:
                 memory = ""
             if move_beats is not None and move_beats.legal:
@@ -1868,11 +1890,14 @@ def create_app(
                 and names_a_legal_move(commentary, unlicensed)
             ):
                 logger.warning(
-                    "commentary_leaked_move_advice",
+                    "commentary_leaked_move_advice suppressed=%r",
+                    commentary.replace("\n", " "),
                     extra={"text": text, "correlation_id": correlation_id},
                 )
+                suppressed = commentary
                 commentary = MOVE_ADVICE_REPLY
                 guarded = True
+                claims = ("move_advice",)
                 memory = ""
             # If this turn armed a destructive op, the question goes to the
             # player about the board they can see *now* — this turn's mutations
@@ -1902,6 +1927,8 @@ def create_app(
                 tool_results=tool_results,
                 engine_reply=_move_reply_dict(engine_reply),
                 guarded=guarded,
+                guarded_claims=claims,
+                suppressed=suppressed,
                 provider_failure=provider_failure,
                 **cost.as_trace(),
             )

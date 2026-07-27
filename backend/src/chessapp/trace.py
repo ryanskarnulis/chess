@@ -83,6 +83,8 @@ def turn_record(
     tool_results: list[dict[str, Any]],
     engine_reply: dict[str, Any] | None = None,
     guarded: bool = False,
+    guarded_claims: Sequence[str] = (),
+    suppressed: str = "",
     provider_failure: str = "",
     model_calls: int = 0,
     prompt_tokens: int = 0,
@@ -111,10 +113,22 @@ def turn_record(
     classifies a sample by, so a retryable death is retried and a refusal is
     reported rather than re-sent five times.
 
-    `guarded` marks a turn whose commentary was suppressed by the honesty guard
-    (it announced an ending no tool produced). `commentary` is what the player
-    actually saw, so the lie itself is not kept — but the *event* is countable,
-    which is what tells you whether the model is still trying to fake outcomes.
+    `guarded` marks a turn whose commentary was suppressed by the honesty guard,
+    `guarded_claims` names the classes the turn's facts did not back, and
+    `suppressed` is the text that was cut. `commentary` stays what the player
+    actually saw.
+
+    The lie used to be dropped on purpose — the event was countable and that
+    read like enough. It is not. A false positive is now the guard's likelier
+    failure than a false negative (the classes have grown from one to twelve),
+    and when one fires there is nowhere left to read what tripped it: the
+    commentary is replaced, the transcript deliberately keeps it out
+    (`api._remembered_facts` — a canned correction fed back is a register the
+    model imitates), and the log put the classes in `extra`, which the default
+    formatter drops. Two live misfires were diagnosed by guessing at candidate
+    phrasings because of that. A guard nobody can debug gets loosened blindly,
+    which is the one way this one becomes worthless. The trace is opt-in and
+    off by default, so this costs nothing until somebody is already debugging.
 
     `model_calls`/`prompt_tokens`/`completion_tokens` are the turn's total cost
     at the provider boundary — how many times the model was called and the tokens
@@ -150,6 +164,8 @@ def turn_record(
         "provider_failure": provider_failure,
         "changed": changed,
         "guarded": guarded,
+        "guarded_claims": list(guarded_claims),
+        "suppressed": suppressed,
         "turn_id": turn_id,
         "correlation_id": correlation_id,
         "mutations": mutations,
