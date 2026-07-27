@@ -86,6 +86,38 @@ digest message would put two user turns back to back. `Transcript`'s role
 whitelist is unchanged — the pair is built at read time and never recorded, so a
 save file still cannot smuggle in a role.
 
+The ack does a second job for the same reason. A turn the app spoke on Glitch's
+behalf is recorded with an empty assistant message (below), and the model's view
+cannot ship one at a template that alternates — so `condense` stands the ack in
+its place. It is the one line in the app already chosen for having no voice to
+imitate.
+
+## What the app said is not what Glitch said
+
+Every canned substitution is written in the first person — *"Scratch that — I
+said something the board doesn't back up"*, *"I lost the thread on that one"*,
+*"My brain cut out mid-turn"* — and the pipeline used to record the substituted
+text as the assistant's turn. `condense` gives the last `RECENT_TURNS` back
+verbatim, so the narrator read its own apology as something it had said and
+started producing the register itself, on turns where nothing was guarded at
+all. Live, that is where *"I almost said something that didn't happen. That's my
+bad."* came from — and because each imitation was recorded too, the voice
+outlived the window that seeded it.
+
+The rule: **text the app substitutes *for* what the model said is for the
+player, not for the model's memory.** Text the app *appends* as fact — the
+engine's reply announcement, the move confirmation — is true and stays.
+
+A substituted turn is therefore remembered by what the turn *did*
+(`api._remembered_facts`): the deterministic move confirmation (`"Bxc6. dxc6."`)
+where a move landed, and an empty assistant message where nothing did. The
+player's ask keeps its place either way, so the digest of what they asked for
+earlier is never punched full of holes by a guarded turn. The carrier is
+`api.CommandOutcome.memory`, which equals `commentary` on every turn Glitch
+really spoke on; the delegate store carries the same divergence as
+`StoredMessage.memory`, kept off the wire so `MessageRead` stays
+byte-compatible.
+
 ## Call sites
 
 - `Transcript.memory()` — what `/api/command` and the board-drag beat pass to the

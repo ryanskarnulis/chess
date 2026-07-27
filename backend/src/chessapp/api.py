@@ -381,8 +381,9 @@ def _move_commentary(
 
 # What the player hears when the brain's loop ran out of budget instead of
 # answering (`max_iterations` / `correction_limit`): those stops carry no
-# commentary, and an empty bubble would read as a crash.
-_STUCK_REPLY = "I lost the thread on that one — say it again?"
+# commentary, and an empty bubble would read as a crash. Public so tests pin
+# the substitution, not a wording.
+STUCK_REPLY = "I lost the thread on that one — say it again?"
 _DECLINED_REPLY = "Alright, keeping it. Your move."
 
 # What the player hears when the provider died mid-turn (audit item 20). Two
@@ -681,6 +682,36 @@ def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
     )
 
 
+def _remembered_facts(
+    tool_results: Sequence[dict[str, Any]],
+    engine_reply: MoveResult | None,
+    session: GameSession,
+) -> str:
+    """What a turn the *app* spoke for is remembered as: the deterministic facts
+    in the app's own register, or nothing at all.
+
+    The transcript's other half of the honesty rule. Every canned correction is
+    written in the first person, and recording one as the assistant's turn hands
+    the narrator its own apology as something it said — `condense` gives the
+    last few turns back verbatim, so Glitch reads it and imitates the register,
+    on turns where nothing was guarded at all. Live, that is exactly what
+    happened: one guarded trade was enough to have him volunteering "I almost
+    said something that didn't happen. That's my bad."
+
+    So a substituted turn remembers what the turn *did*, never what the app said
+    about it. A move turn has a line for that already — the same one verbosity=low
+    and a dead provider fall back to — and every route puts its `make_move`
+    result in `tool_results`. A turn that moved nothing has no facts to remember
+    and says so with an empty string; `conversation.condense` turns that into the
+    inert ack rather than shipping an empty assistant message at a chat template.
+    """
+    for record in tool_results:
+        result = record["result"]
+        if record["name"] == "make_move" and result.get("legal") is True:
+            return _move_confirmation(result, engine_reply, session)
+    return ""
+
+
 def _guarded_commentary(
     commentary: str, facts: VerifiedFacts, logged: dict[str, Any]
 ) -> tuple[str, bool]:
@@ -760,7 +791,14 @@ class CommandOutcome:
     `max_iterations` or `correction_limit` when it ran out of budget first,
     `provider_error` when the provider died mid-turn (the results of whatever
     ran are still here, and the turn was still closed). The fast path is
-    always `completed` — it never reaches the model."""
+    always `completed` — it never reaches the model.
+
+    `memory` is the assistant text the turn is *remembered* by, which is
+    `commentary` for every turn Glitch actually spoke on. They part company when
+    the app spoke in his place — a guarded claim, a budget stop, a dead provider
+    — because a canned line fed back as his own words is a register he imitates
+    (`_remembered_facts`). The player gets the correction; the model gets the
+    facts."""
 
     commentary: str
     tool_results: list[dict[str, Any]]
@@ -768,6 +806,7 @@ class CommandOutcome:
     state: dict[str, Any]
     changed: bool
     stop_reason: str
+    memory: str = ""
 
 
 class StateBroadcaster:
@@ -1130,7 +1169,14 @@ def create_app(
                     ),
                     {"move": move},
                 )
-                ctx.transcript.record(result["san"], commentary)
+                # A guarded drag remembers the move and the reply, not the
+                # correction the player was shown (`_remembered_facts`).
+                ctx.transcript.record(
+                    result["san"],
+                    _remembered_facts(beats.changes, beats.engine_reply, ctx.session)
+                    if guarded
+                    else commentary,
+                )
                 await _broadcast_state()
             _trace_turn(
                 utterance=move,
@@ -1575,6 +1621,11 @@ def create_app(
             tool_results: list[dict[str, Any]] = []
             tool_args: list[dict[str, Any]] = []
             commentary = ""
+            # What the turn is *remembered* by, when that is not what the player
+            # was told. `None` means the two are the same, which is every turn
+            # Glitch spoke on himself; a route that substitutes the app's own
+            # words sets it, and `_remembered_facts` fills an empty one in below.
+            memory: str | None = None
             stop_reason = "completed"
             # Named only when the brain's loop died on the provider; every other
             # route leaves it empty, which is the record's way of saying "did not
@@ -1653,7 +1704,8 @@ def create_app(
                     # the machine mid-sequence), not an illegal move: nothing moved,
                     # so there is nothing to react to. The beats still settled
                     # whatever that turn left owing.
-                    commentary = _STUCK_REPLY
+                    commentary = STUCK_REPLY
+                    memory = ""
                 elif move_beats.narration is not None:
                     commentary = move_beats.narration.text
                     cost = _ModelCost.of(move_beats.narration)
@@ -1711,7 +1763,14 @@ def create_app(
                 # whether anything changed, which the close beat below settles.
                 commentary = response.text
                 if not commentary and stop_reason != "provider_error":
-                    commentary = _STUCK_REPLY
+                    commentary = STUCK_REPLY
+                    memory = ""
+                elif stop_reason == "provider_error":
+                    # The lost-brain line prefixed below is the app's, not
+                    # Glitch's. Whatever he managed to say before the provider
+                    # died is his and is remembered; an empty one falls through
+                    # to the facts.
+                    memory = commentary
             # The close beat, at the one point every route converges. A coordinator
             # left mid-sequence means the player's move landed without its reply —
             # whichever route played it — and whatever narration that route produced
@@ -1778,6 +1837,8 @@ def create_app(
                 ),
                 {"text": text},
             )
+            if guarded:
+                memory = ""
             agent_state = _agent_state_dict(ctx)
             # The advice guard, same convergence point (audit item 11's second
             # half): with hints off, a currently-playable move in the
@@ -1799,6 +1860,7 @@ def create_app(
                 )
                 commentary = MOVE_ADVICE_REPLY
                 guarded = True
+                memory = ""
             # If this turn armed a destructive op, the question goes to the
             # player about the board they can see *now* — this turn's mutations
             # included, since the gate arms mid-turn and the engine's reply can
@@ -1837,6 +1899,12 @@ def create_app(
                 state=state,
                 changed=changed,
                 stop_reason=stop_reason,
+                memory=(
+                    commentary
+                    if memory is None
+                    else memory
+                    or _remembered_facts(tool_results, engine_reply, ctx.session)
+                ),
             )
 
     @app.post("/api/command")
@@ -1853,7 +1921,7 @@ def create_app(
         # Record on the context, not a captured reference: resume_game may
         # have just swapped in the saved game's transcript, and this turn
         # belongs to that thread.
-        ctx.transcript.record(request.text, outcome.commentary)
+        ctx.transcript.record(request.text, outcome.memory)
         return {
             "commentary": outcome.commentary,
             "tool_results": outcome.tool_results,

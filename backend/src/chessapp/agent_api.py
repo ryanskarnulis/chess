@@ -168,6 +168,13 @@ class StoredMessage:
     tool_calls: list[dict[str, Any]] | None
     stop_reason: str | None
     created_at: datetime
+    # What the loop is replayed instead of `content`, when the two differ:
+    # the app substituted its own words for the model's and the caller must
+    # see the correction while the model must not be taught to write it
+    # (`api.CommandOutcome.memory`). `None` means "no divergence", which is
+    # every turn but a guarded one. Never on the wire — `MessageRead` names
+    # its fields, and this is not one of them.
+    memory: str | None = None
 
 
 @dataclass
@@ -230,8 +237,11 @@ class ConversationStore:
         content: str | None,
         tool_calls: list[dict[str, Any]] | None,
         stop_reason: str | None,
+        memory: str | None = None,
     ) -> StoredMessage:
-        return self._append(conversation, "assistant", content, tool_calls, stop_reason)
+        return self._append(
+            conversation, "assistant", content, tool_calls, stop_reason, memory
+        )
 
     def _append(
         self,
@@ -240,6 +250,7 @@ class ConversationStore:
         content: str | None,
         tool_calls: list[dict[str, Any]] | None,
         stop_reason: str | None,
+        memory: str | None = None,
     ) -> StoredMessage:
         message = StoredMessage(
             id=self._next_message_id,
@@ -249,6 +260,7 @@ class ConversationStore:
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             created_at=_utcnow(),
+            memory=memory,
         )
         self._next_message_id += 1
         conversation.messages.append(message)
@@ -266,9 +278,14 @@ class ConversationStore:
         entry points have one memory, not two: recent turns verbatim behind a
         digest of what the caller asked for earlier. The store keeps everything;
         only the model's view is reduced.
+
+        A turn whose `memory` diverges from its `content` replays the former,
+        for the same reason the panel's does: the caller is owed the correction
+        the app made, and the model must not be handed a first-person apology as
+        something it said.
         """
         text_turns = [
-            {"role": m.role, "content": m.content}
+            {"role": m.role, "content": m.content if m.memory is None else m.memory}
             for m in conversation.messages
             if m.content is not None
         ]
@@ -507,6 +524,7 @@ def build_agent_router(
             outcome.commentary,
             _tool_calls_read(outcome.tool_results, outcome.tool_args),
             outcome.stop_reason,
+            memory=(None if outcome.memory == outcome.commentary else outcome.memory),
         )
         return MessageExchange(
             user_message=MessageRead.model_validate(user_message),

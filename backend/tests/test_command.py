@@ -16,6 +16,7 @@ from chessapp.api import (
     MOVE_ADVICE_REPLY,
     PROVIDER_LOST_RETRY,
     PROVIDER_LOST_TURN_STANDS,
+    STUCK_REPLY,
     UNTRUE_CLAIM_REPLY,
     UNVERIFIED_CLAIM_REPLY,
     create_app,
@@ -1010,6 +1011,79 @@ def test_a_move_no_board_this_turn_makes_legal_is_still_guarded():
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
     assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+# --- ...and what the app says in Glitch's place is never remembered as his.
+#
+# The second half of the same live failure. Every canned correction is written
+# in the first person — "Scratch that — I said something the board doesn't back
+# up" — and the pipeline recorded the *substituted* text as the assistant's
+# turn. `condense` hands the last few turns to the narrator verbatim, so Glitch
+# read his own apology as something he had said and started producing the
+# register himself ("I almost said something that didn't happen. That's my
+# bad."), on turns where nothing was guarded at all. Each imitation was recorded
+# too, so the voice outlived the window that seeded it.
+#
+# The rule: text the app substitutes *for* what the model said is for the
+# player, not for the model's memory. Text the app *appends* as fact — the reply
+# announcement, the move confirmation — is true and stays.
+
+
+def assistant_turns(ctx):
+    return [m["content"] for m in ctx.transcript.to_dict() if m["role"] == "assistant"]
+
+
+def test_a_guarded_turn_remembers_the_facts_not_the_apology():
+    client, ctx = traded_client("Rxe5 wins on the spot.")
+
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+
+    assert body["commentary"] == UNVERIFIED_CLAIM_REPLY, "the player is corrected"
+    assert assistant_turns(ctx) == ["Bxc6. dxc6."], "the model is not taught to grovel"
+
+
+def test_a_guarded_ending_claim_is_not_remembered_either():
+    client, _, ctx = make_developed_client(AgentResponse(text="Word. Game over."))
+
+    client.post("/api/command", json={"text": "i'm done with this"})
+
+    assert UNTRUE_CLAIM_REPLY not in assistant_turns(ctx)
+    assert assistant_turns(ctx) == [""], "nothing happened, so nothing is remembered"
+
+
+def test_a_budget_stop_is_not_remembered_as_something_glitch_said():
+    client, _, ctx = make_developed_client(
+        AgentResponse(text="", stop_reason="max_iterations")
+    )
+
+    body = client.post("/api/command", json={"text": "play the best move"}).json()
+
+    assert body["commentary"] == STUCK_REPLY
+    assert assistant_turns(ctx) == [""]
+
+
+def test_a_provider_death_is_not_remembered_as_something_glitch_said():
+    """The app's line about its own brain cutting out is the app's, not
+    Glitch's — but a move that landed before the death is a fact, and the
+    turn remembers that."""
+    client, _, ctx = observing_client(
+        provider_died(ToolCall(name="make_move", args={"move": "e4"}))
+    )
+
+    body = client.post("/api/command", json={"text": "push the king pawn"}).json()
+
+    assert body["commentary"] == f"{PROVIDER_LOST_TURN_STANDS}\n\ne5."
+    assert assistant_turns(ctx) == ["e4. e5."]
+
+
+def test_ordinary_commentary_is_remembered_word_for_word():
+    """The rule is about substitutions. Nothing else changes: what Glitch really
+    said, including the app's appended announcement, is what he is given back."""
+    client, ctx = traded_client("Word, you're up a piece.")
+
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+
+    assert assistant_turns(ctx) == [body["commentary"]]
 
 
 # --- The advice guard: hints off means no move is handed over.
