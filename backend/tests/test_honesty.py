@@ -249,10 +249,31 @@ def test_a_real_draw_is_reportable():
         "This is basically a draw.",
         "Heading for a draw unless one of us blunders.",
         "Take the draw?",
+        # The gap that was left, and it is the same bar the material class
+        # already holds: "drawn" is overwhelmingly an *assessment* of a level
+        # position, not a report that the game ended in one. The hedges caught
+        # "basically" and "dead drawn" and "looks like" — and let the plainest
+        # phrasings through, on exactly the symmetrical positions that earn
+        # them. A London against a London is where Glitch reaches for this
+        # word, and a live turn there is what sent it to the guard.
+        "This is drawn, bro.",
+        "Symmetrical. kinda drawn already.",
+        "Looks drawn to me.",
+        "That's a drawn endgame if I ever saw one.",
+        "Drawish. do something.",
     ],
 )
 def test_calling_a_position_drawish_is_not_a_claim(text):
     assert unverified_claims(text, NOTHING) == ()
+
+
+def test_the_game_actually_ending_in_a_draw_is_still_a_report():
+    """Loosening the assessment must not lose the event. What makes a draw a
+    *claim* is naming the game as over, not the adjective."""
+    assert "draw" in unverified_claims("Stalemate.", VerifiedFacts(ended=True))
+    assert "draw" in unverified_claims("That's a draw.", NOTHING)
+    assert "draw" in unverified_claims("We drew.", NOTHING)
+    assert "draw" in unverified_claims("Game's drawn. gg.", NOTHING)
 
 
 # --- moves that were never on the board ----------------------------------------
@@ -280,6 +301,24 @@ def test_a_move_that_was_never_playable_is_a_claim():
     ],
 )
 def test_a_move_the_turn_accounts_for_is_not_a_claim(text):
+    assert unverified_claims(text, PLAYED_NF3) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A threat names a move that is deliberately *not* playable yet — that
+        # is what makes it a threat — so the class must read the tense or it
+        # guards the one thing it was built to protect. `_FUTURE` had the
+        # explicit futures ("I'll play Qh5", "Qh5 next") and missed the way
+        # people actually threaten.
+        "Qh5 is coming.",
+        "Qh5 incoming, by the way.",
+        "Rd8 is on the way.",
+        "Qh5 looming. sleep on it.",
+    ],
+)
+def test_a_threatened_move_is_not_a_claim(text):
     assert unverified_claims(text, PLAYED_NF3) == ()
 
 
