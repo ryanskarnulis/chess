@@ -23,6 +23,11 @@ Three things are pinned here that the harness previously left to a literal:
 - **what the failures had in common** (`failure_signature`, `block_stability`,
   `RateResult.deterministic_suspect`) — five identical failures are a bug and
   five different ones are variance, and today's harness prints both as "2/5".
+
+A fourth joined them (2026-07-26): **which phase spent the turn's milliseconds**
+(`split_latencies`). The readings were always there per call; what was missing
+was the attribution, and attribution off a route and a stop reason is exactly the
+kind of decision that belongs here rather than in a file no test can run.
 """
 
 import json
@@ -30,8 +35,12 @@ import json
 import pytest
 
 from evalstats import (
+    BUDGET_STOPS,
     DETERMINISTIC_FAILURES,
+    NARRATE_ROUTES,
+    ROUTE_BRAIN,
     Z_ONE_SIDED_95,
+    Attribution,
     Decision,
     Outcome,
     RateResult,
@@ -42,6 +51,7 @@ from evalstats import (
     decide,
     failure_signature,
     scenario_record,
+    split_latencies,
     wilson_interval,
 )
 
@@ -550,3 +560,155 @@ def test_metadata_can_annotate_but_the_counts_come_from_the_result() -> None:
     record = scenario_record("play_as_black", result, 0.8, samples=[{"model_ms": 940}])
     assert record["samples"] == [{"model_ms": 940}]
     assert record["rate"] == 1.0
+
+
+# --- split_latencies ----------------------------------------------------------
+#
+# `model_ms` is a per-turn *sum*, and the question it cannot answer is the one
+# Sprint 5 is asking: a `no_progress` turn was measured narrating 2–3× slower
+# than an ordinary one at the same model-call count, and a turn total cannot
+# tell a slow planner from a slow narrator. The readings themselves already
+# exist per call, in call order, on `AgentResponse.model_latencies_ms` and in
+# the trace — so the only thing missing was the attribution, which is what these
+# tests pin. It is derived from the route and the stop reason, and it refuses to
+# guess: a turn whose phase boundary is not knowable says so.
+
+
+def test_a_brain_turn_splits_into_the_planner_and_the_narrator() -> None:
+    """The narrator is the *last* call on a brain-routed turn that reached one —
+    that is the phase order, not a heuristic (`docs/planner-narrator.md`): the
+    planner loops, then exactly one tool-free call speaks."""
+    latencies = split_latencies(
+        (1200, 900, 39100), route="brain", stop_reason="completed"
+    )
+    assert latencies.attribution is Attribution.SPLIT
+    assert latencies.planner_ms == 2100
+    assert latencies.narrator_ms == 39100
+    assert latencies.total_ms == 41200  # and the parts still sum to the whole
+
+
+def test_a_repeat_stop_still_reached_its_narrator() -> None:
+    """The case this function was written for. `no_progress` ends the *planning*
+    phase, and the narrator still runs (CLAUDE.md), so the split is knowable —
+    which is what turns "a repeat-stop turn narrates slower" from a hypothesis
+    into a measurement."""
+    latencies = split_latencies((1100, 1000), route="brain", stop_reason="no_progress")
+    assert latencies.attribution is Attribution.SPLIT
+    assert latencies.planner_ms == 1100
+    assert latencies.narrator_ms == 1000
+
+
+def test_a_budget_stop_spent_every_millisecond_in_the_planner() -> None:
+    """A budget stop reaches no narrator by construction, so attributing its last
+    call to one would invent narrator time that was never spent."""
+    for stop in sorted(BUDGET_STOPS):
+        latencies = split_latencies(
+            (900, 800, 850, 870), route="brain", stop_reason=stop
+        )
+        assert latencies.attribution is Attribution.NO_NARRATOR, stop
+        assert latencies.planner_ms == 3420, stop
+        assert latencies.narrator_ms is None, stop
+
+
+def test_a_provider_death_leaves_the_phase_boundary_unknown() -> None:
+    """The call that died could have been either phase — a planner round trip or
+    the narrator's — and the trace does not say which. Unknown is reported as
+    unknown: a median computed over guesses is worse than one computed over
+    fewer samples."""
+    latencies = split_latencies(
+        (1200, 30000), route="brain", stop_reason="provider_error"
+    )
+    assert latencies.attribution is Attribution.UNKNOWN
+    assert latencies.planner_ms is None
+    assert latencies.narrator_ms is None
+    assert latencies.total_ms == 31200  # the total is still a fact
+
+
+def test_a_narrate_route_has_no_planner_phase_at_all() -> None:
+    """The fast path, a drag, a resignation and a confirmation reach the model
+    only through `Brain.narrate` — one narrator call, no planner loop — so all of
+    the time is the narrator's and the planner's zero is real, not unknown."""
+    for route in sorted(NARRATE_ROUTES):
+        latencies = split_latencies((3400,), route=route, stop_reason="completed")
+        assert latencies.attribution is Attribution.SPLIT, route
+        assert latencies.planner_ms == 0, route
+        assert latencies.narrator_ms == 3400, route
+
+
+def test_a_zero_llm_turn_reports_no_readings_rather_than_zeros() -> None:
+    """A canned confirmation at verbosity=low never called the model. An
+    unmeasured phase is not a fast one — the same rule `AgentResponse` follows
+    for an unmeasured brain."""
+    latencies = split_latencies((), route="fast_path", stop_reason="completed")
+    assert latencies.attribution is Attribution.NONE
+    assert latencies.planner_ms is None
+    assert latencies.narrator_ms is None
+    assert latencies.total_ms == 0
+
+
+def test_an_empty_trace_record_is_no_readings_not_a_bad_route() -> None:
+    # A request that failed before the pipeline reached its trace point leaves
+    # `_CollectingTracer.last` empty, so route and stop reason are both None.
+    latencies = split_latencies((), route=None, stop_reason=None)
+    assert latencies.attribution is Attribution.NONE
+
+
+def test_a_route_this_module_does_not_know_is_unknown_not_assumed() -> None:
+    """New route, new phase shape — and guessing it would silently mis-attribute
+    every sample on it. `test_the_route_vocabularies_agree` is what makes this
+    branch reachable only by a *new* route rather than by drift."""
+    latencies = split_latencies((500,), route="telepathy", stop_reason="completed")
+    assert latencies.attribution is Attribution.UNKNOWN
+
+
+def test_the_route_vocabularies_agree() -> None:
+    """Same drift payment as `test_the_two_failure_vocabularies_agree`: this
+    module names the routes itself so it stays importable with nothing
+    installed, and this test is what keeps that copy honest. Every route the
+    tracer can record is classified — a route in neither set would attribute
+    to UNKNOWN forever without anyone noticing."""
+    from chessapp import trace
+
+    recorded = {
+        value
+        for name, value in vars(trace).items()
+        if name.startswith("ROUTE_") and isinstance(value, str)
+    }
+    assert recorded == NARRATE_ROUTES | {ROUTE_BRAIN}
+    assert not NARRATE_ROUTES & {ROUTE_BRAIN}
+
+
+def test_the_summary_names_the_phases_and_the_unknowns() -> None:
+    """The `[eval]` line clause a human reads. An unknown prints as `?` rather
+    than as a number, because the whole point is that it is not one."""
+    split = split_latencies((1200, 900, 39100), route="brain", stop_reason="completed")
+    assert split.summary() == (
+        "call_ms=[1200,900,39100] planner_ms=2100 narrator_ms=39100 phases=SPLIT"
+    )
+    stuck = split_latencies((900, 800), route="brain", stop_reason="max_iterations")
+    assert stuck.summary() == (
+        "call_ms=[900,800] planner_ms=1700 narrator_ms=? phases=NO_NARRATOR"
+    )
+    silent = split_latencies((), route="fast_path", stop_reason="completed")
+    assert silent.summary() == "call_ms=[] planner_ms=? narrator_ms=? phases=NONE"
+
+
+def test_the_record_is_json_and_carries_the_total_beside_the_parts() -> None:
+    """The per-sample half: `docs/agent-evals.md` has claimed per-sample
+    `model_ms` since the statistics slice and the report never carried one, so a
+    campaign's medians came out of terminal scrollback. The total ships beside
+    the parts, derived here for the same reason `turn_record` derives it — a
+    record whose total disagrees with its parts is worse than no record."""
+    latencies = split_latencies(
+        (1200, 900, 39100), route="brain", stop_reason="completed"
+    )
+    decoded = json.loads(json.dumps(latencies.as_record()))
+    assert decoded == {
+        "model_ms": 41200,
+        "call_ms": [1200, 900, 39100],
+        "planner_ms": 2100,
+        "narrator_ms": 39100,
+        "phases": "SPLIT",
+    }
+    unknown = split_latencies((1200,), route="brain", stop_reason="provider_error")
+    assert json.loads(json.dumps(unknown.as_record()))["narrator_ms"] is None

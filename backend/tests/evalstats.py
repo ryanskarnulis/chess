@@ -84,6 +84,24 @@ DETERMINISTIC_FAILURES = frozenset(
     {"rejected", "malformed_response", "bad_tool_arguments"}
 )
 
+# The loop's *budget* stops, as opposed to the two stops that still reach the
+# narrator (`completed`, `no_progress`). A turn that ended on one of these
+# produced no commentary at all, which is what makes it both an untested sample
+# under a commentary-only check (`Outcome.INCONCLUSIVE`) and a turn with no
+# narrator round trip to attribute time to (`Attribution.NO_NARRATOR`). One set,
+# because those two readings must never disagree about what a stop means.
+BUDGET_STOPS = frozenset({"max_iterations", "correction_limit"})
+
+# The trace's route vocabulary, split by the only thing this module needs from
+# it: how many model *phases* the route can have spent time in. The brain route
+# runs the planner loop and then the narrator; every other route reaches the
+# model only through `Brain.narrate` — one narrator call, no planner at all. As
+# with `DETERMINISTIC_FAILURES` these are literals rather than imports (this
+# module must stay importable with nothing installed), and
+# `test_evalstats.test_the_route_vocabularies_agree` is what pays for the copy.
+ROUTE_BRAIN = "brain"
+NARRATE_ROUTES = frozenset({"fast_path", "resign", "board", "confirmation", "control"})
+
 
 class Outcome(StrEnum):
     """What one sample was, before it is allowed to count as anything."""
@@ -127,6 +145,27 @@ class Stability(StrEnum):
 
     STABLE = "STABLE"
     UNSTABLE = "UNSTABLE"
+
+
+class Attribution(StrEnum):
+    """How much of a turn's per-call latencies could be pinned to a phase."""
+
+    # Planner and narrator are both known: the readings split at the phase
+    # boundary the route and stop reason put there.
+    SPLIT = "SPLIT"
+    # A budget stop: no narrator ran, so every reading is the planner's and
+    # there is no narrator time — not an unmeasured one, none.
+    NO_NARRATOR = "NO_NARRATOR"
+    # No readings came back: either the model was never called (a canned
+    # confirmation at verbosity=low) or nothing was traced at all (a request that
+    # died before the pipeline's trace point). The sample's own outcome tells
+    # those two apart — a thrown-away INFRA sample from a measured zero-LLM turn.
+    NONE = "NONE"
+    # The boundary is not knowable — the provider died on a call that could have
+    # been either phase, or the route is one this module has never heard of.
+    # Reported rather than guessed: a median over guesses is worse than a median
+    # over fewer samples.
+    UNKNOWN = "UNKNOWN"
 
 
 class VacuousRun(AssertionError):
@@ -354,6 +393,100 @@ class RateResult:
         if self.deterministic_suspect:
             line += " DETERMINISTIC_SUSPECT"
         return line
+
+
+@dataclass(frozen=True)
+class TurnLatencies:
+    """One turn's model round trips, and which phase spent each of them.
+
+    `call_ms` is the turn's readings in call order — `model_latencies_ms` off the
+    trace, one per round trip including the ones that raised. `total_ms` is
+    derived here rather than carried, the same rule `turn_record` follows for
+    `model_ms`: a record whose total disagrees with its parts is worse than no
+    record.
+
+    `planner_ms` and `narrator_ms` are `None` when the phase boundary is not
+    knowable (see `Attribution`), never 0 — an unmeasured phase is not a fast
+    one. The one real zero is a narrate route's planner, which genuinely never
+    ran.
+    """
+
+    call_ms: tuple[int, ...]
+    attribution: Attribution
+    planner_ms: int | None
+    narrator_ms: int | None
+
+    @property
+    def total_ms(self) -> int:
+        """The turn's whole model time — what the trace calls `model_ms`. A fact
+        on every turn, including the ones whose split is unknown."""
+        return sum(self.call_ms)
+
+    def summary(self) -> str:
+        """The latency clause of the `[eval]` line a human reads. An unknown
+        prints as `?`, not as a number, because the point is that it is not one."""
+        calls = ",".join(str(reading) for reading in self.call_ms)
+        planner = "?" if self.planner_ms is None else str(self.planner_ms)
+        narrator = "?" if self.narrator_ms is None else str(self.narrator_ms)
+        return (
+            f"call_ms=[{calls}] planner_ms={planner} "
+            f"narrator_ms={narrator} phases={self.attribution}"
+        )
+
+    def as_record(self) -> dict[str, Any]:
+        """The per-sample latency fields for the JSONL report.
+
+        This is the half a campaign reads: `docs/agent-evals.md` has claimed
+        per-sample `model_ms` since the statistics slice while the report carried
+        none, so the medians in the repeat-stop finding were read out of terminal
+        scrollback. Now the split ships with them, per sample, per scenario."""
+        return {
+            "model_ms": self.total_ms,
+            "call_ms": list(self.call_ms),
+            "planner_ms": self.planner_ms,
+            "narrator_ms": self.narrator_ms,
+            "phases": str(self.attribution),
+        }
+
+
+def split_latencies(
+    call_ms: Sequence[int], *, route: str | None, stop_reason: str | None
+) -> TurnLatencies:
+    """Attribute a turn's per-call readings to the phase that spent them.
+
+    `model_ms` is a per-turn sum, and the question it cannot answer is the one
+    Sprint 5 is asking: a `no_progress` turn was measured narrating 2–3× slower
+    than a `completed` one at the *same* model-call count (40.5 s and ≈26.7 s
+    medians against 9.9–11.5 s — `TODO.md`). Whether that is the narrator's own
+    round trip or a hard sample that made both the repeat and the long narration
+    happen needs planner time told from narrator time, which the readings can
+    give and the total cannot.
+
+    The attribution is derived, never guessed, from two things the trace already
+    records:
+
+    - **the route** decides how many phases existed. `brain` runs the planner
+      loop then one narrator call; every other route reaches the model only
+      through `Brain.narrate`, so its planner time is a real 0.
+    - **the stop reason** decides whether the last call was the narrator. It is
+      on `completed` and `no_progress` (both reach it), it does not exist on a
+      budget stop, and on `provider_error` the dead call could have been either
+      phase — the one case where the honest answer is UNKNOWN.
+    """
+    readings = tuple(call_ms)
+    if not readings:
+        # No round trips: nothing to attribute, and zeros would read as a turn
+        # that planned and narrated instantly.
+        return TurnLatencies(readings, Attribution.NONE, None, None)
+    if route in NARRATE_ROUTES:
+        # One narrator call and no planner phase — including a call that died,
+        # which spent its time in the narrator all the same.
+        return TurnLatencies(readings, Attribution.SPLIT, 0, sum(readings))
+    if route != ROUTE_BRAIN or stop_reason == STOP_PROVIDER_ERROR:
+        return TurnLatencies(readings, Attribution.UNKNOWN, None, None)
+    if stop_reason in BUDGET_STOPS:
+        return TurnLatencies(readings, Attribution.NO_NARRATOR, sum(readings), None)
+    return TurnLatencies(readings, Attribution.SPLIT, sum(readings[:-1]), readings[-1])
 
 
 def scenario_record(
