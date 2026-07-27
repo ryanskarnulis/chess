@@ -263,10 +263,19 @@ class ScriptedProvider:
 
 @dataclass(frozen=True)
 class ModelCall:
-    """One model round trip as the harness sees it: was thinking on, how long."""
+    """One model round trip as the harness sees it: was thinking on, how long,
+    and what it cost in tokens.
+
+    The token counts are `None` when the round trip did not report any — it
+    raised, or the provider returned no usage — never 0. An unmeasured call is
+    not a free one, the same rule the phase splits follow for an unmeasured
+    phase (`evalstats.TurnLatencies`).
+    """
 
     thinking: bool
     seconds: float
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 class CountingProvider:
@@ -283,6 +292,13 @@ class CountingProvider:
 
     A raising round trip is still recorded: the model was called, and the loop
     pays a correction for it.
+
+    It records **usage per call** for the same reason it records latency per
+    call: the trace carries the turn's token totals, and a total cannot say
+    whether a slow narration wrote more tokens or wrote them slower — which is
+    the mechanism question left open by the repeat-stop finding
+    (`docs/agent-evals.md`). Nothing in `src/` needs to change to answer it,
+    because every round trip already passes through here.
     """
 
     def __init__(self, inner: Any) -> None:
@@ -303,15 +319,26 @@ class CountingProvider:
         temperature: float | None = None,
     ) -> ChatResult:
         started = time.monotonic()
+        # Bound before the call so the `finally` can read it after a raise, where
+        # it stays None: a round trip that died reported no usage, and the loop
+        # still paid for whatever it generated first.
+        result: ChatResult | None = None
         try:
-            return self.inner.chat(
+            result = self.inner.chat(
                 messages,
                 tools=tools,
                 enable_thinking=enable_thinking,
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
+            return result
         finally:
+            usage = result.usage if result is not None else None
             self.calls.append(
-                ModelCall(thinking=enable_thinking, seconds=time.monotonic() - started)
+                ModelCall(
+                    thinking=enable_thinking,
+                    seconds=time.monotonic() - started,
+                    prompt_tokens=usage.prompt_tokens if usage else None,
+                    completion_tokens=usage.completion_tokens if usage else None,
+                )
             )

@@ -134,10 +134,13 @@ from evalstats import (
     Outcome,
     RateResult,
     TurnLatencies,
+    TurnTokens,
     VacuousRun,
     classify,
+    generation_rate,
     scenario_record,
     split_latencies,
+    split_tokens,
 )
 from fakes import CountingProvider, ModelCall
 
@@ -554,6 +557,9 @@ class EvalRun(NamedTuple):
     neither can answer the question Sprint 5 is asking — whether a `no_progress`
     turn's extra 30 s is the narrator's own round trip or a hard sample that made
     the repeat and the long narration both happen.
+
+    `tokens` is the same turn priced in tokens, split the same way — because the
+    latency half answered *where* the extra time goes and cannot answer *why*.
     """
 
     assistant: dict[str, Any]
@@ -563,6 +569,16 @@ class EvalRun(NamedTuple):
     stop_reason: str | None
     provider_failure: str | None
     latencies: TurnLatencies
+    tokens: TurnTokens
+
+    @property
+    def narrator_tok_s(self) -> float | None:
+        """How fast the narrator wrote, when both halves of the division are
+        known. Derived here rather than carried on either half: it is the one
+        number that needs a reading from *both* seams — the trace's clock and
+        the call meter's usage — so this is the only place it can be computed
+        without one of them reaching into the other."""
+        return generation_rate(self.tokens.narrator_out, self.latencies.narrator_ms)
 
 
 # A non-200 means the request never produced a turn (almost always the provider
@@ -639,12 +655,25 @@ def _measured(
         route=traced.get("route"),
         stop_reason=traced.get("stop_reason"),
     )
+    # Tokens come off the *call meter* rather than the trace, because the trace
+    # sums the turn and a sum is exactly what could not answer the last
+    # question. The two seams are not cross-checked here on purpose: they are
+    # printed side by side with `model_calls` between them, so a disagreement
+    # about how many round trips happened shows up on the line rather than being
+    # silently reconciled into a wrong attribution.
+    tokens = split_tokens(
+        [(call.prompt_tokens, call.completion_tokens) for call in model_calls],
+        route=traced.get("route"),
+        stop_reason=traced.get("stop_reason"),
+    )
+    tok_s = generation_rate(tokens.narrator_out, latencies.narrator_ms)
     print(
         f"\n[eval] scenario={scenario} status={response.status_code} "
         f"stop={traced.get('stop_reason')} route={traced.get('route')} "
         f"calls={len(_tool_calls(assistant))} model_calls={len(model_calls)} "
         f"thinking=[{thinking}] model_ms={traced.get('model_ms')} "
-        f"{latencies.summary()} "
+        f"{latencies.summary()} {tokens.summary()} "
+        f"narrator_tok_s={'?' if tok_s is None else f'{tok_s:.1f}'} "
         f"mutations={traced.get('mutations', len(_board_mutations(assistant)))} "
         f"duration={duration:.1f}s trajectory=[{_trajectory(assistant)}]"
     )
@@ -661,6 +690,7 @@ def _measured(
         stop_reason=traced.get("stop_reason"),
         provider_failure=provider_failure,
         latencies=latencies,
+        tokens=tokens,
     )
 
 
@@ -1238,6 +1268,11 @@ def _pass_rate(
                     # which is why the medians in TODO.md's repeat-stop item had
                     # to be read out of terminal scrollback.
                     **run.latencies.as_record(),
+                    # And what each of those calls wrote. Milliseconds alone
+                    # cannot tell a wordier narration from a slower one; the two
+                    # records side by side, per sample, can.
+                    **run.tokens.as_record(),
+                    "narrator_tok_s": run.narrator_tok_s,
                     "error": str(error) if error is not None else None,
                 }
             )

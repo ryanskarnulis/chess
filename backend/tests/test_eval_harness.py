@@ -9,16 +9,18 @@ that matters: a wrong tool offer in this file once moved a scenario from 5/5 to
 (`docs/agent-evals.md`). A measurement instrument that can silently lie about
 the thing it measures is worse than no instrument.
 
-So this file pins the seam `_measured` owns: the latency attribution reaches the
-printed line, the `EvalRun`, and the sample record — with the readings and the
-attribution coming off the *same* trace record, so they can never describe
-different turns. Nothing here calls the model, so it runs in ordinary `pytest`
-alongside `test_evalstats.py`.
+So this file pins the seam `_measured` owns: the latency attribution and the
+per-call token counts reach the printed line, the `EvalRun`, and the sample
+record — with each half's readings and its attribution coming off the *same*
+seam, so they can never describe different turns. Nothing here calls the model,
+so it runs in ordinary `pytest` alongside `test_evalstats.py`.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+import pytest
 
 from evalstats import Attribution
 from fakes import CountingProvider, ModelCall
@@ -33,14 +35,31 @@ class _Response:
         self.text = text
 
 
-def _app(record: dict[str, Any], calls: int) -> EvalApp:
+def _app(
+    record: dict[str, Any],
+    calls: int,
+    usage: list[tuple[int | None, int | None]] | None = None,
+) -> EvalApp:
     """An `EvalApp` with only the two observation seams `_measured` touches
     populated. `client` and `ctx` are None on purpose: reaching for either from
-    the reporting path would be a bug this test should catch, not accommodate."""
+    the reporting path would be a bug this test should catch, not accommodate.
+
+    `usage` scripts the per-call token counts the meter recorded; omitted, every
+    call is unmeasured, which is what an older provider or a died turn looks
+    like."""
     tracer = _CollectingTracer()
     tracer.record(record)
     provider = CountingProvider(inner=None)
-    provider.calls.extend(ModelCall(thinking=False, seconds=1.0) for _ in range(calls))
+    readings = usage or [(None, None)] * calls
+    provider.calls.extend(
+        ModelCall(
+            thinking=False,
+            seconds=1.0,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+        )
+        for prompt, completion in readings
+    )
     return EvalApp(client=None, ctx=None, provider=provider, tracer=tracer)  # type: ignore[arg-type]
 
 
@@ -151,3 +170,110 @@ def test_the_sample_record_pairs_the_split_with_the_outcome() -> None:
         "narrator_ms": 39100,
         "phases": "SPLIT",
     }
+
+
+# --- per-call token counts ----------------------------------------------------
+#
+# The measurement Sprint 5 asked for next. `call_ms` settled *where* a
+# repeat-stop turn's extra 30 s goes (the narrator's own round trip); it cannot
+# settle *why*, because "emitted three times the tokens" and "generated at a
+# third of the rate" are the same milliseconds. The token readings come off the
+# call meter rather than the trace — the trace sums the turn — so they are
+# printed beside `call_ms`, and `model_calls` beside both is what makes a
+# disagreement between the two seams visible rather than silent.
+
+
+def test_the_eval_line_carries_the_per_call_tokens(capsys: Any) -> None:
+    run = _measured(
+        _app(_traced(), 3, [(2100, 8), (2400, 12), (2900, 940)]),
+        "hints_off_no_advice",
+        _ASSISTANT,
+        _Response(),
+        41.5,
+    )
+    line = capsys.readouterr().out
+
+    assert "call_in=[2100,2400,2900]" in line
+    assert "call_out=[8,12,940]" in line
+    assert "planner_out=20" in line
+    assert "narrator_in=2900 narrator_out=940" in line
+    assert run.tokens.narrator_out == 940
+
+
+def test_the_line_pairs_the_narrator_s_tokens_with_its_own_clock(
+    capsys: Any,
+) -> None:
+    """The discriminator, computed where both halves are in scope: the narrator
+    wrote 940 tokens in the 39.1 s the trace attributes to it, so ~24 tok/s. A
+    slow narration at the *same* rate is a thinking-budget problem; the same
+    tokens at a third of the rate is a serving problem, and only this number
+    tells the two apart."""
+    run = _measured(
+        _app(_traced(), 3, [(2100, 8), (2400, 12), (2900, 940)]),
+        "hints_off_no_advice",
+        _ASSISTANT,
+        _Response(),
+        41.5,
+    )
+
+    assert "narrator_tok_s=24.0" in capsys.readouterr().out
+    assert run.narrator_tok_s == pytest.approx(24.04, abs=0.01)
+
+
+def test_an_unmeasured_phase_pairs_into_no_rate_at_all(capsys: Any) -> None:
+    """A budget stop reached no narrator: there is no narrator clock and no
+    narrator tokens, and a rate over two unknowns would be a fabricated
+    number."""
+    run = _measured(
+        _app(
+            _traced(
+                stop_reason="max_iterations",
+                model_calls=2,
+                model_ms=2000,
+                model_latencies_ms=[1000, 1000],
+            ),
+            2,
+            [(2100, 8), (2400, 12)],
+        ),
+        "hints_off_no_advice",
+        _ASSISTANT,
+        _Response(),
+        2.4,
+    )
+
+    assert "narrator_out=? " in capsys.readouterr().out
+    assert run.tokens.narrator_out is None
+    assert run.narrator_tok_s is None
+
+
+def test_a_provider_that_reported_no_usage_prints_unknowns_not_zeros(
+    capsys: Any,
+) -> None:
+    # The pre-existing shape: a meter with no usage recorded must degrade to `?`
+    # rather than claim a turn that cost nothing.
+    _measured(_app(_traced(), 3), "long_capture", _ASSISTANT, _Response(), 41.5)
+    line = capsys.readouterr().out
+
+    assert "call_in=[?,?,?] call_out=[?,?,?]" in line
+    assert "planner_out=? narrator_in=? narrator_out=?" in line
+    assert "narrator_tok_s=?" in line
+
+
+def test_the_sample_record_pairs_the_tokens_with_the_milliseconds() -> None:
+    """Both halves in one sample record, which is what makes the campaign
+    question answerable off the report instead of off scrollback: are the slow
+    narrations the *wordy* ones? That needs `narrator_ms` and `narrator_out` on
+    the same line, per sample."""
+    run = _measured(
+        _app(_traced(), 3, [(2100, 8), (2400, 12), (2900, 940)]),
+        "hints_off_no_advice",
+        _ASSISTANT,
+        _Response(),
+        41.5,
+    )
+    record = {**run.latencies.as_record(), **run.tokens.as_record()}
+
+    assert record["narrator_ms"] == 39100
+    assert record["narrator_out"] == 940
+    assert record["completion_tokens"] == 960
+    assert record["call_out"] == [8, 12, 940]

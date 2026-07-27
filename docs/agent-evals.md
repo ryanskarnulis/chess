@@ -289,6 +289,57 @@ test for the harness's own reporting seam — `tests/test_eval_harness.py`, GPU-
 — because an instrument that can silently lie about what it measures is worse
 than no instrument.
 
+#### Tokens, per call and per phase (2026-07-27, Sprint 5)
+
+The other half of the same round trip. `call_ms` settled **where** a repeat-stop
+turn's extra 30 s goes — the narrator's own call — and cannot settle **why**,
+because "emitted three times the tokens" and "generated at a third of the rate"
+are the same milliseconds. So the line and the record now carry what each call
+wrote:
+
+| Field | Is |
+| --- | --- |
+| `call_in` / `call_out` | prompt and completion tokens per round trip, **in call order**, off the harness's call meter (`fakes.CountingProvider` reads `ChatResult.usage`) |
+| `planner_out` | completion tokens the planner loop wrote |
+| `narrator_in` | the narrator's **prompt** size — a candidate mechanism in its own right (a `no_progress` turn dispatched the duplicate, so its narrator reads one more tool result, and a longer prompt costs prefill before a token is written) |
+| `narrator_out` | completion tokens the narrator wrote |
+| `prompt_tokens` / `completion_tokens` | the turn's totals, derived from the parts — the same sums the trace record reports, from the other seam |
+| `narrator_tok_s` | `narrator_out ÷ narrator_ms`: **the discriminator** |
+
+`narrator_tok_s` is what the instrument is for. A narration that ran 3× longer at
+the same rate wrote 3× the tokens, and the standing candidate fix — bounding the
+narrator's thinking budget — is aimed at the right thing. The same tokens at a
+third of the rate is the server, and a token cap would not touch it.
+
+Three rules it keeps, all of them the latency split's:
+
+- **The phase boundary is derived once.** `evalstats._attribute_phases` states
+  the `SPLIT` / `NO_NARRATOR` / `UNKNOWN` / `NONE` rule over call *positions*,
+  and both `split_latencies` and `split_tokens` use it. Two clauses on one line
+  disagreeing about which call was the narrator would make the line unreadable
+  in exactly the case it exists to explain.
+- **Unmeasured is `?`, never 0.** A round trip that raised reported no usage —
+  the result never came back — so its phase total is unknown rather than
+  smaller. Summing the rest would print a partial number as though it were the
+  whole.
+- **The two seams are printed, not reconciled.** Tokens come off the call meter
+  and milliseconds off the trace (the brain measures a call that raised; the
+  provider seam cannot). They sit either side of `model_calls`, so a
+  disagreement about how many round trips happened shows on the line instead of
+  being silently folded into a wrong attribution.
+
+Again **nothing in `src/` changed**: every round trip already passes through the
+meter. `tests/test_eval_harness.py` and `tests/test_evalstats.py` pin it GPU-free.
+
+A line now reads:
+
+```
+[eval] scenario=hints_off_no_advice status=200 stop=no_progress route=brain calls=2 model_calls=3
+       thinking=[off,off,off] model_ms=41200 call_ms=[1200,900,39100] planner_ms=2100 narrator_ms=39100
+       phases=SPLIT call_in=[2100,2400,2900] call_out=[8,12,940] planner_out=20 narrator_in=2900
+       narrator_out=940 narrator_tok_s=24.0 mutations=0 duration=41.5s trajectory=[...]
+```
+
 ## Scenarios — what each pins
 
 | Scenario | Utterance | Pins |
@@ -1052,12 +1103,21 @@ near-identical planner times (1.000–1.007 s) against narrator times spanning
 17.3–38.6 s lean structural — a stereotyped path producing wildly varying
 reasoning lengths — but that is inference, not measurement.
 
-**The next instrument, and it is again harness-only.** Latency alone cannot
-separate "the narrator emitted more reasoning tokens" from "generation was
-slower"; that needs per-call **token** counts, and `CountingProvider` already
-observes every round trip individually, so recording usage on `ModelCall` answers
-it with no `src/` change. Worth doing before bounding the narrator's thinking
-budget — a cap set against an unexplained latency is a guess with a number on it.
+**The next instrument, and it is again harness-only — built 2026-07-27, not yet
+read.** Latency alone cannot separate "the narrator emitted more reasoning
+tokens" from "generation was slower"; that needs per-call **token** counts, and
+`CountingProvider` already observes every round trip individually, so recording
+usage on `ModelCall` answered it with no `src/` change (see *Tokens, per call and
+per phase* above). It ships with the split it discriminates: `narrator_out`
+beside `narrator_ms`, and `narrator_tok_s` between them.
+
+**What it will take to answer the question**, and the arm is not free: repeats
+are the ~10–25 % tail, so the three `no_progress` samples that carried the
+finding came out of a 20-sample `hints_off_no_advice` run. Re-run that arm on an
+idle card and compare the two groups' `narrator_out` and `narrator_tok_s` the way
+the table above compares their `narrator_ms`. A flat rate with 3× the tokens says
+bound the thinking budget; flat tokens at a third of the rate says the cap is the
+wrong fix and the serving path is the finding. Only then set the number.
 
 *Caveat on the rate, not the split:* the server was restarted immediately before
 this run, and `hints_off_no_advice` is the scenario with a recorded

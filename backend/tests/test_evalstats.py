@@ -50,8 +50,10 @@ from evalstats import (
     classify,
     decide,
     failure_signature,
+    generation_rate,
     scenario_record,
     split_latencies,
+    split_tokens,
     wilson_interval,
 )
 
@@ -712,3 +714,130 @@ def test_the_record_is_json_and_carries_the_total_beside_the_parts() -> None:
     }
     unknown = split_latencies((1200,), route="brain", stop_reason="provider_error")
     assert json.loads(json.dumps(unknown.as_record()))["narrator_ms"] is None
+
+
+# --- split_tokens / generation_rate -------------------------------------------
+#
+# The half `split_latencies` cannot answer. It settled *where* the repeat-stop
+# turn's extra 30 s is spent — the narrator's own round trip, p = 0.00088 — and
+# left the mechanism open, because "the narrator emitted more tokens" and
+# "generation was slower" are the same number of milliseconds. Usage per call
+# separates them: tokens say how much was written, the pair says how fast. The
+# phase boundary is the *same* rule the latencies use (one derivation, applied
+# to whichever readings are being attributed), so the two clauses on a line can
+# never disagree about which call was the narrator.
+
+
+def test_a_brain_turn_attributes_its_tokens_the_way_it_attributes_its_time() -> None:
+    tokens = split_tokens(
+        ((2100, 8), (2400, 12), (2900, 940)), route="brain", stop_reason="completed"
+    )
+    assert tokens.attribution is Attribution.SPLIT
+    assert tokens.planner_out == 20
+    assert tokens.narrator_out == 940
+    # The narrator's *prompt* is a candidate mechanism in its own right: a
+    # repeat-stop turn dispatched the duplicate, so its narrator reads one more
+    # tool result than a completed turn's does.
+    assert tokens.narrator_in == 2900
+    assert tokens.completion_tokens == 960
+
+
+def test_a_budget_stop_spent_every_token_in_the_planner() -> None:
+    for stop in sorted(BUDGET_STOPS):
+        tokens = split_tokens(
+            ((2000, 30), (2200, 25), (2400, 28), (2600, 31)),
+            route="brain",
+            stop_reason=stop,
+        )
+        assert tokens.attribution is Attribution.NO_NARRATOR, stop
+        assert tokens.planner_out == 114, stop
+        assert tokens.narrator_out is None, stop
+        assert tokens.narrator_in is None, stop
+
+
+def test_a_narrate_route_spent_every_token_in_the_narrator() -> None:
+    for route in sorted(NARRATE_ROUTES):
+        tokens = split_tokens(((1800, 240),), route=route, stop_reason="completed")
+        assert tokens.attribution is Attribution.SPLIT, route
+        assert tokens.planner_out == 0, route
+        assert tokens.narrator_out == 240, route
+
+
+def test_a_provider_death_leaves_the_token_boundary_unknown_too() -> None:
+    tokens = split_tokens(
+        ((2100, 8), (2400, None)), route="brain", stop_reason="provider_error"
+    )
+    assert tokens.attribution is Attribution.UNKNOWN
+    assert tokens.planner_out is None
+    assert tokens.narrator_out is None
+
+
+def test_a_zero_llm_turn_reports_no_token_readings() -> None:
+    tokens = split_tokens((), route="fast_path", stop_reason="completed")
+    assert tokens.attribution is Attribution.NONE
+    assert tokens.narrator_out is None
+    assert tokens.completion_tokens is None
+
+
+def test_one_unmeasured_call_makes_its_phase_unknown_not_smaller() -> None:
+    """A round trip that raised has no usage — the result never came back. Its
+    phase total is therefore unknown, and summing the rest would report a
+    *smaller* number as if it were the whole: exactly the silent lie the
+    instrument exists to avoid."""
+    tokens = split_tokens(
+        ((2100, 8), (2400, None), (2900, 940)), route="brain", stop_reason="completed"
+    )
+    assert tokens.planner_out is None  # the raising call was the planner's
+    assert tokens.narrator_out == 940  # but the narrator's own reading survives
+    assert tokens.completion_tokens is None
+
+
+def test_the_token_summary_names_the_unknowns_the_same_way() -> None:
+    tokens = split_tokens(
+        ((2100, 8), (2400, 12), (2900, 940)), route="brain", stop_reason="completed"
+    )
+    assert tokens.summary() == (
+        "call_in=[2100,2400,2900] call_out=[8,12,940] "
+        "planner_out=20 narrator_in=2900 narrator_out=940"
+    )
+    stuck = split_tokens(
+        ((2000, 30), (2200, None)), route="brain", stop_reason="max_iterations"
+    )
+    assert stuck.summary() == (
+        "call_in=[2000,2200] call_out=[30,?] planner_out=? narrator_in=? narrator_out=?"
+    )
+    silent = split_tokens((), route="fast_path", stop_reason="completed")
+    assert silent.summary() == (
+        "call_in=[] call_out=[] planner_out=? narrator_in=? narrator_out=?"
+    )
+
+
+def test_the_token_record_is_json_and_carries_the_totals() -> None:
+    tokens = split_tokens(
+        ((2100, 8), (2400, 12), (2900, 940)), route="brain", stop_reason="completed"
+    )
+    decoded = json.loads(json.dumps(tokens.as_record()))
+    assert decoded == {
+        "prompt_tokens": 7400,
+        "completion_tokens": 960,
+        "call_in": [2100, 2400, 2900],
+        "call_out": [8, 12, 940],
+        "planner_out": 20,
+        "narrator_in": 2900,
+        "narrator_out": 940,
+    }
+
+
+def test_generation_rate_is_tokens_per_second_of_the_call_that_wrote_them() -> None:
+    """The discriminator itself. A narrator that emitted 3× the tokens at the
+    same rate is a *thinking* problem (bound the budget); one that emitted the
+    same tokens at a third of the rate is a *serving* problem (and a token cap
+    would not touch it). One number tells them apart."""
+    assert generation_rate(940, 39100) == pytest.approx(24.04, abs=0.01)
+
+
+def test_generation_rate_refuses_to_divide_by_an_unknown() -> None:
+    assert generation_rate(None, 39100) is None
+    assert generation_rate(940, None) is None
+    # A 0 ms reading is a clock that did not run, not an infinitely fast model.
+    assert generation_rate(940, 0) is None
