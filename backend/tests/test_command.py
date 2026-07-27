@@ -950,6 +950,68 @@ def test_a_confirmed_resignation_may_say_the_game_is_over():
     assert response["commentary"] == "Done. Game over."
 
 
+# --- ...and the board it is checked against is one the turn actually had.
+#
+# The observation beat gives the narrator the position after the player's move,
+# while Stockfish is still computing its answer. The guard runs after that
+# answer lands. So the reaction is written from one board and judged from the
+# next, and a recapture flips the count between them: live, ordinary trades
+# guarded ordinary commentary, which is how the canned correction got into the
+# transcript and taught Glitch to apologise for things he never said.
+#
+# The fix is not to loosen the classes but to check them against every board the
+# turn really held. An invented fact is still invented from all of them.
+
+
+def traded_client(narration: str):
+    """A turn that trades: the player takes on c6, the engine recaptures. +3 to
+    the reaction, level again by the time the guard sees it."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine("d7c6"))
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
+        ctx.session.submit_move(san)
+    brain = ScriptedBrain(narrations=(narration,))
+    app, _ = scripted_app(ctx, brain=brain)
+    return TestClient(app), ctx
+
+
+def test_a_count_from_the_board_the_narrator_saw_survives_the_guard():
+    client, ctx = traded_client("Word, you're up a piece.")
+
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+
+    assert ctx.session.material_balance() == 0, "the recapture levelled it again"
+    assert body["commentary"] == "Word, you're up a piece.\n\ndxc6."
+
+
+def test_a_move_only_the_observed_position_makes_legal_survives_the_guard():
+    """The state block hands the narrator the mid-turn legal moves; naming one
+    back must not be a lie. Bb4 is Black's, playable only on the board the
+    reaction was written from."""
+    client, _ = traded_client("Bb4 and you're fine, dude.")
+
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+
+    assert body["commentary"].startswith("Bb4 and you're fine, dude.")
+
+
+def test_the_direction_no_board_this_turn_backs_is_still_guarded():
+    client, _ = traded_client("Ight, you're down a piece.")
+
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+
+    assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+def test_a_move_no_board_this_turn_makes_legal_is_still_guarded():
+    """Widening to every board the turn held is not the same as waving moves
+    through: Rxe5 is playable on none of them."""
+    client, _ = traded_client("Rxe5 wins on the spot.")
+
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+
+    assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
 # --- The advice guard: hints off means no move is handed over.
 #
 # Audit item 11's second half. The capability cut (get_best_moves withheld from

@@ -153,7 +153,15 @@ class VerifiedFacts:
     keeps "Bc4 was right there and you missed it" sayable.
 
     `material` is the player's advantage in pawns, positive when they are
-    ahead — and `None` rather than `0` for a turn that supplied no count,
+    ahead — and a *tuple* of them, because one turn holds more than one board.
+    The narrator reacts during the observation beat, after the player's move
+    and while Stockfish is still computing its answer, so the position it
+    counted is not the position the guard is standing in when it checks: a
+    recapture is +3 to the reaction and 0 to the check. Every board this turn
+    really had contributes its count and any of them backing a claim is enough,
+    on the same reasoning that lets `captured_by_player` span the whole game —
+    staleness is not invention, and the class exists for the direction no board
+    supports. Empty rather than `(0,)` for a turn that supplied no count,
     because a level board is itself a claimable fact ("we're dead even") and
     the guard fails closed on evidence, never on a default that happens to
     read as one.
@@ -168,7 +176,7 @@ class VerifiedFacts:
     saved: bool = False
     settings: Mapping[str, str] = field(default_factory=dict)
     numbers: frozenset[str] = frozenset()
-    material: int | None = None
+    material: tuple[int, ...] = ()
 
 
 _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
@@ -435,20 +443,27 @@ def _material_holds(amount: int | None, behind: bool, balance: int) -> bool:
 
 
 def _material_matches(match: re.Match[str], facts: VerifiedFacts) -> bool:
-    if facts.material is None:
-        return False
+    """Whether any board this turn held backs the count the text names.
+
+    Any of them, because the narrator counted one board and the guard checks
+    from another (see `VerifiedFacts.material`), and both were real.
+    """
     amount, behind = _material_claimed(match)
     subject = (match.group("subject") or "").lower()
-    if subject == "i":  # Glitch is the player's opponent: the count flips
-        return _material_holds(amount, behind, -facts.material)
-    if subject == "you":
-        return _material_holds(amount, behind, facts.material)
-    # Nobody named: "Up a knight. Cute." is genuinely ambiguous about whose
-    # knight, so either reading verifying is enough — the guard fails permissive
-    # on ambiguity, and a level board still backs neither.
-    return _material_holds(amount, behind, facts.material) or _material_holds(
-        amount, behind, -facts.material
-    )
+
+    def holds(balance: int) -> bool:
+        if subject == "i":  # Glitch is the player's opponent: the count flips
+            return _material_holds(amount, behind, -balance)
+        if subject == "you":
+            return _material_holds(amount, behind, balance)
+        # Nobody named: "Up a knight. Cute." is genuinely ambiguous about whose
+        # knight, so either reading verifying is enough — the guard fails
+        # permissive on ambiguity, and a level board still backs neither.
+        return _material_holds(amount, behind, balance) or _material_holds(
+            amount, behind, -balance
+        )
+
+    return any(holds(balance) for balance in facts.material)
 
 
 def _number_reported(match: re.Match[str], facts: VerifiedFacts) -> bool:

@@ -386,9 +386,9 @@ def test_offering_a_setting_change_is_not_a_claim(text):
 # which is a pawn off the net count and true as anybody plays it — while the
 # lie the class exists for is being told you are ahead when you are behind.
 
-LEVEL = VerifiedFacts(material=0)
-UP_A_KNIGHT = VerifiedFacts(material=3)
-DOWN_TWO_PAWNS = VerifiedFacts(material=-2)
+LEVEL = VerifiedFacts(material=(0,))
+UP_A_KNIGHT = VerifiedFacts(material=(3,))
+DOWN_TWO_PAWNS = VerifiedFacts(material=(-2,))
 
 
 @pytest.mark.parametrize(
@@ -420,11 +420,11 @@ def test_an_unbacked_material_claim_is_a_claim(text, facts):
         ("You're up a piece.", UP_A_KNIGHT),
         ("You're a knight up.", UP_A_KNIGHT),
         ("You're up a knight, so stop panicking.", UP_A_KNIGHT),
-        ("I'm up a piece.", VerifiedFacts(material=-3)),
+        ("I'm up a piece.", VerifiedFacts(material=(-3,))),
         ("You're two pawns down.", DOWN_TWO_PAWNS),
         ("Two pawns behind and it shows.", DOWN_TWO_PAWNS),
         ("I'm two pawns ahead.", DOWN_TWO_PAWNS),
-        ("You're up the exchange.", VerifiedFacts(material=2)),
+        ("You're up the exchange.", VerifiedFacts(material=(2,))),
         # No subject at all: ambiguous, so either reading verifying is enough.
         ("Up a knight. Cute.", UP_A_KNIGHT),
     ],
@@ -437,8 +437,38 @@ def test_the_nominal_trade_is_reportable_against_the_net_count():
     """A knight taken for a pawn is "up a knight" to everybody who plays chess,
     and +2 to the board. Magnitude is verified to within a pawn precisely so
     that ordinary material talk survives its own guard."""
-    knight_for_a_pawn = VerifiedFacts(material=2)
+    knight_for_a_pawn = VerifiedFacts(material=(2,))
     assert unverified_claims("You're up a knight.", knight_for_a_pawn) == ()
+
+
+# The count is plural because the turn has more than one board in it. The
+# narrator reacts during the observation beat — after the player's move, while
+# Stockfish is still computing its answer — so the position it counted is not
+# the position the guard is standing in when it checks. Both are boards this
+# turn really had, so a count either one backs is a count, and only a direction
+# neither board supports is the invention the class exists for.
+
+
+def test_a_count_from_the_board_the_narrator_saw_is_reportable():
+    """The player takes a knight and the engine recaptures: +3 while the
+    reaction is being written, 0 by the time it is checked. "You're up a piece"
+    was true when it was said."""
+    traded = VerifiedFacts(material=(3, 0))
+    assert unverified_claims("Word, you're up a piece.", traded) == ()
+
+
+def test_a_direction_no_board_this_turn_backs_is_still_a_claim():
+    assert "material" in unverified_claims(
+        "You're down a piece.", VerifiedFacts(material=(3, 0))
+    )
+
+
+def test_no_count_at_all_still_backs_nothing():
+    """`()` is not `(0,)`: a turn that supplied no count licenses no count,
+    while a level board genuinely backs "we're dead even". The class fails
+    closed on evidence, never on a default that happens to read as one."""
+    assert "material" in unverified_claims("You're two pawns down.", VerifiedFacts())
+    assert "material" in unverified_claims("You're up a pawn.", VerifiedFacts())
 
 
 @pytest.mark.parametrize(
