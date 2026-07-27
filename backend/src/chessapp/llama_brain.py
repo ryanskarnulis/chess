@@ -37,6 +37,20 @@ with tools, append its turn, dispatch each call, append each result as a
 still holds tools (that is what makes `get_best_moves` → `make_move` possible)
 without ever being able to spin.
 
+**A turn that asks for nothing new is the planner's last** (`no_progress`, a
+fifth stop reason beside the standard's three and chess's `provider_error`).
+Measured, not theoretical: asked "what should I play?" with hints off — an ask
+whose right answer is "no, hints are off" — the planner re-ran reads it had
+already run and spent the whole budget doing it (2 of 20 samples,
+`docs/agent-evals.md`), and a budget stop reaches no narrator, so the player
+got the pipeline's canned stuck line. A call identical to one this turn already
+made cannot bring anything new back, so the loop ends the planning phase itself
+rather than granting iterations that can only repeat. It is a *termination*
+rule and nothing more: the repeated call is still dispatched, because whether a
+repeat may run is the tool layer's judgment (the phase machine already refuses
+a second player move), and the results are real — so unlike a budget stop this
+one reaches the narrator and the player gets an answer.
+
 Failures, and why they are not all the same:
 
 - **Domain rejections are results, not errors.** An illegal move comes back
@@ -103,6 +117,18 @@ _DEFAULT_MAX_CORRECTIONS = 2
 # thinking goes ON (BRIEF: thinking OFF for fast move parsing, ON for analysis).
 _ANALYSIS_TOOLS = frozenset(
     {"evaluate_position", "get_best_moves", "analyze_last_move"}
+)
+
+# The handoff note for a turn the *loop* ended (`no_progress`) rather than the
+# planner. The planner never reached the turn that writes one, and handing the
+# narrator a brief with no note at all was measured to cost real seconds: with
+# nothing saying the work was finished, it reasoned about what to do next
+# instead of what to say (`docs/agent-evals.md`). So the loop supplies the one
+# fact it owns. Deliberately about the *work* and not the machinery: how the
+# planning phase ended is nobody's business but the trace's, and a note that
+# mentioned repeated calls would invite commentary about the loop.
+_NO_PROGRESS_NOTE = (
+    "Nothing further was done — the results above are everything this turn has."
 )
 
 
@@ -177,6 +203,9 @@ class LlamaBrain:
         schemas = _schemas_of(tools)
         run = _RunState()
         corrections = 0
+        # Every call this turn has already asked for, so a turn that asks for
+        # nothing new can be recognized as the planner's last (see `_call_key`).
+        asked: set[tuple[str, str]] = set()
 
         for _ in range(self.max_iterations):
             self._report(BRAIN_PLANNING)
@@ -219,7 +248,11 @@ class LlamaBrain:
 
             messages.append(result.to_message())
             schema_error = False
+            progressed = False
             for call in result.tool_calls:
+                key = _call_key(call.name, call.arguments)
+                progressed = progressed or key not in asked
+                asked.add(key)
                 payload, bad_schema = self._dispatch(call, schemas)
                 schema_error = schema_error or bad_schema
                 run.record(call.name, call.arguments, payload)
@@ -228,6 +261,22 @@ class LlamaBrain:
                 corrections += 1
                 if corrections > self.max_corrections:
                     return run.response("", "correction_limit")
+                # A malformed call never dispatched, so repeating it is not the
+                # stall below — it is what the correction budget exists for, and
+                # that budget (smaller than the iteration one) already ends the
+                # turn early. Leave this turn to it.
+            elif not progressed:
+                # Every call this turn repeated one the turn had already made,
+                # so no further iteration can bring anything new back — the
+                # planner has stopped making progress and this turn is its last.
+                # Not a budget stop: results *did* come back, so the narrator
+                # closes the turn from them and the player gets an answer
+                # instead of the pipeline's canned stuck line. The note is the
+                # loop's own, because the planner never reached the turn that
+                # writes one — see `_NO_PROGRESS_NOTE`.
+                return self._close(
+                    run, command, _NO_PROGRESS_NOTE, transcript, "no_progress"
+                )
 
         return run.response("", "max_iterations")
 
@@ -259,6 +308,7 @@ class LlamaBrain:
         command: str,
         note: str,
         transcript: Sequence[dict[str, str]],
+        stop_reason: str = "completed",
     ) -> AgentResponse:
         """The narrator phase: speak as Glitch from what the turn actually did.
 
@@ -266,6 +316,11 @@ class LlamaBrain:
         so the tool results are the record of what changed, exactly as they are
         for `narrate`. The round trip is counted on the turn, so the split's
         extra call shows up in the trace and the eval baseline.
+
+        `stop_reason` is how the planning phase ended: `completed` when the
+        planner declared itself done, `no_progress` when it repeated itself and
+        the loop ended the phase for it. Both reach the narrator — the
+        distinction is what the trace and the eval report read.
         """
         self._report(BRAIN_NARRATING)
         started = self.clock()
@@ -288,7 +343,7 @@ class LlamaBrain:
             narration.completion_tokens,
             self._elapsed_ms(started),
         )
-        return run.response(narration.text, "completed")
+        return run.response(narration.text, stop_reason)
 
     def _speak(
         self,
@@ -403,6 +458,16 @@ def _schemas_of(tools: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {d["function"]["name"]: d["function"]["parameters"] for d in tools}
 
 
+def _call_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
+    """Identity of one call — the tool plus its arguments — for telling a repeat
+    from new work. Sorted keys and `default=str` because the key must be the
+    *call*, not how the model happened to serialize it, and an argument value
+    that will not serialize must still produce a key rather than raise inside
+    the loop.
+    """
+    return name, json.dumps(args, sort_keys=True, default=str)
+
+
 def _fast_path_brief(board_state: dict[str, Any], changes: list[dict[str, Any]]) -> str:
     """The narrator's brief for a move the loop never saw (the fast path). The
     board here *is* fresh — the caller read it after the move landed."""
@@ -422,14 +487,19 @@ def _closing_brief(command: str, changes: list[dict[str, Any]], note: str) -> st
     mutates anything, and the brain has no session to re-read (that is the
     point of the seam). The tool results are the record of what changed, and
     the planner's note says what it believes it did or what needs answering.
+
+    A turn the loop ended itself (`no_progress`) has no note, and the brief says
+    so by leaving the section out — an empty heading reads as a note that said
+    nothing, which is a different claim.
     """
     return (
         f"The player said:\n{command}\n\n"
         "Here is what was done about it (each entry is a tool call and its "
         f"result):\n{json.dumps(changes)}\n\n"
-        f"Note from the layer that did it:\n{note}\n\n"
-        "Reply to the player in character, based only on those results and "
-        "that note. Do not call any tools."
+        + (f"Note from the layer that did it:\n{note}\n\n" if note else "")
+        + "Reply to the player in character, based only on those results"
+        + (" and that note." if note else ".")
+        + " Do not call any tools."
     )
 
 

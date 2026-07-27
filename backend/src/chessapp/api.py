@@ -729,6 +729,8 @@ class CommandOutcome:
     endpoint needs them to build its wire `tool_calls`, but `/api/command`
     never exposes them. `stop_reason` is the brain loop's, in the fleet's
     vocabulary: `completed` when the agent finished with an answer,
+    `no_progress` when the loop ended a planner that had started repeating
+    itself (an answer too — the narrator still ran),
     `max_iterations` or `correction_limit` when it ran out of budget first,
     `provider_error` when the provider died mid-turn (the results of whatever
     ran are still here, and the turn was still closed). The fast path is

@@ -22,7 +22,7 @@ import pytest
 
 from chessapp.brain import AgentResponse
 from chessapp.game import GameSession
-from chessapp.llama_brain import LlamaBrain, create_llama_brain
+from chessapp.llama_brain import _NO_PROGRESS_NOTE, LlamaBrain, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, planner_prompt_for, system_prompt_for
 from chessapp.provider import (
     ProviderError,
@@ -400,8 +400,13 @@ def test_unparseable_args_exhaust_the_correction_budget():
 
 
 def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
+    # Distinct calls every turn: a model that keeps finding new work to do runs
+    # out of budget. (A model that asks for the *same* work twice is stopped one
+    # turn earlier by the repeat rule below — a different stop, on purpose.)
     brain, provider = make_brain(
-        tool_calls_turn(("make_move", {"move": "e4"})),  # repeats forever
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e5"})),
+        tool_calls_turn(("make_move", {"move": "e6"})),
         max_iterations=3,
     )
     resp = brain.get_agent_response(board_state={}, command="play e4")
@@ -409,6 +414,142 @@ def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
     assert len(provider.calls) == 3  # the loop's turns only — no narrator
     assert resp.text == ""
     assert len(resp.tool_results) == 3  # everything it did is still reported
+
+
+# --- the repeat rule: a turn that asks for nothing new is the planner's last --
+
+
+def test_a_planner_turn_that_only_repeats_itself_ends_the_loop():
+    # The recorded defect: asked "what should I play?" with hints off, the
+    # planner re-ran the reads it had already run and burned all four
+    # iterations, so the turn ended on a budget stop and the player got the
+    # canned stuck line. A call it already made against this turn cannot bring
+    # anything new back, so the second one is the planner's last word.
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn("nothing new to add"),
+        max_iterations=4,
+    )
+    resp = brain.get_agent_response(board_state={}, command="what should I play?")
+
+    assert resp.stop_reason == "no_progress"
+    # Two planner turns and the narrator — not the four the budget allowed.
+    assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]
+    assert resp.text == "nothing new to add"
+
+
+def test_a_repeated_call_still_runs_and_is_still_reported():
+    # The rule only ends the *loop*: whether a repeat is allowed to run is the
+    # tool layer's call (the phase machine already refuses a second player
+    # move), so the dispatch happens exactly as before and the turn reports it.
+    dispatcher = FakeDispatcher()
+    brain, _ = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn("reply"),
+        dispatcher=dispatcher,
+    )
+    resp = brain.get_agent_response(board_state={}, command="what should I play?")
+
+    assert dispatcher.calls == [("evaluate_position", {}), ("evaluate_position", {})]
+    assert [r["name"] for r in resp.tool_results] == [
+        "evaluate_position",
+        "evaluate_position",
+    ]
+
+
+def test_a_repeat_next_to_new_work_is_progress_and_the_loop_goes_on():
+    # Only a turn that asks for *nothing* new stops the loop: a repeat riding
+    # along beside a fresh call is a turn that still moved.
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("evaluate_position", {}), ("analyze_last_move", {})),
+        text_turn("looked at both"),
+        text_turn("here's the read"),
+    )
+    resp = brain.get_agent_response(board_state={}, command="how am I doing?")
+
+    assert resp.stop_reason == "completed"
+    assert len(provider.calls) == 4  # three planner turns and the narrator
+
+
+def test_the_same_tool_with_different_args_is_not_a_repeat():
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e5"})),
+        text_turn("played both"),
+        text_turn("your move"),
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4 then e5")
+
+    assert resp.stop_reason == "completed"
+    assert len(provider.calls) == 4
+
+
+def test_the_same_args_in_a_different_order_is_still_a_repeat():
+    # The key is the call, not how the model happened to serialize it.
+    brain, _ = make_brain(
+        tool_calls_turn(("speak", {"text": "hi", "voice": "glitch"})),
+        tool_calls_turn(("speak", {"voice": "glitch", "text": "hi"})),
+        text_turn("said it once"),
+    )
+    resp = brain.get_agent_response(board_state={}, command="say hi")
+
+    assert resp.stop_reason == "no_progress"
+
+
+def test_a_repeat_stop_reaches_the_narrator_with_what_the_turn_verified():
+    # The stop that is *not* a budget stop: results came back, so there is
+    # something verified to speak from and the player gets an answer rather
+    # than the pipeline's canned stuck line.
+    dispatcher = FakeDispatcher({"analyze_last_move": {"ok": True, "verdict": "fine"}})
+    brain, provider = make_brain(
+        tool_calls_turn(("analyze_last_move", {})),
+        tool_calls_turn(("analyze_last_move", {})),
+        text_turn("that move was fine"),
+        dispatcher=dispatcher,
+    )
+    resp = brain.get_agent_response(board_state={}, command="was that bad?")
+
+    assert resp.text == "that move was fine"
+    narrator = provider.calls[-1]
+    assert narrator["tools"] is None  # the closing pass still holds no tools
+    assert (
+        json.dumps({"ok": True, "verdict": "fine"})
+        in narrator["messages"][-1]["content"]
+    )
+
+
+def test_a_repeat_stop_hands_the_narrator_the_loops_own_note():
+    # The planner never reached the turn that writes a note, so the loop
+    # supplies one — a brief with no note at all measured slower live, the
+    # narrator reasoning about what to do next instead of what to say. It says
+    # the work is finished and nothing about the loop that finished it.
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn("reply"),
+    )
+    brain.get_agent_response(board_state={}, command="what should I play?")
+
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert _NO_PROGRESS_NOTE in brief
+    assert "repeat" not in brief.lower()  # the machinery stays in the trace
+
+
+def test_an_empty_planner_note_leaves_the_heading_out_of_the_brief():
+    # The planner *can* hand off with nothing to say. An empty heading would
+    # read as a note that said nothing, which is a different claim.
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn(""),  # the planner's handoff, wordless
+        text_turn("reply"),
+    )
+    brain.get_agent_response(board_state={}, command="how's it looking?")
+
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert "Note from the layer that did it" not in brief
 
 
 # --- cost accounting: model calls and tokens per turn ----------------------
@@ -655,7 +796,8 @@ def test_a_budget_stop_never_reaches_the_narrator():
     # Nothing verified came back, so there is nothing to speak from: the turn
     # ends silent and the pipeline's canned stuck reply covers it.
     brain, provider = make_brain(
-        tool_calls_turn(("make_move", {"move": "e4"})),  # repeats forever
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e5"})),  # new work every turn
         max_iterations=2,
     )
     resp = brain.get_agent_response(board_state={}, command="play e4")
@@ -1105,6 +1247,7 @@ def test_a_budget_stop_never_reports_narrating():
     seen: list[str] = []
     brain, _ = make_brain(
         tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e5"})),  # new work every turn
         on_phase=seen.append,
         max_iterations=2,
     )

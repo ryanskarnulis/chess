@@ -895,6 +895,76 @@ unit tests and nothing else. That is the same caveat the retry path carries and
 it is recorded for the same reason: a healthy-server session says little about
 the bad ones.
 
+### The repeat stop — before and after (2026-07-26, Sprint 5)
+
+The slice that made a repeating planner turn its own stop (`no_progress`,
+`docs/planner-narrator.md`) is the first one here whose *reason to exist* came
+out of this file, so it was measured the same way twice: the same scenario, the
+same 20 samples, before and after.
+
+**Before** (`main` at `fedeb19`, `CHESSAPP_EVAL_RUNS=20 CHESSAPP_EVAL_MAX_RUNS=20`,
+nothing else on the GPU): `hints_off_no_advice` **17/20 → [0.68, 0.94]**,
+ABOVE_FLOOR, STABLE, infra 0 — the campaign's number reproducing on the nose,
+with **2 `INCONCLUSIVE` `max_iterations` stops** (the third
+`INCONCLUSIVE`-free difference from the campaign's 3 is sampling, not a change).
+Both stalled trajectories are exact repeats, which is what the fix is built on:
+
+    [2]  evaluate_position → analyze_last_move → analyze_last_move → evaluate_position
+    [16] evaluate_position → analyze_last_move → evaluate_position → set_hints_mode
+
+Note what those cost: **1.5–1.8 s and four planner turns with thinking off**, the
+signature of a loop spinning rather than one doing work. Every scored sample in
+the same run took 6–17 s (one narrator turn thinking).
+
+**After** (`fix/planner-repeat-stop` at `9518542`, same knobs): **20/20 →
+[0.88, 1.00]**, ABOVE_FLOOR, STABLE, infra 0, **zero `INCONCLUSIVE`**. The stop
+fired on **5 of the 20** samples — every one of them a
+`evaluate_position → analyze_last_move → evaluate_position` repeat — and all
+five passed the behavioral check, which is the whole point: they are samples
+that used to test nothing.
+
+**The one thing the "after" run cost, recorded because it is not free.** A
+`no_progress` turn narrated far slower than an ordinary one in that run —
+median **40.5 s** against **11.5 s** for the fifteen `completed` samples, same
+model-call count (three planner turns and the narrator, against two and the
+narrator). The narrator is the difference, and the only thing that differed in
+its brief was the missing planner note. So the loop was given one of its own
+(`llama_brain._NO_PROGRESS_NOTE` — about the *work* being finished, never about
+the loop that finished it) and the arm was re-run: **20/20 again**, and the
+stop's turns came in at **24.3 s and 29.1 s** (median ≈26.7 s) against a
+`completed` median of 9.9 s.
+
+Read that carefully, because it is weaker evidence than it looks: only **two**
+samples repeated in the second arm (against five in the first — how often the
+planner repeats itself is sampling, not a knob), and the `completed` baseline
+drifted down too (11.5 s → 9.9 s), so some of the gain is a faster server. The
+note stays — it is architecturally right that the layer which ended the phase
+says so, and both arms are 20/20 — but the honest summary is **suggestive, not
+established**, and a repeat-stop turn is still 2–3× an ordinary one. What it
+replaced is worth keeping in view: before the fix these same samples finished in
+**1.6 s** with the canned "I lost the thread on that one" — fast and useless.
+The residual gap is filed in `TODO.md` rather than explained away here; the
+plausible alternative reading is that the repeat and the long narration share a
+cause (the model is having a hard time on that sample) rather than one causing
+the other.
+
+**Gate — full suite, default knobs, `fix/planner-repeat-stop`: 23 items passed
+in 3 m 09 s, 75 samples, infra 0/25.** All **fifteen** pass-rate scenarios
+measured 5/5 — the first run recorded here where `hints_off_no_advice` is not
+the odd one out (it had measured 4/5 with a `max_iterations` `INCONCLUSIVE` in
+each of the three previous runs). `long_capture` 5/5 in all three conditions, so
+the release-blocking constraint holds. Nothing escalated, nothing was retried.
+The report header for that run carries the **parent** SHA (`fedeb19`): the suite
+started before the branch's commit landed, on the same working tree.
+
+**What the gate could and could not see.** The change is loop code plus the
+narrator-brief string, so the gate was owed. But `no_progress` fires on a
+*repeat*, and repeats are the ~10–25 % tail — five samples of a healthy scenario
+mostly will not contain one, and indeed none of the suite run's five did. The
+20-sample arms are where the stop is actually exercised; the suite run is the
+regression check, and it is the *reason* the suite run reads 5/5 rather than the
+4/5 the last three recorded runs produced.
+
 ### Pass-rate scenarios — superseded record (5 fixed runs each, floor 80%)
 
 | Scenario | Utterance | Must land | Rate |

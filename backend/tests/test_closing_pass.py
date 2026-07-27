@@ -111,6 +111,25 @@ def test_brain_route_destructive_budget_spent_still_closes_tool_free():
     assert response["commentary"] == "Fresh board. Your move."
 
 
+def test_brain_route_closes_tool_free_when_the_planner_repeats_itself():
+    """The repeat stop is a *third* way into the narrator, and it must arrive
+    the same way the other two do: tool-free, with the player reading real
+    commentary rather than the pipeline's canned stuck line (which is what a
+    budget stop would have produced before the loop learned to end a planner
+    that had stopped making progress)."""
+    client, provider, _ = make_client(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("evaluate_position", {})),  # nothing new — the last turn
+        text_turn("Dead even. Your move."),
+    )
+
+    response = client.post("/api/command", json={"text": "how's it looking?"}).json()
+
+    # Two planner turns, then the narrator — no third planner turn was bought.
+    assert offered_tools(provider) == [True, True, False]
+    assert response["commentary"] == "Dead even. Your move."
+
+
 # --- the routes outside the loop: the model is only ever reached tool-free
 
 
