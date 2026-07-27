@@ -21,7 +21,11 @@ here:
   3–8 minutes of sustained generation, and since audit 20 the brain *catches*
   `ProviderError` and answers 200 with `stop_reason="provider_error"` — so a
   crash stopped reading as a 502 and started reading as a silent behavioral
-  miss. `classify` separates the two so the harness can retry instead of score.
+  miss. `classify` separates the two so the harness can retry instead of score
+  — and splits the death itself, because the brain now names the kind: a dead
+  socket is worth asking again, a request the server *rejected* (an HTTP 400 on
+  an overrun context) answers the same way every time and is
+  `Outcome.PROVIDER_REJECTED` on the first one.
 - **Vacuous passes counted as passes.** A budget stop reaches no narrator, so a
   purely negative commentary check passes for never having been tested (three of
   four `hints_off_no_advice` passes in one recorded run). `Outcome.INCONCLUSIVE`
@@ -66,6 +70,20 @@ UNSTABLE_SPREAD = 0.6
 # string constant is not worth a dependency on the package under test.
 STOP_PROVIDER_ERROR = "provider_error"
 
+# The provider-failure kinds a retry cannot fix, mirroring the non-transient
+# half of `chessapp.provider.ProviderFailure` (carried to here on
+# `AgentResponse.provider_failure` and recorded in the trace). Literals for the
+# same reason as above; `test_evalstats` pins the two vocabularies against each
+# other so the duplication cannot drift.
+#
+# Anything *not* listed — including no kind at all, which is what a non-200 and
+# every pre-existing caller carry — is retried. Unknown means retry on purpose:
+# spending a few samples on a deterministic failure is cheaper than aborting a
+# whole suite on a server that was only restarting.
+DETERMINISTIC_FAILURES = frozenset(
+    {"rejected", "malformed_response", "bad_tool_arguments"}
+)
+
 
 class Outcome(StrEnum):
     """What one sample was, before it is allowed to count as anything."""
@@ -74,6 +92,14 @@ class Outcome(StrEnum):
     FAIL = "FAIL"
     # The provider died. Retried, never scored: a crash cadence is not a rate.
     INFRA = "INFRA"
+    # The provider failed in a way a retry cannot fix — an HTTP 400 (a context
+    # overrun on a long transcript), a body this app can no longer parse. Like
+    # HARNESS it is never retried and never scored, and unlike HARNESS it
+    # arrives with no exception to re-raise: the request was answered, just not
+    # with a completion. The harness reports it and fails the item on the
+    # *first* one, instead of spending the infra budget re-asking a question
+    # already answered.
+    PROVIDER_REJECTED = "PROVIDER_REJECTED"
     # The turn never reached the thing the check was about (a budget stop under
     # a commentary-dependent check). Neither a pass nor a miss — an untested
     # sample, which today's harness silently scores as a pass.
@@ -165,7 +191,11 @@ def decide(
 
 
 def classify(
-    *, status_code: int, stop_reason: str | None, error: BaseException | None
+    *,
+    status_code: int,
+    stop_reason: str | None,
+    error: BaseException | None,
+    provider_failure: str | None = None,
 ) -> Outcome:
     """What kind of sample this was. Precedence is the point of the function.
 
@@ -174,10 +204,18 @@ def classify(
     assertion, because when the provider died the check failed *because* it
     died — scoring that as behavior is how a crash cadence gets written down as
     a pass rate. Only then is a failed assertion a real miss.
+
+    A provider death then splits on `provider_failure` — the kind the brain
+    named (`AgentResponse.provider_failure`, read off the trace). Retrying is
+    only worth anything against a server that might answer differently, so a
+    kind in `DETERMINISTIC_FAILURES` is PROVIDER_REJECTED and everything else,
+    the unnamed included, stays INFRA.
     """
     if error is not None and not isinstance(error, AssertionError):
         return Outcome.HARNESS
     if status_code != 200 or stop_reason == STOP_PROVIDER_ERROR:
+        if provider_failure in DETERMINISTIC_FAILURES:
+            return Outcome.PROVIDER_REJECTED
         return Outcome.INFRA
     if isinstance(error, VacuousRun):
         return Outcome.INCONCLUSIVE

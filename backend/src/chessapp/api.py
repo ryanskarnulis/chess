@@ -1537,6 +1537,10 @@ def create_app(
             tool_args: list[dict[str, Any]] = []
             commentary = ""
             stop_reason = "completed"
+            # Named only when the brain's loop died on the provider; every other
+            # route leaves it empty, which is the record's way of saying "did not
+            # die" rather than "not recorded".
+            provider_failure = ""
             # The fast path's move beats, held for the commentary below: with no
             # narration to speak for the turn (verbosity=low, or a provider failure)
             # the move and the engine's reply become one canned confirmation. None on
@@ -1660,6 +1664,7 @@ def create_app(
                 tool_results = list(response.tool_results)
                 tool_args = [call.args for call in response.tool_calls]
                 stop_reason = response.stop_reason
+                provider_failure = response.provider_failure
                 cost = _ModelCost.of(response)
                 # A budget stop (max_iterations / correction_limit) carries no
                 # commentary: the loop never reached a text turn. A provider
@@ -1774,6 +1779,7 @@ def create_app(
                 tool_results=tool_results,
                 engine_reply=_move_reply_dict(engine_reply),
                 guarded=guarded,
+                provider_failure=provider_failure,
                 **cost.as_trace(),
             )
             return CommandOutcome(

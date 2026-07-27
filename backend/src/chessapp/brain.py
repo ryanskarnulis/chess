@@ -13,7 +13,8 @@ correction_limit`, the fleet's vocabulary — `../agent-standard/STANDARD.md`
 §3 — plus `provider_error` when the provider died mid-turn: the response
 still carries every tool result that verifiably ran, so the pipeline can
 close the turn and tell the truth instead of catching an exception after
-the board changed).
+the board changed, and `provider_failure` names *which* death it was so a
+caller can tell one worth retrying from one that is not).
 
 How the words get written is the implementation's business, and
 `LlamaBrain`'s answer is a second, tool-free model phase
@@ -63,6 +64,15 @@ class AgentResponse:
     tool_calls: tuple[ToolCall, ...] = ()
     tool_results: tuple[dict[str, Any], ...] = ()
     stop_reason: str = "completed"
+    # Only meaningful beside `stop_reason == "provider_error"`, and empty
+    # otherwise: *which* kind of provider failure ended the turn. A dead socket
+    # and a refused request stop a turn identically but want opposite handling —
+    # one is worth asking again, the other is worth asking about — and the
+    # implementation used to swallow the distinction with the exception. A
+    # plain string for the same reason the token counts are plain ints: the
+    # seam stays model-agnostic, so the provider's enum never crosses it (the
+    # values are `provider.ProviderFailure`'s).
+    provider_failure: str = ""
     # The run's cost at the provider boundary: how many times the model was
     # called and the tokens summed across those calls. Plain ints — the seam
     # stays model-agnostic, so the provider's `Usage` type never crosses it.
@@ -127,12 +137,15 @@ class _RunState:
         self.completion_tokens += completion_tokens
         self.latencies_ms.append(latency_ms)
 
-    def response(self, text: str, stop_reason: str) -> AgentResponse:
+    def response(
+        self, text: str, stop_reason: str, provider_failure: str = ""
+    ) -> AgentResponse:
         return AgentResponse(
             text=text,
             tool_calls=tuple(self.tool_calls),
             tool_results=tuple(self.tool_results),
             stop_reason=stop_reason,
+            provider_failure=provider_failure,
             model_calls=self.model_calls,
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,

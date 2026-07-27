@@ -21,12 +21,18 @@ handled here:
 Correction retries on bad tool calls live in the `Brain`, not here (that is
 where the retry budget and schema validation already are), which is why
 `ToolCallArgumentsError` carries the tool name for the correction message.
+
+Every failure also carries a `ProviderFailure` — the machine-readable half of
+the "no". The exception hierarchy says where the attempt broke; the field says
+whether asking again could work, so a caller never has to read a message to
+tell a crashed server from a request the server refuses identically forever.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from enum import StrEnum
 from typing import Any, Protocol
 
 import httpx
@@ -48,8 +54,67 @@ _READ_TIMEOUT = 300.0
 _CONNECT_TIMEOUT = 10.0
 
 
+class ProviderFailure(StrEnum):
+    """*Which* kind of "no" a completion attempt got — a field, not a message.
+
+    The exception type says where the failure happened (no usable body / a bad
+    body); this says whether asking again could plausibly work, which is the
+    only question a caller ever has. llama-server crash-restarts every few
+    minutes of sustained generation and answers differently ten seconds later;
+    an HTTP 400 (llama.cpp's answer to a context overrun) answers the same way
+    forever. Both used to arrive as a bare `ProviderError` whose message the
+    brain caught and discarded, so the eval harness retried the second one five
+    times before aborting on it.
+
+    Code owns the transient/not answer, the same rule the tool layer's `retry`
+    field keeps (`tools.py`): a caller must not have to infer it from wording.
+    """
+
+    #: The socket never answered — connect refused, reset, timeout.
+    UNREACHABLE = "unreachable"
+    #: A 5xx. llama-swap's answer while the upstream model is restarting.
+    SERVER_ERROR = "server_error"
+    #: A 4xx: the server understood the request and refuses it. A context
+    #: overrun is this, and it is deterministic — the same bytes get the same
+    #: refusal.
+    REJECTED = "rejected"
+    #: 200, but the body failed wire validation. Version skew, not a crash.
+    MALFORMED_RESPONSE = "malformed_response"
+    #: The model's tool-call arguments weren't a JSON object. The brain answers
+    #: this with a correction rather than ending the turn, so it never reaches a
+    #: `provider_error` stop — it is named here to keep the vocabulary complete.
+    BAD_TOOL_ARGUMENTS = "bad_tool_arguments"
+
+    @property
+    def transient(self) -> bool:
+        """Whether re-sending the identical request could get a different
+        answer. Only the two that mean "the server wasn't there"."""
+        return self in _TRANSIENT_FAILURES
+
+
+_TRANSIENT_FAILURES = frozenset(
+    {ProviderFailure.UNREACHABLE, ProviderFailure.SERVER_ERROR}
+)
+
+
 class ProviderError(Exception):
-    """Base for everything a completion attempt can raise."""
+    """Base for everything a completion attempt can raise.
+
+    `failure` is the machine-readable half — see `ProviderFailure`. It defaults
+    to UNREACHABLE so an unclassified failure (a test double, a future raise
+    site that forgets) reads as a dead server, which is the cheap mistake:
+    retrying a deterministic failure wastes a few samples, while calling a
+    restarting server deterministic aborts a whole eval suite on the first
+    crash.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        failure: ProviderFailure = ProviderFailure.UNREACHABLE,
+    ) -> None:
+        super().__init__(message)
+        self.failure = failure
 
 
 class ProviderRequestError(ProviderError):
@@ -58,6 +123,13 @@ class ProviderRequestError(ProviderError):
 
 class ProviderResponseError(ProviderError):
     """The server answered 200 but the body failed validation."""
+
+    def __init__(
+        self,
+        message: str,
+        failure: ProviderFailure = ProviderFailure.MALFORMED_RESPONSE,
+    ) -> None:
+        super().__init__(message, failure)
 
 
 class ToolCallArgumentsError(ProviderResponseError):
@@ -68,7 +140,9 @@ class ToolCallArgumentsError(ProviderResponseError):
     """
 
     def __init__(self, tool_name: str, detail: str) -> None:
-        super().__init__(f"tool call {tool_name!r}: {detail}")
+        super().__init__(
+            f"tool call {tool_name!r}: {detail}", ProviderFailure.BAD_TOOL_ARGUMENTS
+        )
         self.tool_name = tool_name
 
 
@@ -252,10 +326,18 @@ class LlamaCppProvider:
                 f"{self._base_url}/chat/completions", json=payload
             )
         except httpx.HTTPError as exc:
-            raise ProviderRequestError(f"llama-server request failed: {exc}") from exc
-        if response.status_code != 200:
             raise ProviderRequestError(
-                f"llama-server returned {response.status_code}: {response.text[:500]}"
+                f"llama-server request failed: {exc}", ProviderFailure.UNREACHABLE
+            ) from exc
+        if response.status_code != 200:
+            # 5xx is the server having a bad moment (llama-swap mid-restart);
+            # 4xx is the server having read the request and refusing it, which
+            # it will do again identically.
+            raise ProviderRequestError(
+                f"llama-server returned {response.status_code}: {response.text[:500]}",
+                ProviderFailure.SERVER_ERROR
+                if response.status_code >= 500
+                else ProviderFailure.REJECTED,
             )
         try:
             return _WireCompletion.model_validate_json(response.text)

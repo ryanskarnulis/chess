@@ -6,7 +6,9 @@ whole build-request -> wire-validate -> ChatResult path runs without a live
 model. These tests pin the exact wire payload (sampling, the non-standard
 top_k / chat_template_kwargs plain fields, tools + tool_choice), the
 response->ChatResult mapping (tool args parsed, reasoning_content dropped), and
-the typed-error contract (HTTP/network vs invalid body vs bad tool-call JSON).
+the typed-error contract (HTTP/network vs invalid body vs bad tool-call JSON)
+and the `ProviderFailure` each of those carries — which is what tells a dead
+server from a request the server will refuse identically forever.
 The live round trip against the real server is a scratch smoke test, not here.
 """
 
@@ -19,6 +21,8 @@ import pytest
 from chessapp.provider import (
     ChatResult,
     LlamaCppProvider,
+    ProviderError,
+    ProviderFailure,
     ProviderRequestError,
     ProviderResponseError,
     ToolCall,
@@ -269,3 +273,71 @@ def test_invalid_wire_body_raises_response_error():
     # 200 OK, but the body fails wire validation (no choices).
     with pytest.raises(ProviderResponseError, match="wire validation"):
         _provider_returning({"object": "chat.completion", "choices": []}).chat(_USER)
+
+
+# --- the failure kind: which *sort* of "no" this was -------------------------
+#
+# The exception type only says where the failure happened (no body / a bad
+# body). What a caller has to branch on is whether asking again could work: a
+# crashed llama-server answers differently in ten seconds, an HTTP 400 answers
+# the same way forever. Before this, both arrived as a bare `ProviderError` the
+# brain caught and discarded, so the eval harness retried a context overrun five
+# times before aborting on it.
+
+
+def test_a_dead_socket_is_unreachable_and_transient():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = LlamaCppProvider("http://llm.test/v1", "gemma-4-12b", client=client)
+    with pytest.raises(ProviderRequestError) as raised:
+        provider.chat(_USER)
+    assert raised.value.failure is ProviderFailure.UNREACHABLE
+    assert raised.value.failure.transient
+
+
+def test_a_5xx_is_a_server_error_and_transient():
+    # llama-swap answers 502/503 while the upstream model is restarting — the
+    # crash cadence the eval harness exists to retry through.
+    with pytest.raises(ProviderRequestError) as raised:
+        _provider_returning({"error": "upstream gone"}, status_code=502).chat(_USER)
+    assert raised.value.failure is ProviderFailure.SERVER_ERROR
+    assert raised.value.failure.transient
+
+
+def test_a_4xx_is_a_rejection_and_not_transient():
+    # The 400 llama.cpp answers a context overrun with. Sending the same request
+    # again gets the same 400, which is the whole distinction this field exists
+    # to carry.
+    with pytest.raises(ProviderRequestError) as raised:
+        _provider_returning(
+            {"error": {"message": "exceeds context size"}}, status_code=400
+        ).chat(_USER)
+    assert raised.value.failure is ProviderFailure.REJECTED
+    assert not raised.value.failure.transient
+
+
+def test_a_body_that_fails_wire_validation_is_not_transient():
+    with pytest.raises(ProviderResponseError) as raised:
+        _provider_returning({"object": "chat.completion", "choices": []}).chat(_USER)
+    assert raised.value.failure is ProviderFailure.MALFORMED_RESPONSE
+    assert not raised.value.failure.transient
+
+
+def test_unparseable_tool_arguments_carry_their_own_kind():
+    error = ToolCallArgumentsError("make_move", "arguments are not a JSON object")
+    assert error.failure is ProviderFailure.BAD_TOOL_ARGUMENTS
+    assert not error.failure.transient
+
+
+def test_an_unclassified_provider_error_fails_toward_retry():
+    """A bare `ProviderError` — what a fake raises, and what any future caller
+    that forgets to classify will raise — reads as a dead server.
+
+    The default is deliberate rather than incidental: retrying a deterministic
+    failure costs a few wasted samples, while treating a dead server as
+    deterministic aborts the whole eval suite on the first crash. The cheap
+    mistake is the default."""
+    unclassified = ProviderError("llama-server went away")
+    assert unclassified.failure is ProviderFailure.UNREACHABLE

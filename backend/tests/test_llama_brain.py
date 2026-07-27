@@ -24,7 +24,13 @@ from chessapp.brain import AgentResponse
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, planner_prompt_for, system_prompt_for
-from chessapp.provider import ProviderError, ToolCallArgumentsError, Usage
+from chessapp.provider import (
+    ProviderError,
+    ProviderFailure,
+    ProviderRequestError,
+    ToolCallArgumentsError,
+    Usage,
+)
 from chessapp.tools import ToolContext, build_registry
 from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
 
@@ -828,6 +834,51 @@ def test_provider_failure_in_the_narrator_still_reports_the_tools():
     assert resp.stop_reason == "provider_error"
     assert resp.text == ""
     assert [r["name"] for r in resp.tool_results] == ["make_move"]
+
+
+# --- and *which* failure it was --------------------------------------------
+#
+# `provider_error` alone says the turn died, not why, and the two whys want
+# opposite handling: a crashed socket is worth asking again, a request the
+# server rejects is worth asking about. The loop used to catch `ProviderError`
+# bare and drop the exception on the floor, so a 400 and a dead server reached
+# the eval harness identically and it retried both.
+
+
+def test_a_provider_death_names_its_failure_kind():
+    brain, _ = make_brain(
+        ProviderRequestError("llama-server returned 400", ProviderFailure.REJECTED)
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="hello?")
+
+    assert resp.stop_reason == "provider_error"
+    assert resp.provider_failure == "rejected"
+
+
+def test_a_narrator_death_names_its_failure_kind_too():
+    # The second bare `except ProviderError` — same defect, same fix, and the
+    # one a long transcript actually hits (the narrator carries the whole
+    # conversation, so it is where a context overrun surfaces first).
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        ProviderRequestError("llama-server returned 400", ProviderFailure.REJECTED),
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="e pawn forward")
+
+    assert resp.stop_reason == "provider_error"
+    assert resp.provider_failure == "rejected"
+
+
+def test_a_turn_that_did_not_die_names_no_failure():
+    brain, _ = make_brain(text_turn("still here"))
+
+    resp = brain.get_agent_response(board_state={}, command="hello?")
+
+    assert resp.stop_reason == "completed"
+    assert resp.provider_failure == ""
 
 
 # --- factory wires the system prompt ---------------------------------------

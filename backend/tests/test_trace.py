@@ -119,6 +119,20 @@ def test_turn_record_latency_defaults_to_no_calls():
     assert record["model_ms"] == 0
 
 
+def test_turn_record_names_the_provider_failure_when_the_turn_died():
+    """`provider_error` says the turn died; this says what killed it. Reading a
+    trace, that is the difference between "llama-server is crash-looping" and
+    "this prompt no longer fits the context" — and the two want opposite fixes."""
+    record = _record_fields(stop_reason="provider_error", provider_failure="rejected")
+    assert record["provider_failure"] == "rejected"
+
+
+def test_turn_record_provider_failure_defaults_to_none_named():
+    """Every other turn records the empty string, not a missing key: a reader
+    never has to tell "did not die" from "not recorded"."""
+    assert _record_fields()["provider_failure"] == ""
+
+
 # --- what a turn records ----------------------------------------------------
 
 
@@ -259,6 +273,29 @@ def test_trace_records_a_budget_stop(trace_path):
     (record,) = read_records(trace_path)
     assert record["stop_reason"] == "max_iterations"
     assert record["tools"] == []
+
+
+def test_trace_carries_the_provider_failure_through_the_pipeline(trace_path):
+    """End to end: the kind the brain named reaches the record on disk. This is
+    the seam the eval harness reads a sample's classification off, so a break
+    here is a harness that retries a deterministic failure five times."""
+    client, _ = make_client(
+        trace_path,
+        AgentResponse(
+            text="", stop_reason="provider_error", provider_failure="rejected"
+        ),
+    )
+    client.post("/api/command", json={"text": "what should I do?"})
+    (record,) = read_records(trace_path)
+    assert record["stop_reason"] == "provider_error"
+    assert record["provider_failure"] == "rejected"
+
+
+def test_a_healthy_turn_names_no_provider_failure(trace_path):
+    client, _ = make_client(trace_path)
+    client.post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["provider_failure"] == ""
 
 
 def test_trace_carries_the_position_the_turn_acted_from(trace_path):

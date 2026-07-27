@@ -74,7 +74,11 @@ unit-tested on every commit (`test_evalstats.py`). Three consequences here:
   carrying `stop_reason="provider_error"` — indistinguishable, to the old
   harness, from the model quietly doing nothing. A `_CollectingTracer` on the
   app's own tracer seam supplies the real stop reason on both seams, so such a
-  sample is thrown away and re-taken instead of counted as a miss.
+  sample is thrown away and re-taken instead of counted as a miss. It also
+  supplies the *kind* of death (`provider_failure`), because only a transient
+  one is worth re-taking: a request llama-server refuses — the 400 an overrun
+  context gets — refuses identically every time, and fails the item on the
+  first sample rather than after five retries and the suite's infra budget.
 - **A run that never reached the narrator is not a pass.** A budget stop reaches
   no narrator, so a purely negative commentary check passes for never having been
   tested (that really happened — three of four `hints_off_no_advice` passes in
@@ -519,6 +523,12 @@ class EvalRun(NamedTuple):
     neither is faked: the status is the response's, and the stop reason is read
     off the tracer (the panel seam does not return one). Together they are the
     difference between "the model did nothing" and "llama-server died again".
+
+    `provider_failure` is the third, and it splits that last one: the kind of
+    death the brain named, off the same trace record. A crashed socket is worth
+    re-taking the sample for; a request llama-server *rejected* (the 400 an
+    overrun context gets) is the same answer every time, and retrying it five
+    times only spends the infra budget to arrive where it started.
     """
 
     assistant: dict[str, Any]
@@ -526,6 +536,7 @@ class EvalRun(NamedTuple):
     model_calls: list[ModelCall]
     status_code: int
     stop_reason: str | None
+    provider_failure: str | None
 
 
 # A non-200 means the request never produced a turn (almost always the provider
@@ -591,12 +602,16 @@ def _measured(
     )
     if response.status_code != 200:
         print(f"[eval]   ! HTTP {response.status_code}: {response.text[:300]}")
+    provider_failure = traced.get("provider_failure") or None
+    if provider_failure is not None:
+        print(f"[eval]   ! provider failure: {provider_failure}")
     return EvalRun(
         assistant=assistant,
         duration=duration,
         model_calls=model_calls,
         status_code=response.status_code,
         stop_reason=traced.get("stop_reason"),
+        provider_failure=provider_failure,
     )
 
 
@@ -616,7 +631,8 @@ def _run_once(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
         f"{scenario}: HTTP {run.status_code} — see the [eval] line above"
     )
     assert run.stop_reason != STOP_PROVIDER_ERROR, (
-        f"{scenario}: the provider died mid-turn, so nothing was measured"
+        f"{scenario}: the provider died mid-turn ({run.provider_failure}), so "
+        "nothing was measured"
     )
     return run
 
@@ -1070,7 +1086,10 @@ def _sample(
                 # every finished scenario already on disk.
                 error = exc
         outcome = classify(
-            status_code=run.status_code, stop_reason=run.stop_reason, error=error
+            status_code=run.status_code,
+            stop_reason=run.stop_reason,
+            error=error,
+            provider_failure=run.provider_failure,
         )
         return outcome, run, error
     finally:
@@ -1105,11 +1124,15 @@ def _pass_rate(
     interleaving samples across scenarios needs a session-scoped sampler this
     slice does not build.
 
-    An infra death (a 502, or the 200 that carries `stop_reason="provider_error"`)
-    is thrown away and re-taken without consuming a sample, bounded per scenario
-    and across the suite. Exhausting either is `INFRA_ABORTED` — no rate, a hard
-    failure, and louder than today on purpose: it is also what a *deterministic*
-    provider error (a context overrun, a malformed request) now looks like.
+    An infra death (a 502, or the 200 that carries `stop_reason="provider_error"`
+    naming a *transient* failure) is thrown away and re-taken without consuming a
+    sample, bounded per scenario and across the suite. Exhausting either is
+    `INFRA_ABORTED` — no rate, a hard failure — and it now means what it says:
+    llama-server is not staying up. A death the brain names deterministic (an
+    HTTP 400 on an overrun context, a body that fails wire validation) is
+    `PROVIDER_REJECTED` and fails on the *first* sample instead, because five
+    identical refusals are one finding and cost the suite's whole infra budget
+    to reach.
 
     `runner` picks the seam: `_run` (the delegate wire, fresh conversation each
     time) or `_run_panel` (the web panel, reading whatever `setup` left on
@@ -1156,11 +1179,33 @@ def _pass_rate(
                     "outcome": str(outcome),
                     "status_code": run.status_code,
                     "stop_reason": run.stop_reason,
+                    "provider_failure": run.provider_failure,
                     "model_calls": len(run.model_calls),
                     "seconds": round(run.duration, 1),
                     "error": str(error) if error is not None else None,
                 }
             )
+            if outcome is Outcome.PROVIDER_REJECTED:
+                # Answered, just not with a completion — and it will answer the
+                # same way next time. Reported and failed on the *first* one:
+                # the old code could only reach this conclusion by spending five
+                # samples and the suite's infra budget proving it.
+                _report(
+                    record(
+                        scenario=scenario,
+                        floor=floor,
+                        decision="PROVIDER_REJECTED",
+                        infra=infra,
+                        provider_failure=run.provider_failure,
+                    )
+                )
+                pytest.fail(
+                    f"{scenario}: llama-server refused the request "
+                    f"({run.provider_failure}) — no rate was measured, and a "
+                    "retry would get the same refusal. Not the crash cadence: "
+                    "look at the request (a context overrun on a long "
+                    "transcript is the usual one), not at the server."
+                )
             if outcome is Outcome.INFRA:
                 # Not a sample: the provider died, so the model was never asked.
                 infra += 1
@@ -1179,10 +1224,10 @@ def _pass_rate(
                     pytest.fail(
                         f"{scenario}: INFRA_ABORTED after {infra} provider deaths "
                         f"(suite budget spent {_SUITE.infra_spent}/"
-                        f"{_SUITE.infra_budget}). No rate was measured — either "
-                        "llama-server is not staying up, or the failure is "
-                        "deterministic (a context overrun answers the same way "
-                        "every time)."
+                        f"{_SUITE.infra_budget}). No rate was measured: "
+                        "llama-server is not staying up. A deterministic "
+                        "refusal is no longer folded in here — that fails as "
+                        "PROVIDER_REJECTED on the first sample."
                     )
                 continue
             if outcome is Outcome.HARNESS:
