@@ -306,6 +306,10 @@ export function useGame(): UseGame {
           // speak mirrors the server-side voice_output setting, so an
           // agent-side toggle ("turn on voice") keeps the UI switch in sync.
           if (typeof response.speak === 'boolean') setVoiceOutputState(response.speak)
+          // tier mirrors the server-side difficulty the same way, so "make
+          // it harder" moves the options-sheet selector too (null: strength
+          // was set outside the named tiers).
+          if (response.tier !== undefined) setTierState(response.tier)
         } else {
           // Null means the backend refused (e.g. 503: no brain) — leave the
           // board untouched and tell the user the agent isn't available.

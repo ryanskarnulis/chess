@@ -174,6 +174,10 @@ export interface CommandResponse {
   /** Whether the user wants the commentary voiced (their voice_output
    * setting — the server decides, the client plays). */
   speak: boolean
+  /** The difficulty tier after the turn (null when strength was set outside
+   * the tiers), so an agent-side set_difficulty reaches the selector.
+   * Optional only for older backends that don't send it. */
+  tier?: string | null
 }
 
 /**

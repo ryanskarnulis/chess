@@ -23,12 +23,16 @@ class RecordingEngine:
     def __init__(self):
         self.skill_levels: list[int] = []
         self.elos: list[int] = []
+        self.tiers: list[str] = []
 
     def set_skill_level(self, level: int) -> None:
         self.skill_levels.append(level)
 
     def set_elo(self, elo: int) -> None:
         self.elos.append(elo)
+
+    def set_tier(self, tier: str) -> None:
+        self.tiers.append(tier)
 
 
 def make_client_for(ctx: ToolContext, *responses: AgentResponse):
@@ -69,6 +73,32 @@ def test_difficulty_by_elo_by_speech():
     assert ctx.settings.elo == 1500
     assert ctx.settings.skill_level is None
     assert engine.elos == [1500]
+
+
+def test_difficulty_by_speech_lands_in_the_command_response():
+    # The UI's difficulty selector reflects only what the server confirms —
+    # /api/settings on load, then each mutation response after. An agent-side
+    # change must ride the command response the same way voice_output already
+    # does (`speak`), or the selector keeps showing a strength the engine is
+    # no longer playing.
+    engine = RecordingEngine()
+    client, _ = make_client(
+        ToolCall(name="set_difficulty", args={"tier": "advanced"}), engine=engine
+    )
+    body = command(client, "make it harder")
+    assert body["tier"] == "advanced"
+    assert engine.tiers == ["advanced"]
+
+
+def test_out_of_tier_difficulty_reports_a_null_tier():
+    # A raw elo unsets the named tier; the response says so, rather than
+    # leaving a stale tier highlighted in the selector.
+    engine = RecordingEngine()
+    client, _ = make_client(
+        ToolCall(name="set_difficulty", args={"elo": 1500}), engine=engine
+    )
+    body = command(client, "play at about 1500 strength")
+    assert body["tier"] is None
 
 
 def test_verbosity_by_speech():

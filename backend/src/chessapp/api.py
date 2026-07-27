@@ -1808,6 +1808,11 @@ def create_app(
             # voice_output setting, agent-togglable via set_voice_output).
             # The server owns the decision; the client owns the playback.
             "speak": ctx.settings.voice_output,
+            # The difficulty tier after the turn, for the same reason as
+            # `speak`: the UI selector reflects only what the server confirms,
+            # and an agent-side set_difficulty otherwise stays invisible until
+            # a reload. Null when strength was set outside the tiers.
+            "tier": ctx.settings.tier,
         }
 
     app.include_router(

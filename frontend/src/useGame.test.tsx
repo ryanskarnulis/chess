@@ -407,6 +407,49 @@ describe('useGame', () => {
     expect(result.current.voiceOutput).toBe(true)
   })
 
+  it('syncs the difficulty tier from the command response (agent-side change)', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.tier).toBe('casual'))
+    // The agent changed strength via set_difficulty: tier rides the response.
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({
+          commentary: 'Cranked up.',
+          tool_results: [],
+          state: state(),
+          speak: false,
+          tier: 'advanced',
+        })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('make it harder')
+    })
+    expect(result.current.tier).toBe('advanced')
+  })
+
+  it('clears the tier when the agent sets a raw strength', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.tier).toBe('casual'))
+    // A raw elo has no named tier; null must reach the selector so it stops
+    // highlighting a strength the engine is no longer playing.
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({
+          commentary: 'About 1500 now.',
+          tool_results: [],
+          state: state(),
+          speak: false,
+          tier: null,
+        })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('play at 1500')
+    })
+    expect(result.current.tier).toBeNull()
+  })
+
   it('voices the commentary when the backend says speak', async () => {
     const { playText } = await import('./tts')
     vi.mocked(playText).mockClear()

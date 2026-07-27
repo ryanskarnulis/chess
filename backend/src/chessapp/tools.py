@@ -34,6 +34,7 @@ import logging
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -92,13 +93,21 @@ class ToolError(ValueError):
         self.details = details
 
 
+SETTINGS_FILENAME = "settings.json"
+
+
 @dataclass
 class Settings:
     """Agent-adjustable app settings. Difficulty records exactly one of
     tier / skill_level / elo (the last one set); it is applied to the live
     engine when present and applied at assembly when an engine attaches.
     The personality (Glitch) is fixed, not a setting — see
-    `chessapp.personality`."""
+    `chessapp.personality`.
+
+    With a store attached (`ToolContext.__post_init__`, off `save_dir`),
+    every field assignment writes the whole object through to disk —
+    `__setattr__` is the one chokepoint all mutation sites already pass
+    through, so no `set_*` tool or endpoint can forget to persist."""
 
     verbosity: str = "normal"
     hints_mode: bool = False
@@ -106,6 +115,70 @@ class Settings:
     tier: str | None = DEFAULT_TIER
     skill_level: int | None = None
     elo: int | None = None
+
+    def snapshot(self) -> dict[str, Any]:
+        return {f.name: getattr(self, f.name) for f in dataclass_fields(self)}
+
+    def attach_store(self, write: Callable[[dict[str, Any]], None]) -> None:
+        # Not a dataclass field: the store is plumbing, not a setting — it
+        # must stay out of snapshots, comparisons and the schema.
+        object.__setattr__(self, "_write", write)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        write = self.__dict__.get("_write")
+        if write is not None:
+            write(self.snapshot())
+
+
+def _valid_setting(name: str, value: Any) -> bool:
+    """Whether a value from the settings file is one the app could have
+    written. The file is ours, but a hand-edit or a partial write must never
+    turn into an unconfigured engine or a crash at assembly."""
+    if name == "verbosity":
+        return value in ("low", "normal", "high")
+    if name in ("hints_mode", "voice_output"):
+        return isinstance(value, bool)
+    if name == "tier":
+        return value is None or value in DIFFICULTY_TIERS
+    if name == "skill_level":
+        return value is None or (
+            isinstance(value, int) and SKILL_MIN <= value <= SKILL_MAX
+        )
+    if name == "elo":
+        return value is None or (isinstance(value, int) and ELO_MIN <= value <= ELO_MAX)
+    return False
+
+
+def _restore_settings(settings: Settings, path: Path) -> None:
+    """Best-effort restore: a missing, corrupt or invalid file means the
+    defaults stand — persistence must never stop assembly."""
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        logger.warning("ignoring unreadable settings file %s", path)
+        return
+    if not isinstance(data, dict):
+        logger.warning("ignoring malformed settings file %s", path)
+        return
+    for f in dataclass_fields(Settings):
+        if f.name in data and _valid_setting(f.name, data[f.name]):
+            setattr(settings, f.name, data[f.name])
+
+
+def _write_settings_file(path: Path, data: dict[str, Any]) -> None:
+    """Atomic best-effort write: a failed save must never fail the mutation
+    that triggered it (the same rule the tracer and progress observers live
+    by), and a crash mid-write must never leave a half-file to restore from."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(path)
+    except OSError:
+        logger.warning("could not persist settings to %s", path)
 
 
 @dataclass(frozen=True)
@@ -189,6 +262,17 @@ class ToolContext:
     # whole mutation and nothing under it reaches for it again. Nesting two
     # guarded regions in one thread would deadlock; don't.
     mutation_lock: Any = field(default_factory=threading.Lock)
+
+    def __post_init__(self) -> None:
+        # Settings ride the save dir: restored before anything reads them
+        # (assembly applies the difficulty to the engine off this object),
+        # then written through on every mutation. No save dir — tests, or a
+        # deployment without the volume — means plain in-memory settings,
+        # exactly as before.
+        if self.save_dir is not None:
+            path = self.save_dir / SETTINGS_FILENAME
+            _restore_settings(self.settings, path)
+            self.settings.attach_store(lambda data: _write_settings_file(path, data))
 
     @property
     def board_version(self) -> int:
