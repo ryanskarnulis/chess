@@ -24,7 +24,7 @@ import pytest
 
 from evalstats import Attribution
 from fakes import CountingProvider, ModelCall
-from test_agent_evals import EvalApp, _CollectingTracer, _measured
+from test_agent_evals import EvalApp, _CollectingTracer, _measured, _trajectory
 
 
 class _Response:
@@ -277,3 +277,117 @@ def test_the_sample_record_pairs_the_tokens_with_the_milliseconds() -> None:
     assert record["narrator_out"] == 940
     assert record["completion_tokens"] == 960
     assert record["call_out"] == [8, 12, 940]
+
+
+# --- what each call asked for -------------------------------------------------
+#
+# The trajectory named the tools and not their arguments, which is a blind spot
+# with a live suspect behind it: across four `hints_off_no_advice` runs a
+# `set_hints_mode` call turns up on 9/65 turns where the player only asked "what
+# should I play here?" (TODO.md). Whether it turned hints **on** — a setting the
+# player owns, changed by an agent that was asked a question — is unknowable from
+# `trajectory=[get_best_moves → set_hints_mode]`. The arguments are already on
+# the wire (`agent_api._tool_call_read` puts them there); only the reporting
+# path was dropping them, so this is a harness change with no `src/` in it.
+
+
+def _call(
+    tool: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    result: str | None = "{}",
+    error: str | None = None,
+) -> dict[str, Any]:
+    """One dispatched call, shaped like the `/api/agent` wire's."""
+    return {
+        "tool": tool,
+        "arguments": arguments or {},
+        "result": result,
+        "error": error,
+    }
+
+
+def _assistant(*calls: dict[str, Any]) -> dict[str, Any]:
+    return {"content": "Bishop takes. Rude.", "tool_calls": list(calls)}
+
+
+def test_the_trajectory_names_what_each_call_asked_for(capsys: Any) -> None:
+    """The measurement the slice exists for, in one line: the suspect call now
+    says which way it flipped the setting."""
+    _measured(
+        _app(_traced(), 3),
+        "hints_off_no_advice",
+        _assistant(
+            _call("get_best_moves", {"count": 3}),
+            _call("set_hints_mode", {"enabled": True}),
+        ),
+        _Response(),
+        41.5,
+    )
+
+    assert (
+        "trajectory=[get_best_moves(count=3) → set_hints_mode(enabled=true)]"
+        in capsys.readouterr().out
+    )
+
+
+def test_a_call_that_asked_for_nothing_stays_a_bare_name(capsys: Any) -> None:
+    # Most of the suite's tokens are these, and `get_board_state()` would be
+    # noise on every line to say nothing. Empty parens are not information.
+    _measured(
+        _app(_traced(), 3),
+        "long_capture",
+        _assistant(_call("get_board_state"), _call("undo", {"plies": 2})),
+        _Response(),
+        41.5,
+    )
+
+    assert "trajectory=[get_board_state → undo(plies=2)]" in capsys.readouterr().out
+
+
+def test_a_string_and_a_boolean_do_not_read_alike() -> None:
+    """Values are rendered as JSON, so `"true"` and `true` stay distinguishable.
+    A model passing the string where the schema wants the bool is exactly the
+    class of mis-invocation this line should not be able to hide — the quotes
+    cost two characters and buy the distinction."""
+    assert _trajectory(_assistant(_call("set_hints_mode", {"enabled": "true"}))) == (
+        'set_hints_mode(enabled="true")'
+    )
+    assert _trajectory(_assistant(_call("set_hints_mode", {"enabled": False}))) == (
+        "set_hints_mode(enabled=false)"
+    )
+
+
+def test_arguments_print_in_a_stable_order() -> None:
+    """Sorted by name rather than in the order the model emitted them: the line
+    is read by scanning many samples for a difference, and an ordering that
+    varies per sample would show up as a difference that isn't one."""
+    forward = _trajectory(_assistant(_call("save_game", {"name": "x", "slot": 2})))
+    reversed_ = _trajectory(_assistant(_call("save_game", {"slot": 2, "name": "x"})))
+
+    assert forward == reversed_ == 'save_game(name="x", slot=2)'
+
+
+def test_a_long_value_is_cut_rather_than_swallowing_the_line() -> None:
+    # One trajectory sits on one terminal line beside eleven other clauses; a
+    # pasted PGN in an argument would cost the whole record's readability. The
+    # cut is visible, so a truncated value never reads as a complete one.
+    long = _trajectory(_assistant(_call("resume_game", {"name": "a" * 60})))
+
+    assert long == 'resume_game(name="' + "a" * 22 + "…)"
+    assert len(long) < len("resume_game") + len("a" * 60)
+
+
+def test_a_rejected_move_reads_as_rejected_beside_its_arguments() -> None:
+    """The marker moved out of the parens it used to sit in (`make_move(illegal)`
+    would now be indistinguishable from an argument called `illegal`) and onto a
+    `!` suffix — the same `!` a dispatch error already carried, with the reason
+    spelled when there is one."""
+    rejected = _trajectory(
+        _assistant(
+            _call("make_move", {"move": "Qh8"}, result='{"legal":false}'),
+            _call("save_game", {"name": "x"}, result=None, error="no such slot"),
+        )
+    )
+
+    assert rejected == 'make_move(move="Qh8")!illegal → save_game(name="x")!'

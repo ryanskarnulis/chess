@@ -340,6 +340,41 @@ A line now reads:
        narrator_out=940 narrator_tok_s=24.0 mutations=0 duration=41.5s trajectory=[...]
 ```
 
+#### The trajectory carries arguments (2026-07-27, Sprint 5)
+
+`trajectory=[get_best_moves → set_hints_mode]` names the tools and not what they
+asked for, and there is a live suspect behind that blind spot: across four
+`hints_off_no_advice` runs on 2026-07-26 a `set_hints_mode` call appears on
+**9/65** samples where the player asked only *"what should I play here?"*.
+Whether it turned hints **on** — a setting the player owns, changed by an agent
+that was asked a question, which no gate covers today — was unknowable from the
+line. So each token now renders as `name(arg=value, …)`:
+
+- **JSON values**, so `enabled="true"` (a mis-invocation) and `enabled=true`
+  (the call) do not read alike.
+- **Keys sorted**, so the same call renders identically in every sample: the
+  line is read by scanning many samples for a difference, and emission order
+  would manufacture ones that aren't there.
+- **Values cut at 24 chars**, visibly — one trajectory shares a terminal line
+  with eleven other clauses.
+- **No parens when a call took no arguments** (`get_board_state`), because empty
+  parens on every read tool are noise on every line.
+- **Both failure markers are `!` suffixes after the arguments.** The rejected
+  move's was `make_move(illegal)`, which beside real arguments would read as an
+  argument named `illegal`; it is `make_move(move="Qh8")!illegal` now, and a
+  dispatch error keeps its bare `!`.
+
+The per-sample report record carries the same string, which is what makes "how
+many samples called `set_hints_mode`, and which way" a query over the report
+rather than a hand tally across four runs of scrollback. Nothing in `src/`
+changed here either — `agent_api._tool_call_read` has always put `arguments` on
+the wire, and only the reporting path was dropping them.
+
+**This does not settle the finding, it makes it decidable.** If the flip is
+real, the fix is a capability question rather than a prompt line, and the
+scenario's `check` should assert `app.ctx.settings.hints_mode is False` after
+the turn.
+
 ## Scenarios — what each pins
 
 | Scenario | Utterance | Pins |
@@ -1173,7 +1208,7 @@ a dedicated run after its prompt iteration (the split section above).
 | `judgment_question` | `evaluate_position` | **2** | **off, on** | none | 3.4–9.2 s |
 | `ambiguous_move` | *(none — clarifying question)* | **1** | off | none | 0.6–1.1 s |
 | `settings_by_speech` | `set_difficulty` | **2** | off, off | none | 0.7–0.8 s |
-| `honest_illegal` | `make_move(illegal)` then a worded concession, **or** a concession outright | **1–2** | off | none (see note) | 0.5–0.8 s |
+| `honest_illegal` | `make_move(…)!illegal` then a worded concession, **or** a concession outright | **1–2** | off | none (see note) | 0.5–0.8 s |
 | `destructive_confirm` | `new_game` **refused by the gate**, then asks | **2** | off, off | none | 0.8–1.3 s |
 
 **What the model-call column says.** The loop's floor for a tool-using
