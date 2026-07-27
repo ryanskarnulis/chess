@@ -393,11 +393,19 @@ class ToolRegistry:
     `on_tool` is told the name of each call that is about to *run* — the live
     progress seam (`progress.py`). It hangs off dispatch rather than off the
     callers because this is the one road every tool call takes, whoever made
-    it, so a label the player sees is always a tool that really ran."""
+    it, so a label the player sees is always a tool that really ran.
+
+    `on_mutation` is told once a call has *moved the board*, which is
+    `board_version` before the handler differing from after it. It hangs off
+    dispatch for the same reason: this is the one road every model-initiated
+    mutation takes, so a board document published from here is one the game
+    really reached. A handler that moved the board and then refused still
+    moved it, so the report is owed either way."""
 
     _tools: dict[str, Tool] = field(default_factory=dict)
     context: "ToolContext | None" = None
     on_tool: "Callable[[str], None] | None" = None
+    on_mutation: "Callable[[], None] | None" = None
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -495,12 +503,23 @@ class ToolRegistry:
         # args the schema rejects never reach a handler, and a progress line for
         # work nobody did is worse than none.
         self._report(name)
+        version_before = None if self.context is None else self.context.board_version
         try:
             return tool.handler(**args)
         except ToolError as exc:
             return self.refusal(str(exc), exc.retry, **exc.details)
         except ValueError as exc:
             return self.refusal(str(exc), RETRY_NEVER)
+        finally:
+            # In a `finally` because the board does not care how the call
+            # ended: a handler that mutated and then raised has left a new
+            # position behind, and a client not told about it is wrong rather
+            # than merely late.
+            if (
+                self.context is not None
+                and self.context.board_version != version_before
+            ):
+                self._report_mutation()
 
     def _report(self, name: str) -> None:
         """Tell the observer, and never let that cost the call. Same rule the
@@ -511,6 +530,15 @@ class ToolRegistry:
             self.on_tool(name)
         except Exception:
             logger.warning("tool_observer_failed", exc_info=True)
+
+    def _report_mutation(self) -> None:
+        """Same rule as `_report`: a lost board frame is not a lost move."""
+        if self.on_mutation is None:
+            return
+        try:
+            self.on_mutation()
+        except Exception:
+            logger.warning("mutation_observer_failed", exc_info=True)
 
 
 def _outcome_dict(session: GameSession) -> dict[str, Any] | None:

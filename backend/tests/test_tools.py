@@ -260,6 +260,58 @@ def test_a_failing_tool_observer_never_costs_the_call(registry, session):
     assert registry.dispatch("get_board_state", {})["ok"] is True
 
 
+def test_dispatch_reports_a_mutation_once_it_has_happened(registry):
+    """The board document's seam: a call that moved the board is one the UI must
+    hear about immediately, and `board_version` is what says it moved."""
+    seen: list[int] = []
+    registry.on_mutation = lambda: seen.append(registry.context.board_version)
+    registry.dispatch("make_move", {"move": "e4"})
+    assert seen == [registry.context.board_version]
+
+
+def test_a_call_that_moved_nothing_reports_no_mutation(registry):
+    """A read and a rejected move leave the board where it was, and a state
+    frame for a board that did not change is a frame nobody needed."""
+    seen: list[int] = []
+    registry.on_mutation = lambda: seen.append(1)
+    registry.dispatch("get_board_state", {})
+    registry.dispatch("make_move", {"move": "e5"})  # illegal for white
+    assert seen == []
+
+
+def test_a_mutation_is_reported_even_when_the_call_then_failed(registry, session):
+    """The board is the board: a handler that moved it and *then* refused has
+    still moved it, and a client left holding the old position would be wrong
+    about the game rather than merely late."""
+    seen: list[int] = []
+
+    def refuse_after_moving() -> dict:
+        session.submit_move("e4")
+        raise ValueError("changed my mind")
+
+    registry.register(
+        Tool(
+            name="half_done",
+            description="mutates, then refuses",
+            parameters={"type": "object", "properties": {}},
+            handler=refuse_after_moving,
+        )
+    )
+    registry.on_mutation = lambda: seen.append(1)
+    assert registry.dispatch("half_done", {})["ok"] is False
+    assert seen == [1]
+
+
+def test_a_failing_mutation_observer_never_costs_the_call(registry):
+    """Same rule the tool observer has: a lost frame is not a lost move."""
+
+    def explode():
+        raise RuntimeError("socket went away")
+
+    registry.on_mutation = explode
+    assert registry.dispatch("make_move", {"move": "e4"})["legal"] is True
+
+
 def test_legal_moves_after_game_over_is_empty(registry, session):
     session.resign("white")
     result = registry.dispatch("get_legal_moves", {})

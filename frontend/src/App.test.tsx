@@ -3,8 +3,23 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { GameState } from './api'
+import type { BoardProps } from './Board'
 
 vi.mock('./tts', () => ({ playText: vi.fn() }))
+
+// Chessground refuses synthetic events (`isTrusted`), so what the board is
+// *offered* cannot be read back out of its DOM. The real board still renders —
+// this only records the props on the way through.
+const boardProps = vi.hoisted(() => [] as BoardProps[])
+vi.mock('./Board', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./Board')>()
+  return {
+    Board: (props: BoardProps) => {
+      boardProps.push(props)
+      return <actual.Board {...props} />
+    },
+  }
+})
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 
@@ -49,6 +64,7 @@ let served: GameState
 let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
+  boardProps.length = 0
   served = state()
   vi.stubGlobal('WebSocket', FakeWebSocket)
   fetchMock = vi.fn((url: string) => {
@@ -153,6 +169,26 @@ describe('App layout', () => {
       expect(screen.getByRole('dialog', { name: /options/i })).toBeInTheDocument(),
     )
     expect(screen.getByRole('button', { name: /new game/i })).toBeInTheDocument()
+  })
+})
+
+describe('a board mid-turn', () => {
+  it('offers nothing to drag while it is the engine to move', async () => {
+    // The state document now arrives mid-turn — the player's move is on the
+    // board before the engine has answered — and such a frame carries the
+    // engine's turn and the engine's own legal moves. Handing those to the
+    // board would let the player drag the opponent's pieces.
+    served = state({ turn: 'black', history: ['e4'], dests: { e7: ['e6', 'e5'] } })
+    render(<App />)
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    await waitFor(() => expect(boardProps.at(-1)!.turnColor).toBe('black'))
+    expect(boardProps.at(-1)!.dests).toEqual({})
+  })
+
+  it('offers the player their own moves once the turn is theirs', async () => {
+    render(<App />)
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    expect(boardProps.at(-1)!.dests).toEqual({ e2: ['e3', 'e4'] })
   })
 })
 

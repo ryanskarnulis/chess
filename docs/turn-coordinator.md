@@ -455,6 +455,16 @@ delta rather than a tally:
 | `brain` | `LlamaBrain`, per phase | `planning` / `narrating` |
 | `begin` / `end` | the pipeline, bracketing the interaction | — |
 
+**The state document itself goes out on that same beat.** `ToolRegistry` reports
+a call that moved the board (`on_mutation`, a `board_version` delta around the
+handler) and the API publishes the document there and then, deduped by version
+so one board is one frame — which is what puts the player's move on the board
+the moment it is validated, rather than after Glitch has reacted and Stockfish
+has answered. Ordering between that mid-turn frame and the turn's final one is
+now load-bearing, so state frames ride the progress queue rather than a send of
+their own. The frames a mid-turn board carries are the *engine's* turn and legal
+moves, so the UI offers nothing to drag until the turn is the player's again.
+
 Every event carries the interaction's `correlation_id` — the trace record's id —
 so a line the player saw and the record of the turn behind it are one search
 apart. That is what the trace slice minted the id for before anything on the
