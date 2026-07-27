@@ -76,11 +76,16 @@ _HEDGES = re.compile(
 # deliberately left out — it is pinned to today's behavior, where "You
 # resigned — I'll take it." is an assertion about an event that already
 # happened, and reading `'ll` there as a hedge would let the worst lie through.
+# `coming`/`incoming`/`on the way`/`looming` are how a threat is actually
+# spoken. The explicit futures were all here and the idiomatic ones were not,
+# so "Qh5 is coming" — a move that is deliberately *not* playable yet, which is
+# the entire point of a threat — read as a claim that it had been played.
 _FUTURE = re.compile(
     r"""
     '(?: ll | d )
     | \b(?: will | gonna | going \s+ to | plan | planning | plans
-          | next | soon | after | then | let \s+ me | can | say \s+ the \s+ word )\b
+          | next | soon | after | then | let \s+ me | can | say \s+ the \s+ word
+          | coming | incoming | looming | on \s+ the \s+ way )\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -212,11 +217,20 @@ _CHECK = re.compile(
 # A draw is its own fact, not a flavour of the ending class: a game that ended
 # in mate did not end in a draw either, and the ending class would wave that
 # through.
+#
+# "Drawn" is the wrinkle, and it is the material class's distinction again:
+# almost every use of it is an *assessment* of a level position ("this is
+# drawn", "a drawn endgame"), which is opinion and the trash talk the guard
+# exists to protect — while the report is about *the game* ("the game's
+# drawn"). Reading the bare adjective as a claim guarded ordinary commentary on
+# exactly the symmetrical positions that earn the word, so it is now read only
+# with the game as its subject. The other spellings are unambiguous reports
+# already: nobody says "we drew" about a position.
 _DRAW = re.compile(
     r"""
     \b(?: stalemate
         | (?: a | the ) \s+ draw
-        | drawn
+        | (?: game | match ) \s* (?: is | 's | was ) \s+ drawn
         | (?: we | it ) \s+ (?: drew | tied )
         | split (?: ting )? \s+ (?: it | the \s+ point )
     )\b
