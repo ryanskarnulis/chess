@@ -425,12 +425,10 @@ class TurnLatencies:
     def summary(self) -> str:
         """The latency clause of the `[eval]` line a human reads. An unknown
         prints as `?`, not as a number, because the point is that it is not one."""
-        calls = ",".join(str(reading) for reading in self.call_ms)
-        planner = "?" if self.planner_ms is None else str(self.planner_ms)
-        narrator = "?" if self.narrator_ms is None else str(self.narrator_ms)
         return (
-            f"call_ms=[{calls}] planner_ms={planner} "
-            f"narrator_ms={narrator} phases={self.attribution}"
+            f"call_ms=[{_readings(self.call_ms)}] "
+            f"planner_ms={_known(self.planner_ms)} "
+            f"narrator_ms={_known(self.narrator_ms)} phases={self.attribution}"
         )
 
     def as_record(self) -> dict[str, Any]:
@@ -447,6 +445,63 @@ class TurnLatencies:
             "narrator_ms": self.narrator_ms,
             "phases": str(self.attribution),
         }
+
+
+_WHOLE_TURN = slice(None)
+
+
+def _attribute_phases(
+    calls: int, *, route: str | None, stop_reason: str | None
+) -> tuple[Attribution, slice | None, slice | None]:
+    """Which of a turn's per-call readings belong to which phase.
+
+    The rule itself, stated once over call *positions* and nothing else, so that
+    every kind of per-call reading — milliseconds off the trace, tokens off the
+    call meter — is attributed identically. Two clauses on one `[eval]` line
+    disagreeing about which call was the narrator would make the line unreadable
+    in exactly the case it is there to explain.
+
+    `None` for a phase means the boundary is not knowable, and an *empty* slice
+    means the phase genuinely never ran (a narrate route's planner). The
+    difference is the whole point: an unmeasured phase is not a free one.
+
+    See `split_latencies` for why each branch is what it is.
+    """
+    if calls == 0:
+        # No round trips: nothing to attribute, and zeros would read as a turn
+        # that planned and narrated instantly.
+        return Attribution.NONE, None, None
+    if route in NARRATE_ROUTES:
+        # One narrator call and no planner phase — including a call that died,
+        # which spent its time in the narrator all the same.
+        return Attribution.SPLIT, slice(0, 0), _WHOLE_TURN
+    if route != ROUTE_BRAIN or stop_reason == STOP_PROVIDER_ERROR:
+        return Attribution.UNKNOWN, None, None
+    if stop_reason in BUDGET_STOPS:
+        return Attribution.NO_NARRATOR, _WHOLE_TURN, None
+    return Attribution.SPLIT, slice(0, calls - 1), slice(calls - 1, calls)
+
+
+def _total(readings: Sequence[int | None], phase: slice | None) -> int | None:
+    """One phase's readings summed, or `None` for either honest unknown: the
+    phase boundary was not knowable, or one of the phase's own calls reported no
+    reading at all (a round trip that raised has no usage). Summing the rest
+    would report a *smaller* number as though it were the whole."""
+    if phase is None:
+        return None
+    values = readings[phase]
+    if any(value is None for value in values):
+        return None
+    return sum(value for value in values if value is not None)
+
+
+def _readings(values: Sequence[int | None]) -> str:
+    """A per-call array for the `[eval]` line, unknowns as `?`."""
+    return ",".join("?" if value is None else str(value) for value in values)
+
+
+def _known(value: int | None) -> str:
+    return "?" if value is None else str(value)
 
 
 def split_latencies(
@@ -474,19 +529,132 @@ def split_latencies(
       phase — the one case where the honest answer is UNKNOWN.
     """
     readings = tuple(call_ms)
-    if not readings:
-        # No round trips: nothing to attribute, and zeros would read as a turn
-        # that planned and narrated instantly.
-        return TurnLatencies(readings, Attribution.NONE, None, None)
-    if route in NARRATE_ROUTES:
-        # One narrator call and no planner phase — including a call that died,
-        # which spent its time in the narrator all the same.
-        return TurnLatencies(readings, Attribution.SPLIT, 0, sum(readings))
-    if route != ROUTE_BRAIN or stop_reason == STOP_PROVIDER_ERROR:
-        return TurnLatencies(readings, Attribution.UNKNOWN, None, None)
-    if stop_reason in BUDGET_STOPS:
-        return TurnLatencies(readings, Attribution.NO_NARRATOR, sum(readings), None)
-    return TurnLatencies(readings, Attribution.SPLIT, sum(readings[:-1]), readings[-1])
+    attribution, planner, narrator = _attribute_phases(
+        len(readings), route=route, stop_reason=stop_reason
+    )
+    return TurnLatencies(
+        readings,
+        attribution,
+        _total(readings, planner),
+        _total(readings, narrator),
+    )
+
+
+@dataclass(frozen=True)
+class TurnTokens:
+    """One turn's model round trips priced in tokens, split by the same rule.
+
+    The half `TurnLatencies` cannot supply. It settled *where* a repeat-stop
+    turn's extra 30 s goes — the narrator's own round trip, and not a harder
+    sample (p = 0.00088, `docs/agent-evals.md`) — and left the mechanism open,
+    because "the narrator emitted three times the tokens" and "generation ran at
+    a third of the rate" are the same milliseconds. Tokens say which.
+
+    `call_in` and `call_out` are the per-call prompt and completion counts in
+    call order, `None` where the round trip reported no usage. Both are read off
+    the harness's call meter (`fakes.CountingProvider`), not the trace: the
+    trace carries the turn's *totals*, which have the blind spot `model_ms` had.
+
+    `narrator_in` is here beside the completion counts because prompt size is
+    its own candidate mechanism — a `no_progress` turn dispatched the duplicate
+    call, so its narrator reads one more tool result than a `completed` turn's
+    does, and a longer prompt costs prefill before a single token is written.
+    """
+
+    call_in: tuple[int | None, ...]
+    call_out: tuple[int | None, ...]
+    attribution: Attribution
+    planner_out: int | None
+    narrator_in: int | None
+    narrator_out: int | None
+
+    @property
+    def prompt_tokens(self) -> int | None:
+        """The turn's prompt total — the same sum the trace record reports, from
+        the other seam, so the two can be compared."""
+        return _total(self.call_in, _WHOLE_TURN) if self.call_in else None
+
+    @property
+    def completion_tokens(self) -> int | None:
+        """`None`, not 0, for a turn that never called the model: a zero-LLM
+        fast path has no token cost to report, and 0 reads as one measured at
+        nothing."""
+        return _total(self.call_out, _WHOLE_TURN) if self.call_out else None
+
+    def summary(self) -> str:
+        """The token clause of the `[eval]` line, unknowns as `?` — same rule as
+        the latency clause, and printed straight after it so the reader can line
+        a call's milliseconds up against what it wrote."""
+        return (
+            f"call_in=[{_readings(self.call_in)}] "
+            f"call_out=[{_readings(self.call_out)}] "
+            f"planner_out={_known(self.planner_out)} "
+            f"narrator_in={_known(self.narrator_in)} "
+            f"narrator_out={_known(self.narrator_out)}"
+        )
+
+    def as_record(self) -> dict[str, Any]:
+        """The per-sample token fields for the JSONL report, merged beside
+        `TurnLatencies.as_record()`. The pairing is the point: 20 samples of
+        `narrator_ms` next to `narrator_out` answer in one pass what reading
+        either column alone cannot."""
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "call_in": list(self.call_in),
+            "call_out": list(self.call_out),
+            "planner_out": self.planner_out,
+            "narrator_in": self.narrator_in,
+            "narrator_out": self.narrator_out,
+        }
+
+
+def split_tokens(
+    usage: Sequence[tuple[int | None, int | None]],
+    *,
+    route: str | None,
+    stop_reason: str | None,
+) -> TurnTokens:
+    """Attribute a turn's per-call token counts to the phase that spent them.
+
+    `usage` is `(prompt_tokens, completion_tokens)` per round trip, in call
+    order — `fakes.ModelCall`, which records one per `chat()` including the ones
+    that raised (those report `(None, None)`: the result never came back).
+
+    The attribution is `_attribute_phases`, unchanged and unduplicated, so a
+    sample's tokens and its milliseconds always name the same call as the
+    narrator's.
+    """
+    call_in = tuple(prompt for prompt, _ in usage)
+    call_out = tuple(completion for _, completion in usage)
+    attribution, planner, narrator = _attribute_phases(
+        len(usage), route=route, stop_reason=stop_reason
+    )
+    return TurnTokens(
+        call_in=call_in,
+        call_out=call_out,
+        attribution=attribution,
+        planner_out=_total(call_out, planner),
+        narrator_in=_total(call_in, narrator),
+        narrator_out=_total(call_out, narrator),
+    )
+
+
+def generation_rate(completion_tokens: int | None, ms: int | None) -> float | None:
+    """Tokens per second — the discriminator the two halves exist to compute.
+
+    A narration that ran 3× longer at the *same* rate wrote 3× the tokens, and
+    the standing candidate fix (bounding the narrator's thinking budget) is
+    aimed at the right thing. The same tokens at a third of the rate is the
+    server, and a token cap would not touch it. Setting that cap against an
+    unexplained latency is a guess with a number on it — hence this.
+
+    `None` whenever either side is unknown, and on a 0 ms reading: a rate off a
+    clock that did not run is a division, not a measurement.
+    """
+    if completion_tokens is None or not ms:
+        return None
+    return completion_tokens * 1000 / ms
 
 
 def scenario_record(
