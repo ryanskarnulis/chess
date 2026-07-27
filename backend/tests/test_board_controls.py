@@ -195,7 +195,8 @@ def test_a_game_ending_drag_has_no_reply_to_announce():
 
 def test_a_dishonest_drag_reaction_is_guarded():
     """The honesty guard runs on every route, this one included: a reaction that
-    invents an ending is replaced with the truth."""
+    invents an ending is replaced with the truth — and only the reaction is,
+    so the drag still hears what the engine played back."""
     client, _, ctx = agent_client(
         narrations=("That's the game. Game over.",), engine=FakeEngine()
     )
@@ -203,7 +204,7 @@ def test_a_dishonest_drag_reaction_is_guarded():
     body = client.post("/api/game/move", json={"move": "e2e4"}).json()
 
     assert not ctx.session.is_game_over()
-    assert body["commentary"] == UNTRUE_CLAIM_REPLY
+    assert body["commentary"] == f"{UNTRUE_CLAIM_REPLY}\n\ne5."
 
 
 def test_a_drag_records_the_turn_on_the_transcript():

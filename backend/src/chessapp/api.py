@@ -1149,17 +1149,14 @@ def create_app(
             commentary = ""
             guarded = False
             if beats.legal:
-                commentary = _move_commentary(
-                    narration.text if narration is not None else "",
-                    result,
-                    beats.engine_reply,
-                    beats.owed_reply,
-                    ctx.session,
-                )
                 # The honesty guard, on this road too: a reaction that announces
-                # something the drag did not actually do is replaced with the truth.
-                commentary, guarded = _guarded_commentary(
-                    commentary,
+                # something the drag did not actually do is replaced with the
+                # truth. On the reaction alone — the announcement composed
+                # around it below is the app's own deterministic line, so there
+                # is nothing in it to guard and everything to lose by taking it
+                # back with the reaction.
+                reaction, guarded = _guarded_commentary(
+                    narration.text if narration is not None else "",
                     _verified_facts(
                         ctx,
                         beats.changes,
@@ -1168,6 +1165,13 @@ def create_app(
                         beats.observed_fen,
                     ),
                     {"move": move},
+                )
+                commentary = _move_commentary(
+                    reaction,
+                    result,
+                    beats.engine_reply,
+                    beats.owed_reply,
+                    ctx.session,
                 )
                 # A guarded drag remembers the move and the reply, not the
                 # correction the player was shown (`_remembered_facts`).
@@ -1794,6 +1798,39 @@ def create_app(
                 owed_reply = True
                 engine_reply = await _offloop(coordinator.collect_engine_reply)
                 coordinator.complete_turn()
+            # The honesty guard, at the one point every route converges: an
+            # operational claim the turn cannot back is not shown to the player.
+            # The board, the engine's reply and the tool results are the record of
+            # what happened; the model's prose is not, and live it has claimed
+            # resignations and checkmates that never occurred (trace review,
+            # finding 6). This is the same rule as the gate, applied one step
+            # later — the model may neither *do* a destructive op unasked nor
+            # *say* it did, nor announce any other fact it invented.
+            #
+            # It runs on the *model's* half of the turn and nothing else. The
+            # app's own lines — the reply announcement, the canned confirmation,
+            # the lost-brain line — are composed around whatever survives, below.
+            # They are deterministic truth by construction, so there is nothing
+            # in them to guard; running them through it only risks taking back
+            # the engine's move along with the lie, which is the one fact a
+            # guarded turn cannot afford to drop (the board moved under the
+            # player and the correction says nothing about how).
+            commentary, guarded = _guarded_commentary(
+                commentary,
+                _verified_facts(
+                    ctx,
+                    tool_results,
+                    engine_reply,
+                    before["fen"],
+                    # Only the fast path observes a mid-turn board. The brain
+                    # route's narrator ran inside the loop, off `before`, which
+                    # is already one of the positions checked.
+                    move_beats.observed_fen if move_beats is not None else None,
+                ),
+                {"text": text},
+            )
+            if guarded:
+                memory = ""
             if move_beats is not None and move_beats.legal:
                 commentary = _move_commentary(
                     commentary, move_beats.result, engine_reply, owed_reply, ctx.session
@@ -1815,30 +1852,6 @@ def create_app(
                     else PROVIDER_LOST_RETRY
                 )
                 commentary = f"{lost}\n\n{commentary}" if commentary else lost
-            # The honesty guard, at the one point every route converges: an
-            # operational claim the turn cannot back is not shown to the player.
-            # The board, the engine's reply and the tool results are the record of
-            # what happened; the model's prose is not, and live it has claimed
-            # resignations and checkmates that never occurred (trace review,
-            # finding 6). This is the same rule as the gate, applied one step
-            # later — the model may neither *do* a destructive op unasked nor
-            # *say* it did, nor announce any other fact it invented.
-            commentary, guarded = _guarded_commentary(
-                commentary,
-                _verified_facts(
-                    ctx,
-                    tool_results,
-                    engine_reply,
-                    before["fen"],
-                    # Only the fast path observes a mid-turn board. The brain
-                    # route's narrator ran inside the loop, off `before`, which
-                    # is already one of the positions checked.
-                    move_beats.observed_fen if move_beats is not None else None,
-                ),
-                {"text": text},
-            )
-            if guarded:
-                memory = ""
             agent_state = _agent_state_dict(ctx)
             # The advice guard, same convergence point (audit item 11's second
             # half): with hints off, a currently-playable move in the

@@ -737,15 +737,16 @@ def test_an_undo_inside_the_turn_abandons_the_owed_reply():
 
 
 def test_a_false_ending_in_the_observation_is_still_guarded():
-    """The guard runs on the assembled commentary against the post-reply board,
-    so a reaction that invents an ending is caught on the new road too."""
+    """The guard runs on the reaction against the boards this turn held, so one
+    that invents an ending is caught on the new road too — and takes only itself
+    with it. The reply line is the app's own and survives, because a player told
+    their claim was pulled still needs to know what the engine played."""
     client, _, ctx = observing_client(narrations=("That's the game. Game over.",))
 
     body = client.post("/api/command", json={"text": "e4"}).json()
 
     assert not ctx.session.is_game_over()
-    assert body["commentary"] == UNTRUE_CLAIM_REPLY
-    assert "e5" not in body["commentary"], "the lie takes the reply line with it"
+    assert body["commentary"] == f"{UNTRUE_CLAIM_REPLY}\n\ne5."
 
 
 # --- The destructive-op confirmation gate, at the pipeline.
@@ -1000,7 +1001,7 @@ def test_the_direction_no_board_this_turn_backs_is_still_guarded():
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
+    assert body["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\ndxc6."
 
 
 def test_a_move_no_board_this_turn_makes_legal_is_still_guarded():
@@ -1010,7 +1011,7 @@ def test_a_move_no_board_this_turn_makes_legal_is_still_guarded():
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
+    assert body["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\ndxc6."
 
 
 # --- ...and what the app says in Glitch's place is never remembered as his.
@@ -1038,7 +1039,7 @@ def test_a_guarded_turn_remembers_the_facts_not_the_apology():
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"] == UNVERIFIED_CLAIM_REPLY, "the player is corrected"
+    assert body["commentary"].startswith(UNVERIFIED_CLAIM_REPLY), "player corrected"
     assert assistant_turns(ctx) == ["Bxc6. dxc6."], "the model is not taught to grovel"
 
 
@@ -1074,6 +1075,44 @@ def test_a_provider_death_is_not_remembered_as_something_glitch_said():
 
     assert body["commentary"] == f"{PROVIDER_LOST_TURN_STANDS}\n\ne5."
     assert assistant_turns(ctx) == ["e4. e5."]
+
+
+# --- ...and the guard only ever takes back the model's half of the turn.
+#
+# The reaction is the model's; the line announcing what answered it is the
+# app's, and it is deterministic truth by construction. Replacing both because
+# one of them lied costs the player the move the engine just played — the one
+# thing on a guarded turn they cannot afford to miss, since the board moved
+# under them and the correction says nothing about how.
+
+
+def test_a_guarded_turn_still_tells_the_player_what_the_engine_played():
+    client, ctx = traded_client("Rxe5 wins on the spot.")
+
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+
+    assert body["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\ndxc6."
+    assert ctx.session.move_history()[-1] == "dxc6", "which is what really happened"
+
+
+def test_a_guarded_brain_turn_keeps_its_reply_line_too():
+    """Same rule off the loop's own closing narration, not just the fast path."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
+    app, _ = scripted_app(ctx, move("e4", text="Took your rook. Cooked."))
+
+    body = TestClient(app).post("/api/command", json={"text": "play e4"}).json()
+
+    assert body["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\ne5."
+
+
+def test_a_guarded_turn_with_no_reply_owed_says_only_the_correction():
+    """Nothing to append when nothing answered: a turn that moved nothing has no
+    announcement, and the correction stands alone."""
+    client, _, _ = make_developed_client(AgentResponse(text="Took your queen. Easy."))
+
+    body = client.post("/api/command", json={"text": "how's it look?"}).json()
+
+    assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
 
 
 def test_ordinary_commentary_is_remembered_word_for_word():
