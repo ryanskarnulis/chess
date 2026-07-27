@@ -40,6 +40,35 @@ Only the *voice* left. The planner's first turn with no tool calls used to be
 the commentary; now it is a one-line internal note, and the player never sees
 it.
 
+## When the loop ends the planning phase itself (`no_progress`, 2026-07-26)
+
+One thing was added to the loop after the split, from a measurement rather than
+a design: **a planner turn whose every tool call repeats one the turn already
+made is its last.** Asked "what should I play?" with hints off — an ask whose
+right answer is "no, hints are off" — the planner re-ran the reads it had
+already run (`evaluate_position → analyze_last_move → analyze_last_move →
+evaluate_position`) and spent the whole iteration budget doing it: 2 of 20
+samples in the recorded run, and a budget stop reaches no narrator, so the
+player got the pipeline's canned stuck line about an ask nothing was wrong with.
+
+The rule is deterministic and general, which is why it lives here rather than in
+the prompt: a call identical to one already made this turn cannot bring anything
+new back, so no further iteration can either. Three things it deliberately is
+not:
+
+- **Not a refusal.** The repeated call is still dispatched. Whether a repeat may
+  *run* belongs to the tool layer, which already answers it (the phase machine
+  refuses a second player move; a destructive op needs its confirmation), and
+  the trace then shows the repeat that ended the phase instead of hiding it.
+- **Not a budget stop.** Results came back, so there is something verified to
+  speak from: this stop reaches the narrator exactly as `completed` does, and
+  the player gets an answer. What it does not carry is a handoff note — the
+  planner never wrote one — and the closing brief leaves that section out rather
+  than presenting an empty heading as a note that said nothing.
+- **Not the correction path.** A turn whose calls failed *schema* validation
+  never dispatched anything, and repeating a malformed call is what the
+  (smaller) correction budget is for; that budget keeps precedence.
+
 ## What the planner runs on
 
 `personality.planner_prompt_for()` — a compact, persona-free contract. It keeps

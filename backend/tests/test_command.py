@@ -310,6 +310,19 @@ def test_a_budget_stop_still_says_something():
     assert body["commentary"]
 
 
+def test_a_repeat_stop_speaks_for_itself_instead_of_the_stuck_line():
+    """`no_progress` is the loop ending a planner that had started repeating
+    itself — the narrator still ran, so the turn has real commentary and the
+    pipeline must not paper over it with the canned stuck reply (the whole point
+    of the stop: the hints-off ask used to reach the player as "I lost the
+    thread" for want of one more iteration it had no use for)."""
+    client, _ = make_client(
+        AgentResponse(text="Hints are off. Figure it out.", stop_reason="no_progress"),
+    )
+    body = client.post("/api/command", json={"text": "what should I play?"}).json()
+    assert body["commentary"] == "Hints are off. Figure it out."
+
+
 def test_command_mutation_broadcasts_state_to_ws():
     client, _ = make_client(move("e4"))
     with client.websocket_connect("/ws") as ws:

@@ -10,11 +10,16 @@ back, and keeps going until the model stops asking for tools — but it never
 impossible for a brain to corrupt game state. The loop is bounded, and the
 stop reason says how it ended (`completed | max_iterations |
 correction_limit`, the fleet's vocabulary — `../agent-standard/STANDARD.md`
-§3 — plus `provider_error` when the provider died mid-turn: the response
-still carries every tool result that verifiably ran, so the pipeline can
-close the turn and tell the truth instead of catching an exception after
-the board changed, and `provider_failure` names *which* death it was so a
-caller can tell one worth retrying from one that is not).
+§3 — plus two chess additions: `provider_error` when the provider died
+mid-turn (the response still carries every tool result that verifiably ran,
+so the pipeline can close the turn and tell the truth instead of catching an
+exception after the board changed, and `provider_failure` names *which*
+death it was so a caller can tell one worth retrying from one that is not),
+and `no_progress` when the loop ended a planning phase that had started
+repeating itself. The two are opposites for the player: a budget stop or a
+dead provider produces no commentary, while `no_progress` reaches the
+narrator like `completed` does — results came back, so there is something
+verified to speak from).
 
 How the words get written is the implementation's business, and
 `LlamaBrain`'s answer is a second, tool-free model phase
