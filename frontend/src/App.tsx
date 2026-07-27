@@ -78,11 +78,16 @@ function App() {
 
   const board = state && (
     <div className="board-wrap">
+      {/* The state document arrives mid-turn now — the player's move is on the
+          board while the engine is still thinking — and such a frame carries
+          the engine's turn and the engine's legal moves. Those are never the
+          player's to drag, so the board is offered nothing until the turn is
+          theirs again (the same silence a review position gets). */}
       <Board
         fen={displayFen ?? state.fen}
         turnColor={state.turn}
         orientation={state.player_color}
-        dests={reviewing ? {} : state.dests}
+        dests={reviewing || state.turn !== state.player_color ? {} : state.dests}
         onMove={play}
         viewOnly={state.game_over || reviewing}
         revision={revision}

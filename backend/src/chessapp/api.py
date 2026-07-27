@@ -841,6 +841,14 @@ class StateBroadcaster:
     what keeps `begin` in front of `end`: several `ensure_future`d sends could
     interleave at their first await, a single consumer cannot.
 
+    **Board documents go down that same queue**, which is why `broadcast` is
+    `publish` with a different envelope rather than a send of its own. A turn
+    now publishes a document mid-flight — the player's move, before the engine
+    has answered — so two state frames describe the same turn and their order
+    is the board: delivered the other way round, the player's piece would
+    snap back. Two paths onto one socket could not promise that; one queue
+    can.
+
     Unstarted is a working state, not a broken one: `publish` drops the event.
     A process with no UI attached (a unit test, an MCP session) still runs its
     turns; it just has nobody to tell.
@@ -879,8 +887,8 @@ class StateBroadcaster:
     def disconnect(self, websocket: WebSocket) -> None:
         self._clients.discard(websocket)
 
-    async def broadcast(self, state: dict[str, Any]) -> None:
-        await self._send({"type": "state", "state": state})
+    def broadcast(self, state: dict[str, Any]) -> None:
+        self.publish({"type": "state", "state": state})
 
     def publish(self, message: dict[str, Any]) -> None:
         """Queue a message from any thread. Never raises: the caller is in the
@@ -950,9 +958,35 @@ def create_app(
     def _publish_progress(event: ProgressEvent) -> None:
         broadcaster.publish({"type": "progress", "progress": event.as_dict()})
 
+    last_published_version = -1
+
+    def _publish_state() -> None:
+        """Send the board document, once per board.
+
+        The one emitter, because there are now two reasons to send: a mutation
+        as it happens (below), and an endpoint closing its turn. `board_version`
+        is what tells them apart — one frame per board, so a registry-dispatched
+        op followed by its endpoint's own send is one document, not the same one
+        twice.
+
+        Called from worker threads (dispatch runs off the loop) as well as from
+        endpoints. Both hold the app's mutation lock, which is what makes
+        reading the version and snapshotting the board one coherent step; the
+        queue behind `broadcast` is what makes the crossing back safe.
+        """
+        nonlocal last_published_version
+        if ctx.board_version == last_published_version:
+            return
+        last_published_version = ctx.board_version
+        broadcaster.broadcast(_state_dict(ctx))
+
     progress.bind(_publish_progress)
     coordinator.on_phase = progress.phase
     registry.on_tool = progress.tool
+    # The mutation chokepoint, pointed at the same emitter: the player's move
+    # reaches the board when it is validated rather than when the turn ends —
+    # while Glitch reacts and Stockfish thinks (`docs/turn-coordinator.md`).
+    registry.on_mutation = _publish_state
     store = ConversationStore()
 
     @asynccontextmanager
@@ -979,9 +1013,6 @@ def create_app(
         extra thread hop changes no ordering.
         """
         return await anyio.to_thread.run_sync(fn, *args)
-
-    async def _broadcast_state() -> None:
-        await broadcaster.broadcast(_state_dict(ctx))
 
     @app.exception_handler(StaleVersionError)
     async def _stale_version(_request: Request, exc: StaleVersionError) -> JSONResponse:
@@ -1158,7 +1189,7 @@ def create_app(
                 # was left open — that reply is on the board now, so every client
                 # hears about it before the refusal goes back.
                 if ctx.session.fen() != before["fen"]:
-                    await _broadcast_state()
+                    _publish_state()
                 raise HTTPException(status_code=409, detail=result["error"])
             commentary = ""
             claims: tuple[str, ...] = ()
@@ -1198,7 +1229,7 @@ def create_app(
                     else commentary,
                 )
                 suppressed = said if claims else ""
-                await _broadcast_state()
+                _publish_state()
             _trace_turn(
                 utterance=move,
                 route=ROUTE_BOARD,
@@ -1259,7 +1290,7 @@ def create_app(
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             engine_move = _move_dict(reply) if reply is not None else None
             if result.legal:
-                await _broadcast_state()
+                _publish_state()
             return {
                 "legal": result.legal,
                 "san": result.san,
@@ -1367,7 +1398,7 @@ def create_app(
             outcome = _run_destructive("new_game", {"player_color": color})
             if isinstance(outcome, JSONResponse):
                 return outcome
-            await _broadcast_state()
+            _publish_state()
             return {"state": _state_dict(ctx)}
 
     @app.post("/api/game/confirm")
@@ -1425,7 +1456,7 @@ def create_app(
                 raise HTTPException(
                     status_code=409, detail=result.get("error", f"cannot {name}")
                 )
-            await _broadcast_state()
+            _publish_state()
             return {"op": name, "confirmed": True, "state": _state_dict(ctx)}
 
     @app.post("/api/game/undo")
@@ -1447,7 +1478,7 @@ def create_app(
             result = ctx.session.undo(plies)
             if not result.ok:
                 raise HTTPException(status_code=409, detail=result.reason)
-            await _broadcast_state()
+            _publish_state()
             return {"undone": list(result.undone), "state": _state_dict(ctx)}
 
     @app.post("/api/game/resign")
@@ -1466,7 +1497,7 @@ def create_app(
             )
             if isinstance(outcome, JSONResponse):
                 return outcome
-            await _broadcast_state()
+            _publish_state()
             return {"outcome": outcome["outcome"], "state": _state_dict(ctx)}
 
     @app.post("/api/game/difficulty")
@@ -1907,11 +1938,12 @@ def create_app(
             ctx.restamp_pending()
             # The UI still gets its own full document; a mutation shows up in the
             # agent view too (any board change moves the fen), so that comparison
-            # decides the broadcast.
+            # decides the broadcast. What the turn already published as it ran
+            # is not sent again — the emitter dedupes by board version.
             state = _state_dict(ctx)
             changed = agent_state != before
             if changed:
-                await broadcaster.broadcast(state)
+                _publish_state()
             _trace_turn(
                 utterance=text,
                 route=route,

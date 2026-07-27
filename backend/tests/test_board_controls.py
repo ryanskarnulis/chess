@@ -228,12 +228,17 @@ def test_a_drag_records_the_turn_on_the_transcript():
 
 
 def test_a_drag_broadcasts_the_new_state():
+    """And the dragged move itself is the first frame, not the finished
+    exchange: the mutation publishes the document, so the piece the player let
+    go of stays where they put it while Glitch reacts and the engine thinks."""
     client, _, _ = agent_client(narrations=("ok",), engine=FakeEngine())
     with client.websocket_connect("/ws") as ws:
         receive_state(ws)  # connect snapshot
         client.post("/api/game/move", json={"move": "e2e4"})
-        message = receive_state(ws)
-    assert message["state"]["history"] == ["e4", "e5"]
+        first = receive_state(ws)
+        second = receive_state(ws)
+    assert first["state"]["history"] == ["e4"]
+    assert second["state"]["history"] == ["e4", "e5"]
 
 
 def test_a_drag_is_traced_as_the_board_route(tmp_path):
@@ -480,6 +485,23 @@ def test_the_confirmed_op_broadcasts_the_new_state():
         client.post("/api/game/confirm", json={"confirm": True})
         message = ws.receive_json()
     assert message["state"]["fen"] == START_FEN
+
+
+def test_a_confirmed_op_broadcasts_once_and_not_twice():
+    """The dispatch publishes the new board and the endpoint publishes it again
+    right after — one board is one frame, so the second is dropped. Without
+    that, every client would replay the reset and the frame after it would be
+    one behind the game."""
+    ctx = developed(ToolContext(session=GameSession()))
+    client = TestClient(create_app(ctx))
+    client.post("/api/game/new", json={"color": "white"})
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # connect snapshot
+        client.post("/api/game/confirm", json={"confirm": True})
+        assert ws.receive_json()["state"]["fen"] == START_FEN
+        # The next frame is the next mutation's, not the reset a second time.
+        client.post("/api/game/move", json={"move": "e4"})
+        assert ws.receive_json()["state"]["history"] == ["e4"]
 
 
 def test_a_cancelled_op_broadcasts_nothing():

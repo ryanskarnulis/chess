@@ -571,6 +571,21 @@ def test_fast_move_broadcasts_state_to_ws():
     assert message["state"]["history"] == ["e4"]
 
 
+def test_the_players_move_reaches_the_board_before_the_reply_does():
+    """The player's move is on the board the moment it is validated, not when
+    the turn finishes: the mutation itself publishes the document, so the piece
+    lands while Glitch is still reacting and Stockfish is still thinking. Two
+    frames, in the order the game happened."""
+    client, _, _ = make_fast_client(narrations=("ok",), engine=FakeEngine("e7e5"))
+    with client.websocket_connect("/ws") as ws:
+        receive_state(ws)  # connect snapshot
+        client.post("/api/command", json={"text": "e4"})
+        first = receive_state(ws)
+        second = receive_state(ws)
+    assert first["state"]["history"] == ["e4"]
+    assert second["state"]["history"] == ["e4", "e5"]
+
+
 # --- The observe beat: a reaction to the player's move, then the reply.
 #
 # `make_move` applies the player's move and stops (audit items 2/5), so the
