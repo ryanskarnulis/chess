@@ -164,7 +164,9 @@ middle row).
   *measurable*: per-block `(passed, runs)` in the report, an `UNSTABLE` flag when
   the block spread reaches 0.6 (quiet on `long_capture`'s 5/5-vs-3/5), and
   per-sample `model_ms`, because a prompt-cache hit is fast and correlating
-  outcome with latency tests the hypothesis at zero GPU cost.
+  outcome with latency tests the hypothesis at zero GPU cost. (That last one was
+  printed per sample but **not written to the report** until 2026-07-26, when it
+  landed with the per-call split — see *Model time, per call and per phase*.)
   **What the flag cannot see, stated plainly:** it compares blocks *within* one
   scenario's sampling, and only where escalation bought a second block. A
   mid-suite 0/5 decides red on block 1, so it is reported STABLE — correctly,
@@ -239,6 +241,53 @@ should say what budget produced it.* Each scenario line carries the counts, the
 blocks, the interval, the decision, the stability flag, the infra retries, the
 failure-mode histogram and the per-sample record. The tables in this file are
 meant to be assembled from that file, not from terminal scrollback.
+
+#### Model time, per call and per phase (2026-07-26, Sprint 5)
+
+The `[eval]` line and every per-sample record now carry the turn's model time
+broken down rather than summed:
+
+| Field | Is |
+| --- | --- |
+| `model_ms` | the turn's whole model time — the sum, as before |
+| `call_ms` | one reading per round trip, **in call order**, off the trace's `model_latencies_ms` (which includes the calls that *raised* — the brain measures them, and the provider seam cannot) |
+| `planner_ms` | the planner loop's time: every reading but the narrator's |
+| `narrator_ms` | the narrator's own round trip |
+| `phases` | how confidently those two were separated — `SPLIT`, `NO_NARRATOR`, `NONE` or `UNKNOWN` |
+
+The readings existed on the trace record all along; what was missing was the
+attribution, and the sum could not answer the question it was being asked. A
+`no_progress` turn narrates 2–3× slower than a `completed` one at the same
+model-call count (the finding below), and "the narrator's round trip is slow" and
+"this sample was hard for the model, which is *why* it both repeated and rambled"
+add up to the same `model_ms`. Separating them needs the parts.
+
+`evalstats.split_latencies` derives the attribution from the route and the stop
+reason — unit-tested off the GPU like the rest of the verdict — and **refuses to
+guess**:
+
+- `SPLIT` — the narrator is the last call. True on a `brain` route that stopped
+  `completed` or `no_progress` (both reach the narrator), and on the narrate
+  routes (`fast_path`, `board`, `resign`, `confirmation`, `control`), where there
+  is no planner loop at all and the planner's 0 is real.
+- `NO_NARRATOR` — a budget stop (`max_iterations`, `correction_limit`) reaches no
+  narrator, so every reading is the planner's and narrator time does not exist.
+  Attributing the last call to a narrator here would invent time never spent.
+- `UNKNOWN` — `provider_error`: the call that died could have been either phase
+  and the record does not say which. A median over guesses is worse than a
+  median over fewer samples.
+- `NONE` — no readings (a zero-LLM canned confirmation, or a request that died
+  before the pipeline traced anything; the sample's outcome tells those apart).
+
+Two notes on why this shape. It is **per sample, not aggregated**, because the
+open question is whether the slow samples and the `no_progress` samples are the
+*same* samples — which needs the pairing kept. And **nothing in `src/` changed**
+to get it: the same proof-of-innocence rule the statistics slice worked under,
+for the reason the harness-bug precedent below records (a wrong tool offer in the
+harness silently moved a scenario from 5/5 to 0–3/5). What the slice did add is a
+test for the harness's own reporting seam — `tests/test_eval_harness.py`, GPU-free
+— because an instrument that can silently lie about what it measures is worse
+than no instrument.
 
 ## Scenarios — what each pins
 
@@ -714,7 +763,9 @@ a coin flip on a true ~80% rate); it looks run-order / server-state dependent
 > has no second block to differ from (the cross-run comparison is the report's
 > job, and the order experiment below is how it gets made); and per-sample `model_ms`,
 > because if the mechanism is prompt-cache state then the fast samples and the
-> passing samples should be the same samples. The **order experiment** the
+> passing samples should be the same samples. (`model_ms` reached the *report*
+> only on 2026-07-26, with the per-call split; until then it was printed and had
+> to be read out of scrollback.) The **order experiment** the
 > campaign owes: run `play_as_black` at forced n=20 both isolated *and* placed
 > after the long-transcript block — the placement is the variable, and the report
 > now records enough per sample to tell which hypothesis it supports. A
@@ -947,6 +998,16 @@ The residual gap is filed in `TODO.md` rather than explained away here; the
 plausible alternative reading is that the repeat and the long narration share a
 cause (the model is having a hard time on that sample) rather than one causing
 the other.
+
+> **Instrumented (2026-07-26).** Those medians were computed by hand from a
+> per-turn `model_ms`, which is why the two readings could not be told apart: a
+> slow narrator and a slow whole turn are the same number. The harness now
+> records `planner_ms` and `narrator_ms` per sample (see *Model time, per call
+> and per phase* above), so the next run of either arm answers this directly —
+> if the gap is the narrator's own round trip, `planner_ms` on the `no_progress`
+> samples matches the `completed` ones and `narrator_ms` does not; if the sample
+> was simply hard, both are up. **Not yet measured** — the instrument landed
+> without a GPU run, and no number here has changed.
 
 **Gate — full suite, default knobs, `fix/planner-repeat-stop`: 23 items passed
 in 3 m 09 s, 75 samples, infra 0/25.** All **fifteen** pass-rate scenarios

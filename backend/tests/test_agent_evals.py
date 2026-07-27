@@ -87,6 +87,20 @@ unit-tested on every commit (`test_evalstats.py`). Three consequences here:
 Set `CHESSAPP_EVAL_REPORT=/path/to.jsonl` and the suite writes one machine-
 readable line per scenario *as it finishes*, so a baseline stops being
 transcribed by hand out of terminal scrollback.
+
+**A turn's model time is reported per call and per phase** (Sprint 5). Both the
+`[eval]` line and the report's per-sample records carry `call_ms` (one reading
+per round trip, in call order, off the trace), `planner_ms`, `narrator_ms` and
+the `phases` attribution that says how confidently those two were separated —
+`evalstats.split_latencies`, which derives it from the route and the stop reason
+and answers UNKNOWN rather than guessing when the provider died mid-turn. The
+turn total alone could not resolve the finding it was asked about: `no_progress`
+turns narrate 2–3× slower than `completed` ones at the *same* model-call count,
+and "the narrator is slow" and "this sample was hard for the model" sum to the
+same `model_ms`. Nothing in `src/` changed to get this — the readings were
+already on the record, and the harness-bug precedent (a wrong tool offer silently
+moving a scenario from 5/5 to 0–3/5) is why a diagnostic slice does not touch
+production.
 """
 
 from __future__ import annotations
@@ -114,13 +128,16 @@ from chessapp.personality import planner_prompt_for, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import BOARD_STATE_TOOLS, Settings, ToolContext, build_registry
 from evalstats import (
+    BUDGET_STOPS,
     STOP_PROVIDER_ERROR,
     Decision,
     Outcome,
     RateResult,
+    TurnLatencies,
     VacuousRun,
     classify,
     scenario_record,
+    split_latencies,
 )
 from fakes import CountingProvider, ModelCall
 
@@ -203,9 +220,10 @@ _FLOORS: dict[str, float] = {
     "long_capture": 0.8,
 }
 
-# The loop's budget stops. A turn that ended on one reached no narrator, so it
-# produced no commentary — which is a sample that tested nothing, not a pass.
-_BUDGET_STOPS = frozenset({"max_iterations", "correction_limit"})
+# The loop's budget stops live in `evalstats.BUDGET_STOPS`, next to the other
+# decision it drives: a turn that ended on one reached no narrator, so it both
+# tested nothing under a commentary check *and* has no narrator round trip to
+# attribute latency to. One set, so the two readings cannot disagree.
 
 
 # --- the report ---------------------------------------------------------------
@@ -529,6 +547,13 @@ class EvalRun(NamedTuple):
     re-taking the sample for; a request llama-server *rejected* (the 400 an
     overrun context gets) is the same answer every time, and retrying it five
     times only spends the infra budget to arrive where it started.
+
+    `latencies` is the turn's per-call wall clock with each reading attributed to
+    the phase that spent it (`evalstats.split_latencies`). `duration` is the
+    request's whole wall clock and `model_ms` was the turn's model total, and
+    neither can answer the question Sprint 5 is asking — whether a `no_progress`
+    turn's extra 30 s is the narrator's own round trip or a hard sample that made
+    the repeat and the long narration both happen.
     """
 
     assistant: dict[str, Any]
@@ -537,6 +562,7 @@ class EvalRun(NamedTuple):
     status_code: int
     stop_reason: str | None
     provider_failure: str | None
+    latencies: TurnLatencies
 
 
 # A non-200 means the request never produced a turn (almost always the provider
@@ -588,15 +614,37 @@ def _measured(
     correlating an outcome with the turn's model latency tests the run-order
     hypothesis behind `play_as_black`'s 5/5-in-isolation / 0/5-mid-suite split at
     zero GPU cost.
+
+    **And it now says which model call spent that time** (Sprint 5). The turn
+    total was hiding the finding it was asked about: `no_progress` turns narrate
+    2–3× slower than `completed` ones at the same call count, and a sum cannot
+    tell a slow planner from a slow narrator. `model_latencies_ms` was already
+    on the trace record, one reading per round trip in call order — the harness
+    just never printed it. `split_latencies` attributes each reading off the
+    route and the stop reason (`evalstats`, unit-tested off the GPU) rather than
+    assuming the last call is always the narrator, which on a budget stop or a
+    provider death it is not.
     """
     traced = app.tracer.last
     model_calls = list(app.provider.calls)
     thinking = ",".join("on" if call.thinking else "off" for call in model_calls)
+    # Read off the trace, like `model_ms` beside it: the brain measures a round
+    # trip that *raised* and the provider seam cannot (only the caller of a
+    # raising call is still there to stop the clock), so the trace is the only
+    # reading that covers a died turn. `stop_reason` and `route` come from the
+    # same record, so the attribution and the readings can never be from
+    # different turns.
+    latencies = split_latencies(
+        traced.get("model_latencies_ms", ()),
+        route=traced.get("route"),
+        stop_reason=traced.get("stop_reason"),
+    )
     print(
         f"\n[eval] scenario={scenario} status={response.status_code} "
         f"stop={traced.get('stop_reason')} route={traced.get('route')} "
         f"calls={len(_tool_calls(assistant))} model_calls={len(model_calls)} "
         f"thinking=[{thinking}] model_ms={traced.get('model_ms')} "
+        f"{latencies.summary()} "
         f"mutations={traced.get('mutations', len(_board_mutations(assistant)))} "
         f"duration={duration:.1f}s trajectory=[{_trajectory(assistant)}]"
     )
@@ -612,6 +660,7 @@ def _measured(
         status_code=response.status_code,
         stop_reason=traced.get("stop_reason"),
         provider_failure=provider_failure,
+        latencies=latencies,
     )
 
 
@@ -1042,7 +1091,7 @@ def _assert_reached_narrator(run: EvalRun) -> None:
     INCONCLUSIVE, so the sample counts against the rate and is reported as what
     it was, rather than either passing silently or being blamed on the model.
     """
-    if run.stop_reason in _BUDGET_STOPS:
+    if run.stop_reason in BUDGET_STOPS:
         raise VacuousRun(
             f"stopped on {run.stop_reason}: no narrator ran, so nothing was tested"
         )
@@ -1182,6 +1231,13 @@ def _pass_rate(
                     "provider_failure": run.provider_failure,
                     "model_calls": len(run.model_calls),
                     "seconds": round(run.duration, 1),
+                    # The turn's model time, per call and per phase. Per sample
+                    # rather than aggregated because the whole question is
+                    # whether the slow samples and the `no_progress` samples are
+                    # the *same* samples — which needs the pairing kept, and
+                    # which is why the medians in TODO.md's repeat-stop item had
+                    # to be read out of terminal scrollback.
+                    **run.latencies.as_record(),
                     "error": str(error) if error is not None else None,
                 }
             )
