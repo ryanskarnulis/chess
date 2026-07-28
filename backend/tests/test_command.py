@@ -1347,6 +1347,52 @@ def test_reading_the_move_list_back_is_not_an_invention():
     assert response["commentary"] == "Move list: e4, e5, Nf3, Nc6."
 
 
+def test_a_move_credited_to_the_wrong_side_is_guarded():
+    """Who played a move is a fact too, and the wide `moves` set cannot hold it:
+    a move the *player* made derives from it perfectly, so "I played Nf3" was
+    unguardable. The history knows whose ply each move was."""
+    client, _, ctx = make_developed_client(
+        AgentResponse(text="I played Nf3, obviously.")
+    )
+
+    response = client.post("/api/command", json={"text": "what happened?"}).json()
+
+    assert ctx.session.move_history() == ["e4", "e5", "Nf3", "Nc6"], "Nf3 was theirs"
+    assert response["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+def test_the_side_that_really_played_a_move_may_be_credited():
+    client, _, _ = make_developed_client(AgentResponse(text="You played Nf3. Fine."))
+
+    response = client.post("/api/command", json={"text": "what happened?"}).json()
+
+    assert response["commentary"] == "You played Nf3. Fine."
+
+
+def test_the_credit_follows_the_players_color():
+    """The parity is meaningless without whose side it is: with the player on
+    black, White's moves are Glitch's, and the same sentence flips verdicts."""
+    ctx = developed(ToolContext(session=GameSession(player_color="black")))
+    app, _ = scripted_app(ctx, AgentResponse(text="I played Nf3, obviously."))
+    client = TestClient(app)
+
+    response = client.post("/api/command", json={"text": "what happened?"}).json()
+
+    assert response["commentary"] == "I played Nf3, obviously."
+
+
+def test_the_engine_reply_is_credited_to_the_opponent():
+    """The reply lands in the turn's record as Glitch's move, so he may say he
+    played it — and the player may not be told they did."""
+    client, _ = traded_client("Word. I played dxc6.")
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+    assert body["commentary"].startswith("Word. I played dxc6.")
+
+    client, _ = traded_client("Word. You played dxc6.")
+    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+    assert body["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\ndxc6."
+
+
 def test_a_settings_claim_is_checked_against_the_live_settings():
     """A setting the model announces must be the setting the app is actually
     on — the same rule as the board, applied to the other state the agent

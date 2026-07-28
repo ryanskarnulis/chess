@@ -190,6 +190,83 @@ def test_the_wrong_piece_is_still_an_invention():
     assert "capture" in unverified_claims("I took your queen.", TOOK_A_KNIGHT)
 
 
+# A subject pronoun is not the only way the direction gets pinned. Glitch's
+# register is mostly subjectless — "Snagged your bishop.", "Your knight is
+# gone." — and every one of those went to the union of both sides, so a capture
+# announced in exactly the wrong direction read as verified. A possessive is not
+# ambiguity: "your bishop" names whose piece left the board, and the speaker is
+# always the player's opponent, so it names who took it too. What stays
+# fail-permissive is the phrasing that really pins nothing ("that bishop is
+# gone") — the class is for the piece that was never taken, or taken the other
+# way round.
+
+PLAYER_TOOK_A_BISHOP = VerifiedFacts(captured_by_player=frozenset({"bishop"}))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Snagged your bishop.",
+        "Grabbed your bishop, obviously.",
+        "Your bishop is gone.",
+        "Your bishop is toast.",
+        "Your bishop is mine.",
+    ],
+)
+def test_a_possessive_pins_the_direction_of_a_subjectless_capture(text):
+    """The player took Glitch's bishop, so Glitch did not take theirs."""
+    assert "capture" in unverified_claims(text, PLAYER_TOOK_A_BISHOP)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Snagged my bishop.",
+        "My bishop is gone.",
+        "My bishop is history.",
+        # No possessive at all: genuinely ambiguous about whose bishop, so
+        # either side's record backing it is enough. Unchanged behavior.
+        "That bishop is gone.",
+        "The bishop is off the board.",
+    ],
+)
+def test_a_possessive_that_matches_the_board_is_reportable(text):
+    assert unverified_claims(text, PLAYER_TOOK_A_BISHOP) == ()
+
+
+def test_the_possessive_reads_the_other_way_round_too():
+    """Glitch took the knight, so "your knight is gone" is the report and "my
+    knight is gone" is the invention."""
+    assert unverified_claims("Your knight is gone.", TOOK_A_KNIGHT) == ()
+    assert "capture" in unverified_claims("My knight is gone.", TOOK_A_KNIGHT)
+
+
+def test_the_subject_outranks_the_possessive():
+    """An explicit subject is the stronger evidence and keeps deciding alone.
+    The two agree in every natural phrasing, so the pin has to be an unnatural
+    one: "I took my knight" is Glitch claiming the capture, whatever the
+    possessive says about whose piece it was."""
+    player_took_a_knight = VerifiedFacts(captured_by_player=frozenset({"knight"}))
+    assert "capture" in unverified_claims("I took your knight.", player_took_a_knight)
+    assert unverified_claims("I took your knight.", TOOK_A_KNIGHT) == ()
+    assert "capture" in unverified_claims("I took my knight.", player_took_a_knight)
+    assert unverified_claims("I took my knight.", TOOK_A_KNIGHT) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I'll take your bishop next.",
+        "Your bishop is not gone yet.",
+        "Want me to take your bishop?",
+        # A takeback is still not a capture, possessive or no possessive.
+        "Took your bishop back. Try again.",
+    ],
+)
+def test_a_possessive_does_not_turn_talk_into_a_claim(text):
+    assert unverified_claims(text, NOTHING) == ()
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -320,6 +397,93 @@ def test_a_move_the_turn_accounts_for_is_not_a_claim(text):
 )
 def test_a_threatened_move_is_not_a_claim(text):
     assert unverified_claims(text, PLAYED_NF3) == ()
+
+
+# --- ...and who played one -----------------------------------------------------
+#
+# `moves` is deliberately wide — played, reported, playable — which is what keeps
+# "Bc4 was right there" sayable, and it is also why it can say nothing about
+# *whose* move a move was. "I played Nf3" when the player played Nf3 derives from
+# it perfectly. So the two sides' played moves are their own facts, and a
+# sentence where a pronoun owns a move is checked against the side it credits.
+#
+# The wide set still answers every unattributed mention, and it is the fallback
+# when a caller supplies no attribution at all: fail permissive on missing
+# evidence, exactly as the ambiguous phrasings do.
+
+OWNED = VerifiedFacts(
+    moves=frozenset({"Nf3", "Nc6", "e5"}),
+    moves_by_player=frozenset({"Nf3"}),
+    moves_by_opponent=frozenset({"Nc6", "e5"}),
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I played Nf3.",
+        "I went Nf3, obviously.",
+        "You played Nc6.",
+        "You answered with Nc6.",
+        "You moved Nc6 and here we are.",
+    ],
+)
+def test_a_move_credited_to_the_wrong_side_is_a_claim(text):
+    assert "owned_move" in unverified_claims(text, OWNED)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You played Nf3.",
+        "You pushed Nf3 and I liked it.",
+        "I played Nc6.",
+        "I replied with Nc6.",
+        # A bare pawn push is spelled like a square, so it is no more a move
+        # claim here than in the class above — and this one is true anyway.
+        "I played e5.",
+    ],
+)
+def test_a_move_the_side_really_played_is_reportable(text):
+    assert unverified_claims(text, OWNED) == ()
+
+
+def test_an_unattributed_move_mention_is_still_the_wider_set():
+    """Nobody owns the move, so nothing is credited: the generic class answers
+    it off `moves`, exactly as it did before attribution existed."""
+    assert unverified_claims("Nf3 was strong.", OWNED) == ()
+    claims = unverified_claims("Bxc6 was strong.", OWNED)
+    assert "move" in claims and "owned_move" not in claims
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The usual half of the spec: a threat, a hypothetical, a question. Each
+        # names a move the turn really holds, so only the attribution could
+        # guard them — and a class that guards a threat is the one thing this
+        # module must never ship.
+        "I'll play Nf3.",
+        "I'm going to play Nf3.",
+        "You could have played Nc6.",
+        "You should have played Nc6.",
+        "Did you play Nf3?",
+        "If I play Nf3 you're in trouble.",
+    ],
+)
+def test_an_owned_move_that_is_not_a_report_is_not_a_claim(text):
+    assert unverified_claims(text, OWNED) == ()
+
+
+def test_a_turn_that_supplied_no_attribution_falls_back_to_the_move_list():
+    """A caller with no split to give — MCP, the delegate wire, anything older
+    than this class — must not have every credited move guarded. With both sides
+    empty the class reads the wider set, so it can still catch the invented move
+    and never the true one."""
+    unattributed = VerifiedFacts(moves=frozenset({"Nf3"}))
+    assert unverified_claims("I played Nf3.", unattributed) == ()
+    assert unverified_claims("You played Nf3.", unattributed) == ()
+    assert "owned_move" in unverified_claims("I played Bxc6.", unattributed)
 
 
 # --- saves ---------------------------------------------------------------------

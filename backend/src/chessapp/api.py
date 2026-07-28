@@ -598,6 +598,12 @@ def _verified_facts(
     else, and reciting the move list or a PGN is a read the tools support —
     both turn up in the 46 recorded live turns, and both are board truth.
 
+    That width is why the *credited* move needs its own two sets: a move the
+    player played derives from `moves` perfectly, so "I played Nf3" was
+    unguardable while there was only the one set. Those hold played moves only
+    — the history split by side, plus this turn's own (`make_move` is the
+    player's, the engine's reply is Glitch's).
+
     `fen_observed` is the board the *narrator* was looking at: the observation
     beat hands it the position after the player's move, while Stockfish is
     still computing the answer this function is standing behind. Without it the
@@ -625,8 +631,17 @@ def _verified_facts(
     for board in boards:
         moves |= set(board.legal_moves())
     moves |= _reported_moves(tool_results)
+    # Whose move each one was, which `moves` deliberately cannot say. The board
+    # already knows: the history splits by whose turn it was, and the session's
+    # color says which of those two sides the player is. Everything else in
+    # `moves` — an analysis's candidates, a move that is merely playable — is
+    # nobody's move and stays out of both sets.
+    played_by_color = ctx.session.move_history_by_color()
+    by_player = set(played_by_color[ctx.session.player_color])
+    by_opponent = set(played_by_color[opponent])
     if engine_reply is not None and engine_reply.san:
         moves.add(engine_reply.san)
+        by_opponent.add(engine_reply.san)
     checked = ctx.session.is_check()
     for r in tool_results:
         result = r["result"]
@@ -634,9 +649,14 @@ def _verified_facts(
             continue
         if san := result.get("san"):
             moves.add(san)
+            if r["name"] == "make_move":
+                # The one tool that plays the player's move; every other `san`
+                # a result carries is a move somebody merely talked about.
+                by_player.add(san)
         moves.update(result.get("undone", ()))
         if played := result.get("engine_move"):
             moves.add(played["san"])
+            by_opponent.add(played["san"])
         checked = checked or result.get("check") is True
     settings = {
         "hints": "on" if ctx.settings.hints_mode else "off",
@@ -659,6 +679,8 @@ def _verified_facts(
             _PIECE_NAMES[symbol] for symbol in captured[opponent]
         ),
         moves=frozenset(moves),
+        moves_by_player=frozenset(by_player),
+        moves_by_opponent=frozenset(by_opponent),
         saved=any(
             r["name"] in ("save_game", "resume_game") and r["result"].get("ok") is True
             for r in tool_results

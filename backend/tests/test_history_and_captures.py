@@ -56,6 +56,39 @@ def test_history_disambiguates_san():
     assert session.move_history() == ["Nfd2"]
 
 
+# --- ...and who played each move ------------------------------------------
+#
+# The same replay, split by whose turn it was. `captured_pieces()`'s sibling,
+# and it exists for the same reason: who did a thing is a fact, and the honesty
+# guard checks a credited move ("I played Nf3") against the side that really
+# played it.
+
+
+def test_a_fresh_session_has_no_moves_on_either_side():
+    assert GameSession().move_history_by_color() == {"white": [], "black": []}
+
+
+def test_the_history_splits_by_whose_turn_it_was():
+    session = GameSession()
+    for move in ["e4", "e5", "Nf3", "Nc6"]:
+        assert session.submit_move(move).legal
+    assert session.move_history_by_color() == {
+        "white": ["e4", "Nf3"],
+        "black": ["e5", "Nc6"],
+    }
+
+
+def test_the_split_is_read_off_the_board_not_assumed_from_white():
+    """A session rebuilt from a FEN can start with Black to move, so the side
+    is the board's answer rather than the index's parity."""
+    session = GameSession(
+        fen="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+    )
+    for move in ["e5", "Nf3"]:
+        assert session.submit_move(move).legal
+    assert session.move_history_by_color() == {"white": ["Nf3"], "black": ["e5"]}
+
+
 # --- captured pieces ------------------------------------------------------
 
 

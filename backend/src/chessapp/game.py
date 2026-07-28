@@ -300,6 +300,26 @@ class GameSession:
             board.push(move)
         return sans
 
+    def move_history_by_color(self) -> dict[str, list[str]]:
+        """The moves each color played, in order — `move_history()` split by
+        whose turn it was.
+
+        `captured_pieces()`'s sibling, and derived the same way: by replaying
+        the stack, so the side is the board's answer and not an index's parity.
+        A session rebuilt from a FEN can start with Black to move, and assuming
+        White moved first would credit every move to the wrong player.
+
+        Who played a move is a fact the honesty guard checks — commentary that
+        credits a move to a side ("I played Nf3") has to name the side that
+        really played it.
+        """
+        by_color: dict[str, list[str]] = {"white": [], "black": []}
+        board = self._board.root()
+        for move in self._board.move_stack:
+            by_color[_COLOR_NAMES[board.turn]].append(board.san(move))
+            board.push(move)
+        return by_color
+
     def position_fens(self) -> list[str]:
         """FEN of every position reached, root first, current last — one per
         ply plus the root. Derived by replaying the move stack, like
