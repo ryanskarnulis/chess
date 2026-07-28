@@ -172,6 +172,16 @@ def test_prompt_caps_reaction_length():
 # non-negotiable contract below.
 
 
+def test_prompt_forbids_claiming_the_players_move():
+    # Live game: Glitch narrated the player's capture as his own ("I took your
+    # knight" for a piece the player had just taken off him). The tools state the
+    # attribution now, but the narrator's contract must say it too: a move it
+    # carried out for the player belongs to the player.
+    prompt = system_prompt_for().lower()
+    assert "the player's move, not yours" in prompt
+    assert "opponent" in prompt
+
+
 def test_prompt_forbids_inventing_events():
     # Live game: the react step narrated a capture that never happened
     # ("you actually took my pawn" on a quiet knight move). Commentary must

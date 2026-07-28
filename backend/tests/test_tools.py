@@ -431,7 +431,8 @@ def test_make_move_with_engine_triggers_reply(session):
     registry = build_registry(ToolContext(session=session, engine=FakeEngine()))
     result = registry.dispatch("make_move", {"move": "e4"})
     assert result["legal"] is True
-    assert result["engine_move"] == {"san": "e5", "uci": "e7e5"}
+    assert result["engine_move"]["san"] == "e5"
+    assert result["engine_move"]["uci"] == "e7e5"
     assert result["turn"] == "white"
     assert session.move_history() == ["e4", "e5"]
     assert result["fen"] == session.fen()
@@ -567,7 +568,8 @@ def test_atomic_make_move_keeps_the_whole_exchange_and_the_new_facts(session):
 
     result = registry.dispatch("make_move", {"move": "exd5"})
 
-    assert result["engine_move"] == {"san": "Nc6", "uci": "b8c6"}
+    assert result["engine_move"]["san"] == "Nc6"
+    assert result["engine_move"]["uci"] == "b8c6"
     assert result["capture"] == "p"
     assert result["check"] is False
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
@@ -593,6 +595,114 @@ def test_the_two_modes_describe_themselves_differently(session):
     assert "inside the same call" not in split
     # Neither mode asks the model to do anything about the reply.
     assert "Map loose phrasing" in atomic and "Map loose phrasing" in split
+
+
+# --- a move in the record says whose move it was -----------------------------
+#
+# The narrator is the player's *opponent*, and it never sees the board — it sees
+# these results. Reporting a move with no actor left attribution to be inferred
+# from history parity plus `player_color`, which a 12B fumbles: live, Glitch
+# claimed the player's capture as his own ("I took your knight" for a piece the
+# player had just taken off him). Whose move it was is deterministic state, so
+# code states it: `mover`, and an English `summary` that spells out actor, move,
+# whose piece fell and whether it checks.
+
+
+def _summary(registry, move: str) -> str:
+    return registry.dispatch("make_move", {"move": move})["summary"]
+
+
+def test_make_move_names_the_mover(registry):
+    result = registry.dispatch("make_move", {"move": "e4"})
+    assert result["mover"] == "player"
+
+
+def test_move_summary_states_the_actor_on_a_quiet_move(registry):
+    assert _summary(registry, "e4") == "The player played e4."
+
+
+def test_move_summary_says_whose_piece_the_capture_took(session):
+    # The captured piece belonged to the side that did not move — the narrator's
+    # own side. "your pawn", never a bare symbol to be attributed by guesswork.
+    for san in ("e4", "d5"):
+        session.submit_move(san)
+    registry, _ = _split_registry(ToolContext(session=session, engine=FakeEngine()))
+
+    assert _summary(registry, "exd5") == "The player played exd5, capturing your pawn."
+
+
+def test_move_summary_names_the_piece_in_words():
+    # A knight is a knight, not an "n": the summary is prose the narrator reads.
+    knight_on_c6 = "r1bqkbnr/pppppppp/2n5/1B6/8/8/PPPPPPPP/RNBQK1NR w KQkq - 0 1"
+    registry, _ = _split_registry(ToolContext(session=GameSession(knight_on_c6)))
+
+    assert _summary(registry, "Bxc6") == (
+        "The player played Bxc6, capturing your knight."
+    )
+
+
+def test_move_summary_reports_a_check():
+    ctx = ToolContext(session=GameSession("4k3/8/8/8/8/8/8/4K2R w K - 0 1"))
+    registry, _ = _split_registry(ctx)
+    assert _summary(registry, "Rh8") == "The player played Rh8+, putting you in check."
+
+
+def test_move_summary_combines_a_capture_and_a_check():
+    ctx = ToolContext(session=GameSession("4k2r/8/8/8/8/8/8/4K2R w K - 0 1"))
+    registry, _ = _split_registry(ctx)
+    assert _summary(registry, "Rxh8") == (
+        "The player played Rxh8+, capturing your rook and putting you in check."
+    )
+
+
+def test_move_summary_handles_an_en_passant_capture():
+    # The taken pawn is not on the destination square, so a summary that read the
+    # board after the push would name nothing. It reads `MoveResult.capture`,
+    # which the session already derives en-passant-aware.
+    ctx = ToolContext(session=GameSession("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1"))
+    registry, _ = _split_registry(ctx)
+    assert _summary(registry, "exd6") == "The player played exd6, capturing your pawn."
+
+
+def test_the_engine_reply_carries_its_own_summary(session):
+    """The atomic result holds two moves, so both say who made them — and the
+    reply's wording is neutral, because it is the narrator's own move."""
+    for san in ("e4", "d5"):
+        session.submit_move(san)
+    ctx = ToolContext(session=session, engine=FakeEngine("d5e4"))
+    registry = build_registry(ctx, TurnCoordinator(ctx))
+
+    result = registry.dispatch("make_move", {"move": "Nc3"})
+
+    assert result["summary"] == "The player played Nc3."
+    assert result["engine_move"]["summary"] == (
+        "The engine played dxe4, capturing the player's pawn."
+    )
+    # Additive: the fields the reply already promised are untouched.
+    assert result["engine_move"]["san"] == "dxe4"
+    assert result["engine_move"]["uci"] == "d5e4"
+
+
+def test_the_engine_summary_fits_an_opening_move_too():
+    """`_engine_move_dict` also reports `new_game`'s opening move, which answers
+    nothing — so the engine's wording says "played", never "replied"."""
+    session = GameSession(player_color="black")
+    registry = build_registry(
+        ToolContext(session=session, engine=FakeEngine(reply_uci="e2e4"))
+    )
+
+    result = registry.dispatch("new_game", {})
+
+    assert result["engine_move"]["summary"] == "The engine played e4."
+
+
+def test_a_rejected_move_has_no_mover_or_summary(registry):
+    # Nothing happened, so there is nothing to attribute; the refusal keeps
+    # carrying only what correcting it needs.
+    result = registry.dispatch("make_move", {"move": "e5"})
+    assert result["legal"] is False
+    assert "mover" not in result
+    assert "summary" not in result
 
 
 # --- non-move mutations end the open turn ------------------------------------
@@ -1066,7 +1176,8 @@ def test_new_game_plays_engine_opening_when_player_is_black():
     registry = build_registry(ToolContext(session=session, engine=engine))
     result = registry.dispatch("new_game", {})
     assert result["ok"] is True
-    assert result["engine_move"] == {"san": "e4", "uci": "e2e4"}
+    assert result["engine_move"]["san"] == "e4"
+    assert result["engine_move"]["uci"] == "e2e4"
     assert session.move_history() == ["e4"]
     assert session.turn == "black"
 
@@ -1100,7 +1211,8 @@ def test_new_game_assigns_the_requested_side():
     assert session.player_color == "black"
     # Owning white, the engine must open — or the board sits waiting on a move
     # only it can make.
-    assert result["engine_move"] == {"san": "e4", "uci": "e2e4"}
+    assert result["engine_move"]["san"] == "e4"
+    assert result["engine_move"]["uci"] == "e2e4"
     assert session.move_history() == ["e4"]
     assert session.turn == "black"
 

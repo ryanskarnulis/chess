@@ -38,6 +38,7 @@ from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import chess
 import jsonschema
 from mcp.server.fastmcp.utilities.func_metadata import func_metadata
 from pydantic import Field
@@ -552,13 +553,74 @@ def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
     }
 
 
+# Who made a move, as the payloads say it. Constants because these strings are a
+# contract with whoever reads a result — the narrator most of all.
+_MOVER_PLAYER = "player"
+_MOVER_ENGINE = "engine"
+
+# How a summary addresses each mover: how the move is introduced, whose the
+# captured piece was, and who was put in check. The player's summary is written
+# *to the narrator*, who is the player's opponent — so a piece the player took
+# was the narrator's own ("your pawn"). The engine's summary is neutral instead
+# of second-person, because that move is the narrator's and its readers vary (an
+# MCP caller's atomic exchange, `new_game`'s opening move).
+_SUMMARY_VOICE = {
+    _MOVER_PLAYER: ("The player played", "your", "you"),
+    _MOVER_ENGINE: ("The engine played", "the player's", "the player"),
+}
+
+
+def _piece_word(symbol: str) -> str:
+    """The word a summary calls a captured piece by ("n" -> "knight").
+
+    python-chess owns the vocabulary, so this layer keeps no second copy of it.
+    The symbol always comes from `GameSession._captured_symbol`, i.e. board
+    truth — the fallback exists only so that composing prose can never turn a
+    move that already landed into an error result.
+    """
+    try:
+        return chess.piece_name(chess.PIECE_SYMBOLS.index(symbol))
+    except ValueError:  # pragma: no cover - unreachable off board truth
+        return "piece"
+
+
+def _move_summary(result: MoveResult, mover: str) -> str:
+    """One English sentence saying who moved, what they played, whose piece it
+    took and whether it checks.
+
+    Composed by code from `MoveResult`, because attribution is deterministic
+    state and a 12B asked to derive it from move-history parity gets it wrong:
+    live, the narrator claimed the player's capture as its own ("I took your
+    knight" for a piece the player had just taken off it). The symbol/boolean
+    fields stay on the payload for every other reader; this is the same facts in
+    the one form the narrator cannot misread.
+
+    En passant needs no special case here: `MoveResult.capture` is already the
+    pawn the move took, whether or not it stood on the destination square.
+    """
+    opening, owner, target = _SUMMARY_VOICE[mover]
+    clauses = []
+    if result.capture:
+        clauses.append(f"capturing {owner} {_piece_word(result.capture)}")
+    if result.check:
+        clauses.append(f"putting {target} in check")
+    if not clauses:
+        return f"{opening} {result.san}."
+    return f"{opening} {result.san}, {' and '.join(clauses)}."
+
+
 def _engine_move_dict(reply: MoveResult | None) -> dict[str, Any] | None:
-    """How the move tools report an engine move: `{"san", "uci"}`, or None when
-    the coordinator says the engine owed none. One shape for `make_move`'s reply
-    and `new_game`'s opening move, which is what their results promise."""
+    """How the move tools report an engine move: `{"san", "uci", "summary"}`, or
+    None when the coordinator says the engine owed none. One shape for
+    `make_move`'s reply and `new_game`'s opening move, which is what their
+    results promise."""
     if reply is None:
         return None
-    return {"san": reply.san, "uci": reply.uci}
+    return {
+        "san": reply.san,
+        "uci": reply.uci,
+        "summary": _move_summary(reply, _MOVER_ENGINE),
+    }
 
 
 def _require_engine(ctx: ToolContext) -> EnginePlayer:
@@ -830,6 +892,15 @@ def build_registry(
             # truth, derived by the session at move time.
             "capture": result.capture,
             "check": result.check,
+            # Whose move this was. Constant on this payload — `make_move` submits
+            # the *player's* move and nothing else, with the engine's answer
+            # reported separately under `engine_move` — but stated as data rather
+            # than left implicit, because the narrator that reads this result has
+            # no board and would otherwise have to infer attribution from move
+            # parity, which is exactly what it got wrong.
+            "mover": _MOVER_PLAYER,
+            # The same facts as one sentence, for whoever narrates from them.
+            "summary": _move_summary(result, _MOVER_PLAYER),
             "game_over": ctx.session.is_game_over(),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,

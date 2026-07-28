@@ -110,7 +110,8 @@ async def test_make_move_happy_path_returns_real_game_data():
         result = await _call(client, "make_move", {"move": "e4"})
         assert result["legal"] is True
         assert result["san"] == "e4"
-        assert result["engine_move"] == {"san": "e5", "uci": "e7e5"}
+        assert result["engine_move"]["san"] == "e5"
+        assert result["engine_move"]["uci"] == "e7e5"
 
     # The move landed on the context's own session (the server's game).
     assert ctx.session.move_history() == ["e4", "e5"]
