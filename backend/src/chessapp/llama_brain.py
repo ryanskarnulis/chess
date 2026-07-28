@@ -468,35 +468,32 @@ def _call_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
     return name, json.dumps(args, sort_keys=True, default=str)
 
 
-def _attribution(board_state: dict[str, Any]) -> str:
-    """Whose move the narrator is about to react to, and which side each of them
-    plays — off `player_color`, which the state block already carries.
-
-    The brief used to open "You just acted on the player's behalf", and a 12B
-    reads that as "I moved": live, Glitch narrated the player's capture as his
-    own. Who moved is deterministic state, so the brief says it outright instead
-    of leaving it to be inferred from move-history parity.
-
-    A state block without a color still gets the attribution sentence and no
-    claim about sides — every real caller injects the full agent state, and a
-    color this was not given is not a fact to assert.
-    """
-    lead = (
-        "The player just made their own move, and you carried it out for them: "
-        "the moves in these results are the player's moves, not yours."
-    )
-    player = board_state.get("player_color")
-    if player not in ("white", "black"):
-        return lead
-    opponent = "black" if player == "white" else "white"
-    return f"{lead} The player is playing {player}; you are playing {opponent}."
+# Whose move the narrator is about to react to. The brief used to open "You
+# just acted on the player's behalf", and a 12B reads that as "I moved": live,
+# Glitch narrated the player's capture as his own. Who moved is deterministic
+# state, so the brief says it outright instead of leaving it to be inferred
+# from move-history parity.
+#
+# It says that and nothing more, deliberately. The first cut also named each
+# side's color, and that was an identity the narrator *used*: it reacts
+# mid-turn, from a board where it is the engine's move and the state block
+# lists the engine's legal options, so "you are playing black" turned the
+# reaction beat into a move-selection beat — every reaction in the 2026-07-28
+# game announced a reply ("i'll go with d6", then Bb4 was played) that
+# Stockfish was still computing. The attribution the misattribution fix needed
+# was purely negative — whose move the results are NOT — and the narrator must
+# be offered no side to play for.
+_ATTRIBUTION = (
+    "The player just made their own move, and you carried it out for them: "
+    "the moves in these results are the player's moves, not yours."
+)
 
 
 def _fast_path_brief(board_state: dict[str, Any], changes: list[dict[str, Any]]) -> str:
     """The narrator's brief for a move the loop never saw (the fast path). The
     board here *is* fresh — the caller read it after the move landed."""
     return (
-        f"{_attribution(board_state)}\n\nHere is what happened "
+        f"{_ATTRIBUTION}\n\nHere is what happened "
         f"(each entry is a tool call and its result):\n{json.dumps(changes)}"
         f"\n\nNew board state:\n{json.dumps(board_state)}\n\n"
         "React with a short, in-character comment for the player, based "

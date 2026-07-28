@@ -182,6 +182,16 @@ def test_prompt_forbids_claiming_the_players_move():
     assert "opponent" in prompt
 
 
+def test_prompt_gives_the_narrator_no_moves_of_its_own():
+    # The first cut of the rule above added "Only the engine's replies are your
+    # own moves" — ownership the narrator acted on: reacting mid-turn, before
+    # Stockfish had answered, every reaction in the 2026-07-28 game announced a
+    # reply it had invented ("i'll go with d6", then Bb4 was played). The rule
+    # is purely negative; nothing in the prompt assigns the narrator moves.
+    prompt = system_prompt_for().lower()
+    assert "your own moves" not in prompt
+
+
 def test_prompt_forbids_inventing_events():
     # Live game: the react step narrated a capture that never happened
     # ("you actually took my pawn" on a quiet knight move). Commentary must

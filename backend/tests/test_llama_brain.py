@@ -932,8 +932,14 @@ def test_narrate_null_content_becomes_empty_string():
 #
 # The brief used to open "You just acted on the player's behalf", which a 12B
 # reads as "I moved": live, Glitch narrated the player's capture as his own. The
-# opener now states the attribution outright, off `player_color` — deterministic
-# state, not something the narrator should be inferring from move parity.
+# opener now states the attribution outright — and states *only* that. The first
+# version also named each side's color, and that was an identity the narrator
+# used: reacting mid-turn from a board where it is the engine's move, with the
+# engine's legal moves in the state block, "you are playing black" turned the
+# reaction beat into a move-selection beat — every reaction in the 2026-07-28
+# game announced a reply ("i'll go with d6") the narrator had no way to know,
+# since Stockfish was still computing it. The attribution the fix needed was
+# purely negative: whose move the results are NOT.
 
 FAST_PATH_STATE = {"fen": "8/8/8/8", "turn": "black", "player_color": "white"}
 
@@ -948,16 +954,13 @@ def test_fast_path_brief_attributes_the_move_to_the_player():
     assert "not yours" in brief
 
 
-def test_fast_path_brief_names_both_sides():
-    brief = _fast_path_brief(FAST_PATH_STATE, [])
-    assert "The player is playing white" in brief
-    assert "you are playing black" in brief
-
-
-def test_fast_path_brief_names_both_sides_the_other_way_round():
-    brief = _fast_path_brief({**FAST_PATH_STATE, "player_color": "black"}, [])
-    assert "The player is playing black" in brief
-    assert "you are playing white" in brief
+def test_fast_path_brief_gives_the_narrator_no_side_to_play():
+    # Naming the narrator's color handed it a move to choose. The brief carries
+    # no color for either side, whichever the player has.
+    for color in ("white", "black"):
+        brief = _fast_path_brief({**FAST_PATH_STATE, "player_color": color}, [])
+        assert "is playing" not in brief
+        assert "you are playing" not in brief
 
 
 def test_fast_path_brief_keeps_its_structure():
@@ -968,14 +971,6 @@ def test_fast_path_brief_keeps_its_structure():
     assert "8/8/8/8" in brief, "so does the new board"
     assert "in-character" in brief
     assert "Do not call any tools." in brief
-
-
-def test_fast_path_brief_survives_a_board_state_with_no_color():
-    # `narrate`'s callers all inject the full agent state, but a brief must never
-    # raise, and a color it wasn't given is not a color to assert.
-    brief = _fast_path_brief({}, [])
-    assert "the player's move" in brief
-    assert "is playing" not in brief
 
 
 # --- recovery: a provider failure mid-turn (audit item 20) ------------------
