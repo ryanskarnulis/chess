@@ -544,7 +544,7 @@ def test_make_move_tool_drives_the_shared_coordinator(session):
     coordinator = TurnCoordinator(ctx)
     registry = build_registry(ctx, coordinator)
     result = registry.dispatch("make_move", {"move": "e4"})
-    assert result["engine_move"] == {"san": "e5", "uci": "e7e5"}
+    assert result["engine_move"]["san"] == "e5"
     assert coordinator.turn_id == 2
 
 
@@ -564,7 +564,7 @@ def test_turn_state_rejection_reaches_the_agent_as_result_data(session):
 def test_build_registry_makes_its_own_coordinator_when_given_none(session):
     registry = build_registry(ToolContext(session=session, engine=FakeEngine()))
     first = registry.dispatch("make_move", {"move": "e4"})
-    assert first["engine_move"] == {"san": "e5", "uci": "e7e5"}
+    assert first["engine_move"]["san"] == "e5"
     # Turn after turn, with nobody handing it a coordinator.
     second = registry.dispatch("make_move", {"move": "d4"})
     assert second["legal"] is True

@@ -22,7 +22,12 @@ import pytest
 
 from chessapp.brain import AgentResponse
 from chessapp.game import GameSession
-from chessapp.llama_brain import _NO_PROGRESS_NOTE, LlamaBrain, create_llama_brain
+from chessapp.llama_brain import (
+    _NO_PROGRESS_NOTE,
+    LlamaBrain,
+    _fast_path_brief,
+    create_llama_brain,
+)
 from chessapp.personality import PLANNER_PROMPT, planner_prompt_for, system_prompt_for
 from chessapp.provider import (
     ProviderError,
@@ -921,6 +926,56 @@ def test_narrate_includes_the_transcript():
 def test_narrate_null_content_becomes_empty_string():
     brain, _ = make_brain(text_turn(None))
     assert brain.narrate(board_state={}, changes=[]).text == ""
+
+
+# --- the fast path's brief says whose move it is reacting to ------------------
+#
+# The brief used to open "You just acted on the player's behalf", which a 12B
+# reads as "I moved": live, Glitch narrated the player's capture as his own. The
+# opener now states the attribution outright, off `player_color` — deterministic
+# state, not something the narrator should be inferring from move parity.
+
+FAST_PATH_STATE = {"fen": "8/8/8/8", "turn": "black", "player_color": "white"}
+
+
+def test_fast_path_brief_does_not_say_the_narrator_acted():
+    assert "on the player's behalf" not in _fast_path_brief(FAST_PATH_STATE, [])
+
+
+def test_fast_path_brief_attributes_the_move_to_the_player():
+    brief = _fast_path_brief(FAST_PATH_STATE, [])
+    assert "the player's move" in brief
+    assert "not yours" in brief
+
+
+def test_fast_path_brief_names_both_sides():
+    brief = _fast_path_brief(FAST_PATH_STATE, [])
+    assert "The player is playing white" in brief
+    assert "you are playing black" in brief
+
+
+def test_fast_path_brief_names_both_sides_the_other_way_round():
+    brief = _fast_path_brief({**FAST_PATH_STATE, "player_color": "black"}, [])
+    assert "The player is playing black" in brief
+    assert "you are playing white" in brief
+
+
+def test_fast_path_brief_keeps_its_structure():
+    brief = _fast_path_brief(
+        FAST_PATH_STATE, [{"name": "make_move", "result": {"san": "exd5"}}]
+    )
+    assert "exd5" in brief, "the results still reach the narrator"
+    assert "8/8/8/8" in brief, "so does the new board"
+    assert "in-character" in brief
+    assert "Do not call any tools." in brief
+
+
+def test_fast_path_brief_survives_a_board_state_with_no_color():
+    # `narrate`'s callers all inject the full agent state, but a brief must never
+    # raise, and a color it wasn't given is not a color to assert.
+    brief = _fast_path_brief({}, [])
+    assert "the player's move" in brief
+    assert "is playing" not in brief
 
 
 # --- recovery: a provider failure mid-turn (audit item 20) ------------------
