@@ -157,6 +157,16 @@ class VerifiedFacts:
     analysis, or playable now or at the turn's start. The last of those is what
     keeps "Bc4 was right there and you missed it" sayable.
 
+    `moves_by_player` and `moves_by_opponent` are the narrower fact that width
+    cannot hold: the moves each side really *played*, game-spanning like the
+    captured sets. "I played Nf3" derives from `moves` perfectly when the
+    player is the one who played Nf3, so crediting a move was unguardable
+    until the sides were told apart. A caller that supplies neither set is
+    supplying no attribution at all, and the owned-move class reads `moves`
+    instead — missing evidence is the one thing this guard fails permissive on,
+    since the alternative is guarding every credited move on the routes that
+    have no pipeline to assemble them.
+
     `material` is the player's advantage in pawns, positive when they are
     ahead — and a *tuple* of them, because one turn holds more than one board.
     The narrator reacts during the observation beat, after the player's move
@@ -178,6 +188,8 @@ class VerifiedFacts:
     captured_by_player: frozenset[str] = frozenset()
     captured_by_opponent: frozenset[str] = frozenset()
     moves: frozenset[str] = frozenset()
+    moves_by_player: frozenset[str] = frozenset()
+    moves_by_opponent: frozenset[str] = frozenset()
     saved: bool = False
     settings: Mapping[str, str] = field(default_factory=dict)
     numbers: frozenset[str] = frozenset()
@@ -194,11 +206,23 @@ _TAKE_VERBS = (
     r"| ate | eats | eating )"
 )
 
+# The possessive is direction evidence, and it is the direction Glitch's own
+# register actually carries: he says "Snagged your bishop." and "Your knight is
+# gone.", not "I took your bishop." Every subjectless phrasing used to fall
+# through to the union of both sides' captures, so a capture announced in
+# exactly the wrong direction read as verified. Whose piece it was is not
+# ambiguous, and the speaker is always the player's opponent, so whose piece it
+# was says who took it.
+_POSSESSIVE = r"(?: your | my )"
+
 _CAPTURE = re.compile(
     rf"""
     (?: (?P<subject> \b (?: i | you ) \b ) [^.!?]{{0,24}}? )?
-    \b {_TAKE_VERBS} \b [^.!?]{{0,24}}? \b (?P<piece> {_PIECE_WORDS} ) s? \b
+    \b {_TAKE_VERBS} \b [^.!?]{{0,24}}?
+    (?: \b (?P<owner> {_POSSESSIVE} ) \s+ )?
+    \b (?P<piece> {_PIECE_WORDS} ) s? \b
     |
+    (?: \b (?P<gone_owner> {_POSSESSIVE} ) \s+ )?
     \b (?P<gone_piece> {_PIECE_WORDS} ) s? \b \s* (?: is | 's | are ) \s+
     (?: gone | dead | history | mine | yours | toast | off \s+ the \s+ board )\b
     """,
@@ -243,14 +267,33 @@ _DRAW = re.compile(
 # is never read as a claim that a move was played — the class exists for the
 # invented piece move ("you took it with Bxc6"), not for square talk. Case
 # matters: SAN piece letters are capitals.
-_SAN_CLAIM = re.compile(
-    r"""
+_SAN = r"""
     (?<! [\w-] )
     (?: O-O (?: -O )?
       | [KQRBN] [a-h]? [1-8]? x? [a-h] [1-8]
       | [a-h] x [a-h] [1-8]
     ) (?: = [QRBN] )? [+#]?
     (?! [\w-] )
+"""
+
+_SAN_CLAIM = re.compile(_SAN, re.VERBOSE)
+
+# Who played it, when the sentence says. `moves` is wide by design and so it
+# verifies "I played Nf3" off the player's own Nf3 — the credit was the one part
+# of a move claim nothing checked. Only a *played* move can be credited, so the
+# verbs are the ones that report a move as made; "I castled" names no SAN and is
+# not this class's business.
+_PLAY_VERBS = (
+    r"(?: played | play | went | pushed | moved | dropped | slid | swung "
+    r"| replied \s+ with | answered \s+ with | met \s+ it \s+ with )"
+)
+
+# Case-sensitive on the SAN half and not on the prose half: SAN piece letters
+# are capitals, which is what keeps ordinary words out of the move classes.
+_OWNED_MOVE = re.compile(
+    rf"""
+    (?i: \b (?P<subject> i | you ) \b [^.!?]{{0,16}}? \b {_PLAY_VERBS} \b )
+    [^.!?]{{0,16}}? (?P<san> {_SAN} )
     """,
     re.VERBOSE,
 )
@@ -408,6 +451,15 @@ def _setting_is(key: str) -> Callable[[re.Match[str], VerifiedFacts], bool]:
 
 
 def _capture_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    """Whether the board's capture record backs the capture this sentence says.
+
+    Direction first, and by the strongest evidence the sentence carries: an
+    explicit subject decides alone, and only when there is none does the
+    possessive get a say — "took *your* bishop" is Glitch taking the player's
+    piece, "*my* bishop is gone" is the player taking his. With neither, the
+    text pins nothing ("a knight came off") and either side's record is enough,
+    because the guard fails permissive on real ambiguity.
+    """
     piece = match.group("piece") or match.group("gone_piece")
     # "horse" is a knight; the board only knows the one word for it.
     name = "knight" if piece.lower() == "horse" else piece.lower()
@@ -416,12 +468,39 @@ def _capture_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
         return name in facts.captured_by_opponent
     if subject == "you":
         return name in facts.captured_by_player
+    owner = (match.group("owner") or match.group("gone_owner") or "").lower()
+    if owner == "your":  # the speaker is the opponent, so the piece was his to take
+        return name in facts.captured_by_opponent
+    if owner == "my":
+        return name in facts.captured_by_player
     return name in (facts.captured_by_player | facts.captured_by_opponent)
 
 
+def _names(claimed: str, sans: Iterable[str]) -> bool:
+    """Whether `sans` holds the move named, check and mate marks aside."""
+    bare = claimed.rstrip("+#")
+    return any(san.rstrip("+#") == bare for san in sans)
+
+
 def _move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
-    claimed = match.group(0).rstrip("+#")
-    return any(san.rstrip("+#") == claimed for san in facts.moves)
+    return _names(match.group(0), facts.moves)
+
+
+def _owned_move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    """Whether the side the sentence credits is the side that played the move.
+
+    With neither side's moves supplied there is no attribution to check against
+    — an older call site, or a caller with no pipeline to assemble one — so the
+    class falls back to the wider set and behaves exactly like the generic one.
+    Guarding every credited move on the strength of absent evidence would cost
+    far more than the miss does.
+    """
+    claimed = match.group("san")
+    if not facts.moves_by_player and not facts.moves_by_opponent:
+        return _names(claimed, facts.moves)
+    if match.group("subject").lower() == "i":  # Glitch is the opponent
+        return _names(claimed, facts.moves_by_opponent)
+    return _names(claimed, facts.moves_by_player)
 
 
 def _material_claimed(match: re.Match[str]) -> tuple[int | None, bool]:
@@ -527,6 +606,7 @@ _CLAIM_CLASSES = (
     _ClaimClass("capture", _CAPTURE, _capture_happened, hedges=_CAPTURE_HEDGES),
     _ClaimClass("check", _CHECK, lambda match, facts: facts.check),
     _ClaimClass("move", _SAN_CLAIM, _move_happened),
+    _ClaimClass("owned_move", _OWNED_MOVE, _owned_move_happened),
     _ClaimClass("save", _SAVE, lambda match, facts: facts.saved),
     _ClaimClass("hints", _HINTS, _setting_is("hints")),
     _ClaimClass("voice", _VOICE, _setting_is("voice")),
