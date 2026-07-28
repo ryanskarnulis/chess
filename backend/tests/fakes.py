@@ -253,6 +253,9 @@ class ScriptedProvider:
                 # temperature and the narrator asks for none, and which of the
                 # two made a call is exactly what the split's tests assert on.
                 "temperature": temperature,
+                # Same for the generation cap: which phase's ceiling a call
+                # carried is the runaway-thought fix's whole assertion.
+                "max_tokens": max_tokens,
             }
         )
         turn = self._turns[min(len(self.calls) - 1, len(self._turns) - 1)]
