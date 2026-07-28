@@ -79,6 +79,13 @@ Model-specific quirks, split across the two layers:
   flips ON, and only when an analysis tool answered during the run it closes
   (the turn that comments on an evaluation is analysis work, the turn that
   parses "knight f3" is not). One thinking turn per analysis question.
+- Every call carries a per-phase `max_tokens` ceiling (`_PLANNER_MAX_TOKENS` /
+  `_NARRATOR_MAX_TOKENS`), because a degenerate thought loop with no cap
+  generates until the read timeout (300 s) instead of for seconds. A call the
+  ceiling cut off (`finish_reason == "length"`) is a *failed* turn, never a
+  truncated one that travels: the planner's fragment is dropped and the phase
+  ends under `no_progress` with the loop's own note, and a cut-off narration
+  becomes the empty reply the pipeline already knows how to stand in for.
 """
 
 import json
@@ -112,6 +119,22 @@ logger = logging.getLogger(__name__)
 # tighter than PCC's 10/3.
 _DEFAULT_MAX_ITERATIONS = 4
 _DEFAULT_MAX_CORRECTIONS = 2
+
+# Hard ceilings on what one model call may generate (`max_tokens`; thinking
+# tokens count toward it on this server). Without one, llama-server runs
+# n_predict -1 and a degenerate thought loop generates until the provider's
+# 300 s read timeout fires — observed live twice on 2026-07-27, 20k+ tokens on
+# ordinary planner calls, the player watching "thinking" for five minutes and
+# the GPU still grinding after the disconnect (cancellation does not reliably
+# propagate through llama-swap). The numbers are sized from measured output,
+# generous side up, because truncating a legitimate turn is the worse failure:
+# the planner never thinks and its real output is tool calls or a one-line
+# note (tens of tokens), so 2048 is ~20× headroom and bounds a runaway to
+# ~30 s; the narrator's one thinking turn legitimately reaches ~2.6k tokens
+# (docs/agent-evals.md; a live 2,408 in the 2026-07-27 trace), so 4096 keeps
+# every observed real narration intact and bounds a runaway to ~60 s.
+_PLANNER_MAX_TOKENS = 2048
+_NARRATOR_MAX_TOKENS = 4096
 
 # Once one of these has answered, the rest of the run is analysis work and
 # thinking goes ON (BRIEF: thinking OFF for fast move parsing, ON for analysis).
@@ -162,6 +185,11 @@ class LlamaBrain:
     # Per-phase sampling: the planner may run cooler than the narrator, which
     # keeps the provider's default. None means "whatever the provider samples at".
     planner_temperature: float | None = None
+    # Per-phase generation ceilings (see the module constants for the sizing).
+    # A call the ceiling cuts off is a failed turn, never a truncated one that
+    # travels: the loop and `_speak` both check `finish_reason == "length"`.
+    planner_max_tokens: int = _PLANNER_MAX_TOKENS
+    narrator_max_tokens: int = _NARRATOR_MAX_TOKENS
     # Wall clock for the per-call latencies the trace records. Injected so the
     # timing is testable, and read *here* rather than in the provider because a
     # round trip that raises has a latency too — and only the caller of a raising
@@ -241,6 +269,19 @@ class LlamaBrain:
             run.count_call(*_usage_ints(result.usage), self._elapsed_ms(started))
 
             if not result.tool_calls:
+                if result.finish_reason == "length":
+                    # The cap cut the model off mid-generation (the
+                    # runaway-thought fix: without it this was five minutes of
+                    # "thinking" ending in a dead socket). Whatever content
+                    # survived is a fragment — or nothing, when the whole
+                    # budget went to reasoning — never a handoff note, so it
+                    # must not travel. The turn brought nothing usable back,
+                    # which is the no-progress stop's exact contract: end the
+                    # phase, let the narrator close from what the turn
+                    # verified, under the loop's own note.
+                    return self._close(
+                        run, command, _NO_PROGRESS_NOTE, transcript, "no_progress"
+                    )
                 # The planner is done. Its text is a handoff note, never the
                 # reply — the narrator turns the turn's verified results into
                 # what the player actually reads.
@@ -360,10 +401,22 @@ class LlamaBrain:
             *transcript,
             {"role": "user", "content": brief},
         ]
-        result = self.provider.chat(messages, tools=None, enable_thinking=thinking)
+        result = self.provider.chat(
+            messages,
+            tools=None,
+            enable_thinking=thinking,
+            max_tokens=self.narrator_max_tokens,
+        )
         prompt_tokens, completion_tokens = _usage_ints(result.usage)
+        # A narration the cap cut off is not commentary: the words stop
+        # mid-claim, or never started (a thought loop spends the whole budget
+        # in reasoning and leaves content empty). Half a sentence shown to the
+        # player is worse than none — the pipeline already composes its
+        # deterministic lines around an empty reply — so a "length" finish
+        # keeps the cost and drops the words.
+        truncated = result.finish_reason == "length"
         return Narration(
-            text=result.content or "",
+            text="" if truncated else (result.content or ""),
             model_calls=1,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -420,7 +473,8 @@ class LlamaBrain:
     ) -> ChatResult:
         # The provider owns the wire (model, top_p, top_k, the payload shape);
         # the brain owns the policy knobs — whether the thinking channel is on,
-        # and the planner phase's temperature. Tools are always offered: the loop
+        # the planner phase's temperature and its generation ceiling. Tools are
+        # always offered: the loop
         # ends when the model declines to use them, not because we took them
         # away (the phase that may not act is the narrator, and it is a
         # different call).
@@ -428,6 +482,7 @@ class LlamaBrain:
             messages,
             tools=tools,
             enable_thinking=(self.enable_thinking if thinking is None else thinking),
+            max_tokens=self.planner_max_tokens,
             temperature=self.planner_temperature,
         )
 

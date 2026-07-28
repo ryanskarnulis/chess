@@ -846,6 +846,129 @@ def test_narrate_stays_on_the_default_temperature():
     assert provider.calls[0]["temperature"] is None
 
 
+# --- token caps: every model call is bounded ---------------------------------
+#
+# Without a `max_tokens`, llama-server runs n_predict -1 and a degenerate
+# thought loop generates until the provider's 300 s read timeout fires
+# (observed live 2026-07-27, 20k+ tokens on ordinary planner calls). Every
+# phase therefore carries its own ceiling, and a call the ceiling cut off
+# (`finish_reason == "length"`) is a failed turn whose fragment never travels.
+
+
+def test_every_planner_call_carries_the_planner_token_cap():
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    planner_calls = provider.calls[:-1]
+    assert planner_calls
+    assert all(call["max_tokens"] == brain.planner_max_tokens for call in planner_calls)
+
+
+def test_the_narrator_carries_its_own_larger_cap():
+    # The narrator is the one phase that thinks, and thinking tokens count
+    # toward max_tokens on this server — its ceiling must clear the largest
+    # measured legitimate narration (~2.6k tokens), which the planner's need not.
+    brain, provider = make_brain(text_turn("note"), text_turn("reply"))
+    brain.get_agent_response(board_state={}, command="hi")
+    assert provider.calls[-1]["max_tokens"] == brain.narrator_max_tokens
+    assert brain.narrator_max_tokens > brain.planner_max_tokens
+
+
+def test_narrate_carries_the_narrator_cap():
+    # The fast path's commentary turn is the same phase as the loop's closer.
+    brain, provider = make_brain(text_turn("nice"))
+    brain.narrate(board_state={}, changes=[])
+    assert provider.calls[0]["max_tokens"] == brain.narrator_max_tokens
+
+
+def test_the_caps_are_generous_enough_for_measured_real_turns():
+    # The floor the numbers may never sink under: legitimate thinking-on
+    # narrations reached 2,633 completion tokens (docs/agent-evals.md;
+    # a live 2,408 in the 2026-07-27 trace), and clipping a real turn is the
+    # failure this fix must not trade for. The planner never thinks; its real
+    # output is tool calls or a one-line note.
+    brain, _ = make_brain(text_turn("ok"))
+    assert brain.narrator_max_tokens >= 3000
+    assert brain.planner_max_tokens >= 1024
+
+
+def test_a_truncated_planner_turn_is_a_failed_turn_not_a_handoff():
+    # `finish_reason == "length"`: the cap cut the model off, so whatever
+    # content survived is a fragment (or nothing at all — a thought loop can
+    # spend the whole budget in reasoning). It must never travel onward as the
+    # note; the loop ends the phase itself, exactly as a repeat-stop does.
+    brain, provider = make_brain(
+        text_turn("okay so first I should probably", finish_reason="length"),
+        text_turn("reply"),
+    )
+    resp = brain.get_agent_response(board_state={}, command="hi")
+    assert resp.stop_reason == "no_progress"
+    assert resp.text == "reply"
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert "okay so first" not in brief
+    assert _NO_PROGRESS_NOTE in brief
+
+
+def test_a_truncated_planner_turn_with_no_content_at_all():
+    # The observed live shape: the whole budget went to reasoning_content
+    # (which the provider drops) and `content` came back empty.
+    brain, _ = make_brain(
+        text_turn(None, finish_reason="length"),
+        text_turn("reply"),
+    )
+    resp = brain.get_agent_response(board_state={}, command="hi")
+    assert resp.stop_reason == "no_progress"
+    assert resp.text == "reply"
+
+
+def test_a_truncated_planner_turn_keeps_what_the_turn_verified():
+    # A move that landed before the truncation is real board history; the
+    # narrator still closes the turn from it, like any no-progress stop.
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("and now I will", finish_reason="length"),
+        text_turn("e4, done."),
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4")
+    assert resp.stop_reason == "no_progress"
+    assert [call.name for call in resp.tool_calls] == ["make_move"]
+    assert resp.text == "e4, done."
+
+
+def test_a_truncated_narrator_says_nothing_but_still_costs():
+    # Half a sentence shown to the player is worse than none — the pipeline
+    # already composes its deterministic lines around an empty reply. The
+    # tokens the cut-off call generated are still the turn's to pay for.
+    brain, _ = make_brain(
+        text_turn("note"),
+        text_turn(
+            "and with that, the game is basically",
+            finish_reason="length",
+            usage=Usage(prompt_tokens=9, completion_tokens=4096),
+        ),
+    )
+    resp = brain.get_agent_response(board_state={}, command="hi")
+    assert resp.text == ""
+    assert resp.stop_reason == "completed"
+    assert resp.completion_tokens == 4096
+
+
+def test_a_truncated_narrate_says_nothing_but_still_counts():
+    brain, _ = make_brain(
+        text_turn(
+            "half a",
+            finish_reason="length",
+            usage=Usage(prompt_tokens=5, completion_tokens=7),
+        )
+    )
+    narration = brain.narrate(board_state={}, changes=[])
+    assert narration.text == ""
+    assert narration.completion_tokens == 7
+
+
 # --- conversation transcript ------------------------------------------------
 
 TRANSCRIPT = [

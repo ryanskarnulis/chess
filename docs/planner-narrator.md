@@ -69,6 +69,40 @@ not:
   never dispatched anything, and repeating a malformed call is what the
   (smaller) correction budget is for; that budget keeps precedence.
 
+## Every call is capped, and a cut-off turn is a failed one (2026-07-27)
+
+Neither phase used to pass `max_tokens`, so llama-server ran `n_predict -1` and
+a degenerate thought loop generated until the provider's 300 s read timeout —
+observed live twice on 2026-07-27, 20k+ tokens on *ordinary planner calls*, the
+player watching "thinking" for five minutes and the GPU still grinding after
+the disconnect (cancellation does not reliably propagate through llama-swap).
+Now each phase carries its own ceiling (`llama_brain._PLANNER_MAX_TOKENS` 2048,
+`_NARRATOR_MAX_TOKENS` 4096), and `narrate` — the same phase on the fast path —
+carries the narrator's.
+
+The numbers are sized from measured output, generous side up, because clipping
+a legitimate turn is the worse failure: the planner never thinks and its real
+output is tool calls or a one-line note (tens of tokens), so 2048 is ~20×
+headroom and bounds a runaway to ~30 s; the narrator's one thinking turn
+legitimately reaches ~2.6k completion tokens (the repeat-stop token study in
+`docs/agent-evals.md`; a live 2,408 in the 2026-07-27 trace), so 4096 keeps
+every observed real narration intact and bounds a runaway to ~60 s. This is a
+*safety ceiling* against the runaway, deliberately not the tighter wordiness
+cap the token study weighed (the distributions overlap too much for one).
+
+Truncation is handled, never forwarded — a `finish_reason == "length"` call may
+come back with empty `content` and only `reasoning_content` behind it, or with
+a mid-sentence fragment, and neither may travel:
+
+- A **planner** turn the cap cut off ends the planning phase under the existing
+  `no_progress` stop with the loop's own note — the fragment is never the
+  handoff note. Results that landed before it are real and reach the narrator
+  like any no-progress stop's.
+- A **narrator** call (loop closer or `narrate`) the cap cut off returns empty
+  text with its cost intact; the pipeline already composes its deterministic
+  lines around an empty reply (the stuck line on the brain route, the move
+  announcement on the fast path).
+
 ## What the planner runs on
 
 `personality.planner_prompt_for()` — a compact, persona-free contract. It keeps
