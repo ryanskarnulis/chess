@@ -507,7 +507,12 @@ def test_split_make_move_applies_the_player_move_only(session):
 
 def test_split_make_move_reports_the_facts_the_narrator_reacts_to(session):
     """The observation beat's structured facts (audit item 5): what moved, what
-    it took, whether it checks, and the board it left behind."""
+    it took, and whether it checks — and deliberately not the board it left
+    behind. The split payload's `fen`/`turn` described a mid-exchange position
+    the pipeline is about to supersede, and `turn` named a side to play for to
+    every narrator that read the result (#193): it is the engine's color for
+    exactly as long as the reply is still being computed. The atomic payload
+    keeps both — a caller with no pipeline gets the settled position."""
     for san in ("e4", "d5"):
         session.submit_move(san)
     ctx = ToolContext(session=session, engine=FakeEngine())
@@ -520,8 +525,8 @@ def test_split_make_move_reports_the_facts_the_narrator_reacts_to(session):
     assert result["capture"] == "p"
     assert result["check"] is False
     assert result["game_over"] is False
-    assert result["fen"] == session.fen()
-    assert result["turn"] == "black"
+    assert "fen" not in result
+    assert "turn" not in result
 
 
 def test_split_make_move_reports_a_check(session):

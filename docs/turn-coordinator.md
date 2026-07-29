@@ -141,6 +141,18 @@ What fills it depends on the route, and neither route needed a new call:
 - **the brain route** — the planner/narrator loop's own closing narration, which
   now naturally reacts to a player move alone for the same reason.
 
+**And the board it is handed carries no side to play for** (#193,
+`api._narrator_state_dict`): mid-turn it is the engine's move and the legal
+moves are the engine's options, and a narrator handed `turn` and `legal_moves`
+read the reaction beat as a move-selection beat — live, post-#188, most
+reactions announced a reply ("My turn. ...Be6.") one line before the app
+announced the real one. The narrator's view keeps what commentary uses (the
+history, the player's color, the captures, the outcome, saves, settings) and
+drops every spelling of "it is your move": `turn`, `legal_moves`, and the FEN
+whose string names the mover. The split `make_move` result stopped carrying
+`fen`/`turn` for the same reason — that leak reached the brain route, whose
+closing brief holds no state block at all.
+
 Then the pipeline collects the reply and appends a **deterministic** line
 announcing it (`api._reply_announcement`). No second narration: the reaction has
 already been paid for, and a model turn per engine move is precisely the latency

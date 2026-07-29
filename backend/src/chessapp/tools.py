@@ -902,11 +902,18 @@ def build_registry(
             # The same facts as one sentence, for whoever narrates from them.
             "summary": _move_summary(result, _MOVER_PLAYER),
             "game_over": ctx.session.is_game_over(),
-            "fen": ctx.session.fen(),
-            "turn": ctx.session.turn,
         }
         if atomic_exchange:
             payload["engine_move"] = _engine_move_dict(reply)
+            # The settled position, for the caller with no pipeline behind the
+            # call. The split payload deliberately reports the move and not the
+            # board it left: mid-exchange, that fen/turn describe a position
+            # the engine's reply is about to supersede — and `turn` names a
+            # side to play for to every narrator that reads the result, which
+            # is the engine's color for exactly as long as the reply is still
+            # being computed (#193, the "My turn. ...Be6." announcements).
+            payload["fen"] = ctx.session.fen()
+            payload["turn"] = ctx.session.turn
         return payload
 
     make_move.__doc__ = _make_move_doc(atomic_exchange)

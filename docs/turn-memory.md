@@ -104,19 +104,28 @@ all. Live, that is where *"I almost said something that didn't happen. That's my
 bad."* came from — and because each imitation was recorded too, the voice
 outlived the window that seeded it.
 
-The rule: **text the app substitutes *for* what the model said is for the
-player, not for the model's memory.** Text the app *appends* as fact — the
-engine's reply announcement, the move confirmation — is true and stays.
+The rule: **what the app says — substituted *for* what the model said, or
+*appended* around it — is for the player, not for the model's memory.** The
+first cut of this rule kept the appended reply announcement on the grounds that
+it is true, and it is; the next live game showed truth was never the issue,
+register is (#193). Every remembered move turn ended in the app's bare
+`\n\ne5.` line, and the narrator completed that format at the beat where the
+reply does not exist yet — announcing a move of its own one line before the
+app announced the real one, on the brain route too, whose brief carries no
+board at all. So a move turn is remembered by the reaction alone; the engine's
+reply is board history, and board history is injected fresh into the state
+block every turn rather than restated in memory (the same reasoning as the
+digest's).
 
-A substituted turn is therefore remembered by what the turn *did*
-(`api._remembered_facts`): the deterministic move confirmation (`"Bxc6. dxc6."`)
-where a move landed, and an empty assistant message where nothing did. The
-player's ask keeps its place either way, so the digest of what they asked for
-earlier is never punched full of holes by a guarded turn. The carrier is
-`api.CommandOutcome.memory`, which equals `commentary` on every turn Glitch
-really spoke on; the delegate store carries the same divergence as
-`StoredMessage.memory`, kept off the wire so `MessageRead` stays
-byte-compatible.
+A turn Glitch said nothing usable on — a substitution, a silent low-verbosity
+move — is remembered by what the turn *did* (`api._remembered_facts`): the
+deterministic move confirmation (`"Bxc6. dxc6."`) where a move landed, and an
+empty assistant message where nothing did. The player's ask keeps its place
+either way, so the digest of what they asked for earlier is never punched full
+of holes by a guarded turn. The carrier is `api.CommandOutcome.memory`, which
+equals the reaction on every turn Glitch really spoke on; the delegate store
+carries the same divergence as `StoredMessage.memory`, kept off the wire so
+`MessageRead` stays byte-compatible.
 
 ## Call sites
 

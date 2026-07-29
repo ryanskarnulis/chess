@@ -622,11 +622,60 @@ def test_the_observation_reacts_to_the_player_move_alone():
     assert len(brain.narrate_calls) == 1
     state, changes = brain.narrate_calls[0]
     assert state["history"] == ["e4"], "the engine has not replied yet"
-    assert state["turn"] == "black"
     result = changes[0]["result"]
     assert result["san"] == "e4"
     assert "engine_move" not in result
     assert body["state"]["history"] == ["e4", "e5"], "and then it replied"
+
+
+def test_the_observation_offers_the_narrator_no_side_to_play_for():
+    """#188's rule, finished. Removing "you are playing black" from the brief
+    changed nothing while the state block still said the same thing in JSON:
+    the next live game (2026-07-28, post-#188) read the mid-turn `turn` +
+    `legal_moves` as its own move to pick and announced one ("My turn.
+    ...Be6.") a line before the app announced the real reply. So the narrator's
+    view keeps what commentary uses — the game so far, which color the player
+    is, the captures — and carries no spelling of "it is your move": not
+    `turn`, not the move menu, not the FEN whose string names the mover."""
+    client, brain, _ = observing_client(narrations=("Bold opener.",))
+
+    client.post("/api/command", json={"text": "e4"})
+
+    state, _ = brain.narrate_calls[0]
+    assert "turn" not in state
+    assert "legal_moves" not in state
+    assert "fen" not in state
+    assert state["player_color"] == "white"
+    assert state["captured"] == {"white": [], "black": []}
+
+
+def test_the_move_result_the_narrator_reads_names_no_side_to_move():
+    """The same leak through the other door: the split `make_move` result used
+    to carry `fen` and `turn`, so even the brain route's narrator — whose brief
+    holds no state block at all — was told whose move it is now. The split
+    result reports the move; the mid-exchange board is nobody's to read back."""
+    client, brain, _ = observing_client(narrations=("Bold opener.",))
+
+    client.post("/api/command", json={"text": "e4"})
+
+    result = brain.narrate_calls[0][1][0]["result"]
+    assert "turn" not in result
+    assert "fen" not in result
+
+
+def test_a_confirmed_ops_narration_gets_the_same_sideless_view():
+    """One narrator, one view: the reaction to a confirmed resign or new game
+    is the same no-tools phase, so it is handed the same state with no side to
+    play for."""
+    client, brain, _ = make_developed_client(narrations=("Done. Game over.",))
+    client.post("/api/command", json={"text": "i resign"})
+
+    client.post("/api/command", json={"text": "yes"})
+
+    state, _ = brain.narrate_calls[0]
+    assert "turn" not in state
+    assert "legal_moves" not in state
+    assert "fen" not in state
 
 
 def test_the_observation_is_handed_the_facts_about_the_move():
@@ -1001,9 +1050,11 @@ def test_a_count_from_the_board_the_narrator_saw_survives_the_guard():
 
 
 def test_a_move_only_the_observed_position_makes_legal_survives_the_guard():
-    """The state block hands the narrator the mid-turn legal moves; naming one
-    back must not be a lie. Bb4 is Black's, playable only on the board the
-    reaction was written from."""
+    """A move playable on a board the turn really held is a fact however the
+    narrator came to name it: Bb4 is Black's, playable only on the board the
+    reaction was written from. (That board's move list is no longer *handed* to
+    the narrator — #193 — but the guard's width stays: it exists to catch
+    invention, not tense, and the position was real.)"""
     client, _ = traded_client("Bb4 and you're fine, dude.")
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
@@ -1040,9 +1091,16 @@ def test_a_move_no_board_this_turn_makes_legal_is_still_guarded():
 # bad."), on turns where nothing was guarded at all. Each imitation was recorded
 # too, so the voice outlived the window that seeded it.
 #
-# The rule: text the app substitutes *for* what the model said is for the
-# player, not for the model's memory. Text the app *appends* as fact — the reply
-# announcement, the move confirmation — is true and stays.
+# The rule: what the app says — substituted *for* what the model said, or
+# *appended* around it — is for the player, not for the model's memory. The
+# first cut kept the appended reply announcement on the grounds that it is
+# true, and it is; the next live game showed truth was never the issue,
+# register is (#193). Given assistant turns ending in the app's bare "\n\ne5."
+# line, the narrator completed the pattern at the beat where the reply does not
+# exist yet — announcing a move of his own one line before the real one. So a
+# turn is remembered by what Glitch himself said, and the deterministic facts
+# stand in only where he said nothing worth keeping (a substitution, a silent
+# turn).
 
 
 def assistant_turns(ctx):
@@ -1130,14 +1188,33 @@ def test_a_guarded_turn_with_no_reply_owed_says_only_the_correction():
     assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
 
 
-def test_ordinary_commentary_is_remembered_word_for_word():
-    """The rule is about substitutions. Nothing else changes: what Glitch really
-    said, including the app's appended announcement, is what he is given back."""
+def test_a_move_turn_is_remembered_by_the_reaction_alone():
+    """What Glitch said is his; the announcement composed after it is the
+    app's. This deliberately reverses the first cut's "appended facts stay"
+    call: remembered composed turns taught him their format — live, the first
+    announced move appeared exactly one turn after the first remembered
+    "\\n\\ne5." (#193) — so the player still hears both, and the model is given
+    back only its own words. The engine's move is not lost to it: the state
+    block's `history` carries every move, fresh, every turn."""
     client, ctx = traded_client("Word, you're up a piece.")
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert assistant_turns(ctx) == [body["commentary"]]
+    assert body["commentary"] == "Word, you're up a piece.\n\ndxc6."
+    assert assistant_turns(ctx) == ["Word, you're up a piece."]
+
+
+def test_a_brain_routed_move_turn_is_remembered_by_its_own_words_too():
+    """Same rule off the loop's closing narration: the reply line is appended
+    to what the player sees on that route as well, and reaches the transcript
+    on neither."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
+    app, _ = scripted_app(ctx, move("e4", text="King's pawn, obviously."))
+
+    body = TestClient(app).post("/api/command", json={"text": "play e4"}).json()
+
+    assert body["commentary"] == "King's pawn, obviously.\n\ne5."
+    assert assistant_turns(ctx) == ["King's pawn, obviously."]
 
 
 # --- The advice guard: hints off means no move is handed over.
