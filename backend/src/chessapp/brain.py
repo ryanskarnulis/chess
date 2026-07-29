@@ -192,7 +192,12 @@ class Brain(Protocol):
         path (`parse_move` → `make_move`) skips the planner entirely, so there
         is no turn for the narrator to close. This is the narrator phase on its
         own — the *new* board plus `changes` (each a `{"name", "result"}` tool
-        result), no tools offered, no access to the raw utterance. It exists
+        result), no tools offered, no access to the raw utterance. What the
+        board view contains is the caller's policy, and the app deliberately
+        hands a view with no side to play for — no turn, no legal moves, no
+        FEN (`api._narrator_state_dict`): the beat runs while the engine's
+        reply is still being computed, and a narrator that can see whose move
+        it is announces one. It exists
         because the fast path is deliberately outside the loop; at verbosity=low
         even this is skipped for a canned confirmation, making a plain move
         zero-LLM."""

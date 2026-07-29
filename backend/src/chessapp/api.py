@@ -289,6 +289,32 @@ def _agent_settings_dict(ctx: ToolContext) -> dict[str, Any]:
     return {"difficulty": difficulty, "voice_output": settings.voice_output}
 
 
+def _narrator_state_dict(ctx: ToolContext) -> dict[str, Any]:
+    """The view the narrator speaks from: the agent view minus every spelling
+    of "it is your move" — no `turn`, no `legal_moves`, and no `fen`, whose
+    string itself names the side to move.
+
+    The narrator reacts mid-turn, from the board the player's move just left —
+    a board where it is the engine's move and the legal moves are the engine's
+    options. Handed that as data, it treats the reaction beat as a
+    move-selection beat: #188 cut "you are playing black" from the brief and
+    the next game announced a reply all the same ("My turn. ...Be6.", #193),
+    because `turn` beside `player_color` says the same thing in JSON and
+    `legal_moves` is the menu to pick from. What commentary actually uses
+    stays: the game so far, which color the player is (capture talk needs its
+    direction), the captures, the outcome once there is one, and the saves and
+    settings it may be asked about. The planner keeps the full view — mapping
+    an utterance onto a move is what `legal_moves` exists for.
+
+    Derived by deletion rather than built up, so the two views cannot drift
+    apart on the facts they share; the deletion list is the invariant.
+    """
+    state = _agent_state_dict(ctx)
+    for key in ("fen", "turn", "legal_moves"):
+        del state[key]
+    return state
+
+
 def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
 
@@ -608,12 +634,14 @@ def _verified_facts(
     beat hands it the position after the player's move, while Stockfish is
     still computing the answer this function is standing behind. Without it the
     turn is checked from a board its own commentary never saw — a recapture
-    flips the material count between the two, and the mid-turn legal moves the
-    state block itself hands the narrator appear in neither `fen_before` nor
-    now. Both are boards this turn really held, so both count; an invented fact
-    is invented from all of them. `None` for a route that produced no
-    observation, and unnecessary on the brain route, whose narrator saw
-    `fen_before`.
+    flips the material count between the two, and a move playable only
+    mid-turn appears in neither `fen_before` nor now. Both are boards this
+    turn really held, so both count; an invented fact is invented from all of
+    them, and staleness is not invention. (The narrator is no longer *handed*
+    that board's move list — its view carries no side to play for, #193 — but
+    the width stays: the guard exists to catch invention, not tense.) `None`
+    for a route that produced no observation, and unnecessary on the brain
+    route, whose narrator saw `fen_before`.
     """
     outcome = ctx.session.outcome()
     captured = ctx.session.captured_pieces()
@@ -829,12 +857,17 @@ class CommandOutcome:
     ran are still here, and the turn was still closed). The fast path is
     always `completed` — it never reaches the model.
 
-    `memory` is the assistant text the turn is *remembered* by, which is
-    `commentary` for every turn Glitch actually spoke on. They part company when
-    the app spoke in his place — a guarded claim, a budget stop, a dead provider
-    — because a canned line fed back as his own words is a register he imitates
-    (`_remembered_facts`). The player gets the correction; the model gets the
-    facts."""
+    `memory` is the assistant text the turn is *remembered* by: what Glitch
+    himself said, and never the app's words. They part company two ways. When
+    the app spoke *in his place* — a guarded claim, a budget stop, a dead
+    provider — the turn remembers the deterministic facts instead, because a
+    canned line fed back as his own words is a register he imitates
+    (`_remembered_facts`). And when the app spoke *after* him — the reply
+    announcement composed onto every move turn — only his reaction is
+    remembered, because the appended "\\n\\ne5." fed back as his own words is a
+    format he completes at the beat where the reply does not exist yet (#193).
+    The player gets the whole composed line; the model gets its own words or
+    the facts."""
 
     commentary: str
     tool_results: list[dict[str, Any]]
@@ -1140,13 +1173,16 @@ def create_app(
             # have ended the game, which closes the turn where it stands; the
             # collect below accepts either phase, so nothing else changes.
             coordinator.mark_observation()
-            observed = _agent_state_dict(ctx)
+            fen_at_observation = ctx.session.fen()
             try:
-                narration = brain.narrate(observed, changes, transcript)
+                narration = brain.narrate(
+                    _narrator_state_dict(ctx), changes, transcript
+                )
                 # Kept only once something was actually said from it: this is
                 # "the board the reaction was written from", and a beat the
-                # provider killed wrote no reaction.
-                observed_fen = observed["fen"]
+                # provider killed wrote no reaction. Read off the session,
+                # because the narrator's own view deliberately carries no FEN.
+                observed_fen = fen_at_observation
             except ProviderError:
                 logger.warning(
                     "observe_narration_failed",
@@ -1242,13 +1278,19 @@ def create_app(
                     beats.owed_reply,
                     ctx.session,
                 )
-                # A guarded drag remembers the move and the reply, not the
-                # correction the player was shown (`_remembered_facts`).
+                # What the turn is remembered by, the same rule as the command
+                # pipeline's: the reaction when Glitch spoke one (never the
+                # composed commentary — the appended reply line is the app's,
+                # and remembered as his it becomes a format he completes a beat
+                # early, #193), and the deterministic facts when he didn't (a
+                # guarded reaction, a silent low-verbosity turn).
+                remembered = "" if claims else reaction
                 ctx.transcript.record(
                     result["san"],
-                    _remembered_facts(beats.changes, beats.engine_reply, ctx.session)
-                    if claims
-                    else commentary,
+                    remembered
+                    or _remembered_facts(
+                        beats.changes, beats.engine_reply, ctx.session
+                    ),
                 )
                 suppressed = said if claims else ""
                 _publish_state()
@@ -1750,7 +1792,7 @@ def create_app(
                         try:
                             narration = await _offloop(
                                 brain.narrate,
-                                _agent_state_dict(ctx),
+                                _narrator_state_dict(ctx),
                                 tool_results,
                                 transcript,
                             )
@@ -1811,7 +1853,7 @@ def create_app(
                     try:
                         narration = await _offloop(
                             brain.narrate,
-                            _agent_state_dict(ctx),
+                            _narrator_state_dict(ctx),
                             tool_results,
                             transcript,
                         )
@@ -1906,6 +1948,15 @@ def create_app(
             suppressed = said if claims else ""
             if guarded:
                 memory = ""
+            elif memory is None:
+                # What Glitch himself said, taken *before* the app's lines are
+                # composed around it below. The reply announcement is the app's
+                # voice: remembered as his, its trailing "\n\ne5." is a format
+                # he completes at the beat where the reply does not exist yet —
+                # live, the first announced move followed the first remembered
+                # announcement by exactly one turn (#193). The player hears the
+                # composed whole; the model is given back only its own words.
+                memory = commentary
             if move_beats is not None and move_beats.legal:
                 commentary = _move_commentary(
                     commentary, move_beats.result, engine_reply, owed_reply, ctx.session
@@ -1993,12 +2044,12 @@ def create_app(
                 state=state,
                 changed=changed,
                 stop_reason=stop_reason,
-                memory=(
-                    commentary
-                    if memory is None
-                    else memory
-                    or _remembered_facts(tool_results, engine_reply, ctx.session)
-                ),
+                # Every branch above has settled `memory` by here (the guard
+                # block fills the last None in), so what is left is only the
+                # empty case: a turn Glitch said nothing on remembers the
+                # deterministic facts, or nothing at all.
+                memory=memory
+                or _remembered_facts(tool_results, engine_reply, ctx.session),
             )
 
     @app.post("/api/command")

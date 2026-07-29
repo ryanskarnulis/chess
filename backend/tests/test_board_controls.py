@@ -209,7 +209,10 @@ def test_a_dishonest_drag_reaction_is_guarded():
 
 def test_a_drag_records_the_turn_on_the_transcript():
     """So Glitch's later turns remember its own drag reactions: the move's SAN
-    stands in for the utterance a drag doesn't have."""
+    stands in for the utterance a drag doesn't have — and the reaction alone is
+    what is remembered, never the reply announcement the app composed after it
+    (#193: the appended "\\n\\ne5." is a register he completes at the beat
+    where the reply doesn't exist yet)."""
     client, brain, ctx = agent_client(
         AgentResponse(text="you opened with e4"),
         narrations=("Sharp.",),
@@ -220,7 +223,7 @@ def test_a_drag_records_the_turn_on_the_transcript():
 
     assert ctx.transcript.window() == [
         {"role": "user", "content": "e4"},
-        {"role": "assistant", "content": "Sharp.\n\ne5."},
+        {"role": "assistant", "content": "Sharp."},
     ]
     # And the next command sees it.
     client.post("/api/command", json={"text": "how did I open?"})

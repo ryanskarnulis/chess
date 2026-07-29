@@ -167,6 +167,19 @@ freshly read board because it *has* one. When the coordinator's observe/close
 beats land (slice 3), those call sites have a verified post-move board to hand
 over, and this is the phase that will speak in them.
 
+A side to play for. The observe beat runs while the engine's reply is still
+being computed, from a board where it is the engine's move — so `turn`, the
+`legal_moves` menu, and the FEN (whose string names the side to move) are
+withheld from the narrator's view (`api._narrator_state_dict`, #193), and the
+split `make_move` result stopped reporting the mid-exchange `fen`/`turn` it used
+to carry. #188 established the rule by cutting "you are playing black" from the
+brief; the next live game announced replies all the same ("My turn. ...Be6."),
+because the data said what the prose no longer did. The memory rule is the same
+fix's other half: a move turn is remembered by the reaction alone, never the
+composed commentary whose trailing `\n\ne5.` is the app's announcement — given
+those back verbatim, the narrator completed the format at the beat where the
+reply does not exist yet (`docs/turn-memory.md`).
+
 ## The cost, and why it is accepted
 
 A brain-routed turn is one model call more expensive than it was:

@@ -531,13 +531,17 @@ def _call_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
 #
 # It says that and nothing more, deliberately. The first cut also named each
 # side's color, and that was an identity the narrator *used*: it reacts
-# mid-turn, from a board where it is the engine's move and the state block
-# lists the engine's legal options, so "you are playing black" turned the
-# reaction beat into a move-selection beat — every reaction in the 2026-07-28
-# game announced a reply ("i'll go with d6", then Bb4 was played) that
-# Stockfish was still computing. The attribution the misattribution fix needed
-# was purely negative — whose move the results are NOT — and the narrator must
-# be offered no side to play for.
+# mid-turn, from a board where it is the engine's move, so "you are playing
+# black" turned the reaction beat into a move-selection beat — every reaction
+# in the 2026-07-28 game announced a reply ("i'll go with d6", then Bb4 was
+# played) that Stockfish was still computing. The attribution the
+# misattribution fix needed was purely negative — whose move the results are
+# NOT — and the narrator must be offered no side to play for. Cutting the
+# prose alone did not finish the job: the state block still said the same
+# thing in data (`turn` beside `player_color`, the engine's `legal_moves` as
+# the menu) and the next game announced replies all the same ("My turn.
+# ...Be6."), so the app now withholds those fields from the narrator's view
+# too (`api._narrator_state_dict`, #193).
 _ATTRIBUTION = (
     "The player just made their own move, and you carried it out for them: "
     "the moves in these results are the player's moves, not yours."
