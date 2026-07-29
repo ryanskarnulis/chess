@@ -44,6 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('playText', () => {
@@ -180,6 +181,52 @@ describe('playText', () => {
     audioInstances[0].onended?.()
     await first
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:fake-url')
+  })
+
+  it('gives up on a request that never answers, best-effort like a 503', async () => {
+    // A backend or proxy that accepts the request and then never settles it
+    // rejects nothing, so the catch above never runs: without a client
+    // deadline the promise hangs, currentPlayback never settles and the
+    // hands-free loop awaiting audioIdle() never reopens the mic.
+    vi.useFakeTimers()
+    const { playText, audioIdle } = await loadTts()
+    const signals: (AbortSignal | undefined)[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        signals.push(init?.signal ?? undefined)
+        return new Promise<Response>(() => {})
+      }),
+    )
+    let settled = false
+    const done = playText('Check!').then(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await expect(done).resolves.toBeUndefined()
+    expect(settled).toBe(true)
+    // Nothing was played, exactly as when voice answers 503.
+    expect(audioInstances).toHaveLength(0)
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+    // And the wait the hands-free loop does is released too.
+    await expect(audioIdle()).resolves.toBeUndefined()
+    // The request itself is cancelled, not just abandoned.
+    expect(signals[0]?.aborted).toBe(true)
+  })
+
+  it('clears the deadline once a clip has been fetched', async () => {
+    // A completed request must not leave a timer armed to abort nothing.
+    vi.useFakeTimers()
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const done = playText('Check!')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(play).toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+    audioInstances[0].onended?.()
+    await done
   })
 
   it('survives a blocked autoplay without leaking the URL', async () => {
