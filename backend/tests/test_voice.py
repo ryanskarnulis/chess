@@ -28,6 +28,7 @@ from chessapp.voice import (
     SpeechResponseError,
     create_speech_client,
     normalize_transcript,
+    speakable,
 )
 from fakes import ScriptedBrain, scripted_app
 
@@ -297,6 +298,103 @@ def test_transcribe_returns_the_normalized_transcript():
     server = FakeSpeechServer(text="night to f 3")
     speech = SpeechClient(client=server.client())
     assert speech.transcribe(b"opus-bytes") == "knight to f3"
+
+
+# --- speakable commentary (voice-out hardening, #197) --------------------------
+#
+# Kokoro's G2P treats SAN tokens as unknown words and sounds them out
+# ("exd4" → "EXTVUR", "Nxe5" → "In Zephyv", "O-O" → "Oh"), so the TTS
+# direction gets the mirror of `normalize_transcript`: a deterministic
+# `speakable()` applied in `SpeechClient.speak()`. The bubble keeps SAN —
+# only the audio copy is re-rendered. The renderings were tuned by
+# round-tripping the live TTS through the STT: squares must be spaced
+# ("e 5" survives, glued "e5" garbles), and the a-file must be "A," —
+# bare "a" reduces to the English article, a hyphen reads as "minus".
+
+
+@pytest.mark.parametrize(
+    ("san", "spoken"),
+    [
+        # captures — the reported bug
+        ("exd4.", "e takes d 4."),
+        ("Nxe5.", "knight takes e 5."),
+        ("Bxf7", "bishop takes f 7"),
+        # plain piece moves and pawn pushes (the reply announcement's shape)
+        ("Nf3", "knight to f 3"),
+        ("e5.", "e 5."),
+        ("Kg2!", "king to g 2!"),
+        # check and mate suffixes
+        ("Qh5+", "queen to h 5, check"),
+        ("Qxf7#", "queen takes f 7, checkmate"),
+        # castling
+        ("O-O.", "castles kingside."),
+        ("O-O-O", "castles queenside"),
+        ("O-O+", "castles kingside, check"),
+        # disambiguators: the letter (or rank) becomes a label with a pause
+        ("Rad1", "rook A, to d 1"),
+        ("Nbd2", "knight b, to d 2"),
+        ("R1a3", "rook 1, to A, 3"),
+        # promotion
+        ("e8=Q", "e 8, promoting to a queen"),
+        ("exd8=N+", "e takes d 8, promoting to a knight, check"),
+        # the a-file article problem
+        ("a4", "A, 4"),
+        ("axb5", "A, takes b 5"),
+        ("Rxa1", "rook takes A, 1"),
+    ],
+)
+def test_speakable_renders_san_as_spoken_chess(san, spoken):
+    assert speakable(san) == spoken
+
+
+@pytest.mark.parametrize(
+    ("result", "spoken"),
+    [
+        ("Game over: 1-0 (checkmate).", "Game over: white wins (checkmate)."),
+        ("Game over: 0-1 (resignation).", "Game over: black wins (resignation)."),
+        ("Game over: 1/2-1/2 (stalemate).", "Game over: a draw (stalemate)."),
+    ],
+)
+def test_speakable_renders_results_as_words(result, spoken):
+    assert speakable(result) == spoken
+
+
+def test_speakable_transforms_san_inside_prose():
+    # The reply announcement the pipeline appends to Glitch's reaction…
+    assert speakable("Bold. Very bold.\n\nexd4.") == "Bold. Very bold.\n\ne takes d 4."
+    # …and squares Glitch names mid-sentence.
+    assert speakable("your knight on f6 is toast") == "your knight on f 6 is toast"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Take the exit and check the door",  # chess words in plain English
+        "Be careful out there",  # sentence-initial piece letter
+        "an extra exam for excellence",  # x-words near the pawn-capture shape
+        "I lost the thread on that one — say it again?",
+        "Check!",
+        "",
+    ],
+)
+def test_speakable_leaves_prose_alone(text):
+    assert speakable(text) == text
+
+
+def test_speakable_is_idempotent():
+    mixed = "Rad1! Then O-O-O, then axb8=Q#. Game over: 1-0 (checkmate)."
+    once = speakable(mixed)
+    assert speakable(once) == once
+
+
+def test_speak_sends_the_speakable_rendering():
+    # The wire body carries the spoken form; the caller's string — what the
+    # bubble already showed — is never what the TTS reads.
+    server = FakeSpeechServer()
+    speech = SpeechClient(client=server.client())
+    speech.speak("Nice.\n\nNxe5.")
+    (request,) = server.requests
+    assert json.loads(request.read())["input"] == "Nice.\n\nknight takes e 5."
 
 
 # --- API endpoint ------------------------------------------------------------

@@ -70,6 +70,79 @@ def normalize_transcript(text: str) -> str:
     return _CASTLE_SIDE.sub(lambda m: m.group(1).lower() + "side", text)
 
 
+# The TTS mirror of the repairs above (#197): Kokoro's G2P treats SAN tokens
+# as unknown words and sounds them out ("exd4" → "EXTVUR", "Nxe5" →
+# "In Zephyv", "O-O" → "Oh"), so commentary is re-rendered as spoken chess
+# before synthesis. The renderings were tuned by round-tripping the live TTS
+# through the STT: squares must be spaced ("e 5" survives, glued "e5"
+# garbles), and the a-file must be "A," — bare "a" reduces to the English
+# article, a hyphen reads as "minus", "ay" reads as "eye". Chess-domain
+# vocabulary, like STT_PROMPT — not part of the fleet SpeechClient shape.
+_PIECE_NAMES = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
+_PROMOTION_NAMES = {"Q": "a queen", "R": "a rook", "B": "a bishop", "N": "a knight"}
+_SUFFIX_WORDS = {"+": ", check", "#": ", checkmate"}
+_RESULT_WORDS = {"1-0": "white wins", "0-1": "black wins", "1/2-1/2": "a draw"}
+_RESULT = re.compile(r"\b(1-0|0-1|1/2-1/2)\b")
+# One token-bounded pass over the SAN grammar. Case-sensitive on purpose
+# (files lowercase, pieces uppercase) so ordinary English never matches; the
+# pawn-push alternative doubles as the bare-square rule for squares named in
+# prose ("your knight on f6"). The trailing lookahead stands in for \b, which
+# cannot follow the non-word "+"/"#".
+_SAN = re.compile(
+    r"""\b(?:
+        (?P<castle>O-O(?:-O)?)
+      | (?P<piece>[KQRBN])(?P<disambig>[a-h1-8]?)(?P<capture>x?)(?P<square>[a-h][1-8])
+      | (?P<file>[a-h])(?:x(?P<taken>[a-h][1-8])|(?P<rank>[1-8]))
+    )
+    (?P<promotion>=[QRBN])?
+    (?P<suffix>[+#])?
+    (?!\w)""",
+    re.VERBOSE,
+)
+
+
+def _spoken_file(file: str) -> str:
+    return "A," if file == "a" else file
+
+
+def _spoken_square(square: str) -> str:
+    return f"{_spoken_file(square[0])} {square[1]}"
+
+
+def _spoken_san(m: re.Match[str]) -> str:
+    if m.group("castle"):
+        side = "queenside" if m.group("castle") == "O-O-O" else "kingside"
+        words = f"castles {side}"
+    elif m.group("piece"):
+        parts = [_PIECE_NAMES[m.group("piece")]]
+        if disambig := m.group("disambig"):
+            parts.append("A," if disambig == "a" else disambig + ",")
+        parts.append("takes" if m.group("capture") else "to")
+        parts.append(_spoken_square(m.group("square")))
+        words = " ".join(parts)
+    elif m.group("taken"):
+        words = (
+            f"{_spoken_file(m.group('file'))} takes {_spoken_square(m.group('taken'))}"
+        )
+    else:
+        words = _spoken_square(m.group("file") + m.group("rank"))
+    if m.group("promotion"):
+        words += f", promoting to {_PROMOTION_NAMES[m.group('promotion')[1]]}"
+    if m.group("suffix"):
+        words += _SUFFIX_WORDS[m.group("suffix")]
+    return words
+
+
+def speakable(text: str) -> str:
+    """Re-render chess notation as the spoken chess a TTS can say: SAN tokens
+    ("exd4" → "e takes d 4", "O-O" → "castles kingside"), bare squares, and
+    game results ("1-0" → "white wins"). Deterministic and idempotent; prose
+    passes through untouched. Applied to the audio copy only — the bubble
+    keeps real SAN."""
+    text = _RESULT.sub(lambda m: _RESULT_WORDS[m.group(1)], text)
+    return _SAN.sub(_spoken_san, text)
+
+
 class SpeechError(Exception):
     """Base for everything a speech round-trip can raise."""
 
@@ -127,7 +200,9 @@ class SpeechClient:
 
     def speak(self, text: str) -> bytes:
         """Text → spoken audio bytes. mp3, because every browser <audio>
-        plays it and it's small enough for LAN round-trips."""
+        plays it and it's small enough for LAN round-trips. The text is
+        re-rendered by `speakable` on the way out — the caller's string is
+        display text, and SAN read verbatim comes out garbled (#197)."""
         client = self.tts_client if self.tts_client is not None else self.client
         try:
             response = client.post(
@@ -135,7 +210,7 @@ class SpeechClient:
                 json={
                     "model": self.tts_model,
                     "voice": self.tts_voice,
-                    "input": text,
+                    "input": speakable(text),
                     "response_format": "mp3",
                 },
             )
