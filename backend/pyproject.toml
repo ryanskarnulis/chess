@@ -9,7 +9,11 @@ dependencies = [
     # Tool argument schemas are derived from typed signatures via FastMCP's
     # func_metadata (the workspace agent standard; see agent-standard/STANDARD.md
     # §1). Pulls in pydantic, which fastapi already requires.
-    "mcp>=1.20.0",
+    # <2 because mcp 2.0.0 (released 2026-07-28) drops `mcp.server.fastmcp` —
+    # every import in the app and the test suite dies at collection on it
+    # (first seen as CI-only red on PR #194; local venvs still held 1.x).
+    # Migrating to the 2.x shape is its own slice, not a pin's.
+    "mcp>=1.20.0,<2",
     "fastapi>=0.115",
     # The LLM brain speaks the OpenAI chat wire to llama-server over plain
     # httpx (chessapp.provider), and voice speaks the OpenAI audio wire the
