@@ -40,10 +40,16 @@ services:
     environment:
       # Brain seam → the shared workspace llama-swap proxy on the host
       # (port block 8200, see ../gateway/README.md). The model name must match
-      # a ../llama-swap/config.yaml entry. Unset/override to run the LLM off —
-      # /api/command 503s, gameplay is fine.
+      # a ../llama-swap/config.yaml entry.
       LLAMACPP_BASE_URL: http://host.docker.internal:8200/v1
       LLAMACPP_MODEL: gemma-4-12b
+      # Direct mode: uncomment to run the LLM off — /api/command 503s, the UI
+      # says "Direct mode — Stockfish only", gameplay is untouched. Unsetting
+      # the two vars above does NOT do this (they fall back to their defaults
+      # and a brain is built anyway); this is the switch. 'on'/'off' only —
+      # anything else refuses to start rather than quietly advertising an
+      # agent that isn't there.
+      # CHESSAPP_AGENT: "off"
       # Voice seam: where the app proxies STT/TTS requests — the shared
       # workspace ../speech/ stack on the host. Unset to run voiceless — the
       # voice endpoints 503, gameplay is untouched.

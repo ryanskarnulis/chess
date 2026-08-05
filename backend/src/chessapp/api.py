@@ -24,7 +24,9 @@ Conventions:
   bypass. With no brain — direct mode — it runs the atomic exchange it always
   ran, answering byte-for-byte what it answered before: LLM-off play is a
   binding invariant, and `/api/settings`' `agent_available` is what makes the
-  mode visible in the UI rather than a per-input surprise.
+  mode visible in the UI rather than a per-input surprise. `CHESSAPP_AGENT=off`
+  is how a deployment selects it (`app._agent_enabled_from_env`) — the mode was
+  written and correct long before anything could reach it.
 - **Every mutation is version-checkable and serialized** (audit item 7). The
   state document carries `version` (`ToolContext.board_version`), and every
   mutating request may carry the one it last saw: superseded means 409 with
