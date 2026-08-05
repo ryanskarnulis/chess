@@ -15,6 +15,7 @@ const AFTER_PROMO_FEN = '4Q1k1/8/8/8/8/8/8/4K3 b - - 0 1'
 
 function state(overrides: Partial<GameState> = {}): GameState {
   return {
+    version: 1,
     fen: START_FEN,
     turn: 'white',
     player_color: 'white',
@@ -127,6 +128,304 @@ describe('useGame', () => {
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
   })
 
+  it('submits rapid competing drags against the same rendered version', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+
+    await act(async () => {
+      await Promise.all([
+        result.current.play('e2', 'e4'),
+        result.current.play('d2', 'd4'),
+      ])
+    })
+
+    const moveBodies = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/api/game/move'))
+      .map(([, init]) => JSON.parse(String(init.body)))
+    expect(moveBodies).toEqual([
+      { move: 'e2e4', version: 1 },
+      { move: 'd2d4', version: 1 },
+    ])
+  })
+
+  it('does not let a delayed initial fetch overwrite a newer websocket state', async () => {
+    let resolveState!: (value: Awaited<ReturnType<typeof jsonResponse>>) => void
+    const delayedState = new Promise<Awaited<ReturnType<typeof jsonResponse>>>((resolve) => {
+      resolveState = resolve
+    })
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/settings'))
+        return jsonResponse({
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+        })
+      if (String(url).includes('/api/state')) return delayedState
+      return jsonResponse(state())
+    })
+
+    const { result } = renderHook(() => useGame())
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 3, fen: AFTER_E4_FEN, turn: 'black' }),
+      })
+    })
+    await waitFor(() => expect(result.current.state?.version).toBe(3))
+    const revisionAfterSocket = result.current.revision
+
+    await act(async () => {
+      resolveState(await jsonResponse(state({ version: 1 })))
+      await delayedState
+    })
+
+    expect(result.current.state?.version).toBe(3)
+    expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
+    expect(result.current.revision).toBe(revisionAfterSocket)
+  })
+
+  it('does not let a delayed mutation response overwrite a newer websocket state', async () => {
+    let resolveMove!: (value: Awaited<ReturnType<typeof jsonResponse>>) => void
+    const delayedMove = new Promise<Awaited<ReturnType<typeof jsonResponse>>>((resolve) => {
+      resolveMove = resolve
+    })
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/game/move')) return delayedMove
+      if (String(url).includes('/api/settings'))
+        return jsonResponse({
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+        })
+      return jsonResponse(state())
+    })
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+
+    let pending!: Promise<void>
+    act(() => {
+      pending = result.current.play('e2', 'e4')
+    })
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 3, fen: AFTER_E4_E5_FEN }),
+      })
+    })
+    const revisionAfterSocket = result.current.revision
+    await act(async () => {
+      resolveMove(
+        await jsonResponse({
+          ...moveResponse,
+          state: state({ version: 2, fen: AFTER_E4_FEN, turn: 'black' }),
+        }),
+      )
+      await pending
+    })
+
+    expect(result.current.state?.version).toBe(3)
+    expect(result.current.state?.fen).toBe(AFTER_E4_E5_FEN)
+    expect(result.current.revision).toBe(revisionAfterSocket)
+  })
+
+  it('adopts the current state returned by a stale 409', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/game/move'))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () =>
+            Promise.resolve({
+              detail: 'the board changed',
+              stale: true,
+              version: 4,
+              state: state({ version: 4, fen: AFTER_E4_E5_FEN }),
+            }),
+        })
+      if (String(url).includes('/api/settings'))
+        return jsonResponse({
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+        })
+      return jsonResponse(state())
+    })
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+
+    await act(async () => {
+      await result.current.play('e2', 'e4')
+    })
+
+    expect(result.current.state?.version).toBe(4)
+    expect(result.current.state?.fen).toBe(AFTER_E4_E5_FEN)
+    expect(result.current.moveError).toBeNull()
+  })
+
+  it('adopts stale-409 state from commands and lifecycle helpers', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      const path = String(url)
+      if (path.includes('/api/command'))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () =>
+            Promise.resolve({
+              detail: 'the board changed',
+              stale: true,
+              version: 2,
+              state: state({ version: 2, fen: AFTER_E4_FEN }),
+            }),
+        })
+      if (path.includes('/api/game/undo') || path.includes('/api/game/new'))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () =>
+            Promise.resolve({
+              detail: 'the board changed again',
+              stale: true,
+              version: path.includes('/undo') ? 3 : 4,
+              state: state({
+                version: path.includes('/undo') ? 3 : 4,
+                fen: AFTER_E4_E5_FEN,
+              }),
+            }),
+        })
+      if (path.includes('/api/settings'))
+        return jsonResponse({
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+        })
+      return jsonResponse(state())
+    })
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+
+    await act(async () => {
+      await result.current.sendCommand('play e4')
+    })
+    expect(result.current.state?.version).toBe(2)
+    expect(result.current.commentary).toBeNull()
+    await act(async () => {
+      await result.current.undo()
+    })
+    expect(result.current.state?.version).toBe(3)
+    await act(async () => {
+      await result.current.newGame()
+    })
+    expect(result.current.state?.version).toBe(4)
+  })
+
+  it('adopts stale-409 state while answering a destructive confirmation', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    fetchMock.mockImplementation((url: string) => {
+      const path = String(url)
+      if (path.includes('/api/game/confirm'))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () =>
+            Promise.resolve({
+              detail: 'the board changed',
+              stale: true,
+              version: 2,
+              state: state({ version: 2, fen: AFTER_E4_FEN }),
+            }),
+        })
+      if (path.includes('/api/game/new'))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () =>
+            Promise.resolve({ detail: 'Start a new one?', confirm: true, op: 'new_game' }),
+        })
+      if (path.includes('/api/settings'))
+        return jsonResponse({
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+        })
+      return jsonResponse(state())
+    })
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+
+    await act(async () => {
+      await result.current.newGame()
+    })
+
+    expect(result.current.state?.version).toBe(2)
+    expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
+  })
+
+  it('keeps working with an older backend that omits state versions', async () => {
+    const unversioned = state()
+    delete unversioned.version
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/game/move'))
+        return jsonResponse({ ...moveResponse, state: unversioned })
+      if (String(url).includes('/api/settings'))
+        return jsonResponse({
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+        })
+      return jsonResponse(unversioned)
+    })
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    await act(async () => {
+      await result.current.play('e2', 'e4')
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/move',
+      expect.objectContaining({ body: JSON.stringify({ move: 'e2e4' }) }),
+    )
+  })
+
+  it('cites the rendered version on command and lifecycle mutations', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+
+    await act(async () => {
+      await result.current.sendCommand('play e4')
+      await result.current.undo()
+      await result.current.newGame('black')
+      await result.current.resign()
+    })
+
+    const bodyFor = (path: string) => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes(path))
+      return JSON.parse(String(call?.[1]?.body))
+    }
+    expect(bodyFor('/api/command')).toEqual({ text: 'play e4', version: 1 })
+    expect(bodyFor('/api/game/undo')).toEqual({ version: 1 })
+    expect(bodyFor('/api/game/new')).toEqual({ color: 'black', version: 1 })
+    expect(bodyFor('/api/game/resign')).toEqual({ version: 1 })
+  })
+
   // --- live turn progress (audit item 19) ------------------------------------
   //
   // The events are *broadcast*, which is the point: a dragged move and a turn
@@ -185,7 +484,10 @@ describe('useGame', () => {
     expect(result.current.moveError).toBeNull()
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/move',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ move: 'e2e4' }) }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ move: 'e2e4', version: 1 }),
+      }),
     )
   })
 
@@ -249,7 +551,7 @@ describe('useGame', () => {
     })
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/move',
-      expect.objectContaining({ body: JSON.stringify({ move: 'e7e8q' }) }),
+      expect.objectContaining({ body: JSON.stringify({ move: 'e7e8q', version: 1 }) }),
     )
     expect(result.current.pendingPromotion).toBeNull()
     expect(result.current.state?.fen).toBe(AFTER_PROMO_FEN)
@@ -286,7 +588,7 @@ describe('useGame', () => {
     // vs the engine, one ply engine-free).
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/undo',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ version: 1 }) }),
     )
   })
 
@@ -298,7 +600,10 @@ describe('useGame', () => {
     })
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/new',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ color: 'black' }) }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ color: 'black', version: 1 }),
+      }),
     )
   })
 
@@ -365,7 +670,10 @@ describe('useGame', () => {
     })
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/command',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ text: 'play e4' }) }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ text: 'play e4', version: 1 }),
+      }),
     )
     expect(result.current.commentary).toBe('A classic king-pawn opening.')
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
@@ -608,7 +916,10 @@ describe('useGame', () => {
     expect(confirmSpy).toHaveBeenCalledWith('Start a new one?')
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/confirm',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ confirm: true }) }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ confirm: true, version: 1 }),
+      }),
     )
     expect(result.current.state?.history).toEqual([])
   })
@@ -631,7 +942,7 @@ describe('useGame', () => {
     // nothing on the board moves.
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/confirm',
-      expect.objectContaining({ body: JSON.stringify({ confirm: false }) }),
+      expect.objectContaining({ body: JSON.stringify({ confirm: false, version: 1 }) }),
     )
     expect(result.current.state?.history).toEqual(['e4', 'e5'])
     expect(result.current.revision).toBe(revisionBefore)

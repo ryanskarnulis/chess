@@ -9,6 +9,9 @@ export interface Outcome {
 }
 
 export interface GameState {
+  /** Monotonic board revision. Optional only for compatibility with an older
+   * backend; once observed, it prevents older responses replacing newer state. */
+  version?: number
   fen: string
   turn: 'white' | 'black'
   /** Which side the human plays; the engine owns the other. Drives board
@@ -42,32 +45,58 @@ export interface MoveResponse {
   speak?: boolean
 }
 
+/** A mutation rejected because another client already advanced the board.
+ * The backend includes its current state so this client can catch up without
+ * another fetch. */
+export interface StaleStateResponse {
+  stale: true
+  version: number
+  detail: string
+  state: GameState
+}
+
+export type MoveOutcome = MoveResponse | StaleStateResponse
+
+function versioned(body: Record<string, unknown>, version?: number): Record<string, unknown> {
+  return version === undefined ? body : { ...body, version }
+}
+
+export function isStaleStateResponse(data: unknown): data is StaleStateResponse {
+  if (typeof data !== 'object' || data === null) return false
+  const candidate = data as Partial<StaleStateResponse>
+  return candidate.stale === true && typeof candidate.state === 'object' && candidate.state !== null
+}
+
 export async function fetchState(): Promise<GameState> {
   const res = await fetch('/api/state')
   return (await res.json()) as GameState
 }
 
-export async function submitMove(uci: string): Promise<MoveResponse> {
+export async function submitMove(uci: string, version?: number): Promise<MoveOutcome> {
   const res = await fetch('/api/game/move', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ move: uci }),
+    body: JSON.stringify(versioned({ move: uci }, version)),
   })
-  return (await res.json()) as MoveResponse
+  return (await res.json()) as MoveOutcome
 }
 
 const JSON_POST = { method: 'POST', headers: { 'Content-Type': 'application/json' } }
 
 /**
- * POST a lifecycle mutation and return the authoritative new state, or null
- * if the backend refused it (e.g. 409: nothing to undo, resigning a finished
- * game). The board only advances on a state the server actually produced.
+ * POST a lifecycle mutation and return the authoritative resulting state (also
+ * the catch-up state from a stale 409), or null if the backend refused it for
+ * another reason. The board only advances on a state the server produced.
  */
-async function postLifecycle(path: string, body: unknown = {}): Promise<GameState | null> {
-  const res = await fetch(path, { ...JSON_POST, body: JSON.stringify(body) })
-  if (!res.ok) return null
-  const data = (await res.json()) as { state: GameState }
-  return data.state
+async function postLifecycle(
+  path: string,
+  body: Record<string, unknown> = {},
+  version?: number,
+): Promise<GameState | null> {
+  const res = await fetch(path, { ...JSON_POST, body: JSON.stringify(versioned(body, version)) })
+  const data = (await res.json().catch(() => ({}))) as unknown
+  if (!res.ok) return isStaleStateResponse(data) ? data.state : null
+  return (data as { state: GameState }).state
 }
 
 /** A destructive op the backend's confirmation gate armed instead of running:
@@ -79,9 +108,9 @@ export interface ConfirmQuestion {
   op: string
 }
 
-/** One gated lifecycle call: the new state when the op ran, or the gate's
- * question when it wants an answer first. Both null means the backend refused
- * for some other reason and nothing should move. */
+/** One gated lifecycle call: the new/catch-up state, or the gate's question
+ * when it wants an answer first. Both null means the backend refused for some
+ * other reason and nothing should move. */
 export interface LifecycleOutcome {
   state: GameState | null
   question: ConfirmQuestion | null
@@ -92,58 +121,80 @@ export interface LifecycleOutcome {
  * `confirm: true` is a question, not a failure — the board is untouched and the
  * op is armed until `confirmDestructive` answers it.
  */
-async function postGated(path: string, body: unknown = {}): Promise<LifecycleOutcome> {
-  const res = await fetch(path, { ...JSON_POST, body: JSON.stringify(body) })
+async function postGated(
+  path: string,
+  body: Record<string, unknown> = {},
+  version?: number,
+): Promise<LifecycleOutcome> {
+  const res = await fetch(path, { ...JSON_POST, body: JSON.stringify(versioned(body, version)) })
+  const data = (await res.json().catch(() => ({}))) as unknown
   if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as {
+    if (isStaleStateResponse(data)) return { state: data.state, question: null }
+    const refused = data as {
       detail?: string
       confirm?: boolean
       op?: string
     }
-    if (res.status === 409 && data.confirm) {
-      return { state: null, question: { detail: data.detail ?? '', op: data.op ?? '' } }
+    if (res.status === 409 && refused.confirm) {
+      return {
+        state: null,
+        question: { detail: refused.detail ?? '', op: refused.op ?? '' },
+      }
     }
     return { state: null, question: null }
   }
-  const data = (await res.json()) as { state: GameState }
-  return { state: data.state, question: null }
+  return { state: (data as { state: GameState }).state, question: null }
 }
 
 /** Start a fresh game. `color` is the side the player takes; omitted, the
  * backend rolls one at random. When the player takes black the engine's
  * opening move is already in the returned state. Mid-game the gate asks first:
  * the outcome carries its question instead of a state. */
-export function newGame(color?: 'white' | 'black' | 'random'): Promise<LifecycleOutcome> {
-  return postGated('/api/game/new', color ? { color } : {})
+export function newGame(
+  color?: 'white' | 'black' | 'random',
+  version?: number,
+): Promise<LifecycleOutcome> {
+  return postGated('/api/game/new', color ? { color } : {}, version)
+}
+
+export interface ConfirmOutcome {
+  state: GameState
+  /** True when this is the catch-up state from a stale 409, rather than the
+   * ordinary response to the player's answer. */
+  stale: boolean
 }
 
 /**
  * Answer the armed destructive op: true runs it, false drops it. Returns the
- * authoritative state either way (unchanged on a cancel), or null if there was
- * nothing armed — which includes nothing armed *about this board*: the backend
- * drops a question the board has moved past, so a stale answer leaves the game
- * alone. Whichever way it is answered, nothing stays armed.
+ * authoritative state either way (unchanged on an ordinary cancel), flags the
+ * catch-up state from a stale 409, or returns null for another refusal.
+ * Whichever way a live question is answered, nothing stays armed.
  */
-export async function confirmDestructive(confirm: boolean): Promise<GameState | null> {
+export async function confirmDestructive(
+  confirm: boolean,
+  version?: number,
+): Promise<ConfirmOutcome | null> {
   const res = await fetch('/api/game/confirm', {
     ...JSON_POST,
-    body: JSON.stringify({ confirm }),
+    body: JSON.stringify(versioned({ confirm }, version)),
   })
-  if (!res.ok) return null
-  const data = (await res.json()) as { state: GameState }
-  return data.state
+  const data = (await res.json().catch(() => ({}))) as unknown
+  if (!res.ok) {
+    return isStaleStateResponse(data) ? { state: data.state, stale: true } : null
+  }
+  return { state: (data as { state: GameState }).state, stale: false }
 }
 
 /** Take back moves. Without `plies` the backend applies the player's
  * takeback: the full exchange vs the engine, one ply engine-free. */
-export function undo(plies?: number): Promise<GameState | null> {
-  return postLifecycle('/api/game/undo', plies === undefined ? {} : { plies })
+export function undo(plies?: number, version?: number): Promise<GameState | null> {
+  return postLifecycle('/api/game/undo', plies === undefined ? {} : { plies }, version)
 }
 
 /** Resign. Gated like `newGame`: mid-game the outcome carries the gate's
  * question and the game only ends once it is answered. */
-export function resign(color?: 'white' | 'black'): Promise<LifecycleOutcome> {
-  return postGated('/api/game/resign', color ? { color } : {})
+export function resign(color?: 'white' | 'black', version?: number): Promise<LifecycleOutcome> {
+  return postGated('/api/game/resign', color ? { color } : {}, version)
 }
 
 export interface DifficultyResponse {
@@ -181,15 +232,22 @@ export interface CommandResponse {
 }
 
 /**
- * Send a free-form command to the agent. Returns the agent's commentary plus
- * the authoritative new state, or null if the agent is unavailable (e.g. no
+ * Send a free-form command to the agent. Returns its commentary and state, the
+ * catch-up state from a stale 409, or null if the agent is unavailable (e.g. no
  * brain is configured → 503). The backend is still the sole move-truth source:
  * the agent acts only through tools, so a command can never corrupt state.
  */
-export async function sendCommand(text: string): Promise<CommandResponse | null> {
-  const res = await fetch('/api/command', { ...JSON_POST, body: JSON.stringify({ text }) })
-  if (!res.ok) return null
-  return (await res.json()) as CommandResponse
+export async function sendCommand(
+  text: string,
+  version?: number,
+): Promise<CommandResponse | StaleStateResponse | null> {
+  const res = await fetch('/api/command', {
+    ...JSON_POST,
+    body: JSON.stringify(versioned({ text }, version)),
+  })
+  const data = (await res.json().catch(() => ({}))) as unknown
+  if (!res.ok) return isStaleStateResponse(data) ? data : null
+  return data as CommandResponse
 }
 
 export interface Settings {

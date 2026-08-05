@@ -78,9 +78,11 @@ beforeEach(() => {
           skill_level: null,
           elo: null,
         }
-      : path.includes('/api/game/')
-        ? { state: served }
-        : served
+      : path.includes('/api/command')
+        ? { commentary: '', tool_results: [], state: served, speak: false }
+        : path.includes('/api/game/')
+          ? { state: served }
+          : served
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) })
   })
   vi.stubGlobal('fetch', fetchMock)

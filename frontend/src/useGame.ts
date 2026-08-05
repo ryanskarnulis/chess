@@ -4,6 +4,7 @@ import {
   fetchHint,
   fetchSettings,
   fetchState,
+  isStaleStateResponse,
   newGame as apiNewGame,
   resign as apiResign,
   sendCommand as apiSendCommand,
@@ -127,6 +128,11 @@ export function useGame(): UseGame {
   // Latest state without making the move callbacks depend on it — the board
   // holds `play` in a ref, but promotion detection still needs the live fen.
   const stateRef = useRef<GameState | null>(null)
+  // Once a versioned backend has been observed, state may only move forward.
+  // This is a ref because fetch, mutation, and WebSocket callbacks race outside
+  // React's render cycle. It stays null for an older backend, whose unversioned
+  // documents retain the pre-versioning last-arrival-wins behavior.
+  const highestVersionRef = useRef<number | null>(null)
   // Mirror of viewPly for the same reason: `play` must see the live value.
   const viewPlyRef = useRef<number | null>(null)
 
@@ -136,6 +142,13 @@ export function useGame(): UseGame {
   }, [])
 
   const apply = useCallback((next: GameState) => {
+    const highest = highestVersionRef.current
+    if (next.version === undefined) {
+      if (highest !== null) return false
+    } else {
+      if (highest !== null && next.version < highest) return false
+      highestVersionRef.current = next.version
+    }
     stateRef.current = next
     setState(next)
     setRevision((r) => r + 1)
@@ -144,6 +157,7 @@ export function useGame(): UseGame {
     viewPlyRef.current = null
     setViewPly(null)
     setHintShapes([])
+    return true
   }, [])
 
   useEffect(() => {
@@ -178,11 +192,18 @@ export function useGame(): UseGame {
 
   const submit = useCallback(
     async (uci: string) => {
-      const result = await submitMove(uci)
+      // Capture the rendered board's version before yielding. Two drags made
+      // before either response arrives therefore cite the same version and the
+      // backend deterministically accepts at most one of them.
+      const result = await submitMove(uci, stateRef.current?.version)
+      if (isStaleStateResponse(result)) {
+        apply(result.state)
+        return
+      }
+      // A WebSocket frame may have advanced the board while this request was
+      // in flight. Ignore every part of an older response, not just its FEN.
+      if (!apply(result.state)) return
       setMoveError(result.legal ? null : (result.reason ?? 'Illegal move'))
-      // Authoritative in both cases: the new position on success, or the
-      // unchanged one on rejection (which snaps the illegal move back).
-      apply(result.state)
       // In agent mode the drag went through the same beats a typed move does,
       // so it comes back with Glitch's reaction to it — staged and voiced
       // exactly like a command's, because it is the same kind of turn. Direct
@@ -239,10 +260,10 @@ export function useGame(): UseGame {
   const answerGate = useCallback(
     async (question: ConfirmQuestion) => {
       const yes = window.confirm(question.detail)
-      const next = await apiConfirmDestructive(yes)
-      if (yes && next) {
+      const outcome = await apiConfirmDestructive(yes, stateRef.current?.version)
+      if (outcome && (yes || outcome.stale)) {
         setMoveError(null)
-        apply(next)
+        apply(outcome.state)
       }
     },
     [apply],
@@ -264,13 +285,13 @@ export function useGame(): UseGame {
 
   const newGame = useCallback(
     async (color?: 'white' | 'black' | 'random') => {
-      await settle(await apiNewGame(color))
+      await settle(await apiNewGame(color, stateRef.current?.version))
     },
     [settle],
   )
 
   const undo = useCallback(async () => {
-    const next = await apiUndo()
+    const next = await apiUndo(undefined, stateRef.current?.version)
     // Null means the backend refused (nothing to undo) — leave state as is.
     if (next) {
       setMoveError(null)
@@ -279,7 +300,7 @@ export function useGame(): UseGame {
   }, [apply])
 
   const resign = useCallback(async () => {
-    await settle(await apiResign())
+    await settle(await apiResign(undefined, stateRef.current?.version))
   }, [settle])
 
   const setDifficulty = useCallback(async (nextTier: string) => {
@@ -294,12 +315,17 @@ export function useGame(): UseGame {
     async (text: string) => {
       setAgentThinking(true)
       try {
-        const response = await apiSendCommand(text)
+        const response = await apiSendCommand(text, stateRef.current?.version)
         if (response) {
+          if (isStaleStateResponse(response)) {
+            apply(response.state)
+            return
+          }
+          // A state frame may have won the race while the agent was thinking.
+          // If so, none of this older response (including commentary/settings)
+          // belongs to the board now being rendered.
+          if (!apply(response.state)) return
           setCommentary(response.commentary)
-          // The agent acts only through tools; the returned state is
-          // authoritative (unchanged for a question or read-only command).
-          apply(response.state)
           // Voice out is fire-and-forget: the reply is already on screen,
           // and a playback failure must never block the game.
           if (response.speak && response.commentary) void playText(response.commentary)
