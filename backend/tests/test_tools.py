@@ -954,6 +954,84 @@ def test_resume_corrupt_transcript_is_error_not_crash(tmp_path, session):
     assert registry.dispatch("resume_game", {"name": "tampered"})["ok"] is False
 
 
+def _valid_save(**changes):
+    data = GameSession().to_dict()
+    data.update(changes)
+    return data
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param([], id="array-root"),
+        pytest.param(None, id="null-root"),
+        pytest.param(_valid_save(version=True), id="boolean-version"),
+        pytest.param(_valid_save(version="1"), id="string-version"),
+        pytest.param(_valid_save(root_fen=None), id="null-root-fen"),
+        pytest.param(_valid_save(root_fen=[]), id="array-root-fen"),
+        pytest.param(_valid_save(moves=None), id="null-moves"),
+        pytest.param(_valid_save(moves="e2e4"), id="string-moves"),
+        pytest.param(_valid_save(moves=[None]), id="null-move"),
+        pytest.param(_valid_save(moves=[17]), id="integer-move"),
+        pytest.param(_valid_save(resigned=False), id="boolean-resigned"),
+        pytest.param(_valid_save(resigned="green"), id="invalid-resigned"),
+        pytest.param(_valid_save(player_color=None), id="null-player-color"),
+        pytest.param(_valid_save(player_color=17), id="integer-player-color"),
+        pytest.param(_valid_save(transcript=None), id="null-transcript"),
+        pytest.param(_valid_save(transcript={}), id="object-transcript"),
+        pytest.param(_valid_save(transcript=[None]), id="null-message"),
+        pytest.param(
+            _valid_save(transcript=[{"role": 17, "content": "hello"}]),
+            id="non-string-role",
+        ),
+        pytest.param(
+            _valid_save(transcript=[{"role": "user", "content": 17}]),
+            id="non-string-content",
+        ),
+        pytest.param(
+            _valid_save(transcript=[{"role": "system", "content": "hello"}]),
+            id="invalid-role",
+        ),
+    ],
+)
+def test_resume_malformed_json_is_stable_refusal_and_preserves_context(tmp_path, data):
+    """A syntactically valid save is still untrusted external data.
+
+    Every malformed shape must stop at the tool boundary, before either half
+    of the live context is replaced. This is deliberately one parameterized
+    contract: adding a new shape cannot accidentally weaken the refusal or
+    state-preservation assertions.
+    """
+    session = GameSession()
+    session.submit_move("e4")
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    ctx.transcript.record("play e4", "e4. Revolutionary stuff.")
+    registry = build_registry(ctx)
+    game_dir = tmp_path / GAME_SAVE_DIRNAME
+    game_dir.mkdir()
+    path = game_dir / "malformed.json"
+    path.write_text(json.dumps(data))
+
+    session_before = ctx.session
+    game_before = ctx.session.to_dict()
+    transcript_before = ctx.transcript
+    messages_before = ctx.transcript.to_dict()
+    version_before = ctx.board_version
+
+    result = registry.dispatch("resume_game", {"name": "malformed"})
+
+    assert set(result) == {"ok", "error", "retry", "board_version"}
+    assert result["ok"] is False
+    assert result["error"]
+    assert result["retry"] == "never"
+    assert result["board_version"] == version_before
+    assert ctx.session is session_before
+    assert ctx.session.to_dict() == game_before
+    assert ctx.transcript is transcript_before
+    assert ctx.transcript.to_dict() == messages_before
+    assert ctx.board_version == version_before
+
+
 def test_save_game_default_name_is_autosave(tmp_path, session):
     registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
     result = registry.dispatch("save_game", {})
