@@ -8,7 +8,9 @@ inject an `httpx.MockTransport`, so no live speech server is ever required
 (same pattern as the provider tests).
 """
 
+import asyncio
 import json
+import threading
 
 import httpx
 import pytest
@@ -434,6 +436,51 @@ def test_transcribe_endpoint_returns_repaired_text(ctx):
         files={"audio": ("clip.webm", b"opus-bytes", "audio/webm")},
     )
     assert response.json() == {"text": "knight to e4"}
+
+
+async def test_transcribe_endpoint_keeps_event_loop_free_while_speech_blocks(ctx):
+    """A slow synchronous STT request must not stall unrelated async work."""
+    entered = threading.Event()
+    heartbeat = threading.Event()
+    release = threading.Event()
+    heartbeat_seen: list[bool] = []
+
+    class Audio:
+        filename = "clip.webm"
+
+        async def read(self):
+            return b"opus-bytes"
+
+    class BlockingSpeech:
+        def transcribe(self, data, filename):
+            assert data == b"opus-bytes"
+            assert filename == "clip.webm"
+            entered.set()
+            assert release.wait(2), "test never released transcription"
+            return "castle kingside"
+
+    def release_after_heartbeat() -> None:
+        assert entered.wait(2), "transcription never started"
+        heartbeat_seen.append(heartbeat.wait(1))
+        release.set()
+
+    speech = BlockingSpeech()
+    app = create_app(ctx, speech=speech)
+    endpoint = next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/voice/transcribe"
+    )
+    witness = threading.Thread(target=release_after_heartbeat)
+    witness.start()
+
+    request = asyncio.create_task(endpoint(Audio()))
+    await asyncio.sleep(0)
+    heartbeat.set()
+
+    assert await request == {"text": "castle kingside"}
+    witness.join(2)
+    assert heartbeat_seen == [True], "transcription blocked the event loop"
 
 
 def test_transcribe_without_speech_service_is_503(ctx):
