@@ -50,7 +50,10 @@ function reviewableState(): GameState {
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
   onmessage: ((ev: { data: string }) => void) | null = null
-  close = vi.fn()
+  onopen: (() => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+  close = vi.fn(() => this.emitClose())
   url: string
   constructor(url: string) {
     this.url = url
@@ -58,6 +61,15 @@ class FakeWebSocket {
   }
   emit(data: unknown) {
     this.onmessage?.({ data: JSON.stringify(data) })
+  }
+  emitOpen() {
+    this.onopen?.()
+  }
+  emitClose() {
+    this.onclose?.()
+  }
+  emitError() {
+    this.onerror?.()
   }
 }
 
@@ -106,6 +118,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -126,6 +139,108 @@ describe('useGame', () => {
       })
     })
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
+  })
+
+  it('reconnects once after an unexpected close, after a delay', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useGame())
+    const first = FakeWebSocket.instances[0]
+
+    act(() => first.emitClose())
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    await act(async () => vi.advanceTimersByTimeAsync(999))
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    await act(async () => vi.advanceTimersByTimeAsync(1))
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('fetches and applies fresh authoritative state when a reconnect opens', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/state'))
+        return jsonResponse(state({ version: 4, fen: AFTER_E4_FEN, turn: 'black' }))
+      if (String(url).includes('/api/settings'))
+        return jsonResponse({
+          verbosity: 'normal',
+          hints_mode: false,
+          voice_output: false,
+          tier: 'casual',
+          skill_level: null,
+          elo: null,
+        })
+      return jsonResponse(state())
+    })
+    vi.useFakeTimers()
+
+    act(() => FakeWebSocket.instances[0].emitClose())
+    await act(async () => vi.advanceTimersByTimeAsync(1_000))
+    act(() => FakeWebSocket.instances[1].emitOpen())
+    await act(async () => Promise.resolve())
+
+    expect(result.current.state?.version).toBe(4)
+    expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/state')),
+    ).toHaveLength(2)
+  })
+
+  it('backs off failed reconnects exponentially and caps the delay at ten seconds', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useGame())
+
+    for (const delay of [1_000, 2_000, 4_000, 8_000, 10_000, 10_000]) {
+      const current = FakeWebSocket.instances.at(-1)!
+      act(() => current.emitClose())
+      await act(async () => vi.advanceTimersByTimeAsync(delay - 1))
+      expect(FakeWebSocket.instances.at(-1)).toBe(current)
+      await act(async () => vi.advanceTimersByTimeAsync(1))
+      expect(FakeWebSocket.instances.at(-1)).not.toBe(current)
+    }
+  })
+
+  it('lets close own the retry after an error and ignores repeated close events', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useGame())
+    const first = FakeWebSocket.instances[0]
+    const repeatedClose = first.onclose
+
+    act(() => {
+      first.emitError()
+      repeatedClose?.()
+    })
+    expect(first.close).toHaveBeenCalledOnce()
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000))
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    await act(async () => vi.advanceTimersByTimeAsync(10_000))
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('cleans up socket handlers and retry timers without reconnecting on unmount', async () => {
+    vi.useFakeTimers()
+    const firstHook = renderHook(() => useGame())
+    const unexpectedlyClosed = FakeWebSocket.instances[0]
+    act(() => unexpectedlyClosed.emitClose())
+    expect(vi.getTimerCount()).toBe(1)
+    expect(unexpectedlyClosed.onclose).toBeNull()
+
+    firstHook.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    await act(async () => vi.advanceTimersByTimeAsync(10_000))
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    const secondHook = renderHook(() => useGame())
+    const intentionallyClosed = FakeWebSocket.instances[1]
+    secondHook.unmount()
+    expect(intentionallyClosed.close).toHaveBeenCalledOnce()
+    expect(intentionallyClosed.onopen).toBeNull()
+    expect(intentionallyClosed.onmessage).toBeNull()
+    expect(intentionallyClosed.onclose).toBeNull()
+    expect(intentionallyClosed.onerror).toBeNull()
+    await act(async () => vi.advanceTimersByTimeAsync(10_000))
+    expect(FakeWebSocket.instances).toHaveLength(2)
   })
 
   it('submits rapid competing drags against the same rendered version', async () => {
