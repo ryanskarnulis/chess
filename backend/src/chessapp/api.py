@@ -2203,7 +2203,9 @@ def create_app(
             )
         data = await audio.read()
         try:
-            text = speech.transcribe(data, filename=audio.filename or "audio.webm")
+            text = await _offloop(
+                speech.transcribe, data, audio.filename or "audio.webm"
+            )
         except Exception as exc:
             raise HTTPException(
                 status_code=502, detail=f"speech service error: {exc}"
