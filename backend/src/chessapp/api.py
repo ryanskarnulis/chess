@@ -54,6 +54,7 @@ import mimetypes
 import random
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,10 +117,11 @@ class StaleVersionError(Exception):
     from there is stop the body from running at all.
     """
 
-    def __init__(self, expected: int, current: int) -> None:
+    def __init__(self, expected: int, current: int, state: dict[str, Any]) -> None:
         super().__init__(f"stale board version {expected}; current is {current}")
         self.expected = expected
         self.current = current
+        self.state = state
 
 
 class VersionedRequest(BaseModel):
@@ -211,7 +213,22 @@ def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
 
 
 def _state_dict(ctx: ToolContext) -> dict[str, Any]:
-    """The full state document the board UI renders from.
+    """Take one coherent snapshot of the full state the board UI renders.
+
+    Reads share the mutation boundary rather than merely reading the version
+    beside a series of live session fields. Otherwise a move can land after the
+    old FEN is read and produce a document whose version/FEN describe one board
+    while its turn/history describe the next.
+
+    Callers already inside `_mutation` must use `_state_dict_unlocked`: the
+    context deliberately owns a plain, non-reentrant lock.
+    """
+    with ctx.mutation_lock:
+        return _state_dict_unlocked(ctx)
+
+
+def _state_dict_unlocked(ctx: ToolContext) -> dict[str, Any]:
+    """Serialize UI state while the caller holds `ctx.mutation_lock`.
 
     Takes the context rather than the session because `version` is the
     context's (`ToolContext.board_version`) — a resumed game replaces the
@@ -1015,7 +1032,41 @@ def create_app(
     def _publish_progress(event: ProgressEvent) -> None:
         broadcaster.publish({"type": "progress", "progress": event.as_dict()})
 
-    last_published_version = -1
+    # Public reads serve this immutable-by-convention document rather than
+    # waiting behind the turn-wide mutation lock. A command holds that lock
+    # while the brain thinks, so acquiring it in GET /state made the liveness
+    # probe (and therefore the progress stream) wait for the whole turn.
+    #
+    # Writers replace the reference under the mutation lock; they never mutate
+    # a document already published. Readers capture one reference and deepcopy
+    # it, so a response is one board even if a newer document is installed at
+    # the same instant. Assembly takes the initial coherent snapshot once.
+    published_state = _state_dict(ctx)
+    last_broadcast_version = published_state["version"]
+
+    def _published_state() -> dict[str, Any]:
+        """Return the latest coherent state without waiting for a long turn.
+
+        App mutations publish at their chokepoints below. The non-blocking
+        refresh closes the remaining seam: a caller may mutate the shared
+        context through another correctly locked registry (or directly in a
+        test) that is not wired to this app's observer. Once that mutation has
+        released the lock, the next read notices the version mismatch and
+        catches up. While it is still in flight, the last complete document is
+        preferable to a torn one or a read that stalls live progress.
+        """
+        nonlocal published_state
+        state = published_state
+        if ctx.board_version != state["version"] and ctx.mutation_lock.acquire(False):
+            try:
+                if ctx.board_version != published_state["version"]:
+                    state = _state_dict_unlocked(ctx)
+                    published_state = state
+                else:
+                    state = published_state
+            finally:
+                ctx.mutation_lock.release()
+        return deepcopy(state)
 
     def _publish_state() -> None:
         """Send the board document, once per board.
@@ -1031,11 +1082,13 @@ def create_app(
         reading the version and snapshotting the board one coherent step; the
         queue behind `broadcast` is what makes the crossing back safe.
         """
-        nonlocal last_published_version
-        if ctx.board_version == last_published_version:
+        nonlocal last_broadcast_version, published_state
+        if ctx.board_version == last_broadcast_version:
             return
-        last_published_version = ctx.board_version
-        broadcaster.broadcast(_state_dict(ctx))
+        state = _state_dict_unlocked(ctx)
+        published_state = state
+        last_broadcast_version = state["version"]
+        broadcaster.broadcast(state)
 
     progress.bind(_publish_progress)
     coordinator.on_phase = progress.phase
@@ -1083,17 +1136,22 @@ def create_app(
         just found out it is behind needs both to catch up and retry without a
         second round trip.
         """
-        logger.info("stale_version expected=%s current=%s", exc.expected, exc.current)
+        # Captured by the mutation guard while it still held the boundary. The
+        # handler neither waits behind a later turn nor races that turn into a
+        # recovery document different from the version the rejection names.
+        state = deepcopy(exc.state)
+        current = state["version"]
+        logger.info("stale_version expected=%s current=%s", exc.expected, current)
         return JSONResponse(
             status_code=409,
             content={
                 "detail": (
                     "the board changed since you last saw it — "
-                    f"you sent version {exc.expected}, it is now {exc.current}"
+                    f"you sent version {exc.expected}, it is now {current}"
                 ),
                 "stale": True,
-                "version": exc.current,
-                "state": _state_dict(ctx),
+                "version": current,
+                "state": state,
             },
         )
 
@@ -1119,19 +1177,20 @@ def create_app(
         await anyio.to_thread.run_sync(ctx.mutation_lock.acquire)
         try:
             if expected is not None and expected != ctx.board_version:
-                raise StaleVersionError(expected, ctx.board_version)
+                current = ctx.board_version
+                raise StaleVersionError(expected, current, _state_dict_unlocked(ctx))
             yield
         finally:
             ctx.mutation_lock.release()
 
     @app.get("/api/state")
     def get_state() -> dict[str, Any]:
-        return _state_dict(ctx)
+        return _published_state()
 
     @app.websocket("/ws")
     async def state_channel(websocket: WebSocket) -> None:
         await broadcaster.connect(websocket)
-        await websocket.send_json({"type": "state", "state": _state_dict(ctx)})
+        await websocket.send_json({"type": "state", "state": _published_state()})
         try:
             # The channel is one-way; we only read to notice the disconnect.
             while True:
@@ -1325,7 +1384,7 @@ def create_app(
                     if beats.engine_reply is not None
                     else None
                 ),
-                "state": _state_dict(ctx),
+                "state": _state_dict_unlocked(ctx),
                 "commentary": commentary,
                 # Whether the client should voice it — the user's voice_output
                 # setting, the same contract `/api/command` has.
@@ -1363,7 +1422,7 @@ def create_app(
                 "uci": result.uci,
                 "reason": result.reason,
                 "engine_move": engine_move,
-                "state": _state_dict(ctx),
+                "state": _state_dict_unlocked(ctx),
             }
 
     def _trace_control(
@@ -1465,7 +1524,7 @@ def create_app(
             if isinstance(outcome, JSONResponse):
                 return outcome
             _publish_state()
-            return {"state": _state_dict(ctx)}
+            return {"state": _state_dict_unlocked(ctx)}
 
     @app.post("/api/game/confirm")
     async def confirm_destructive(request: ConfirmRequest) -> dict[str, Any]:
@@ -1505,7 +1564,7 @@ def create_app(
                 return {
                     "op": armed.name,
                     "confirmed": False,
-                    "state": _state_dict(ctx),
+                    "state": _state_dict_unlocked(ctx),
                 }
             confirmed = confirm_pending(registry, ctx)
             assert confirmed is not None  # armed above, and only this consumes it
@@ -1523,7 +1582,11 @@ def create_app(
                     status_code=409, detail=result.get("error", f"cannot {name}")
                 )
             _publish_state()
-            return {"op": name, "confirmed": True, "state": _state_dict(ctx)}
+            return {
+                "op": name,
+                "confirmed": True,
+                "state": _state_dict_unlocked(ctx),
+            }
 
     @app.post("/api/game/undo")
     async def undo(request: UndoRequest) -> dict[str, Any]:
@@ -1545,7 +1608,10 @@ def create_app(
             if not result.ok:
                 raise HTTPException(status_code=409, detail=result.reason)
             _publish_state()
-            return {"undone": list(result.undone), "state": _state_dict(ctx)}
+            return {
+                "undone": list(result.undone),
+                "state": _state_dict_unlocked(ctx),
+            }
 
     @app.post("/api/game/resign")
     async def resign(request: ResignRequest) -> Any:
@@ -1564,7 +1630,10 @@ def create_app(
             if isinstance(outcome, JSONResponse):
                 return outcome
             _publish_state()
-            return {"outcome": outcome["outcome"], "state": _state_dict(ctx)}
+            return {
+                "outcome": outcome["outcome"],
+                "state": _state_dict_unlocked(ctx),
+            }
 
     @app.post("/api/game/difficulty")
     def set_difficulty(request: DifficultyRequest) -> dict[str, Any]:
@@ -2015,7 +2084,7 @@ def create_app(
             # agent view too (any board change moves the fen), so that comparison
             # decides the broadcast. What the turn already published as it ran
             # is not sent again — the emitter dedupes by board version.
-            state = _state_dict(ctx)
+            state = _state_dict_unlocked(ctx)
             changed = agent_state != before
             if changed:
                 _publish_state()
