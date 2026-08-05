@@ -21,15 +21,18 @@ clients; the model is never asked to know one (and the schemas the brain is
 offered are frozen by the eval floor besides).
 """
 
+import asyncio
+import json
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
 
 import pytest
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
-from chessapp.api import _agent_state_dict, _state_dict, create_app
+from chessapp.api import StaleVersionError, _agent_state_dict, _state_dict, create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.game import GameSession
@@ -459,56 +462,121 @@ def test_state_snapshot_is_one_atomic_board_version(ctx, monkeypatch):
     }
 
 
-def test_http_state_is_one_atomic_board_version(ctx, monkeypatch):
+def test_http_state_is_one_atomic_board_version(ctx):
     app = create_app(ctx)
     endpoint = next(
         route.endpoint for route in app.routes if route.path == "/api/state"
     )
-    state = snapshot_while_move_lands(
-        ctx,
-        monkeypatch,
-        endpoint,
-        "e4",
+
+    with ctx.mutation_lock:
+        ctx.session.submit_move("e4")
+        during = endpoint()
+    after = endpoint()
+
+    assert state_identity(during) == (0, "w", "white", ())
+    assert state_identity(after) == (1, "b", "black", ("e4",))
+
+
+def test_http_state_does_not_wait_for_a_long_running_turn(ctx):
+    """A state probe is also the progress stream's event-loop liveness probe.
+
+    The turn-wide mutation lock stays held while the brain thinks, which can be
+    seconds. A read during that window may return the last coherent published
+    board, but it must not wait behind the rest of the turn.
+    """
+    app = create_app(ctx)
+    endpoint = next(
+        route.endpoint for route in app.routes if route.path == "/api/state"
     )
+    answered = threading.Event()
+    result: dict[str, Any] = {}
 
-    assert state_identity(state) in {
+    with ctx.mutation_lock:
+        ctx.session.submit_move("e4")
+        reader = threading.Thread(
+            target=lambda: (result.update(endpoint()), answered.set())
+        )
+        reader.start()
+        assert answered.wait(0.5), "state waited behind the turn-wide lock"
+
+    reader.join(5)
+    assert state_identity(result) in {
         (0, "w", "white", ()),
         (1, "b", "black", ("e4",)),
     }
 
 
-def test_initial_websocket_state_is_one_atomic_board_version(client, ctx, monkeypatch):
-    def initial_state() -> dict[str, Any]:
-        with client.websocket_connect("/ws") as websocket:
-            message = websocket.receive_json()
-        assert message["type"] == "state"
-        return message["state"]
+class SnapshotWebSocket:
+    """The initial-frame half of a WebSocket; disconnect after one send."""
 
-    state = snapshot_while_move_lands(ctx, monkeypatch, initial_state, "e4")
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
 
-    assert state_identity(state) in {
-        (0, "w", "white", ()),
-        (1, "b", "black", ("e4",)),
-    }
+    async def accept(self) -> None:
+        pass
+
+    async def send_json(self, message: dict[str, Any]) -> None:
+        self.messages.append(message)
+
+    async def receive_text(self) -> str:
+        raise WebSocketDisconnect
 
 
-def test_stale_response_state_is_one_atomic_board_version(client, ctx, monkeypatch):
+def test_initial_websocket_state_is_one_atomic_board_version(ctx):
+    app = create_app(ctx)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/ws")
+    websocket = SnapshotWebSocket()
+
+    with ctx.mutation_lock:
+        ctx.session.submit_move("e4")
+        asyncio.run(endpoint(websocket))
+
+    message = websocket.messages[0]
+    assert message["type"] == "state"
+    assert state_identity(message["state"]) == (0, "w", "white", ())
+
+
+def test_stale_response_state_is_one_atomic_board_version(ctx):
     ctx.session.submit_move("e4")
-
-    response = snapshot_while_move_lands(
-        ctx,
-        monkeypatch,
-        lambda: client.post("/api/game/move", json={"move": "d4", "version": 0}).json(),
-        "e5",
+    app = create_app(ctx)
+    handler = app.exception_handlers[StaleVersionError]
+    endpoint = next(
+        route.endpoint for route in app.routes if route.path == "/api/state"
     )
-    state = response["state"]
+    rejected_state = endpoint()
 
+    with ctx.mutation_lock:
+        ctx.session.submit_move("e5")
+        raw_response = asyncio.run(
+            handler(None, StaleVersionError(0, 1, rejected_state))
+        )
+
+    response = json.loads(raw_response.body)
+    state = response["state"]
     assert response["stale"] is True
     assert response["version"] == state["version"]
-    assert state_identity(state) in {
-        (1, "b", "black", ("e4",)),
-        (2, "w", "white", ("e4", "e5")),
-    }
+    assert state_identity(state) == (1, "b", "black", ("e4",))
+
+
+def test_public_state_catches_up_after_a_shared_mcp_mutation(ctx):
+    """An app-local observer cannot be wired to a separately built registry.
+
+    MCP still shares the context's lock/version contract. Once its call has
+    released the lock, a public read detects the newer version and refreshes
+    the published document without requiring MCP to know about the app.
+    """
+    app = create_app(ctx)
+    endpoint = next(
+        route.endpoint for route in app.routes if route.path == "/api/state"
+    )
+    server = build_mcp_server(ctx)
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+
+    result = tools["make_move"].fn(move="e4")
+    state = endpoint()
+
+    assert result["ok"] is True
+    assert state_identity(state) == (1, "b", "black", ("e4",))
 
 
 # --- what the model is never told -------------------------------------------
