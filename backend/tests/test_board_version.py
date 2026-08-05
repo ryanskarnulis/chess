@@ -23,11 +23,13 @@ offered are frozen by the eval floor besides).
 
 import threading
 import time
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.api import _agent_state_dict, create_app
+from chessapp.api import _agent_state_dict, _state_dict, create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.game import GameSession
@@ -63,6 +65,76 @@ def developed(ctx: ToolContext) -> None:
     """A game in progress — enough player investment for the destructive gate."""
     for san in ("e4", "e5", "Nf3", "Nc6"):
         ctx.session.submit_move(san)
+
+
+def snapshot_while_move_lands(
+    ctx: ToolContext,
+    monkeypatch: pytest.MonkeyPatch,
+    read: Callable[[], dict[str, Any]],
+    move: str,
+) -> dict[str, Any]:
+    """Pause a state read after it has captured the old FEN, then move.
+
+    A coherent reader holds the same non-reentrant lock as a mutation. Its lock
+    makes the attempted move wait until the snapshot finishes; an unguarded
+    reader lets the move land between `_state_dict`'s field reads and returns a
+    document assembled from two board versions.
+    """
+    original_fen = ctx.session.fen
+    fen_read = threading.Event()
+    release_read = threading.Event()
+    result: dict[str, Any] = {}
+    failure: list[BaseException] = []
+
+    def paused_fen() -> str:
+        fen = original_fen()
+        fen_read.set()
+        assert release_read.wait(5), "the test never released the snapshot"
+        return fen
+
+    def read_snapshot() -> None:
+        try:
+            result.update(read())
+        except BaseException as exc:  # re-raised in the test thread below
+            failure.append(exc)
+
+    monkeypatch.setattr(ctx.session, "fen", paused_fen)
+    reader = threading.Thread(target=read_snapshot)
+    reader.start()
+    assert fen_read.wait(5), "the state read never reached the paused FEN"
+
+    # If the reader is unguarded, this acquires immediately and forces the
+    # reported interleaving. If it owns the lock, finish the old snapshot first
+    # and land the move second. Either way there is no scheduling guess in the
+    # assertion: the lock itself determines the order.
+    moved_during_read = ctx.mutation_lock.acquire(timeout=0.1)
+    try:
+        if moved_during_read:
+            ctx.session.submit_move(move)
+    finally:
+        if moved_during_read:
+            ctx.mutation_lock.release()
+        release_read.set()
+
+    reader.join(5)
+    assert not reader.is_alive(), "the state read deadlocked"
+    if failure:
+        raise failure[0]
+
+    if not moved_during_read:
+        with ctx.mutation_lock:
+            ctx.session.submit_move(move)
+    return result
+
+
+def state_identity(state: dict[str, Any]) -> tuple[int, str, str, tuple[str, ...]]:
+    """The version and three independently serialized views of one board."""
+    return (
+        state["version"],
+        state["fen"].split()[1],
+        state["turn"],
+        tuple(state["history"]),
+    )
 
 
 # --- the version itself -----------------------------------------------------
@@ -368,6 +440,75 @@ def test_the_mcp_surface_serializes_its_mutations():
 
     assert engine.max_overlap == 1, "two MCP turns overlapped on one session"
     assert len(ctx.session.move_history()) == 4, "two whole exchanges, none torn"
+
+
+# --- coherent state snapshots ----------------------------------------------
+
+
+def test_state_snapshot_is_one_atomic_board_version(ctx, monkeypatch):
+    state = snapshot_while_move_lands(
+        ctx,
+        monkeypatch,
+        lambda: _state_dict(ctx),
+        "e4",
+    )
+
+    assert state_identity(state) in {
+        (0, "w", "white", ()),
+        (1, "b", "black", ("e4",)),
+    }
+
+
+def test_http_state_is_one_atomic_board_version(ctx, monkeypatch):
+    app = create_app(ctx)
+    endpoint = next(
+        route.endpoint for route in app.routes if route.path == "/api/state"
+    )
+    state = snapshot_while_move_lands(
+        ctx,
+        monkeypatch,
+        endpoint,
+        "e4",
+    )
+
+    assert state_identity(state) in {
+        (0, "w", "white", ()),
+        (1, "b", "black", ("e4",)),
+    }
+
+
+def test_initial_websocket_state_is_one_atomic_board_version(client, ctx, monkeypatch):
+    def initial_state() -> dict[str, Any]:
+        with client.websocket_connect("/ws") as websocket:
+            message = websocket.receive_json()
+        assert message["type"] == "state"
+        return message["state"]
+
+    state = snapshot_while_move_lands(ctx, monkeypatch, initial_state, "e4")
+
+    assert state_identity(state) in {
+        (0, "w", "white", ()),
+        (1, "b", "black", ("e4",)),
+    }
+
+
+def test_stale_response_state_is_one_atomic_board_version(client, ctx, monkeypatch):
+    ctx.session.submit_move("e4")
+
+    response = snapshot_while_move_lands(
+        ctx,
+        monkeypatch,
+        lambda: client.post("/api/game/move", json={"move": "d4", "version": 0}).json(),
+        "e5",
+    )
+    state = response["state"]
+
+    assert response["stale"] is True
+    assert response["version"] == state["version"]
+    assert state_identity(state) in {
+        (1, "b", "black", ("e4",)),
+        (2, "w", "white", ("e4", "e5")),
+    }
 
 
 # --- what the model is never told -------------------------------------------
