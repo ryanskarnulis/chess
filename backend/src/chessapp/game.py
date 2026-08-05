@@ -215,27 +215,43 @@ class GameSession:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "GameSession":
+    def from_dict(cls, data: Any) -> "GameSession":
         """Rebuild a session by replaying moves through the legality gate,
         so a corrupted file can never produce an inconsistent board."""
-        if data.get("version") != 1:
-            raise ValueError(f"unsupported save version: {data.get('version')!r}")
+        if not isinstance(data, dict):
+            raise ValueError("save data must be an object")
+        version = data.get("version")
+        # bool is an int subclass, so equality alone would accept `true` as
+        # version 1 even though it is the wrong serialized shape.
+        if type(version) is not int or version != 1:
+            raise ValueError(f"unsupported save version: {version!r}")
         missing = {"root_fen", "moves", "resigned"} - data.keys()
         if missing:
             raise ValueError(f"save data missing keys: {sorted(missing)}")
 
+        root_fen = data["root_fen"]
+        moves = data["moves"]
+        resigned = data["resigned"]
+        player_color = data.get("player_color", "white")
+        if not isinstance(root_fen, str):
+            raise ValueError("save data root_fen must be a string")
+        if not isinstance(moves, list):
+            raise ValueError("save data moves must be a list")
+        if not all(isinstance(move, str) for move in moves):
+            raise ValueError("save data moves must contain only strings")
+        if resigned is not None and resigned not in _COLOR_NAMES.values():
+            raise ValueError(f"invalid resigned color: {resigned!r}")
+        _validate_player_color(player_color)
+
         # Saves that predate the player-color field default to white — the
         # implicit assignment those games were played under.
-        session = cls(
-            fen=data["root_fen"],
-            player_color=data.get("player_color", "white"),
-        )
-        for uci in data["moves"]:
+        session = cls(fen=root_fen, player_color=player_color)
+        for uci in moves:
             result = session.submit_move(uci)
             if not result.legal:
                 raise ValueError(f"save data contains illegal move: {uci!r}")
-        if data["resigned"] is not None:
-            session.resign(data["resigned"])
+        if resigned is not None:
+            session.resign(resigned)
         return session
 
     def save(self, path: str | Path) -> None:
