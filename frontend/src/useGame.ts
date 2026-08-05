@@ -22,6 +22,12 @@ import { NO_PROGRESS, applyProgress, type TurnProgress } from './progress'
 import { isPromotion, type PromotionPiece } from './promotion'
 import { playText } from './tts'
 
+// A brief outage should heal quickly without hammering a restarting backend.
+// Successful opens reset the sequence; repeated connection failures climb to
+// a fixed ceiling: 1s, 2s, 4s, 8s, 10s, 10s …
+const SOCKET_RETRY_BASE_MS = 1_000
+const SOCKET_RETRY_MAX_MS = 10_000
+
 export interface UseGame {
   /** Latest authoritative game state, or null until the first load. */
   state: GameState | null
@@ -162,9 +168,70 @@ export function useGame(): UseGame {
 
   useEffect(() => {
     let live = true
-    fetchState().then((s) => {
-      if (live) apply(s)
-    })
+    let socket: WebSocket | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryDelay = SOCKET_RETRY_BASE_MS
+
+    const syncState = () => {
+      void fetchState().then((s) => {
+        if (live) apply(s)
+      })
+    }
+    const detach = (target: WebSocket) => {
+      target.onopen = null
+      target.onmessage = null
+      target.onclose = null
+      target.onerror = null
+    }
+    const scheduleReconnect = () => {
+      // `socket` and `retryTimer` are the duplicate-connection guards. A
+      // repeated close/error from an old socket cannot add another attempt.
+      if (!live || socket !== null || retryTimer !== null) return
+      const delay = retryDelay
+      retryDelay = Math.min(retryDelay * 2, SOCKET_RETRY_MAX_MS)
+      retryTimer = setTimeout(() => {
+        retryTimer = null
+        connect(true)
+      }, delay)
+    }
+    const connect = (reconnecting: boolean) => {
+      if (!live || socket !== null) return
+      const next = new WebSocket(stateSocketUrl())
+      socket = next
+      next.onopen = () => {
+        if (!live || socket !== next) return
+        retryDelay = SOCKET_RETRY_BASE_MS
+        // The WebSocket will also send its snapshot, but an explicit fetch
+        // closes the gap even if frames were lost around the outage. `apply`
+        // keeps the highest-version result whichever arrives first.
+        if (reconnecting) syncState()
+      }
+      next.onmessage = (ev) => {
+        if (!live || socket !== next) return
+        const message = JSON.parse(ev.data) as SocketMessage
+        // Two kinds of message on the one channel: the authoritative board,
+        // and what the turn changing it is doing at this moment.
+        if (message.type === 'state') apply(message.state)
+        else if (message.type === 'progress') {
+          setProgress((current) => applyProgress(current, message.progress))
+        }
+      }
+      next.onclose = () => {
+        if (socket !== next) return
+        socket = null
+        detach(next)
+        scheduleReconnect()
+      }
+      next.onerror = () => {
+        if (!live || socket !== next) return
+        // `close` is the one place that schedules retries. Browsers normally
+        // follow an error with close; actively closing also covers those that
+        // do not, without creating a second retry path.
+        next.close()
+      }
+    }
+
+    syncState()
     fetchSettings().then((s) => {
       if (live) {
         setVoiceOutputState(s.voice_output)
@@ -174,19 +241,21 @@ export function useGame(): UseGame {
         setAgentAvailable(s.agent_available ?? null)
       }
     })
-    const socket = new WebSocket(stateSocketUrl())
-    socket.onmessage = (ev) => {
-      const message = JSON.parse(ev.data) as SocketMessage
-      // Two kinds of message on the one channel: the authoritative board, and
-      // what the turn changing it is doing at this moment.
-      if (message.type === 'state') apply(message.state)
-      else if (message.type === 'progress') {
-        setProgress((current) => applyProgress(current, message.progress))
-      }
-    }
+    connect(false)
     return () => {
       live = false
-      socket.close()
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer)
+        retryTimer = null
+      }
+      if (socket !== null) {
+        const current = socket
+        socket = null
+        // Detach before the intentional close so its close event cannot
+        // schedule a reconnect after unmount.
+        detach(current)
+        current.close()
+      }
     }
   }, [apply])
 
