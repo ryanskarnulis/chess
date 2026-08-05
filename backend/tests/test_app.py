@@ -10,6 +10,7 @@ Exercised only through a `ScriptedProvider` that records the `chat()` requests
 and returns scripted `ChatResult`s — never a live LLM.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 import chessapp.app
@@ -277,6 +278,110 @@ def test_build_app_from_env_defaults_match_the_agent_standard(monkeypatch):
 
     assert captured["base_url"] == DEFAULT_LLAMA_BASE_URL == "http://127.0.0.1:8200/v1"
     assert captured["model"] == DEFAULT_MODEL == "gemma-4-12b"
+
+
+# --- Direct mode is selectable ----------------------------------------------
+#
+# `brain is None` is the whole of direct mode and every seam downstream of it
+# already behaves (`/api/command` 503s, the drag runs the atomic exchange,
+# `agent_available` reports the mode). What was missing was a way for a
+# deployment to *reach* that state: `build_app(brain=None)` means "construct
+# one", so the LLM-off invariant was unreachable from configuration.
+
+
+def test_build_app_assembles_a_playable_game_with_the_agent_disabled():
+    # The binding invariant, end to end: no brain, and a full exchange still
+    # plays. `/api/command` is the documented 503 and the mode is visible.
+    app = build_app(agent_enabled=False, engine=FakeEngine(reply_uci="e7e5"))
+    client = TestClient(app)
+
+    assert client.get("/api/settings").json()["agent_available"] is False
+    assert client.post("/api/command", json={"text": "hi"}).status_code == 503
+
+    move = client.post("/api/game/move", json={"move": "e2e4"}).json()
+    assert move["legal"] is True
+    assert move["san"] == "e4"
+    # The engine answered inside the same request: direct mode runs the
+    # coordinator's atomic exchange, so a drag is a whole turn.
+    assert move["engine_move"]["san"] == "e5"
+    assert move["state"]["history"] == ["e4", "e5"]
+
+
+def test_the_disabled_agent_never_constructs_a_brain(monkeypatch):
+    # The point of the switch, and the sharpest assertion available for it:
+    # disabled must mean *no provider client is ever built*, not one built and
+    # left unused. A factory that detonates proves nothing reached for it.
+    def exploding_create_llama_brain(**kwargs):
+        raise AssertionError("built a brain with the agent disabled")
+
+    monkeypatch.setattr(
+        chessapp.app, "create_llama_brain", exploding_create_llama_brain
+    )
+
+    client = TestClient(build_app(agent_enabled=False))
+
+    assert client.get("/api/settings").json()["agent_available"] is False
+
+
+def test_build_app_rejects_an_injected_brain_with_the_agent_disabled():
+    # An incoherent pair, and silently letting one win would make a confusing
+    # test someday: say so at assembly.
+    with pytest.raises(ValueError, match="agent_enabled"):
+        build_app(
+            brain=ScriptedBrain(AgentResponse(text="hi")),
+            agent_enabled=False,
+        )
+
+
+def test_build_app_from_env_disables_the_agent(monkeypatch):
+    # The deployment switch: CHESSAPP_AGENT=off is what makes the LLM-off
+    # invariant selectable in the actual container.
+    def exploding_create_llama_brain(**kwargs):
+        raise AssertionError("built a brain with CHESSAPP_AGENT=off")
+
+    monkeypatch.setattr(
+        chessapp.app, "create_llama_brain", exploding_create_llama_brain
+    )
+    monkeypatch.setenv("CHESSAPP_AGENT", "off")
+
+    client = TestClient(build_app_from_env())
+
+    assert client.get("/api/settings").json()["agent_available"] is False
+    assert client.post("/api/command", json={"text": "hi"}).status_code == 503
+
+
+def test_build_app_from_env_keeps_the_agent_on_by_default(monkeypatch):
+    # Agent-on stays the no-config default: a missing variable must never
+    # quietly change the operating mode, and neither the endpoint nor the
+    # model defaults move (pinned above).
+    calls: list[str] = []
+
+    def fake_create_llama_brain(**kwargs):
+        calls.append("built")
+        return ScriptedBrain(AgentResponse(text="hi"))
+
+    monkeypatch.setattr(chessapp.app, "create_llama_brain", fake_create_llama_brain)
+
+    monkeypatch.delenv("CHESSAPP_AGENT", raising=False)
+    assert (
+        TestClient(build_app_from_env()).get("/api/settings").json()["agent_available"]
+    )
+    monkeypatch.setenv("CHESSAPP_AGENT", "on")
+    assert (
+        TestClient(build_app_from_env()).get("/api/settings").json()["agent_available"]
+    )
+    assert calls == ["built", "built"]
+
+
+def test_build_app_from_env_rejects_an_unrecognized_agent_switch(monkeypatch):
+    # Refuse to start rather than fall back to "on". The bug this switch
+    # exists to fix *is* the app advertising an agent it hasn't got, and a
+    # permissive parse reproduces it from a typo — loudly, where someone is
+    # watching, is the only safe direction to fail.
+    monkeypatch.setenv("CHESSAPP_AGENT", "of")
+
+    with pytest.raises(ValueError, match="CHESSAPP_AGENT"):
+        build_app_from_env()
 
 
 def test_uvicorn_has_a_websocket_protocol_available():

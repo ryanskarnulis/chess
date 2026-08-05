@@ -53,6 +53,7 @@ def build_app(
     engine: EnginePlayer | None = None,
     save_dir: Path | None = None,
     brain: Brain | None = None,
+    agent_enabled: bool = True,
     provider: ChatProvider | None = None,
     speech: SpeechClient | None = None,
     static_dir: Path | None = None,
@@ -68,7 +69,16 @@ def build_app(
     into that default brain without a real llama-server. `planner_temperature`
     samples the planner phase apart from the narrator (None: both on the
     provider's default).
+
+    `agent_enabled=False` is **direct mode**: no brain is constructed at all, so
+    `/api/command` 503s and the board plays the deterministic exchange. It needs
+    its own parameter because `brain=None` already means "construct one" — the
+    LLM-off invariant was otherwise unreachable from configuration, every branch
+    behind it written and correct but dead. Injecting a brain *and* disabling
+    the agent is incoherent and raises rather than picking a quiet winner.
     """
+    if brain is not None and not agent_enabled:
+        raise ValueError("agent_enabled=False cannot be combined with a brain")
     ctx = ToolContext(session=GameSession(), engine=engine, save_dir=save_dir)
     if engine is not None:
         # Stockfish's own default is full strength; make the engine play at
@@ -117,7 +127,7 @@ def build_app(
             exclude.append("get_best_moves")
         return registry.definitions(exclude=exclude)
 
-    if brain is None:
+    if brain is None and agent_enabled:
         brain = create_llama_brain(
             base_url=llama_base_url,
             model=model,
@@ -176,6 +186,30 @@ def _speech_from_env() -> SpeechClient | None:
     )
 
 
+def _agent_enabled_from_env() -> bool:
+    """`CHESSAPP_AGENT=off` runs the app in direct mode — Stockfish only.
+
+    App-local, not the fleet's `LLAMACPP_BASE_URL`: that name is the workspace
+    agent standard's and other apps parse it as a URL, so an unset variable has
+    to keep meaning "use the default endpoint" rather than doubling as an off
+    switch. Agent-on is the no-config default for the same reason — a missing
+    variable must never silently change the operating mode.
+
+    Strict on purpose. The bug this switch exists to fix is the app
+    *advertising an agent it hasn't got*, and a permissive parse reproduces it
+    from a typo (`of` reading as "on"), which is the one failure that must not
+    be quiet. So an unrecognized value refuses to start, at assembly, where
+    someone is watching.
+    """
+    value = os.environ.get("CHESSAPP_AGENT")
+    if value is None:
+        return True
+    normalized = value.strip().lower()
+    if normalized in ("on", "off"):
+        return normalized == "on"
+    raise ValueError(f"CHESSAPP_AGENT must be 'on' or 'off', not {value!r}")
+
+
 def _tracer_from_env() -> Tracer | None:
     """Turn tracing on by pointing `CHESSAPP_TRACE_PATH` at a JSONL file.
 
@@ -204,6 +238,7 @@ def build_app_from_env() -> FastAPI:
     return build_app(
         llama_base_url=os.environ.get("LLAMACPP_BASE_URL", DEFAULT_LLAMA_BASE_URL),
         model=os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL),
+        agent_enabled=_agent_enabled_from_env(),
         engine=_engine_from_env(),
         save_dir=Path(save_dir_env) if save_dir_env else None,
         speech=_speech_from_env(),
