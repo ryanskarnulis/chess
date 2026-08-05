@@ -16,6 +16,7 @@ from chessapp.engine import DEFAULT_TIER
 from chessapp.game import GameSession
 from chessapp.tools import (
     BOARD_STATE_TOOLS,
+    GAME_SAVE_DIRNAME,
     Settings,
     Tool,
     ToolContext,
@@ -904,7 +905,7 @@ def test_save_and_resume_round_trip(tmp_path, session):
     registry.dispatch("make_move", {"move": "e5"})
     saved = registry.dispatch("save_game", {"name": "test-game"})
     assert saved["ok"] is True
-    assert (tmp_path / "test-game.json").exists()
+    assert (tmp_path / GAME_SAVE_DIRNAME / "test-game.json").exists()
 
     registry.dispatch("new_game", {})
     resumed = registry.dispatch("resume_game", {"name": "test-game"})
@@ -957,7 +958,7 @@ def test_save_game_default_name_is_autosave(tmp_path, session):
     registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
     result = registry.dispatch("save_game", {})
     assert result["ok"] is True
-    assert (tmp_path / "autosave.json").exists()
+    assert (tmp_path / GAME_SAVE_DIRNAME / "autosave.json").exists()
 
 
 def test_resume_missing_save_is_error(tmp_path, session):
@@ -989,7 +990,8 @@ def test_resume_corrupt_save_is_error(tmp_path, session):
 #
 # The agent must never have to *infer* whether a saved game exists: it is a
 # question the filesystem answers. `saved_game_names` is the one reader, and the
-# tool layer owns it because the tool layer owns the `{name}.json` convention.
+# tool layer owns it because the tool layer owns the `games/{name}.json`
+# convention.
 
 
 def test_saved_game_names_without_save_dir_is_empty(session):

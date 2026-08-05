@@ -95,6 +95,48 @@ class ToolError(ValueError):
 
 
 SETTINGS_FILENAME = "settings.json"
+GAME_SAVE_DIRNAME = "games"
+
+
+def _migrate_legacy_game_saves(save_dir: Path) -> None:
+    """Move valid saves from the old shared root into the game namespace.
+
+    Releases before the game/settings split wrote both documents as
+    ``{save_dir}/{name}.json``. Validate with the deterministic loader before
+    moving so arbitrary JSON metadata is never promoted to a game. Migration
+    is best-effort like settings persistence: an unwritable home volume must
+    not prevent the app from starting.
+    """
+    if not save_dir.is_dir():
+        return
+    game_dir = save_dir / GAME_SAVE_DIRNAME
+    for legacy_path in save_dir.glob("*.json"):
+        try:
+            data = json.loads(legacy_path.read_text())
+        except OSError:
+            logger.warning("could not inspect legacy save %s", legacy_path)
+            continue
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        try:
+            GameSession.from_dict(data)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        destination = game_dir / legacy_path.name
+        if destination.exists():
+            logger.warning(
+                "legacy save %s not migrated: %s already exists",
+                legacy_path,
+                destination,
+            )
+            continue
+        try:
+            game_dir.mkdir(parents=True, exist_ok=True)
+            legacy_path.replace(destination)
+        except OSError:
+            logger.warning("could not migrate legacy save %s", legacy_path)
 
 
 @dataclass
@@ -271,6 +313,7 @@ class ToolContext:
         # deployment without the volume — means plain in-memory settings,
         # exactly as before.
         if self.save_dir is not None:
+            _migrate_legacy_game_saves(self.save_dir)
             path = self.save_dir / SETTINGS_FILENAME
             _restore_settings(self.settings, path)
             self.settings.attach_store(lambda data: _write_settings_file(path, data))
@@ -662,18 +705,19 @@ def _player_has_moved(ctx: ToolContext) -> bool:
 def _save_path(ctx: ToolContext, name: str) -> Path:
     if ctx.save_dir is None:
         raise ValueError("saving unavailable: no save directory configured")
-    return ctx.save_dir / f"{name}.json"
+    return ctx.save_dir / GAME_SAVE_DIRNAME / f"{name}.json"
 
 
 def saved_game_names(ctx: ToolContext) -> list[str]:
     """The saves on disk right now. Lives here because this layer owns the
-    `{name}.json` convention (`_save_path`), and it is read fresh per turn —
+    `games/{name}.json` convention (`_save_path`), and it is read fresh per turn —
     `api._agent_state_dict` hands it to the brain so that whether a saved game
     exists is deterministic state, never something the model has to infer from
     what it said earlier."""
     if ctx.save_dir is None or not ctx.save_dir.is_dir():
         return []
-    return sorted(path.stem for path in ctx.save_dir.glob("*.json"))
+    game_dir = ctx.save_dir / GAME_SAVE_DIRNAME
+    return sorted(path.stem for path in game_dir.glob("*.json"))
 
 
 # `make_move`'s description, in two variants — see `build_registry`'s
@@ -1085,6 +1129,7 @@ def build_registry(
         path = _save_path(ctx, name)
         data = ctx.session.to_dict()
         data["transcript"] = ctx.transcript.to_dict()
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2))
         return {"ok": True, "name": name}
 
