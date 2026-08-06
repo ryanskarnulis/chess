@@ -674,6 +674,108 @@ describe('useGame', () => {
     expect(result.current.state?.fen).toBe(AFTER_PROMO_FEN)
   })
 
+  /** Arm the promotion picker: put a promotable board on screen at `version`,
+   * then drag the pawn onto the last rank. Returns the hook handle. */
+  async function armPromotion(version: number) {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version, fen: PROMO_FEN }),
+      })
+    })
+    await act(async () => {
+      await result.current.play('e7', 'e8')
+    })
+    expect(result.current.pendingPromotion).toEqual({ from: 'e7', to: 'e8' })
+    return result
+  }
+
+  /** Every move body the hook has sent, oldest first. */
+  function submittedMoves() {
+    return fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/api/game/move'))
+      .map(([, init]) => JSON.parse(String(init.body)))
+  }
+
+  it('invalidates a pending promotion when a newer authoritative board arrives', async () => {
+    const result = await armPromotion(2)
+    const revisionBefore = result.current.revision
+
+    // Another client moved — or a command, an undo, a new game. The board the
+    // drag was made against is gone (#222).
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 3, fen: AFTER_E4_FEN, turn: 'black' }),
+      })
+    })
+
+    // The picker closing is the visible symptom: App renders it off this.
+    expect(result.current.pendingPromotion).toBeNull()
+    // `apply` bumps the revision, so the pawn sitting on the last rank snaps
+    // back with the rest of the re-sync — no separate snap needed here.
+    expect(result.current.revision).toBeGreaterThan(revisionBefore)
+  })
+
+  it('submits nothing when a promotion piece is chosen after the board moved on', async () => {
+    const result = await armPromotion(2)
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 3, fen: AFTER_E4_FEN, turn: 'black' }),
+      })
+    })
+
+    // The click can still arrive — a rendered handler, a keypress in flight.
+    await act(async () => {
+      await result.current.completePromotion('q')
+    })
+
+    // Nothing at all goes out: on the new board `e7e8q` is either an illegal
+    // move round trip or, worse, a legal move the player never asked for.
+    expect(submittedMoves()).toEqual([])
+    expect(result.current.state?.version).toBe(3)
+    expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
+  })
+
+  /**
+   * Deliberate: an equal-version frame is the *same* board — a reconnect
+   * re-sync or a duplicated broadcast — and the picker stays open across it.
+   * `apply` accepts equal versions precisely so those redundant snapshots
+   * land, and closing the picker on one would throw away input the player has
+   * already given for a board that never moved. (`apply` does drop the hint
+   * arrow and the review view on the same frame; those are derived displays
+   * the app can recompute on demand, a half-finished promotion is not.)
+   */
+  it('keeps a pending promotion across an equal-version re-sync of the same board', async () => {
+    const result = await armPromotion(2)
+
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 2, fen: PROMO_FEN }),
+      })
+    })
+    expect(result.current.pendingPromotion).toEqual({ from: 'e7', to: 'e8' })
+
+    // And the choice still goes through, citing the board it was armed on.
+    moveResponse = {
+      legal: true,
+      san: 'e8=Q',
+      uci: 'e7e8q',
+      reason: null,
+      engine_move: null,
+      state: state({ version: 3, fen: AFTER_PROMO_FEN, turn: 'black' }),
+    }
+    await act(async () => {
+      await result.current.completePromotion('q')
+    })
+    expect(submittedMoves()).toEqual([{ move: 'e7e8q', version: 2 }])
+    expect(result.current.state?.fen).toBe(AFTER_PROMO_FEN)
+  })
+
   it('starts a new game and clears any move feedback', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
