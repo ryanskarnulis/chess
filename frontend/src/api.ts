@@ -304,6 +304,10 @@ export interface HintResponse {
   san: string
   from: string
   to: string
+  /** The board this hint was computed for — the same counter `GameState.version`
+   * carries. A search takes real time, so the caller must check this against the
+   * live board before drawing anything (#218). */
+  version: number
 }
 
 /** Fetch the engine's best move for the side to move, or null if the backend

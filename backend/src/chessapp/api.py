@@ -2235,13 +2235,26 @@ def create_app(
         """Best move for the side to move, for the UI's hint arrow (trusted
         path, same engine the `suggest_moves` analysis uses). Needs an engine
         (503 without one); a finished or move-less position is a domain
-        failure (409). Read-only — nothing is broadcast."""
+        failure (409). Read-only — nothing is broadcast.
+
+        The payload names the board it analyzed (`version`, the same counter the
+        state document publishes), because a search takes real time and nothing
+        holds the board still while it runs — another client, or this one
+        dragging a piece. Without it a client cannot tell an answer about its
+        board from an answer about the board before it, and a late response
+        paints the old position's arrow onto the new one (#218). Read *before*
+        the search deliberately: it is the position the engine started from, so
+        a board that moves mid-search yields a version the client already knows
+        is behind and discards, rather than a number whose position was never
+        the one analyzed.
+        """
         if ctx.engine is None:
             raise HTTPException(status_code=503, detail="hint unavailable: no engine")
         if ctx.session.is_game_over():
             raise HTTPException(
                 status_code=409, detail="cannot suggest moves: game is over"
             )
+        version = ctx.board_version
         try:
             candidates = ctx.engine.get_best_moves(ctx.session, n=1)
         except ValueError as exc:
@@ -2255,6 +2268,7 @@ def create_app(
             "san": best.san,
             "from": best.uci[:2],
             "to": best.uci[2:4],
+            "version": version,
         }
 
     @app.get("/api/game/review")

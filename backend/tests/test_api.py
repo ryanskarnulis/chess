@@ -476,7 +476,9 @@ def test_hint_returns_best_move(ctx):
     best = CandidateMove(uci="e2e4", san="e4", score_cp=30, mate_in=None)
     client = _hint_client(ctx, best_moves=(best,))
     body = client.get("/api/game/hint").json()
-    assert body == {"uci": "e2e4", "san": "e4", "from": "e2", "to": "e4"}
+    # Exact shape, so a stray key cannot appear unnoticed. `version` is the
+    # board it analyzed (0 for an untouched game) — see the test below.
+    assert body == {"uci": "e2e4", "san": "e4", "from": "e2", "to": "e4", "version": 0}
 
 
 def test_hint_destination_is_correct_for_promotion(ctx):
@@ -485,6 +487,29 @@ def test_hint_destination_is_correct_for_promotion(ctx):
     body = client.get("/api/game/hint").json()
     assert body["from"] == "e7"
     assert body["to"] == "e8"
+
+
+def test_hint_names_the_board_version_it_analyzed(ctx):
+    """A hint is an answer about one position, so it says which one (#218).
+
+    The search takes real time, and nothing stops the board moving while it
+    runs — another client, or this one dragging a piece. Without the version in
+    the payload a client that asked has no way to tell an answer about its board
+    from an answer about the board before it, and the arrow lands on whichever
+    position happens to be on screen when the response arrives. Same counter the
+    state document publishes (`ToolContext.board_version`), so the two agree
+    read back-to-back and a client can compare them directly.
+    """
+    best = CandidateMove(uci="e2e4", san="e4", score_cp=30, mate_in=None)
+    client = _hint_client(ctx, best_moves=(best,))
+    fresh = client.get("/api/game/hint").json()
+    assert fresh["version"] == client.get("/api/state").json()["version"]
+    # And it moves with the board: two hints across a move are distinguishable,
+    # which is the whole point of carrying the number.
+    client.post("/api/game/move", json={"move": "e4"})
+    later = client.get("/api/game/hint").json()
+    assert later["version"] > fresh["version"]
+    assert later["version"] == client.get("/api/state").json()["version"]
 
 
 def test_hint_when_game_over_is_409(ctx):
