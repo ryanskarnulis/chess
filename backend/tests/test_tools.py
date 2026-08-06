@@ -8,6 +8,7 @@ Analysis tools need a live stockfish and skip without one (CI installs it).
 
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -1062,6 +1063,108 @@ def test_resume_corrupt_save_is_error(tmp_path, session):
     registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
     result = registry.dispatch("resume_game", {"name": "bad"})
     assert result["ok"] is False
+
+
+# --- a failed save must not cost the save it was replacing -------------------
+#
+# `save_game` overwrites a named save in place, so the write is the moment the
+# last good game is at risk: a write that truncates the file and then dies (a
+# full disk, an I/O error, the host going away) would take the previous save
+# with it and hand the raw OSError up through the tool boundary. The bytes
+# therefore go to a sibling temp file and the destination is replaced only once
+# they are all down — the pattern `_write_settings_file` has always used — and
+# the failure comes back as a refusal like every other "no" this layer produces.
+
+
+def _partial_write_then_fail(target, data, *_args, **_kwargs):
+    """A `write_text` that truncates, lands one byte, then dies.
+
+    The nastiest shape of the real thing: the bytes it did write are already on
+    disk when the OSError lands, so a save written straight to its destination
+    has destroyed the previous one before it can report anything.
+    """
+    Path(target).write_bytes(data[:1].encode())
+    raise OSError(28, "No space left on device")
+
+
+def _save_through_a_dying_disk(registry, monkeypatch, name="autosave"):
+    """Dispatch `save_game` with every file write failing mid-write."""
+    with monkeypatch.context() as failing:
+        failing.setattr(Path, "write_text", _partial_write_then_fail)
+        return registry.dispatch("save_game", {"name": name})
+
+
+def test_failed_overwrite_leaves_the_previous_save_loadable(
+    tmp_path, monkeypatch, session
+):
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    registry = build_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})
+    assert registry.dispatch("save_game", {"name": "autosave"})["ok"] is True
+    good_bytes = (tmp_path / GAME_SAVE_DIRNAME / "autosave.json").read_bytes()
+
+    registry.dispatch("make_move", {"move": "e5"})
+    assert _save_through_a_dying_disk(registry, monkeypatch)["ok"] is False
+
+    # Byte-for-byte, and still a save the app can actually load.
+    assert (tmp_path / GAME_SAVE_DIRNAME / "autosave.json").read_bytes() == good_bytes
+    reader = ToolContext(session=GameSession(), save_dir=tmp_path)
+    resumed = build_registry(reader).dispatch("resume_game", {"name": "autosave"})
+    assert resumed["ok"] is True
+    assert reader.session.move_history() == ["e4"]
+
+
+def test_failed_overwrite_leaves_no_temp_file_behind(tmp_path, monkeypatch, session):
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    registry = build_registry(ctx)
+    assert registry.dispatch("save_game", {"name": "autosave"})["ok"] is True
+
+    assert _save_through_a_dying_disk(registry, monkeypatch)["ok"] is False
+
+    game_dir = tmp_path / GAME_SAVE_DIRNAME
+    assert sorted(path.name for path in game_dir.iterdir()) == ["autosave.json"]
+
+
+def test_failed_first_save_leaves_no_file_behind(tmp_path, monkeypatch, session):
+    """Nothing to preserve, so the bar is that nothing is created: a partial
+    file under the requested name is a save the agent would be told exists."""
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    registry = build_registry(ctx)
+
+    assert _save_through_a_dying_disk(registry, monkeypatch)["ok"] is False
+
+    game_dir = tmp_path / GAME_SAVE_DIRNAME
+    assert not game_dir.exists() or list(game_dir.iterdir()) == []
+    assert saved_game_names(ctx) == []
+
+
+def test_failed_save_is_a_stable_refusal_and_preserves_the_session(
+    tmp_path, monkeypatch, session
+):
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    registry = build_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})
+    ctx.transcript.record("save this", "Saved. Probably.")
+    game_before = ctx.session.to_dict()
+    transcript_before = ctx.transcript.to_dict()
+    version_before = ctx.board_version
+
+    result = _save_through_a_dying_disk(registry, monkeypatch, "keeper")
+
+    assert set(result) == {"ok", "error", "retry", "board_version"}
+    assert result["ok"] is False
+    assert "keeper" in result["error"]
+    # The app's own words, not the platform's errno string: the agent relays
+    # this to the player, and a message that varies by host is not a contract.
+    assert "No space left" not in result["error"]
+    # A disk that cannot take the bytes will not take them under another name,
+    # so retrying is a wasted round trip out of the iteration budget.
+    assert result["retry"] == "never"
+    assert result["board_version"] == version_before
+    # Saving is a read of the session; a failed one must not have touched it.
+    assert ctx.session is session
+    assert ctx.session.to_dict() == game_before
+    assert ctx.transcript.to_dict() == transcript_before
 
 
 # --- what saves exist, as deterministic state -------------------------------
