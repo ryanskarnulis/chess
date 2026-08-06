@@ -28,6 +28,32 @@ import { playText } from './tts'
 const SOCKET_RETRY_BASE_MS = 1_000
 const SOCKET_RETRY_MAX_MS = 10_000
 
+/**
+ * A promotion the player has proposed but not yet completed: the squares they
+ * dragged, plus the board that drag was made against. The board is the half
+ * the picker used to leave out — squares alone cannot say which position they
+ * were a legal, intended move on (#222).
+ */
+interface ArmedPromotion {
+  from: string
+  to: string
+  /** Version of the board dragged on; undefined on a pre-versioning backend. */
+  version: number | undefined
+  fen: string
+}
+
+/**
+ * Whether an armed promotion still belongs to `board`. The version is the
+ * app's identity for "which board" everywhere else (the hint binding, the
+ * backend's armed destructive ops), and the fen is what `isPromotion` actually
+ * read — redundant under versioning, but the only evidence there is on an
+ * older backend that sends none, where two undefined versions would otherwise
+ * compare equal to every position forever.
+ */
+function armedForBoard(armed: ArmedPromotion, board: GameState): boolean {
+  return armed.version === board.version && armed.fen === board.fen
+}
+
 export interface UseGame {
   /** Latest authoritative game state, or null until the first load. */
   state: GameState | null
@@ -44,7 +70,9 @@ export interface UseGame {
   /**
    * Set when the last move was a pawn reaching the last rank: the move is
    * held until the user picks a piece. The board has already moved the pawn
-   * visually, so a cancel must re-sync it back.
+   * visually, so a cancel must re-sync it back. Back to null — closing the
+   * picker — as soon as authoritative state for a different board arrives: the
+   * held move was a proposal about the position that is now gone.
    */
   pendingPromotion: { from: string; to: string } | null
   /** Finish the held promotion with the chosen piece. */
@@ -141,10 +169,21 @@ export function useGame(): UseGame {
   const highestVersionRef = useRef<number | null>(null)
   // Mirror of viewPly for the same reason: `play` must see the live value.
   const viewPlyRef = useRef<number | null>(null)
+  // The armed promotion with its board stamp. A ref because `apply` has to see
+  // it: `apply` is the socket effect's one dependency and must stay
+  // identity-stable, so it cannot close over the rendered value.
+  const pendingPromotionRef = useRef<ArmedPromotion | null>(null)
 
   const setView = useCallback((ply: number | null) => {
     viewPlyRef.current = ply
     setViewPly(ply)
+  }, [])
+
+  /** Arm (or disarm) the promotion picker. The ref carries the stamp the logic
+   * checks; the rendered value stays the bare squares the UI needs. */
+  const armPromotion = useCallback((armed: ArmedPromotion | null) => {
+    pendingPromotionRef.current = armed
+    setPendingPromotion(armed === null ? null : { from: armed.from, to: armed.to })
   }, [])
 
   const apply = useCallback((next: GameState) => {
@@ -163,8 +202,22 @@ export function useGame(): UseGame {
     viewPlyRef.current = null
     setViewPly(null)
     setHintShapes([])
+    // A held promotion is a proposal about one board (#222). State for a
+    // *different* board voids it: completing it would either bounce back as an
+    // illegal move or — where that pawn can still promote — play a move on a
+    // position the player never dragged on. Closing the picker is the visible
+    // half, and the revision bump above snaps the parked pawn back for free,
+    // exactly as `cancelPromotion` does it.
+    //
+    // An equal-version frame is deliberately *not* a different board: `apply`
+    // accepts equal versions so a reconnect re-sync and a duplicated broadcast
+    // land, and neither moved anything. The hint and the review view above are
+    // dropped on those anyway because they are derived displays the app can
+    // recompute; input the player has already given is not.
+    const armed = pendingPromotionRef.current
+    if (armed !== null && !armedForBoard(armed, next)) armPromotion(null)
     return true
-  }, [])
+  }, [armPromotion])
 
   useEffect(() => {
     let live = true
@@ -293,31 +346,50 @@ export function useGame(): UseGame {
       // a stray drag submit a move against a position that isn't live.
       if (viewPlyRef.current !== null) return
       // A promotion can't be expressed as bare from+to; hold it for a piece
-      // choice rather than submitting a move the backend would reject.
+      // choice rather than submitting a move the backend would reject. Stamped
+      // with the board it was dragged on, because the choice arrives later and
+      // the squares alone can't say which position they were meant for.
       if (stateRef.current && isPromotion(stateRef.current.fen, from, to)) {
-        setPendingPromotion({ from, to })
+        armPromotion({
+          from,
+          to,
+          version: stateRef.current.version,
+          fen: stateRef.current.fen,
+        })
         return
       }
       await submit(from + to)
     },
-    [submit],
+    [armPromotion, submit],
   )
 
   const completePromotion = useCallback(
     async (piece: PromotionPiece) => {
-      if (!pendingPromotion) return
-      const { from, to } = pendingPromotion
-      setPendingPromotion(null)
-      await submit(from + to + piece)
+      const armed = pendingPromotionRef.current
+      if (armed === null) return
+      armPromotion(null)
+      // Braces to `apply`'s belt: a promotion armed against a superseded board
+      // may not be submitted even if the clear above it was somehow missed.
+      // `submit` cites whatever version is live *now*, so what would go out is
+      // not the move the player made — it is their squares against someone
+      // else's position.
+      const live = stateRef.current
+      if (live === null || !armedForBoard(armed, live)) {
+        // Nothing was sent, so nothing else will re-sync the board: snap the
+        // pawn back off the last rank the way a cancel does.
+        setRevision((r) => r + 1)
+        return
+      }
+      await submit(armed.from + armed.to + piece)
     },
-    [pendingPromotion, submit],
+    [armPromotion, submit],
   )
 
   const cancelPromotion = useCallback(() => {
-    setPendingPromotion(null)
+    armPromotion(null)
     // The board already moved the pawn to the last rank; re-sync it back.
     setRevision((r) => r + 1)
-  }, [])
+  }, [armPromotion])
 
   /**
    * Settle a gated destructive op: put the gate's question to the player and

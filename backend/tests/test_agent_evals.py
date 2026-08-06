@@ -137,6 +137,7 @@ from chessapp.provider import LlamaCppProvider
 from chessapp.tools import (
     Settings,
     ToolContext,
+    _save_path,
     brain_tool_exclusions,
     build_registry,
 )
@@ -1624,7 +1625,14 @@ def test_eval_resume_game_is_not_denied(engine: EnginePlayer, tmp_path: Any) -> 
         app.ctx.save_dir = tmp_path
         for san in ("e4", "e5", "Nf3", "Nc6"):
             assert app.ctx.session.submit_move(san).legal
-        app.ctx.session.save(tmp_path / "scholars.json")
+        # Seed at the app's own path for the name (`_save_path`), never a
+        # hand-built one: the harness's hard-coded `tmp_path / "scholars.json"`
+        # went quietly stale when #214 namespaced saves under `games/`, and this
+        # opt-in suite is the one place CI could not catch it — every resume
+        # scenario read 0/5 with the model behaving correctly.
+        path = _save_path(app.ctx, "scholars")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        app.ctx.session.save(path)
         app.ctx.session = GameSession()  # a different game is in progress now
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
@@ -1951,7 +1959,11 @@ def test_eval_long_transcript_resume_is_not_denied(
         saved = GameSession()
         for san in ("e4", "e5", "Nf3", "Nc6"):
             assert saved.submit_move(san).legal
-        saved.save(tmp_path / "scholars.json")
+        # `_save_path`, not a hand-built path — same reason as the fresh resume
+        # scenario above: the save must land where `resume_game` reads.
+        path = _save_path(app.ctx, "scholars")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        saved.save(path)
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         assert _successful(assistant, "resume_game"), (
