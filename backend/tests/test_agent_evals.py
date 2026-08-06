@@ -135,10 +135,10 @@ from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import planner_prompt_for, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import (
-    BOARD_STATE_TOOLS,
     Settings,
     ToolContext,
     _save_path,
+    brain_tool_exclusions,
     build_registry,
 )
 from evalstats import (
@@ -427,18 +427,17 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
     provider = CountingProvider(LlamaCppProvider(LLAMACPP_BASE_URL, LLAMACPP_MODEL))
 
     def offered_tools() -> list[dict[str, Any]]:
-        # Exactly what build_app offers the brain, resolved live per command:
-        # the board state is injected into its prompt every turn, so
-        # BOARD_STATE_TOOLS are dispatchable but not *offered*, and with hints
-        # off `get_best_moves` is withheld too (audit 11 — the capability
-        # restriction, not a prompt rule). Offering more here would measure a
-        # different agent than the one that ships — and a bigger tool list is
-        # itself a variable (the 2026-07-13 trace review saw capture phrasings
-        # behave differently under the two lists).
-        exclude = list(BOARD_STATE_TOOLS)
-        if not ctx.settings.hints_mode:
-            exclude.append("get_best_moves")
-        return registry.definitions(exclude=exclude)
+        # Exactly what build_app offers the brain, resolved live per command
+        # through the *same* policy function assembly calls: the board state is
+        # injected into its prompt every turn, so BOARD_STATE_TOOLS are
+        # dispatchable but not *offered*; with hints off `get_best_moves` is
+        # withheld, and `claim_draw` until a draw is actually claimable (both
+        # capability restrictions, not prompt rules). Shared rather than copied
+        # because offering a different list here would measure a different agent
+        # than the one that ships — and a bigger tool list is itself a variable
+        # (the 2026-07-13 trace review saw capture phrasings behave differently
+        # under the two lists).
+        return registry.definitions(exclude=brain_tool_exclusions(ctx))
 
     brain = create_llama_brain(
         base_url=LLAMACPP_BASE_URL,

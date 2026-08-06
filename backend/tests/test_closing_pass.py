@@ -20,15 +20,20 @@ dispatcher; this file is the route-level assertion the audit asked for.
 from fastapi.testclient import TestClient
 
 from chessapp.api import create_app
-from chessapp.app import BOARD_STATE_TOOLS
 from chessapp.coordinator import TurnCoordinator
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain
-from chessapp.tools import ToolContext, build_registry
+from chessapp.tools import BOARD_STATE_TOOLS, ToolContext, build_registry
 from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
 
 PLANNER = "Pick the tools."
 PERSONA = "You are a chess opponent."
+
+# A fifty-move claim already available, on a position nobody played into — so
+# the confirmation gate stands aside (no player investment) and the command
+# window's destructive budget is the only thing left in the way, which is what
+# this file is about.
+FIFTY_MOVE_FEN = "8/8/8/4k3/8/8/4K3/6R1 w - - 100 80"
 
 
 def make_client(*turns, ctx: ToolContext | None = None):
@@ -128,6 +133,29 @@ def test_brain_route_closes_tool_free_when_the_planner_repeats_itself():
     # Two planner turns, then the narrator — no third planner turn was bought.
     assert offered_tools(provider) == [True, True, False]
     assert response["commentary"] == "Dead even. Your move."
+
+
+def test_a_claimed_draw_spends_the_budget_and_still_closes_tool_free():
+    """Claiming a draw ends the game, so it is one of the ops the command window
+    budgets: the second one is dead result data and the narrator that tells the
+    player about it still holds no tools."""
+    ctx = ToolContext(session=GameSession(fen=FIFTY_MOVE_FEN), engine=FakeEngine())
+    client, provider, ctx = make_client(
+        tool_calls_turn(("claim_draw", {})),
+        tool_calls_turn(("new_game", {})),  # second destructive op in one command
+        text_turn("note: draw claimed, reset refused"),
+        text_turn("Half a point each. Done."),
+        ctx=ctx,
+    )
+
+    response = client.post("/api/command", json={"text": "claim the draw"}).json()
+
+    assert offered_tools(provider) == [True, True, True, False]
+    results = [r["result"] for r in response["tool_results"]]
+    assert results[0]["ok"] is True
+    assert results[1]["ok"] is False
+    assert ctx.session.outcome().termination == "fifty_moves", "the refused reset"
+    assert response["commentary"] == "Half a point each. Done."
 
 
 # --- the routes outside the loop: the model is only ever reached tool-free

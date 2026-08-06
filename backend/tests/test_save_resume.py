@@ -1,8 +1,9 @@
 """Save/resume: serialize a session to disk and restore it.
 
-The serialized form is root FEN + UCI move list + resignation flag —
-resuming replays the moves through the same legality gate, so a
-corrupted file can never produce an inconsistent board.
+The serialized form is root FEN + UCI move list + the two session-level
+endings a board cannot model (resignation, a claimed draw) — resuming replays
+the moves through the same legality gate, so a corrupted file can never
+produce an inconsistent board.
 """
 
 import json
@@ -59,6 +60,45 @@ def test_checkmated_game_round_trips():
     restored = GameSession.from_dict(session.to_dict())
     assert restored.is_game_over()
     assert restored.outcome().termination == "checkmate"
+
+
+def test_claimed_draw_round_trips():
+    """A claimed draw is session-level state like a resignation, so it has to
+    survive the file: a saved-then-resumed drawn game is still drawn."""
+    session = GameSession()
+    for _ in range(2):
+        for move in ["Nf3", "Nf6", "Ng1", "Ng8"]:
+            session.submit_move(move)
+    session.claim_draw()
+    restored = GameSession.from_dict(session.to_dict())
+    assert restored.is_game_over()
+    assert restored.outcome() == session.outcome()
+    assert restored.outcome().termination == "threefold_repetition"
+
+
+def test_save_without_the_claim_flag_is_an_unclaimed_game():
+    """Saves written before claims existed carry no flag; they load as the
+    live games they were."""
+    data = GameSession().to_dict()
+    del data["draw_claimed"]
+    restored = GameSession.from_dict(data)
+    assert not restored.is_game_over()
+
+
+def test_from_dict_rejects_a_claim_the_position_does_not_support():
+    """Replayed through the same gate as the moves: a file claiming a draw in a
+    position with no claim available cannot produce a drawn board."""
+    data = GameSession().to_dict()
+    data["draw_claimed"] = True
+    with pytest.raises(ValueError):
+        GameSession.from_dict(data)
+
+
+def test_from_dict_rejects_a_non_bool_claim_flag():
+    data = GameSession().to_dict()
+    data["draw_claimed"] = "yes"
+    with pytest.raises(ValueError):
+        GameSession.from_dict(data)
 
 
 def test_undo_works_after_resume():

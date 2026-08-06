@@ -250,6 +250,12 @@ def _state_dict_unlocked(ctx: ToolContext) -> dict[str, Any]:
         "captured": session.captured_pieces(),
         "legal_moves": session.legal_moves(),
         "dests": session.legal_destinations(),
+        # Which draw rules the side to move may claim right now (empty when
+        # none). A claim is the one ending the rules leave to the *player*, so a
+        # client cannot offer it without being told it exists — and it is named
+        # rather than flagged so the offer can say which rule, exactly as
+        # `outcome` names the termination once one is taken.
+        "claimable_draws": list(session.claimable_draws()),
     }
 
 
@@ -350,19 +356,24 @@ def _move_reply_dict(reply: MoveResult | None) -> dict[str, Any] | None:
 def _destructive_confirmation(
     name: str, result: dict[str, Any], session: GameSession
 ) -> str:
-    """Deterministic stand-in for the reaction after a confirmed new_game/resign
+    """Deterministic stand-in for the reaction after a confirmed destructive op
     at verbosity=low — the twin of `_move_confirmation`, keeping a confirmed
-    destructive op a zero-LLM turn like a plain move is."""
-    if name == "resign":
-        outcome = result.get("outcome") or _outcome_dict(session)
-        if outcome:
-            return f"Game over: {outcome['result']} ({outcome['termination']})."
-        return "Game over."
-    parts = ["New game."]
-    engine_move = result.get("engine_move")
-    if engine_move:
-        parts.append(f"{engine_move['san']}.")
-    return " ".join(parts)
+    destructive op a zero-LLM turn like a plain move is.
+
+    Only `new_game` leaves a game to play; every other op here ended one, and an
+    ending is reported by its outcome (a resignation's result, or the half point a
+    claimed draw produces) rather than by name.
+    """
+    if name == "new_game":
+        parts = ["New game."]
+        engine_move = result.get("engine_move")
+        if engine_move:
+            parts.append(f"{engine_move['san']}.")
+        return " ".join(parts)
+    outcome = result.get("outcome") or _outcome_dict(session)
+    if outcome:
+        return f"Game over: {outcome['result']} ({outcome['termination']})."
+    return "Game over."
 
 
 def _reply_announcement(reply: MoveResult | None, session: GameSession) -> str:

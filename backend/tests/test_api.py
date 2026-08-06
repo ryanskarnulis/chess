@@ -67,6 +67,24 @@ def test_state_reflects_moves_and_captures(client):
     assert body["turn"] == "black"
 
 
+def test_state_reports_no_claimable_draw_in_a_fresh_game(client):
+    assert client.get("/api/state").json()["claimable_draws"] == []
+
+
+def test_state_reports_a_claimable_threefold_repetition(client):
+    """The issue's reproduction, as the document a client reads: the claim is
+    available, the game is not over, and the rule is named — so a UI can offer
+    the claim instead of the player having to know it exists."""
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8") * 2:
+        assert client.post("/api/game/move", json={"move": san}).json()["legal"]
+
+    body = client.get("/api/state").json()
+
+    assert body["claimable_draws"] == ["threefold_repetition"]
+    assert body["game_over"] is False
+    assert body["outcome"] is None
+
+
 def test_state_includes_per_ply_fens(client):
     assert client.get("/api/state").json()["fens"] == [START_FEN]
     for move in ["e4", "d5", "exd5"]:

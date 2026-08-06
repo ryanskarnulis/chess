@@ -22,6 +22,7 @@ from chessapp.tools import (
     Tool,
     ToolContext,
     ToolRegistry,
+    brain_tool_exclusions,
     build_registry,
     confirm_pending,
     saved_game_names,
@@ -34,6 +35,14 @@ requires_stockfish = pytest.mark.skipif(
 
 # White to move, Qxf7# available (scholar's mate pattern).
 WHITE_MATE_IN_1 = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"
+
+# A fifty-move claim standing on a position nobody played into: the halfmove
+# clock came in with the FEN, so the confirmation gate has no player investment
+# to guard and a claim runs straight through it (`_player_has_moved`). That is
+# what makes it the setup for testing everything *past* the gate.
+FIFTY_MOVE_FEN = "8/8/8/4k3/8/8/4K3/6R1 w - - 100 80"
+
+REPETITION = ("Nf3", "Nf6", "Ng1", "Ng8")
 
 
 @pytest.fixture
@@ -89,6 +98,56 @@ def test_definitions_can_exclude_tools(registry):
 
 def test_excluded_tools_are_still_dispatchable(registry):
     assert registry.dispatch("get_legal_moves", {})["ok"] is True
+
+
+# --- what the brain is offered, resolved off live state ----------------------
+#
+# One policy, in one place, because two copies of it drift: assembly and the
+# eval harness both ask this function what to withhold, so what is measured is
+# what ships. The reads are always out (the state block already answers them);
+# the rest is a *capability* the code withholds when the app knows the answer —
+# `get_best_moves` with hints off, `claim_draw` with no claim to make.
+
+
+def test_the_brain_offer_always_withholds_the_board_state_reads(session):
+    excluded = set(brain_tool_exclusions(ToolContext(session=session)))
+    assert set(BOARD_STATE_TOOLS) <= excluded
+
+
+def test_the_brain_offer_withholds_get_best_moves_while_hints_are_off(session):
+    ctx = ToolContext(session=session)
+    assert "get_best_moves" in brain_tool_exclusions(ctx)
+    ctx.settings.hints_mode = True
+    assert "get_best_moves" not in brain_tool_exclusions(ctx)
+
+
+def test_the_brain_offer_withholds_claim_draw_until_a_draw_is_claimable(session):
+    """The tool exists only when the rules allow the claim, so the model is
+    never asked to judge whether one is available — and the schema it plans
+    against is unchanged on every turn where none is."""
+    ctx = ToolContext(session=session)
+    assert "claim_draw" in brain_tool_exclusions(ctx)
+
+    for san in REPETITION * 2:
+        session.submit_move(san)
+
+    assert "claim_draw" not in brain_tool_exclusions(ctx)
+
+
+def test_a_claimable_draw_adds_claim_draw_to_the_offer_and_nothing_else(session):
+    """Byte-for-byte, the offer gains exactly one tool: the schema the planner
+    reads is measurably sensitive to churn, so a claim must not reshuffle it."""
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    before = registry.definitions(exclude=brain_tool_exclusions(ctx))
+
+    for san in REPETITION * 2:
+        session.submit_move(san)
+    after = registry.definitions(exclude=brain_tool_exclusions(ctx))
+
+    added = [d for d in after if d not in before]
+    assert [d["function"]["name"] for d in added] == ["claim_draw"]
+    assert [d for d in before if d not in after] == []
 
 
 def test_definitions_are_openai_style_and_json_serializable(registry):
@@ -185,7 +244,7 @@ def test_analyze_last_move_routes_how_good_was_that_move(registry):
 def test_destructive_tools_carry_the_call_then_relay_dance(registry):
     # The gate owns the confirmation (tools.py `_gate`); the tool's job is only
     # to tell the model not to pre-ask, and to relay the refusal when it comes.
-    for name in ("new_game", "resign"):
+    for name in ("new_game", "resign", "claim_draw"):
         desc = _description(registry, name).lower()
         assert "confirm" in desc
         assert "relay" in desc
@@ -395,6 +454,7 @@ def test_registry_lists_all_write_tools(registry):
         "undo",
         "new_game",
         "resign",
+        "claim_draw",
         "save_game",
         "resume_game",
         "export_pgn",
@@ -756,6 +816,20 @@ def test_resign_abandons_the_open_turn(session):
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
 
 
+def test_claim_draw_abandons_the_open_turn():
+    """A claim is a non-move mutation like a resignation: it ends the game the
+    open turn was about, so no reply is owed to it."""
+    session = GameSession(fen=FIFTY_MOVE_FEN)
+    ctx = ToolContext(session=session, engine=FakeEngine("e5e6"))
+    ctx._confirming = True  # past the gate; this is about the turn, not the ask
+    registry, coordinator = _split_registry(ctx)
+    registry.dispatch("make_move", {"move": "Rh1"})  # quiet, so the clock runs on
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
+
+    assert registry.dispatch("claim_draw", {})["ok"] is True
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
 def test_resume_game_abandons_the_open_turn(session, tmp_path):
     GameSession().save(tmp_path / "saved.json")
     ctx = ToolContext(session=session, engine=FakeEngine(), save_dir=tmp_path)
@@ -890,6 +964,71 @@ def test_resign_rejects_bad_color_and_finished_game(registry, session):
     assert registry.dispatch("resign", {"color": "green"})["ok"] is False
     registry.dispatch("resign", {})
     assert registry.dispatch("resign", {})["ok"] is False
+
+
+# --- claim_draw: the other way a player ends a game ---------------------------
+#
+# Threefold repetition and the fifty-move rule are *claims*, so ending the game
+# on one is a mutation like resigning — same gate, same budget — and whether a
+# claim exists is board truth the tool checks before it asks anybody anything.
+
+
+def test_claim_draw_ends_the_game_in_a_draw():
+    session = GameSession(fen=FIFTY_MOVE_FEN)
+    registry = build_registry(ToolContext(session=session))
+
+    result = registry.dispatch("claim_draw", {})
+
+    assert result["ok"] is True
+    assert result["outcome"] == {
+        "termination": "fifty_moves",
+        "winner": None,
+        "result": "1/2-1/2",
+    }
+    assert session.is_game_over()
+
+
+def test_claim_draw_reports_the_rule_the_claim_landed_under():
+    session = GameSession()
+    for san in REPETITION * 2:
+        session.submit_move(san)
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    registry.dispatch("claim_draw", {})  # gated: a real game is on the board
+
+    _, result = confirm_pending(registry, ctx)
+
+    assert result["outcome"]["termination"] == "threefold_repetition"
+
+
+def test_claim_draw_with_nothing_to_claim_is_a_refusal_not_a_crash(registry, session):
+    """No draw available is a domain "no": the board never moved, and no
+    argument would have changed the answer, so it comes back `retry: never` for
+    the player to hear rather than for the loop to retry."""
+    for san in ("e4", "e5"):
+        session.submit_move(san)
+    fen_before = session.fen()
+
+    result = registry.dispatch("claim_draw", {})
+
+    assert result["ok"] is False
+    assert result["retry"] == "never"
+    assert "no draw" in result["error"]
+    assert session.fen() == fen_before
+    assert not session.is_game_over()
+
+
+def test_an_unclaimable_call_never_arms_the_gate(session):
+    """Checked before the gate, so the player is never asked to confirm an op
+    that could not run — a "yes" to that question would fail."""
+    for san in ("e4", "e5"):
+        session.submit_move(san)
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+
+    assert registry.dispatch("claim_draw", {})["ok"] is False
+
+    assert ctx.pending is None
 
 
 def test_export_pgn(registry):
@@ -1535,11 +1674,44 @@ def test_confirmation_is_not_a_tool_argument(session, registry):
     played(session, "e4", "e5")
     fen_before = session.fen()
 
-    for name in ("new_game", "resign"):
+    for name in ("new_game", "resign", "claim_draw"):
         result = registry.dispatch(name, {"confirm": True})
         assert result["ok"] is False
         assert "invalid args" in result["error"]
         assert session.fen() == fen_before
+
+
+def test_unconfirmed_claim_draw_does_not_end_the_game(session):
+    """A claim ends a real game, so it earns the same question a resignation
+    does — a mis-parsed "let's call it a draw" must cost a question, never the
+    game."""
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    for san in REPETITION * 2:
+        session.submit_move(san)
+
+    result = registry.dispatch("claim_draw", {})
+
+    assert result["ok"] is False
+    assert "confirm" in result["error"].lower()
+    assert not session.is_game_over()
+    assert ctx.pending is not None and ctx.pending.name == "claim_draw"
+    assert ctx.pending.args == {}
+
+
+def test_a_confirmed_claim_draw_ends_the_game(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    for san in REPETITION * 2:
+        session.submit_move(san)
+    registry.dispatch("claim_draw", {})
+
+    name, result = confirm_pending(registry, ctx)
+
+    assert name == "claim_draw"
+    assert result["ok"] is True
+    assert session.outcome().result == "1/2-1/2"
+    assert ctx.pending is None, "the op is spent"
 
 
 def test_a_second_unconfirmed_call_still_does_not_fire(session):
@@ -1700,6 +1872,31 @@ def test_a_failed_destructive_op_does_not_burn_the_budget():
     registry, coordinator = _windowed_registry(ctx)
 
     assert registry.dispatch("resign", {})["ok"] is False
+
+    coordinator.require_destructive_budget()  # must not raise
+
+
+def test_a_claim_spends_the_destructive_budget():
+    """Ending the game by claiming a draw is one of the ops the window budgets:
+    it threw the game away, so the command's one destructive op is gone."""
+    ctx = ToolContext(session=GameSession(fen=FIFTY_MOVE_FEN))
+    registry, _ = _windowed_registry(ctx)
+
+    assert registry.dispatch("claim_draw", {})["ok"] is True
+    refused = registry.dispatch("new_game", {})
+
+    assert refused["ok"] is False
+    assert "one per turn" in refused["error"]
+    assert ctx.session.outcome().termination == "fifty_moves", "the draw stands"
+
+
+def test_a_refused_claim_does_not_burn_the_budget():
+    """Check then record, as everywhere else: nothing was claimable, so nothing
+    was thrown away and the command's budget is still there for the real op."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry, coordinator = _windowed_registry(ctx)
+
+    assert registry.dispatch("claim_draw", {})["ok"] is False
 
     coordinator.require_destructive_budget()  # must not raise
 

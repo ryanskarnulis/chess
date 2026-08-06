@@ -44,6 +44,16 @@ def test_resignation_result_recorded():
     assert game.headers["Result"] == "1-0"
 
 
+def test_claimed_draw_result_recorded():
+    session = GameSession()
+    for _ in range(2):
+        for move in ["Nf3", "Nf6", "Ng1", "Ng8"]:
+            session.submit_move(move)
+    session.claim_draw()
+    game = parse(session.export_pgn())
+    assert game.headers["Result"] == "1/2-1/2"
+
+
 def test_custom_fen_start_gets_setup_headers():
     fen = "4k3/8/8/8/8/8/8/4K2R w K - 0 1"
     session = GameSession(fen=fen)

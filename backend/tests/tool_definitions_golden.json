@@ -191,6 +191,18 @@
   },
   {
     "function": {
+      "description": "Claim a draw by threefold repetition or the fifty-move rule. Call this as soon as the player asks to claim a draw — do not ask them to confirm first. If a game is in progress the result comes back refusing and asking you to confirm; relay that to the player and stop, do not call again. When it returns ok, the game really did end in a draw.",
+      "name": "claim_draw",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
       "description": "Save the current game under a name (default 'autosave').",
       "name": "save_game",
       "parameters": {
