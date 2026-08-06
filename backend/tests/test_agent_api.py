@@ -9,13 +9,21 @@ fresh `create_app` gives each test a fresh store; the per-IP rate limiter is
 module-global, so it is reset around every test.
 """
 
+import asyncio
 import logging
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from chessapp.agent_api import LOOP_ACTOR, reset_rate_limit
-from chessapp.api import UNVERIFIED_CLAIM_REPLY
+from chessapp.agent_api import (
+    LOOP_ACTOR,
+    ConversationStore,
+    build_agent_router,
+    reset_rate_limit,
+)
+from chessapp.api import UNVERIFIED_CLAIM_REPLY, CommandOutcome
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.conversation import RECENT_TURNS
 from chessapp.game import GameSession
@@ -409,3 +417,191 @@ def test_actor_falls_back_to_the_default_when_absent_or_unrecognized(caplog, hea
     with caplog.at_level(logging.INFO, logger="chessapp.agent_api"):
         send(client, conversation_id, "e4", headers=headers)
     assert any(f"actor={LOOP_ACTOR}" in r.getMessage() for r in caplog.records)
+
+
+# --- concurrency: one exchange at a time per thread ---------------------------
+#
+# These drive the router over `httpx.ASGITransport` rather than `TestClient`,
+# because they need two requests genuinely in flight in *one* event loop:
+# `TestClient` is synchronous and spins up a fresh loop per request, so it
+# cannot express an overlap at all. The pipeline is stubbed at the
+# `run_command` seam (the router's only collaborator), so what is under test is
+# the endpoint's own sequencing — not the brain, the board, or the engine.
+
+
+class HeldPipeline:
+    """A `run_command` double that parks the one run it is told to hold.
+
+    Records `(text, transcript)` per call, so a test can assert both *when* a
+    run started and what history it was replayed.
+    """
+
+    def __init__(self, hold: str) -> None:
+        self._hold = hold
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls: list[tuple[str, list[dict[str, str]]]] = []
+
+    async def __call__(self, text, transcript, version=None) -> CommandOutcome:
+        self.calls.append((text, list(transcript)))
+        if text == self._hold:
+            self.entered.set()
+            await self.release.wait()
+        return CommandOutcome(
+            commentary=f"answer {text}",
+            tool_results=[],
+            tool_args=[],
+            state={},
+            changed=False,
+            stop_reason="completed",
+            # An ordinary turn Glitch spoke himself, so it is remembered by his
+            # own words. Left at the default `""` this would be a *substituted*
+            # turn — one the app spoke in his place — and the store would
+            # rightly replay the inert ack instead of the answer.
+            memory=f"answer {text}",
+        )
+
+    @property
+    def started(self) -> list[str]:
+        return [text for text, _ in self.calls]
+
+
+def delegate_app(run_command):
+    """The delegate router alone, over a fresh store. Returns `(app, store)`."""
+    store = ConversationStore()
+    app = FastAPI()
+    app.include_router(build_agent_router(store=store, run_command=run_command))
+    return app, store
+
+
+def async_client(app):
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    )
+
+
+async def start_conversation(client):
+    return (await client.post("/api/agent/conversations", json={})).json()["id"]
+
+
+def post_message(client, conversation_id, content):
+    return client.post(
+        f"/api/agent/conversations/{conversation_id}/messages",
+        json={"content": content},
+    )
+
+
+async def let_the_queued_request_run() -> None:
+    """Give a just-posted request every chance to reach the endpoint and block.
+
+    The overlap has to be real for the in-flight assertions below to mean
+    anything. `ASGITransport` runs the app in this same loop, but FastAPI
+    resolves the sync rate-limit dependency in a threadpool, so yielding the
+    loop once is not enough to guarantee the hop. Erring short only makes a
+    test prove less — never fail — so the wait is generous rather than tuned.
+    """
+    await asyncio.sleep(0.1)
+
+
+async def test_concurrent_posts_to_one_conversation_are_serialized_exchanges():
+    """Two posts to one thread are two exchanges, not four interleaved turns.
+
+    The failure this pins (#221): with the history read, the user append, the
+    run and the assistant append unserialized, both user turns were committed
+    before either assistant turn — so the stored thread stopped alternating,
+    and the second run was handed a transcript ending in the first, still
+    unanswered question. Every later `history_for_loop` then replayed that
+    malformed order to the model.
+    """
+    pipeline = HeldPipeline("first")
+    app, store = delegate_app(pipeline)
+
+    async with async_client(app) as client:
+        conversation_id = await start_conversation(client)
+
+        first = asyncio.create_task(post_message(client, conversation_id, "first"))
+        await asyncio.wait_for(pipeline.entered.wait(), 2)
+
+        second = asyncio.create_task(post_message(client, conversation_id, "second"))
+        await let_the_queued_request_run()
+
+        # Mid-hold: the queued message has neither committed its user turn nor
+        # started its run.
+        stored = store.get(conversation_id)
+        assert [m.role for m in stored.messages] == ["user"]
+        assert pipeline.started == ["first"]
+
+        pipeline.release.set()
+        first_response, second_response = await asyncio.gather(first, second)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+
+    # The thread alternates, and each answer sits behind its own question.
+    assert [(m.role, m.content) for m in stored.messages] == [
+        ("user", "first"),
+        ("assistant", "answer first"),
+        ("user", "second"),
+        ("assistant", "answer second"),
+    ]
+
+    # And the second run reasoned from the *finished* first exchange.
+    assert pipeline.started == ["first", "second"]
+    assert pipeline.calls[1][1] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "answer first"},
+    ]
+
+
+async def test_a_held_exchange_does_not_block_a_different_conversation():
+    """Serialization is per thread, never a global funnel: one conversation
+    waiting on a slow model must not stall an unrelated one."""
+    pipeline = HeldPipeline("hold me")
+    app, store = delegate_app(pipeline)
+
+    async with async_client(app) as client:
+        held_thread = await start_conversation(client)
+        other_thread = await start_conversation(client)
+
+        held = asyncio.create_task(post_message(client, held_thread, "hold me"))
+        await asyncio.wait_for(pipeline.entered.wait(), 2)
+
+        # Runs to completion while the other thread's run is parked, or hangs.
+        other = await asyncio.wait_for(post_message(client, other_thread, "quick"), 2)
+        assert other.status_code == 200
+        assert other.json()["assistant_message"]["content"] == "answer quick"
+
+        pipeline.release.set()
+        assert (await held).status_code == 200
+
+    assert [m.role for m in store.get(other_thread).messages] == ["user", "assistant"]
+    assert [m.role for m in store.get(held_thread).messages] == ["user", "assistant"]
+
+
+async def test_a_thread_deleted_while_a_message_waits_404s():
+    """A queued message whose thread is deleted while it waits its turn must
+    404 like any other unknown thread — never a `KeyError`, and never an append
+    to a soft-deleted ghost. So existence is re-checked *after* the wait, not
+    only before it."""
+    pipeline = HeldPipeline("first")
+    app, _ = delegate_app(pipeline)
+
+    async with async_client(app) as client:
+        conversation_id = await start_conversation(client)
+
+        first = asyncio.create_task(post_message(client, conversation_id, "first"))
+        await asyncio.wait_for(pipeline.entered.wait(), 2)
+
+        second = asyncio.create_task(post_message(client, conversation_id, "second"))
+        await let_the_queued_request_run()
+
+        deleted = await client.delete(f"/api/agent/conversations/{conversation_id}")
+        assert deleted.status_code == 204
+
+        pipeline.release.set()
+        # The exchange already in flight finishes on the thread it holds; the
+        # queued one finds it gone and never runs.
+        assert (await first).status_code == 200
+        assert (await second).status_code == 404
+
+    assert pipeline.started == ["first"]
