@@ -438,7 +438,24 @@ export function useGame(): UseGame {
     if (viewPlyRef.current !== null || stateRef.current?.game_over) return
     const hint = await fetchHint()
     // Null means the backend refused (no engine, game over) — no arrow.
-    setHintShapes(hint ? [{ orig: hint.from, dest: hint.to, brush: 'green' }] : [])
+    if (hint === null) {
+      setHintShapes([])
+      return
+    }
+    // Both checks above are asked again here, because the search took real time
+    // and the board it analyzed may no longer be the board on screen. A result
+    // for a position that is gone neither paints nor erases: it has no say over
+    // an arrow that legitimately belongs to the live board.
+    //
+    // Review moves the view without moving the version, so it is its own check.
+    if (viewPlyRef.current !== null) return
+    // The version binds the answer to the position it analyzed (#218): a hint
+    // that resolves after `apply` accepted a newer board is a recommendation for
+    // a position that is gone, and may not even be legal on this one. Plain
+    // equality, so it also fails safe either way round if the two halves ever
+    // disagree about carrying a version at all.
+    if (hint.version !== stateRef.current?.version) return
+    setHintShapes([{ orig: hint.from, dest: hint.to, brush: 'green' }])
   }, [])
 
   const setVoiceOutput = useCallback(async (enabled: boolean) => {

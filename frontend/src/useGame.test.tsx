@@ -99,7 +99,9 @@ beforeEach(() => {
     if (path.includes('/api/command'))
       return jsonResponse({ commentary: 'Nice move!', tool_results: [], state: state() })
     if (path.includes('/api/game/hint'))
-      return jsonResponse({ uci: 'e2e4', san: 'e4', from: 'e2', to: 'e4' })
+      // `version` is the board the engine analyzed, as the real endpoint sends
+      // it — matching `state()` here, so the default hint is for the live board.
+      return jsonResponse({ uci: 'e2e4', san: 'e4', from: 'e2', to: 'e4', version: 1 })
     if (path.includes('/api/settings/voice')) return jsonResponse({ voice_output: true })
     if (path.includes('/api/settings'))
       return jsonResponse({
@@ -1199,6 +1201,73 @@ describe('useGame', () => {
     act(() => {
       FakeWebSocket.instances[0].emit({ type: 'state', state: state({ fen: AFTER_E4_FEN }) })
     })
+    expect(result.current.hintShapes).toEqual([])
+  })
+
+  /** Hold the hint response open, so the board can move while it is in flight.
+   * `version` is the board the held answer is about; returns the release handle. */
+  function deferHint(version: number) {
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/game/hint'))
+        return held.then(() => ({
+          ok: true,
+          json: () =>
+            Promise.resolve({ uci: 'e2e4', san: 'e4', from: 'e2', to: 'e4', version }),
+        }))
+      return jsonResponse(state())
+    })
+    return release
+  }
+
+  it('discards a hint that resolves after a newer board has been applied', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+    const release = deferHint(1)
+
+    let pending: Promise<void> | undefined
+    act(() => {
+      pending = result.current.requestHint()
+    })
+    // The board moves on while the engine is still searching — another client,
+    // or this one dragging a piece. `apply` clears the arrow, but the answer
+    // already in flight is still an answer about version 1.
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 2, fen: AFTER_E4_FEN, turn: 'black' }),
+      })
+    })
+    await act(async () => {
+      release()
+      await pending
+    })
+
+    // Painting it here would show the old position's recommendation on the new
+    // board, where it may not even be legal (#218).
+    expect(result.current.hintShapes).toEqual([])
+  })
+
+  it('discards a hint that resolves after the player enters history review', async () => {
+    const { result } = await renderReviewable()
+    const release = deferHint(1)
+
+    let pending: Promise<void> | undefined
+    act(() => {
+      pending = result.current.requestHint()
+    })
+    // Review moves the view without moving the board, so the version still
+    // matches — the arrow would land on a position the player is only browsing.
+    act(() => result.current.stepBack())
+    await act(async () => {
+      release()
+      await pending
+    })
+
+    expect(result.current.reviewing).toBe(true)
     expect(result.current.hintShapes).toEqual([])
   })
 
