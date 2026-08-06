@@ -26,6 +26,7 @@ Two deliberate divergences from PCC (chess is leaner and in-memory by design):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -429,6 +430,28 @@ def build_agent_router(
     """
     router = APIRouter(prefix="/api/agent", tags=["agent"])
 
+    # One lock per conversation id. A message is an *exchange* — read the
+    # history, commit the question, run the pipeline, commit the answer — and
+    # unserialized that sequence interleaves: two concurrent posts to one thread
+    # committed both user turns before either assistant turn, so the stored
+    # thread stopped alternating and the second run reasoned from a transcript
+    # ending in the first, still-unanswered question (#221). Every later
+    # `history_for_loop` then replayed that order to the model.
+    #
+    # Keyed by id and not global, because different threads share nothing here:
+    # a conductor waiting on one conversation must not stall another. (The one
+    # thing they *do* share — the single game session — has its own guard
+    # downstream in `api._run_command`; that is a different race, about one
+    # board, and this lock neither replaces nor duplicates it.)
+    #
+    # `asyncio.Lock`, because the waiting has to yield the event loop rather
+    # than block it, and the app is single-process. Router-scoped, so the map
+    # lives exactly as long as the store it guards and a fresh app starts with
+    # fresh locks. Entries are never reaped: only an id the store already knows
+    # can mint one (the 404 below comes first), so the map is bounded by the
+    # same conversations the store is already holding, at a fraction of the size.
+    exchange_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
     def _get_or_404(conversation_id: int) -> StoredConversation:
         conversation = store.get(conversation_id)
         if conversation is None:
@@ -482,16 +505,27 @@ def build_agent_router(
         """Store the user turn, run the command pipeline, store and return the
         assistant turn.
 
+        **One exchange at a time per conversation.** The whole sequence — read
+        the history, commit the question, run the pipeline, commit the answer —
+        is serialized under that thread's lock, because it is one indivisible
+        thing: concurrent posts to the same thread otherwise commit both
+        questions before either answer, and the second run is handed a
+        transcript ending in the first unanswered one (#221). A second caller
+        waits its turn rather than being refused, so the conductor never has to
+        retry; different conversations still run concurrently.
+
         The user turn is committed *before* the pipeline runs, so a provider
         failure — surfaced as 502 — never loses what the caller said, and a
         stale `version` (409, from the pipeline's mutation guard) is the same
         deal: the turn is on the record, the board is untouched, and the caller
-        can resync and say it again. History
+        can resync and say it again. That ordering is preserved *inside* the
+        serialized section. History
         replays as text turns only; ``X-Agent-Actor`` binds a trusted delegate
         caller (conductor) as the run's audit actor in the log, otherwise it
         falls back to the loop's default identity.
         """
-        conversation = _get_or_404(conversation_id)
+        # Fail fast before taking a lock, so an unknown id never mints one.
+        _get_or_404(conversation_id)
         if run_command is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -503,29 +537,38 @@ def build_agent_router(
             conversation_id,
             actor,
         )
-        history = store.history_for_loop(conversation)
-        user_message = store.append_user_message(conversation, data.content)
 
-        try:
-            outcome = await run_command(data.content, history, data.version)
-        except ProviderError as exc:
-            logger.error(
-                "agent_delegate_run_failed conversation_id=%s error=%s",
-                conversation_id,
-                exc,
+        async with exchange_locks[conversation_id]:
+            # Re-read under the lock: this message may have spent the wait
+            # queued behind another while the thread was deleted, and then it
+            # must 404 like any other unknown thread rather than append to a
+            # soft-deleted ghost.
+            conversation = _get_or_404(conversation_id)
+            history = store.history_for_loop(conversation)
+            user_message = store.append_user_message(conversation, data.content)
+
+            try:
+                outcome = await run_command(data.content, history, data.version)
+            except ProviderError as exc:
+                logger.error(
+                    "agent_delegate_run_failed conversation_id=%s error=%s",
+                    conversation_id,
+                    exc,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"agent run failed: {exc}",
+                ) from exc
+
+            assistant_message = store.append_assistant_message(
+                conversation,
+                outcome.commentary,
+                _tool_calls_read(outcome.tool_results, outcome.tool_args),
+                outcome.stop_reason,
+                memory=(
+                    None if outcome.memory == outcome.commentary else outcome.memory
+                ),
             )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"agent run failed: {exc}",
-            ) from exc
-
-        assistant_message = store.append_assistant_message(
-            conversation,
-            outcome.commentary,
-            _tool_calls_read(outcome.tool_results, outcome.tool_args),
-            outcome.stop_reason,
-            memory=(None if outcome.memory == outcome.commentary else outcome.memory),
-        )
         return MessageExchange(
             user_message=MessageRead.model_validate(user_message),
             assistant_message=MessageRead.model_validate(assistant_message),
