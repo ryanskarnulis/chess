@@ -33,6 +33,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
@@ -211,15 +212,42 @@ def _restore_settings(settings: Settings, path: Path) -> None:
             setattr(settings, f.name, data[f.name])
 
 
+def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    """Write `data` as JSON so that a failed write costs nothing already on disk.
+
+    The bytes land in a sibling temp file and one `replace` swaps it in, so a
+    reader sees either the whole old document or the whole new one. Writing
+    straight to the destination has no such rollback point: it truncates first,
+    and anything that dies after that (a full disk, an I/O error, the host going
+    away) has destroyed the file it was replacing — which for a named game save
+    is the player's last good game (#219). The temp file goes away on the way
+    out so a failure leaves no litter, and the `.json.tmp` suffix keeps one that
+    outlives a hard kill outside `saved_game_names`'s `*.json` glob, so a
+    half-written save is never advertised as a save.
+
+    The `OSError` is re-raised for the caller to classify: the two callers answer
+    to different contracts — settings persistence is best-effort, a save the
+    player asked for owes them a refusal.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(path)
+    except OSError:
+        # Suppressed so the cleanup's own failure can never stand in for the
+        # real one — the caller is owed the error that lost the write.
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
+
+
 def _write_settings_file(path: Path, data: dict[str, Any]) -> None:
     """Atomic best-effort write: a failed save must never fail the mutation
     that triggered it (the same rule the tracer and progress observers live
     by), and a crash mid-write must never leave a half-file to restore from."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        tmp.replace(path)
+        _write_json_atomic(path, data)
     except OSError:
         logger.warning("could not persist settings to %s", path)
 
@@ -1129,8 +1157,22 @@ def build_registry(
         path = _save_path(ctx, name)
         data = ctx.session.to_dict()
         data["transcript"] = ctx.transcript.to_dict()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2))
+        try:
+            _write_json_atomic(path, data)
+        except OSError as exc:
+            # `never`, and not for want of classifying it: a volume that cannot
+            # take these bytes will not take them under another name, so the
+            # loop's remaining iterations buy nothing and the honest move is to
+            # tell the player the game is not on disk. The message is the app's
+            # own rather than the errno string — that varies by host and names a
+            # path the player has no use for — with the real one logged for
+            # whoever has to go fix the disk.
+            logger.warning("could not write game save %s: %s", path, exc)
+            raise ToolError(
+                f"could not write the save file for {name!r}; "
+                "no save was created or replaced",
+                retry=RETRY_NEVER,
+            ) from exc
         return {"ok": True, "name": name}
 
     @registry.tool()
