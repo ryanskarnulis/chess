@@ -411,8 +411,9 @@ class ToolContext:
         self.transcript = transcript
 
 
-# The two tools that throw a real game away.
-DESTRUCTIVE_TOOLS = ("new_game", "resign")
+# The tools that throw a real game away: the reset, and the two ways a player
+# can end one deliberately.
+DESTRUCTIVE_TOOLS = ("new_game", "resign", "claim_draw")
 
 # Reads whose answers are strict subsets of the board state the brain is handed
 # in its prompt every single turn (`_agent_state_dict`). They stay registered —
@@ -426,6 +427,39 @@ BOARD_STATE_TOOLS = (
     "get_move_history",
     "get_captured_pieces",
 )
+
+
+def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
+    """Which registered tools the brain is *not* offered, right now.
+
+    The offer policy, in one place, resolved per command off live state — app
+    assembly and the eval harness both ask this rather than each keeping its own
+    copy, because a copy that drifts means the measured agent is not the shipped
+    one (and a bigger or different tool list is itself a variable: the 2026-07-13
+    trace review saw capture phrasings behave differently under two lists).
+
+    Three reasons a tool is withheld, and none of them is a prompt rule:
+
+    - `BOARD_STATE_TOOLS`, always: their answers are strict subsets of the state
+      block the brain is handed every turn, so a call only burns a round trip.
+    - `get_best_moves` while hints are off (audit item 11): hints-off is a
+      capability the code withholds, not a line the model is asked to obey.
+    - `claim_draw` while no draw is claimable: whether the rules allow a claim is
+      board truth, so the tool simply is not there until it can be used — never
+      the model's judgment. This also keeps the planner's schema unchanged on
+      every turn where no claim exists, which is what the eval baseline is
+      measured against.
+
+    Callers with no state injection (the MCP server, the delegate wire,
+    `/api/game/hint`) still get the full registry; a withheld tool stays
+    registered and dispatchable, and refuses on its own terms when it cannot run.
+    """
+    exclude = list(BOARD_STATE_TOOLS)
+    if not ctx.settings.hints_mode:
+        exclude.append("get_best_moves")
+    if not ctx.session.claimable_draws():
+        exclude.append("claim_draw")
+    return exclude
 
 
 def confirm_pending(
@@ -1030,9 +1064,9 @@ def build_registry(
     def _gate(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
         """Refuse an unconfirmed destructive call; arm it for the player's yes.
 
-        The prompt asks the agent to confirm before `new_game`/`resign`, but the
-        model honors that only about half the time (docs/agent-evals.md), so the
-        rule is enforced here, where the model has no say. A refusal is an
+        The prompt asks the agent to confirm before a `DESTRUCTIVE_TOOLS` call,
+        but the model honors that only about half the time (docs/agent-evals.md),
+        so the rule is enforced here, where the model has no say. A refusal is an
         ordinary rejection *result* — the agent reads it and asks the player,
         exactly as it reads an illegal move and corrects — so the gate needs no
         special path through the loop.
@@ -1131,6 +1165,40 @@ def build_registry(
             return refusal
         coordinator.abandon_turn()  # no reply is owed on a game that just ended
         outcome = ctx.session.resign(color)
+        coordinator.record_destructive_op()
+        return {
+            "ok": True,
+            "outcome": {
+                "termination": outcome.termination,
+                "winner": outcome.winner,
+                "result": outcome.result,
+            },
+        }
+
+    @registry.tool()
+    def claim_draw() -> dict[str, Any]:
+        """Claim a draw by threefold repetition or the fifty-move rule. Call this
+        as soon as the player asks to claim a draw — do not ask them to confirm
+        first. If a game is in progress the result comes back refusing and asking
+        you to confirm; relay that to the player and stop, do not call again.
+        When it returns ok, the game really did end in a draw."""
+        coordinator.require_destructive_budget()
+        # Whether a claim exists is board truth, and it is checked *before* the
+        # gate for the same reason the budget is: a call that cannot run must not
+        # arm a question, because the player's "yes" to it would then fail on a
+        # game they were told they could end. `never`, and not for want of
+        # classifying it — there are no arguments to vary, and what changes the
+        # answer is a move, not another call.
+        if not ctx.session.claimable_draws():
+            raise ToolError(
+                "cannot claim a draw: no draw is available to claim in this position",
+                retry=RETRY_NEVER,
+            )
+        refusal = _gate("claim_draw", {})
+        if refusal is not None:
+            return refusal
+        coordinator.abandon_turn()  # no reply is owed on a game that just ended
+        outcome = ctx.session.claim_draw()
         coordinator.record_destructive_op()
         return {
             "ok": True,

@@ -40,7 +40,17 @@ _TERMINATION_NAMES = {
     chess.Termination.INSUFFICIENT_MATERIAL: "insufficient_material",
     chess.Termination.SEVENTYFIVE_MOVES: "seventyfive_moves",
     chess.Termination.FIVEFOLD_REPETITION: "fivefold_repetition",
+    chess.Termination.THREEFOLD_REPETITION: "threefold_repetition",
+    chess.Termination.FIFTY_MOVES: "fifty_moves",
 }
+
+# The draws a player *claims* rather than getting automatically, in the order
+# python-chess's own `outcome(claim_draw=True)` resolves them — so the first name
+# `claimable_draws()` reports is the termination a claim would actually produce.
+_DRAW_CLAIM_RULES = (
+    ("fifty_moves", chess.Board.can_claim_fifty_moves),
+    ("threefold_repetition", chess.Board.can_claim_threefold_repetition),
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +109,9 @@ class GameSession:
     def __init__(self, fen: str | None = None, player_color: str = "white"):
         self._board = chess.Board(fen) if fen is not None else chess.Board()
         self._resigned: chess.Color | None = None
+        # Whether a claimable draw was claimed. Session-level like `_resigned`:
+        # a board knows a claim is *available*, never that anybody made it.
+        self._draw_claimed = False
         self._player_color = _validate_player_color(player_color)
         self._revision = 0
 
@@ -139,6 +152,7 @@ class GameSession:
             player_color = _validate_player_color(player_color)
         self._board.reset()
         self._resigned = None
+        self._draw_claimed = False
         if player_color is not None:
             self._player_color = player_color
         self._revision += 1
@@ -159,6 +173,45 @@ class GameSession:
                 raise ValueError(f"invalid color: {color!r}")
             resigner = by_name[color]
         self._resigned = resigner
+        self._revision += 1
+        return self.outcome()
+
+    def claimable_draws(self) -> tuple[str, ...]:
+        """The draw rules the side to move may claim right now.
+
+        python-chess's answer, whole: `can_claim_fifty_moves` and
+        `can_claim_threefold_repetition` are the rules, and their semantics
+        include the part a hand-rolled count would miss — a claim is available as
+        soon as a legal move *would* complete the repetition or the count, not
+        only once it has. Nothing here re-derives a chess rule.
+
+        Empty on a finished game, like `legal_moves()`: there is nothing left to
+        claim, including once the draw itself has been claimed.
+        """
+        if self.is_game_over():
+            return ()
+        return tuple(
+            name for name, claimable in _DRAW_CLAIM_RULES if claimable(self._board)
+        )
+
+    def claim_draw(self) -> Outcome:
+        """Claim an available draw. Refuses when there is nothing to claim.
+
+        Which rule the claim lands under is not the caller's choice and not a
+        second implementation of the rules: `outcome()` asks the board with
+        `claim_draw=True` and reports whatever python-chess resolves it to, in
+        the same precedence order `claimable_draws()` lists.
+
+        Boards don't model *claiming*, only claimability, so — exactly like
+        resignation — the fact lives here and folds into `outcome()` /
+        `is_game_over()`. A refusal leaves the session untouched, revision
+        included.
+        """
+        if self.is_game_over():
+            raise ValueError("cannot claim a draw: game is already over")
+        if not self.claimable_draws():
+            raise ValueError("cannot claim a draw: no draw is available to claim")
+        self._draw_claimed = True
         self._revision += 1
         return self.outcome()
 
@@ -196,15 +249,19 @@ class GameSession:
         return chess.piece_symbol(piece.piece_type) if piece is not None else None
 
     def export_pgn(self) -> str:
-        """The game so far as PGN. Result reflects resignation too."""
+        """The game so far as PGN. Result reflects the session-level endings
+        (resignation, a claimed draw) too, since it comes off `outcome()`."""
         game = chess.pgn.Game.from_board(self._board)
         outcome = self.outcome()
         game.headers["Result"] = outcome.result if outcome is not None else "*"
         return str(game)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialized form: root FEN + UCI moves + resignation flag, plus the
-        player's color (additive — older readers ignore it)."""
+        """Serialized form: root FEN + UCI moves + the two session-level endings
+        (resignation, a claimed draw), plus the player's color. `player_color`
+        and `draw_claimed` are additive — older readers ignore them, and older
+        saves that lack them load at the defaults those games were played
+        under."""
         resigned = self._resigned
         return {
             "version": 1,
@@ -212,6 +269,7 @@ class GameSession:
             "moves": [move.uci() for move in self._board.move_stack],
             "resigned": _COLOR_NAMES[resigned] if resigned is not None else None,
             "player_color": self._player_color,
+            "draw_claimed": self._draw_claimed,
         }
 
     @classmethod
@@ -233,6 +291,9 @@ class GameSession:
         moves = data["moves"]
         resigned = data["resigned"]
         player_color = data.get("player_color", "white")
+        draw_claimed = data.get("draw_claimed", False)
+        if not isinstance(draw_claimed, bool):
+            raise ValueError(f"invalid draw_claimed flag: {draw_claimed!r}")
         if not isinstance(root_fen, str):
             raise ValueError("save data root_fen must be a string")
         if not isinstance(moves, list):
@@ -252,6 +313,11 @@ class GameSession:
                 raise ValueError(f"save data contains illegal move: {uci!r}")
         if resigned is not None:
             session.resign(resigned)
+        if draw_claimed:
+            # Through the same validation a live claim goes through, for the same
+            # reason the moves are replayed rather than trusted: a file claiming a
+            # draw the position does not support must not produce a drawn board.
+            session.claim_draw()
         return session
 
     def save(self, path: str | Path) -> None:
@@ -269,6 +335,13 @@ class GameSession:
         """
         if self._resigned is not None:
             return UndoResult(ok=False, reason="cannot undo: game ended by resignation")
+        if self._draw_claimed:
+            # Same rule, same reason: the claim was about *this* position, and
+            # popping plies out from under it would leave a game over by a claim
+            # the board no longer supports.
+            return UndoResult(
+                ok=False, reason="cannot undo: game ended by a claimed draw"
+            )
         available = len(self._board.move_stack)
         if plies < 1:
             return UndoResult(ok=False, reason="plies must be at least 1")
@@ -483,7 +556,14 @@ class GameSession:
         return self._board.is_check()
 
     def is_game_over(self) -> bool:
-        return self._resigned is not None or self._board.is_game_over()
+        # `claim_draw` is the session's own flag, passed to the same board call
+        # `outcome()` makes: one derivation, so the two can never disagree about
+        # whether a claimed game is finished. It is only ever True on a position
+        # whose claim was available when it was made, and every mutation is
+        # refused from then on, so the board's answer cannot go stale.
+        return self._resigned is not None or self._board.is_game_over(
+            claim_draw=self._draw_claimed
+        )
 
     def outcome(self) -> Outcome | None:
         if self._resigned is not None:
@@ -493,7 +573,7 @@ class GameSession:
                 winner=_COLOR_NAMES[winner],
                 result="1-0" if winner == chess.WHITE else "0-1",
             )
-        raw = self._board.outcome()
+        raw = self._board.outcome(claim_draw=self._draw_claimed)
         if raw is None:
             return None
         fallback = raw.termination.name.lower()

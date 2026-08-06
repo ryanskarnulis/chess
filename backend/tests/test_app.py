@@ -33,6 +33,12 @@ from fakes import (
 )
 
 
+def offered(call) -> set[str]:
+    """The tool names one recorded `chat()` call carried — empty for a call
+    offered none (the narrator)."""
+    return {t["function"]["name"] for t in call["tools"] or []}
+
+
 def test_build_app_serves_state_from_a_fresh_game():
     app = build_app(brain=ScriptedBrain(AgentResponse(text="hi")))
     client = TestClient(app)
@@ -207,15 +213,35 @@ def test_build_app_gates_get_best_moves_on_hints_mode():
     client.post("/api/command", json={"text": "give me hints"})
     client.post("/api/command", json={"text": "what should I play?"})
 
-    def offered(call) -> set[str]:
-        return {t["function"]["name"] for t in call["tools"] or []}
-
     # cmd 1 planned with hints off: no get_best_moves on the table.
     assert "get_best_moves" not in offered(fake.calls[0])
     # cmd 2's planner turn: the switch took effect without a rebuild.
     assert "get_best_moves" in offered(fake.calls[-2])
     # The other analysis reads are ungated — hints only gates move advice.
     assert {"evaluate_position", "analyze_last_move"} <= offered(fake.calls[0])
+
+
+def test_build_app_offers_claim_draw_only_when_a_draw_is_claimable():
+    # The same live seam as the hints gate, off board truth instead of settings:
+    # whether a draw can be claimed is something the app knows, so the tool is
+    # simply absent until it can be used and the model is never asked to judge
+    # it. Every turn with no claim available plans against the unchanged schema.
+    fake = ScriptedProvider(text_turn("ok"))
+    client = TestClient(build_app(model="gemma", provider=fake))
+
+    client.post("/api/command", json={"text": "how's it looking?"})
+    assert "claim_draw" not in offered(fake.calls[0]), "nothing to claim yet"
+
+    # Repeat the position into a claimable threefold draw. Each of these is a
+    # fast-path move (no planner turn), so the next planner call is the one that
+    # sees the new offer.
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8") * 2:
+        client.post("/api/command", json={"text": san})
+    client.post("/api/command", json={"text": "can we call it a draw?"})
+
+    # -2 is that command's planner turn; -1 is the tool-free narrator.
+    assert "claim_draw" in offered(fake.calls[-2])
+    assert offered(fake.calls[-1]) == set(), "the narrator still gets no tools"
 
 
 def test_build_app_from_env_reads_the_planner_temperature(monkeypatch):

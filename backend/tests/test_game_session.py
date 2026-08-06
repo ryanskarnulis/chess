@@ -341,6 +341,172 @@ def test_ongoing_game_has_no_outcome():
     assert session.outcome() is None
 
 
+# --- claimable draws: threefold repetition and the fifty-move rule ---------
+#
+# The two draws the rules make *claimable* rather than automatic. python-chess
+# owns both predicates (`can_claim_*`), including the part everybody forgets:
+# a claim is available as soon as a legal move would complete the repetition or
+# the count, not only once it has. The session inherits those semantics whole —
+# it never re-derives the rule — and adds the one thing a board cannot model:
+# whether anybody actually claimed.
+
+REPETITION = ("Nf3", "Nf6", "Ng1", "Ng8")
+
+# King and rook against a bare king, one half-move short of the fifty-move
+# count: no automatic draw here, and no insufficient material either.
+FIFTY_MOVE_FEN = "8/8/8/4k3/8/8/4K3/6R1 w - - 99 80"
+
+
+def repeated(session: GameSession, cycles: int = 2) -> GameSession:
+    for _ in range(cycles):
+        for san in REPETITION:
+            assert session.submit_move(san).legal
+    return session
+
+
+def test_no_draw_is_claimable_in_a_fresh_game():
+    assert GameSession().claimable_draws() == ()
+
+
+def test_a_repeated_position_makes_a_threefold_claim_available():
+    session = repeated(GameSession())
+    assert session.claimable_draws() == ("threefold_repetition",)
+
+
+def test_a_claimable_repetition_does_not_end_the_game_by_itself():
+    """The issue's reproduction: the claim is available and the game plays on.
+    Only fivefold repetition is automatic; three is a claim somebody has to
+    make."""
+    session = repeated(GameSession())
+    assert session.claimable_draws()
+    assert not session.is_game_over()
+    assert session.outcome() is None
+    assert len(session.legal_moves()) == 20
+
+
+def test_a_repetition_the_next_move_would_complete_is_already_claimable():
+    """python-chess's semantics, inherited rather than re-implemented: after
+    seven plies the position has occurred twice and Ng8 would make it three, so
+    the side to move may claim now."""
+    session = repeated(GameSession())
+    session.undo(1)
+    assert session.move_history() == list(REPETITION * 2)[:-1]
+    assert session.claimable_draws() == ("threefold_repetition",)
+
+
+def test_the_fifty_move_claim_follows_the_halfmove_clock():
+    ninety_eight = FIFTY_MOVE_FEN.replace(" 99 ", " 98 ")
+    assert GameSession(fen=ninety_eight).claimable_draws() == ()
+    # 99 is the same "one legal move away" case as the repetition above; 100 is
+    # the count reached.
+    assert GameSession(fen=FIFTY_MOVE_FEN).claimable_draws() == ("fifty_moves",)
+    hundred = FIFTY_MOVE_FEN.replace(" 99 ", " 100 ")
+    assert GameSession(fen=hundred).claimable_draws() == ("fifty_moves",)
+
+
+def test_claiming_a_repetition_draw_ends_the_game():
+    session = repeated(GameSession())
+    outcome = session.claim_draw()
+    assert outcome.termination == "threefold_repetition"
+    assert outcome.winner is None
+    assert outcome.result == "1/2-1/2"
+    assert session.is_game_over()
+    assert session.outcome() == outcome
+
+
+def test_claiming_a_fifty_move_draw_names_that_rule():
+    session = GameSession(fen=FIFTY_MOVE_FEN)
+    assert session.claim_draw().termination == "fifty_moves"
+    assert session.outcome().result == "1/2-1/2"
+
+
+def test_a_claim_bumps_the_revision():
+    """The board version every client tracks rides on this counter, so a claim
+    has to move it exactly once."""
+    session = repeated(GameSession())
+    before = session.revision
+    session.claim_draw()
+    assert session.revision == before + 1
+
+
+def test_claiming_a_draw_with_nothing_to_claim_raises():
+    session = GameSession()
+    session.submit_move("e4")
+    fen_before, revision_before = session.fen(), session.revision
+    with pytest.raises(ValueError):
+        session.claim_draw()
+    assert session.fen() == fen_before
+    assert session.revision == revision_before
+    assert not session.is_game_over()
+
+
+def test_claiming_a_draw_after_the_game_is_over_raises():
+    session = GameSession()
+    for move in ["f3", "e5", "g4", "Qh4"]:  # fool's mate
+        session.submit_move(move)
+    with pytest.raises(ValueError):
+        session.claim_draw()
+    assert session.outcome().termination == "checkmate", "the ending stands"
+
+
+def test_claiming_a_draw_after_a_resignation_raises():
+    session = repeated(GameSession())
+    session.resign("white")
+    with pytest.raises(ValueError):
+        session.claim_draw()
+    assert session.outcome().termination == "resignation"
+
+
+def test_a_second_claim_raises():
+    session = repeated(GameSession())
+    session.claim_draw()
+    with pytest.raises(ValueError):
+        session.claim_draw()
+
+
+def test_nothing_is_claimable_once_a_draw_has_been_claimed():
+    session = repeated(GameSession())
+    session.claim_draw()
+    assert session.claimable_draws() == ()
+
+
+def test_moves_are_rejected_after_a_claimed_draw():
+    session = repeated(GameSession())
+    session.claim_draw()
+    result = session.submit_move("Nf3")
+    assert not result.legal
+    assert result.reason
+    assert session.legal_moves() == []
+    assert session.legal_destinations() == {}
+
+
+def test_undo_rejected_after_a_claimed_draw():
+    """The same rule resignation has: the claim is about *this* position, so
+    popping plies out from under it would leave a game over by a claim the
+    board no longer supports."""
+    session = repeated(GameSession())
+    session.claim_draw()
+    result = session.undo()
+    assert not result.ok
+    assert result.reason
+
+
+def test_new_game_clears_a_claimed_draw():
+    session = repeated(GameSession())
+    session.claim_draw()
+    session.new_game()
+    assert not session.is_game_over()
+    assert session.outcome() is None
+    assert session.claimable_draws() == ()
+    assert session.submit_move("e4").legal
+
+
+def test_history_survives_a_claimed_draw():
+    session = repeated(GameSession())
+    session.claim_draw()
+    assert session.move_history() == list(REPETITION * 2)
+
+
 # --- position_fens: per-ply positions for history review -----------------
 
 

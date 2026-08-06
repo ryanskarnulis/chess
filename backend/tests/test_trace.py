@@ -246,6 +246,32 @@ def test_resign_turn_is_traced_as_its_own_route(trace_path):
     assert record["changed"] is False, "gated: it asked, it did not end the game"
 
 
+def test_a_confirmed_draw_claim_is_traced_as_one_mutation(trace_path):
+    """A claim ends the game, so the record has to show exactly one board change
+    on the confirmation turn — no engine reply is owed to a finished game."""
+    ctx = ToolContext(session=GameSession())
+    for _ in range(2):
+        for san in ("Nf3", "Nf6", "Ng1", "Ng8"):
+            ctx.session.submit_move(san)
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(text="sure?", tool_calls=(ToolCall(name="claim_draw", args={}),)),
+        tracer=JsonlTracer(trace_path),
+    )
+    client = TestClient(app)
+
+    client.post("/api/command", json={"text": "can we call it a draw?"})
+    client.post("/api/command", json={"text": "yes"})
+
+    asked, confirmed = read_records(trace_path)
+    assert asked["route"] == "brain"
+    assert asked["mutations"] == 0, "the gate only asked"
+    assert confirmed["route"] == "confirmation"
+    assert [t["name"] for t in confirmed["tools"]] == ["claim_draw"]
+    assert confirmed["mutations"] == 1
+    assert confirmed["changed"] is True
+
+
 def test_a_suppressed_claim_is_a_countable_event(trace_path):
     """The guard swaps the lie for the truth, so `commentary` is what the player
     saw — and the record keeps the event beside it."""

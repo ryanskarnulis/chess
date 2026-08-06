@@ -32,7 +32,7 @@ from chessapp.llama_brain import create_llama_brain
 from chessapp.personality import planner_prompt_for, system_prompt_for
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider
-from chessapp.tools import BOARD_STATE_TOOLS, ToolContext, build_registry
+from chessapp.tools import ToolContext, brain_tool_exclusions, build_registry
 from chessapp.trace import JsonlTracer, Tracer
 from chessapp.voice import (
     DEFAULT_STT_MODEL,
@@ -112,20 +112,13 @@ def build_app(
     registry = build_registry(ctx, coordinator, atomic_exchange=False)
 
     def offered_tools() -> list[dict[str, Any]]:
-        """What the brain may call this command, resolved off live settings.
-
-        Always minus the pure reads (it gets the board state in its prompt
-        every turn, so a read it already has the answer to only burns a round
-        trip out of four), and minus `get_best_moves` while hints are off —
-        the audit's item 11: hints-off is a capability the code withholds, not
-        a rule the prompt asks the model to follow. Callers with no such
-        injection (MCP, the delegate wire, /api/game/hint) keep the full
-        registry.
+        """What the brain may call this command, resolved live off the shared
+        context by `brain_tool_exclusions` — the pure reads always, plus whatever
+        the app already knows the answer to (hints off, no claimable draw).
+        Callers with no such injection (MCP, the delegate wire, /api/game/hint)
+        keep the full registry.
         """
-        exclude = list(BOARD_STATE_TOOLS)
-        if not ctx.settings.hints_mode:
-            exclude.append("get_best_moves")
-        return registry.definitions(exclude=exclude)
+        return registry.definitions(exclude=brain_tool_exclusions(ctx))
 
     if brain is None and agent_enabled:
         brain = create_llama_brain(

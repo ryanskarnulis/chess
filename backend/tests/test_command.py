@@ -889,6 +889,75 @@ def test_no_drops_the_armed_op_and_the_game_stands():
     assert response["commentary"]
 
 
+def drawish(ctx: ToolContext) -> ToolContext:
+    """A real game repeated into a claimable threefold draw — something to lose,
+    and a draw the rules allow claiming."""
+    for _ in range(2):
+        for san in ("Nf3", "Nf6", "Ng1", "Ng8"):
+            ctx.session.submit_move(san)
+    return ctx
+
+
+def make_drawish_client(
+    *responses: AgentResponse,
+    narrations: tuple[str, ...] = (),
+    verbosity: str = "normal",
+):
+    ctx = drawish(ToolContext(session=GameSession()))
+    ctx.settings.verbosity = verbosity
+    app, brain = scripted_app(
+        ctx, brain=ScriptedBrain(*responses, narrations=narrations)
+    )
+    return TestClient(app), brain, ctx
+
+
+def test_a_draw_claim_asks_before_it_ends_the_game():
+    client, _, ctx = make_drawish_client(destructive("claim_draw"))
+
+    response = client.post(
+        "/api/command", json={"text": "can we call it a draw?"}
+    ).json()
+
+    assert not ctx.session.is_game_over(), "the game must not end on the ask"
+    assert ctx.pending is not None and ctx.pending.name == "claim_draw"
+    assert response["tool_results"][0]["result"]["ok"] is False
+
+
+def test_yes_confirms_a_draw_claim_and_draws_the_game():
+    client, _, ctx = make_drawish_client(destructive("claim_draw"))
+    client.post("/api/command", json={"text": "can we call it a draw?"})
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.outcome().result == "1/2-1/2"
+    assert response["state"]["game_over"] is True
+    assert response["state"]["outcome"]["termination"] == "threefold_repetition"
+    assert response["state"]["claimable_draws"] == [], "nothing left to claim"
+
+
+def test_a_confirmed_claim_broadcasts_the_drawn_board():
+    client, _, ctx = make_drawish_client(destructive("claim_draw"))
+    client.post("/api/command", json={"text": "draw?"})
+    with client.websocket_connect("/ws") as ws:
+        version_before = receive_state(ws)["state"]["version"]
+        client.post("/api/command", json={"text": "yes"})
+        message = receive_state(ws)
+
+    assert message["state"]["game_over"] is True
+    assert message["state"]["version"] == version_before + 1
+
+
+def test_low_verbosity_confirmed_claim_reports_the_draw():
+    """The canned stand-in has to say what actually happened: a claim is not a
+    new game, and its result is the half point."""
+    client, _, ctx = make_drawish_client(destructive("claim_draw"), verbosity="low")
+    client.post("/api/command", json={"text": "draw?"})
+
+    commentary = client.post("/api/command", json={"text": "yes"}).json()["commentary"]
+
+    assert commentary == "Game over: 1/2-1/2 (threefold_repetition)."
+
+
 def test_a_later_yes_cannot_revive_a_declined_op():
     """The gate must not leave a loaded gun lying around: once declined, a bare
     "yes" is just an utterance for the brain, not a licence to reset."""
@@ -1014,6 +1083,37 @@ def test_a_confirmed_resignation_may_say_the_game_is_over():
 
     assert ctx.session.is_game_over()
     assert response["commentary"] == "Done. Game over."
+
+
+def test_a_confirmed_draw_claim_may_say_the_game_is_a_draw():
+    """The draw class is its own fact, and a claimed draw is exactly the case it
+    has to license: the board says drawn, so the narrator may say so."""
+    client, _, ctx = make_drawish_client(
+        destructive("claim_draw"), narrations=("That's a draw. Game over.",)
+    )
+    client.post("/api/command", json={"text": "let's call it a draw"})
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.outcome().winner is None
+    assert response["commentary"] == "That's a draw. Game over."
+
+
+def test_an_armed_claim_is_not_a_draw_yet():
+    """The other side of the same fact: the gate only *asked*, so nothing was
+    drawn and commentary saying otherwise is the invention the guard exists for
+    (the same rule an armed-but-unconfirmed resignation gets)."""
+    client, _, ctx = make_drawish_client(
+        AgentResponse(
+            text="That's a draw. Game over.",
+            tool_calls=(ToolCall(name="claim_draw", args={}),),
+        )
+    )
+
+    response = client.post("/api/command", json={"text": "draw?"}).json()
+
+    assert not ctx.session.is_game_over()
+    assert response["commentary"] == UNTRUE_CLAIM_REPLY
 
 
 # --- ...and the board it is checked against is one the turn actually had.
