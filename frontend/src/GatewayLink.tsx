@@ -1,5 +1,7 @@
-// Floating top-left link back to the gateway launcher ("The Web").
-// Copied verbatim across apps (house convention — no shared packages).
+// Link back to the gateway launcher ("The Web"); this app seats it in the
+// command row (it used to float top-left, over the mic on phone widths).
+// URL derivation copied verbatim across apps (house convention — no shared
+// packages).
 // The gateway serves the apex of whatever domain served this app, so the
 // URL is derived by stripping the first host label; on localhost/raw-IP
 // dev there is no gateway to return to, so the button renders nothing.

@@ -3,7 +3,6 @@ import { AgentBubble } from './AgentBubble'
 import { Board } from './Board'
 import { BottomBar } from './BottomBar'
 import { CapturedPieces } from './CapturedPieces'
-import { GatewayLink } from './GatewayLink'
 import { CommandBox } from './CommandBox'
 import { MoveStrip } from './MoveStrip'
 import { OptionsSheet } from './OptionsSheet'
@@ -15,6 +14,9 @@ import './App.css'
 // A handed-off intent is one utterance, not an essay — anything longer is
 // junk (or someone poking at the URL), so it gets cut rather than sent.
 const MAX_INTENT_LENGTH = 500
+
+// What the status row shows before the first state document arrives.
+const NO_CAPTURES = { white: [], black: [] }
 
 function App() {
   const {
@@ -103,9 +105,21 @@ function App() {
     </div>
   )
 
+  // Everything the merged status row can say, one state at a time: a rejected
+  // move outranks the turn while it lasts (it clears on the next accepted
+  // one), and before the first state document there is only the connection.
+  const chipText = moveError
+    ? moveError
+    : !state
+      ? 'Connecting…'
+      : state.game_over
+        ? `Game over — ${state.outcome?.result ?? ''}`
+        : reviewing
+          ? 'Reviewing — press ▶ to return'
+          : `${state.turn === 'white' ? 'White' : 'Black'} to move`
+
   return (
     <main className="app">
-      <GatewayLink />
       <CommandBox
         onSubmit={sendCommand}
         commentary={commentary}
@@ -130,30 +144,34 @@ function App() {
         thinking={agentThinking}
         progress={agentProgress}
       />
-      {board ?? <p className="status">Connecting…</p>}
-      {moveError && (
-        <p className="move-error" role="alert">
-          {moveError}
+      {board}
+      {/* One row directly under the board: YOU + captures · turn chip ·
+          captures + GLITCH. The chip is the app's single status slot — the
+          turn, the review notice, the verdict, the connection, or a rejected
+          move. The key remounts the chip when an error takes the slot, so the
+          alert role lands on a fresh element and is announced, exactly as the
+          old standalone error <p> was. */}
+      <CapturedPieces
+        captured={state?.captured ?? NO_CAPTURES}
+        playerColor={state?.player_color ?? 'white'}
+      >
+        <p
+          key={moveError ? 'error' : 'status'}
+          className={moveError ? 'turn-chip turn-chip-error' : 'turn-chip'}
+          role={moveError ? 'alert' : undefined}
+        >
+          {chipText}
         </p>
-      )}
-      {state && (
-        <p className="status">
-          {state.game_over
-            ? `Game over — ${state.outcome?.result ?? ''}`
-            : reviewing
-              ? 'Reviewing — press ▶ to return'
-              : `${state.turn} to move`}
-          {state.game_over && (
-            <button
-              type="button"
-              className="status-results"
-              onClick={() => setResultsDismissed(false)}
-            >
-              Results
-            </button>
-          )}
-        </p>
-      )}
+        {state?.game_over && (
+          <button
+            type="button"
+            className="status-results"
+            onClick={() => setResultsDismissed(false)}
+          >
+            Results
+          </button>
+        )}
+      </CapturedPieces>
       {state && !state.game_over && !playerMoved && (
         <div className="side-picker">
           <span>Playing as {state.player_color}</span>
@@ -164,7 +182,6 @@ function App() {
       )}
       {state && (
         <>
-          <CapturedPieces captured={state.captured} />
           <MoveStrip
             history={state.history}
             currentPly={viewPly ?? state.history.length}

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { GatewayLink } from './GatewayLink'
 import { MicButton } from './MicButton'
 import { unlockAudio } from './tts'
 
@@ -55,9 +56,19 @@ export function CommandBox({
     setText('')
   }
 
+  // Voice-first: no standing Send button. The ↑ submit docks inside the
+  // input's right edge only while there is text to send; the locked states
+  // that used to disable Send simply leave it hidden (the input is disabled
+  // in those states anyway).
+  const sendable = Boolean(trimmed) && !locked
+
   return (
     <section className="command-box" aria-label="Agent">
       <form onSubmit={handleSubmit}>
+        {/* Back-to-gateway lives in the row as its leftmost control (it used
+            to float over the mic on phone widths). Renders nothing off the
+            gateway domain — the row then simply starts at the mic. */}
+        <GatewayLink />
         {/* Voice in/out controls lead the row so they hold their position
             regardless of how the input or commentary below reflows. */}
         {/* Voice in: the transcript goes down the exact same pipeline as a
@@ -80,17 +91,21 @@ export function CommandBox({
             {voiceOutput ? '🔊' : '🔇'}
           </button>
         )}
-        <input
-          type="text"
-          aria-label="Command"
-          placeholder={disabled ? 'No agent — play on the board' : 'Tell the agent what to do…'}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          disabled={locked}
-        />
-        <button type="submit" disabled={locked || !trimmed}>
-          Send
-        </button>
+        <div className={sendable ? 'command-input command-input-sendable' : 'command-input'}>
+          <input
+            type="text"
+            aria-label="Command"
+            placeholder={disabled ? 'No agent — play on the board' : 'Tell the agent what to do…'}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            disabled={locked}
+          />
+          {sendable && (
+            <button type="submit" className="command-submit" aria-label="Send">
+              ↑
+            </button>
+          )}
+        </div>
       </form>
       {showCommentary &&
         (thinking || progress !== null ? (

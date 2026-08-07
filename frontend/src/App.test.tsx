@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { GameState } from './api'
@@ -270,7 +270,9 @@ describe('direct mode', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText(/direct mode/i)).toBeInTheDocument())
     expect(screen.getByRole('textbox', { name: /command/i })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled()
+    // The ↑ submit only exists while there is text to send; a locked box
+    // never has any, so there is no dead button to show.
+    expect(screen.queryByRole('button', { name: /send/i })).not.toBeInTheDocument()
   })
 
   it('says nothing and leaves the box open when an agent is available', async () => {
@@ -279,6 +281,65 @@ describe('direct mode', () => {
     await waitFor(() => expect(document.querySelector('.move-strip')).toBeInTheDocument())
     expect(screen.queryByText(/direct mode/i)).not.toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: /command/i })).not.toBeDisabled()
+  })
+})
+
+// The status line and the captured-pieces clusters merge into one row under
+// the board: YOU + captures · turn chip · captures + GLITCH.
+describe('status row', () => {
+  it('merges captures and the turn chip into one row', async () => {
+    served = state({ captured: { white: ['p', 'n'], black: ['p'] }, history: ['e4', 'e5'] })
+    render(<App />)
+    const row = await screen.findByLabelText(/game status/i)
+    expect(within(row).getByText('YOU')).toBeInTheDocument()
+    expect(within(row).getByText('GLITCH')).toBeInTheDocument()
+    // Sentence case, in the chip — the old capitalized standalone <p> is gone.
+    expect(within(row).getByText('White to move')).toBeInTheDocument()
+    expect(document.querySelector('.status')).not.toBeInTheDocument()
+  })
+
+  it('writes the engine turn in sentence case too', async () => {
+    served = state({ turn: 'black', history: ['e4'] })
+    render(<App />)
+    expect(await screen.findByText('Black to move')).toBeInTheDocument()
+  })
+
+  it('shows the connecting chip before the first state arrives', () => {
+    fetchMock.mockImplementation(() => new Promise(() => {}))
+    render(<App />)
+    const row = screen.getByLabelText(/game status/i)
+    expect(within(row).getByText('Connecting…')).toBeInTheDocument()
+  })
+
+  it('routes a rejected move through the chip as an alert', async () => {
+    render(<App />)
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    fetchMock.mockImplementation((url: string) => {
+      const body = String(url).includes('/api/game/move')
+        ? { state: served, legal: false, reason: 'Illegal move' }
+        : served
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) })
+    })
+    await act(async () => {
+      await boardProps.at(-1)!.onMove?.('e2', 'e5')
+    })
+    const row = screen.getByLabelText(/game status/i)
+    const alert = within(row).getByRole('alert')
+    expect(alert).toHaveTextContent('Illegal move')
+    // The error replaces the turn text: the chip shows one state at a time.
+    expect(within(row).queryByText('White to move')).not.toBeInTheDocument()
+  })
+
+  it('parks the game-over verdict and the results button in the row', async () => {
+    served = state({
+      game_over: true,
+      outcome: { termination: 'checkmate', winner: 'white', result: '1-0' },
+      history: ['e4', 'f6', 'd4', 'g5', 'Qh5#'],
+    })
+    render(<App />)
+    const row = await screen.findByLabelText(/game status/i)
+    expect(within(row).getByText(/game over — 1-0/i)).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: /results/i })).toBeInTheDocument()
   })
 })
 
