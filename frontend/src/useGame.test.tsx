@@ -631,6 +631,108 @@ describe('useGame', () => {
     expect(result.current.revision).toBeGreaterThan(revisionBefore)
   })
 
+  /** Answer /api/game/move with `answer`, leaving every other route on the
+   * default implementation from `beforeEach`. */
+  function moveAnswers(answer: () => Promise<unknown>) {
+    const rest = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/game/move') ? answer() : rest?.(url),
+    )
+  }
+
+  /** A move that never landed leaves the board exactly where it was, and must
+   * still snap the dragged piece back: nothing else will, because a refused
+   * move broadcasts no state frame (#231). */
+  async function expectRefusedMove(
+    result: { current: ReturnType<typeof useGame> },
+    revisionBefore: number,
+    detail: string,
+  ) {
+    await act(async () => {
+      // The board discards this promise, so a rejection here would escape
+      // unhandled with no feedback at all. It must always resolve.
+      await expect(result.current.play('e2', 'e4')).resolves.toBeUndefined()
+    })
+    expect(result.current.moveError).toBe(detail)
+    expect(result.current.state?.fen).toBe(START_FEN)
+    expect(result.current.state?.version).toBe(1)
+    expect(result.current.revision).toBeGreaterThan(revisionBefore)
+  }
+
+  it('surfaces a non-stale 409 and snaps the piece back without applying state', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    // The turn coordinator's documented rejection: a detail and no `state` at
+    // all, so there is nothing to adopt and `apply` must never see it.
+    moveAnswers(() =>
+      Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () =>
+          Promise.resolve({ detail: 'cannot apply a player move while engine_replying' }),
+      }),
+    )
+
+    await expectRefusedMove(
+      result,
+      revisionBefore,
+      'cannot apply a player move while engine_replying',
+    )
+  })
+
+  it('surfaces a transport failure the same way', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    // The backend container restarts on every merge, so a refused connection
+    // mid-drag is routine.
+    moveAnswers(() => Promise.reject(new TypeError('Failed to fetch')))
+
+    await expectRefusedMove(
+      result,
+      revisionBefore,
+      'Could not reach the server — the move was not played.',
+    )
+  })
+
+  it('surfaces a gateway error whose body is not JSON', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    // A proxy 502 carries an HTML page, so the body has no detail to relay.
+    moveAnswers(() =>
+      Promise.resolve({
+        ok: false,
+        status: 502,
+        json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+      }),
+    )
+
+    await expectRefusedMove(result, revisionBefore, 'The server refused the move (502).')
+  })
+
+  it('refuses a 200 that carries no state rather than applying undefined', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    // A truncated body still parses as OK at the HTTP layer. `apply` may only
+    // ever be handed a real GameState.
+    moveAnswers(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input')),
+      }),
+    )
+
+    await expectRefusedMove(
+      result,
+      revisionBefore,
+      'The server sent an unusable response — the move was not played.',
+    )
+  })
+
   it('defers a promotion move to a piece choice instead of submitting bare', async () => {
     const { result } = renderHook(() => useGame())
     // Start from a position where e7->e8 is a promotion.

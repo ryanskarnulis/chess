@@ -55,7 +55,18 @@ export interface StaleStateResponse {
   state: GameState
 }
 
-export type MoveOutcome = MoveResponse | StaleStateResponse
+/** A move the backend never applied and sent no state for: the turn
+ * coordinator's non-stale 409, a gateway error, or a transport failure that
+ * produced no response at all. `detail` is the backend's own explanation when
+ * it sent one, otherwise the app's — either way it is a line to show the
+ * player, because a refused move broadcasts no state frame and nothing else
+ * will mention it. */
+export interface MoveFailure {
+  failed: true
+  detail: string
+}
+
+export type MoveOutcome = MoveResponse | StaleStateResponse | MoveFailure
 
 function versioned(body: Record<string, unknown>, version?: number): Record<string, unknown> {
   return version === undefined ? body : { ...body, version }
@@ -67,18 +78,68 @@ export function isStaleStateResponse(data: unknown): data is StaleStateResponse 
   return candidate.stale === true && typeof candidate.state === 'object' && candidate.state !== null
 }
 
+export function isMoveFailure(data: unknown): data is MoveFailure {
+  if (typeof data !== 'object' || data === null) return false
+  return (data as Partial<MoveFailure>).failed === true
+}
+
+/** Whether a parsed body actually carries the state a caller would apply. A
+ * body that never parsed leaves `{}` behind, and its missing `state` must be
+ * caught here rather than reaching the board as `undefined`. */
+function carriesState(data: unknown): data is { state: GameState } {
+  if (typeof data !== 'object' || data === null) return false
+  const candidate = data as { state?: unknown }
+  return typeof candidate.state === 'object' && candidate.state !== null
+}
+
+/** The backend's own explanation of a refusal, or null when the body has none
+ * to relay. Nothing about the shape is assumed: a proxy error page never
+ * parsed at all, and FastAPI's own `detail` is a list, not a string, when the
+ * refusal is a validation error. */
+function refusalDetail(data: unknown): string | null {
+  if (typeof data !== 'object' || data === null) return null
+  const detail = (data as { detail?: unknown }).detail
+  return typeof detail === 'string' && detail !== '' ? detail : null
+}
+
 export async function fetchState(): Promise<GameState> {
   const res = await fetch('/api/state')
   return (await res.json()) as GameState
 }
 
+const MOVE_UNREACHABLE = 'Could not reach the server — the move was not played.'
+const MOVE_UNUSABLE = 'The server sent an unusable response — the move was not played.'
+
+/**
+ * Submit a move. Never throws: this is the one mutation the board plays
+ * optimistically — chessground has already moved the piece — so every way this
+ * can fail has to come back as a value the caller can re-sync from (#231). A
+ * `MoveFailure` means the move was not applied and no state came with it: the
+ * coordinator's non-stale 409, a gateway error, a dead socket during a
+ * redeploy. Only a `MoveResponse` carries a board to adopt.
+ */
 export async function submitMove(uci: string, version?: number): Promise<MoveOutcome> {
-  const res = await fetch('/api/game/move', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(versioned({ move: uci }, version)),
-  })
-  return (await res.json()) as MoveOutcome
+  let res: Response
+  try {
+    res = await fetch('/api/game/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(versioned({ move: uci }, version)),
+    })
+  } catch {
+    return { failed: true, detail: MOVE_UNREACHABLE }
+  }
+  const data = (await res.json().catch(() => ({}))) as unknown
+  if (!res.ok) {
+    // A stale 409 is the one refusal that carries a board: it is the catch-up
+    // state, and the caller adopts it rather than reporting anything.
+    if (isStaleStateResponse(data)) return data
+    return {
+      failed: true,
+      detail: refusalDetail(data) ?? `The server refused the move (${res.status}).`,
+    }
+  }
+  return carriesState(data) ? (data as MoveResponse) : { failed: true, detail: MOVE_UNUSABLE }
 }
 
 const JSON_POST = { method: 'POST', headers: { 'Content-Type': 'application/json' } }
