@@ -87,18 +87,69 @@
   box-shadow: 0 0 12px var(--glow-soft);
 }
 
-.captured {
+/* One row directly under the board: YOU + captures · turn chip · captures +
+   GLITCH. Space-between over three always-present children — an empty
+   cluster collapses to a zero-width sibling that keeps the chip centered. */
+.status-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  text-align: left;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 1.8rem;
 }
 
 .captured-side {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.35rem;
-  min-height: 1.8rem;
+  text-align: left;
+  /* Equal flex siblings keep the chip dead-center whatever each side holds.
+     When a packed endgame row (captures + verdict + Results) outgrows the
+     column, the clusters yield and clip inside it — glyphs first, labels
+     last — rather than bleed past the viewport padding. */
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.captured-side-right {
+  text-align: right;
+  justify-content: flex-end;
+}
+
+.captured-label {
+  font: 500 10px/1 var(--mono);
+  letter-spacing: 0.14em;
+  /* Fainter than --muted — the design language's faint ink. silk.css is a
+     verbatim gateway copy with no token for it, so the hex lives here. */
+  color: #5d6577;
+}
+
+.status-center {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+/* The single status slot: turn, review notice, verdict, connection — and a
+   rejected move, which wears the alert colors while it lasts. One line
+   always: content changes must never shift the row height. */
+.turn-chip {
+  margin: 0;
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--silk-border);
+  border-radius: 999px;
+  background: var(--surface-veil);
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.turn-chip-error {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .captured-pieces-glyphs {
@@ -273,9 +324,8 @@
   box-shadow: 0 0 12px var(--glow-soft);
 }
 
-/* Reopens the dismissed post-game screen from the status line. */
+/* Reopens the dismissed post-game screen from beside the turn chip. */
 .status-results {
-  margin-left: 0.6rem;
   padding: 0.2rem 0.6rem;
   background: var(--surface);
   color: var(--ink);
@@ -330,18 +380,6 @@
   height: 100%;
 }
 
-.status {
-  margin: 0;
-  text-transform: capitalize;
-  color: var(--muted);
-}
-
-.move-error {
-  margin: 0;
-  color: var(--danger);
-  font-weight: 600;
-}
-
 /* Direct mode: no brain configured, Stockfish only. A quiet standing label —
    the mode is deliberate, so it reads as information and not as an error. */
 .direct-mode {
@@ -363,7 +401,7 @@
   background: var(--surface-veil);
   border: 1px solid var(--silk-border);
   border-radius: var(--radius);
-  padding: 0.85rem 1rem;
+  padding: 0.6rem 0.75rem;
   transition: border-color 0.25s, box-shadow 0.25s;
 }
 
@@ -374,18 +412,63 @@
 
 .command-box form {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
+}
+
+/* Everything in the row must be comfortably tappable on a phone. */
+.command-box .mic-button,
+.command-box .voice-toggle {
+  min-width: 48px;
+  min-height: 44px;
+}
+
+/* The input owns the row's remaining width; the ↑ submit docks inside its
+   right edge (only rendered while there is text to send). */
+.command-input {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
 }
 
 .command-box input {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 44px;
+  box-sizing: border-box;
   padding: 0.45rem 0.6rem;
   font-size: 0.95rem;
   color: var(--ink);
   background: var(--bg);
   border: 1px solid var(--silk-border);
   border-radius: 8px;
+}
+
+/* Clear the docked ↑ so long commands never run under it. */
+.command-input-sendable input {
+  padding-right: 44px;
+}
+
+.command-box .command-submit {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--glow);
+  /* Dark ink on the lit accent — the one control where the palette inverts;
+     no silk token exists for it. */
+  color: #07080c;
+  border: none;
+  border-radius: 50%;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .command-box input::placeholder {
@@ -653,18 +736,17 @@
   color: var(--muted);
 }
 
-/* Floating back-to-gateway button (GatewayLink.tsx) — copied verbatim across apps. */
+/* Back-to-gateway button (GatewayLink.tsx) — the command row's leftmost
+   control (it used to float top-left, over the mic on phone widths). */
 .gateway-link {
-  position: fixed;
-  top: 14px;
-  left: 14px;
-  z-index: 50;
-  width: 48px;
-  height: 48px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: var(--surface-veil);
+  background: var(--surface);
   border: 1px solid var(--silk-border);
   transition: border-color 0.25s, box-shadow 0.25s;
 }
@@ -676,8 +758,8 @@
 }
 
 .gateway-link img {
-  width: 34px;
-  height: 34px;
+  width: 31px;
+  height: 31px;
   border-radius: 50%;
   display: block;
 }

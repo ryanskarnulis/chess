@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { materialScore, PIECE_GLYPHS, type PieceType } from './pieces'
 
 export interface CapturedPiecesProps {
@@ -6,15 +7,27 @@ export interface CapturedPiecesProps {
    * `white` holds the black pieces White took, and vice versa.
    */
   captured: { white: string[]; black: string[] }
+  /** Which side the player drives: their captures sit left, under YOU;
+   * Glitch's mirror on the right. */
+  playerColor: 'white' | 'black'
+  /** The turn chip (and anything beside it), centered between the clusters. */
+  children?: ReactNode
 }
 
-/** One side's captured pieces — glyphs that *look like* the opponent's. */
+/** One cluster's captured pieces — glyphs that *look like* the opponent's. */
 function Side({
   side,
+  label,
+  ariaLabel,
+  mirrored = false,
   symbols,
   advantage,
 }: {
   side: 'white' | 'black'
+  label: string
+  ariaLabel: string
+  /** Glitch's cluster reads right-to-left: glyphs, then the label. */
+  mirrored?: boolean
   symbols: string[]
   advantage: number
 }) {
@@ -24,8 +37,10 @@ function Side({
   // the perceived colors are inverted from the glyph names. Use the same-
   // name set so the rendered color matches the captured piece's color.
   const glyphColor = side
-  return (
-    <div className="captured-side" aria-label={`Captured by ${side}`}>
+  // A cluster with no captures collapses entirely — no orphaned label — but
+  // the element itself stays, an empty flex sibling keeping the chip put.
+  const cluster = symbols.length > 0 && (
+    <>
       <span className="captured-pieces-glyphs">
         {symbols.map((s, i) => (
           <span key={i} aria-hidden>
@@ -34,20 +49,49 @@ function Side({
         ))}
       </span>
       {advantage > 0 && <span className="captured-advantage">{`+${advantage}`}</span>}
+    </>
+  )
+  return (
+    <div
+      className={mirrored ? 'captured-side captured-side-right' : 'captured-side'}
+      aria-label={ariaLabel}
+    >
+      {symbols.length > 0 && !mirrored && <span className="captured-label">{label}</span>}
+      {cluster}
+      {symbols.length > 0 && mirrored && <span className="captured-label">{label}</span>}
     </div>
   )
 }
 
 /**
- * Both players' captured pieces plus the material advantage of whoever is
- * ahead. Presentational — the backend derives captures from the move stack.
+ * The one-line game status row under the board: the player's captures on the
+ * left, Glitch's on the right, whoever is ahead wearing the material badge,
+ * and the turn chip (passed as children — the app owns the status text)
+ * centered between them. Presentational — the backend derives captures from
+ * the move stack.
  */
-export function CapturedPieces({ captured }: CapturedPiecesProps) {
+export function CapturedPieces({ captured, playerColor, children }: CapturedPiecesProps) {
   const diff = materialScore(captured.white) - materialScore(captured.black)
+  const advantage = { white: diff, black: -diff }
+  const opponentColor = playerColor === 'white' ? 'black' : 'white'
   return (
-    <section className="captured" aria-label="Captured pieces">
-      <Side side="white" symbols={captured.white} advantage={diff} />
-      <Side side="black" symbols={captured.black} advantage={-diff} />
+    <section className="status-row" aria-label="Game status">
+      <Side
+        side={playerColor}
+        label="YOU"
+        ariaLabel="Captured by you"
+        symbols={captured[playerColor]}
+        advantage={advantage[playerColor]}
+      />
+      <div className="status-center">{children}</div>
+      <Side
+        side={opponentColor}
+        label="GLITCH"
+        ariaLabel="Captured by Glitch"
+        mirrored
+        symbols={captured[opponentColor]}
+        advantage={advantage[opponentColor]}
+      />
     </section>
   )
 }
