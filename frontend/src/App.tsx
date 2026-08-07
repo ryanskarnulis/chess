@@ -105,10 +105,14 @@ function App() {
     </div>
   )
 
-  // Everything the merged status row can say, one state at a time: a rejected
-  // move outranks the turn while it lasts (it clears on the next accepted
-  // one), and before the first state document there is only the connection.
-  const chipText = moveError
+  // Everything the slot under the board can say, one state at a time: a
+  // rejected move outranks the rest while it lasts (it clears on the next
+  // accepted one), and before the first state document there is only the
+  // connection. Whose turn it is is *not* on this list — board orientation
+  // already tells the player which side they are, and the agent bubble
+  // carries the turn context — so an ordinary game leaves the slot to the
+  // player's captures.
+  const statusText = moveError
     ? moveError
     : !state
       ? 'Connecting…'
@@ -116,7 +120,7 @@ function App() {
         ? `Game over — ${state.outcome?.result ?? ''}`
         : reviewing
           ? 'Reviewing — press ▶ to return'
-          : `${state.turn === 'white' ? 'White' : 'Black'} to move`
+          : null
 
   return (
     <main className="app">
@@ -139,39 +143,55 @@ function App() {
           Direct mode — Stockfish only, no agent
         </p>
       )}
-      <AgentBubble
-        commentary={commentary}
-        thinking={agentThinking}
-        progress={agentProgress}
-      />
+      {/* Each side's captures sit with their owner rather than sharing one
+          row: Glitch's ride under the agent bubble, the player's under the
+          board. Grouped by type with a ×N count, so neither can outgrow the
+          column however long the game runs. */}
+      <div className="agent-block">
+        <AgentBubble
+          commentary={commentary}
+          thinking={agentThinking}
+          progress={agentProgress}
+        />
+        <CapturedPieces
+          captured={state?.captured ?? NO_CAPTURES}
+          playerColor={state?.player_color ?? 'white'}
+          owner="glitch"
+        />
+      </div>
       {board}
-      {/* One row directly under the board: YOU + captures · turn chip ·
-          captures + GLITCH. The chip is the app's single status slot — the
-          turn, the review notice, the verdict, the connection, or a rejected
-          move. The key remounts the chip when an error takes the slot, so the
-          alert role lands on a fresh element and is announced, exactly as the
-          old standalone error <p> was. */}
-      <CapturedPieces
-        captured={state?.captured ?? NO_CAPTURES}
-        playerColor={state?.player_color ?? 'white'}
-      >
-        <p
-          key={moveError ? 'error' : 'status'}
-          className={moveError ? 'turn-chip turn-chip-error' : 'turn-chip'}
-          role={moveError ? 'alert' : undefined}
-        >
-          {chipText}
-        </p>
-        {state?.game_over && (
-          <button
-            type="button"
-            className="status-results"
-            onClick={() => setResultsDismissed(false)}
+      {/* The player's captures, and the app's one status slot — the same
+          slot, because only one of them ever has something to say. A status
+          takes the row rather than pushing it aside, so nothing below the
+          board shifts. The key remounts the text when an error takes the
+          slot, so the alert role lands on a fresh element and is announced,
+          exactly as the old standalone error <p> was. */}
+      {statusText !== null ? (
+        <section className="captured-row board-status" aria-label="Game status">
+          <p
+            key={moveError ? 'error' : 'status'}
+            className={moveError ? 'board-status-text board-status-error' : 'board-status-text'}
+            role={moveError ? 'alert' : undefined}
           >
-            Results
-          </button>
-        )}
-      </CapturedPieces>
+            {statusText}
+          </p>
+          {state?.game_over && (
+            <button
+              type="button"
+              className="status-results"
+              onClick={() => setResultsDismissed(false)}
+            >
+              Results
+            </button>
+          )}
+        </section>
+      ) : (
+        <CapturedPieces
+          captured={state?.captured ?? NO_CAPTURES}
+          playerColor={state?.player_color ?? 'white'}
+          owner="you"
+        />
+      )}
       {state && !state.game_over && !playerMoved && (
         <div className="side-picker">
           <span>Playing as {state.player_color}</span>

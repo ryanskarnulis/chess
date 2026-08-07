@@ -284,34 +284,52 @@ describe('direct mode', () => {
   })
 })
 
-// The status line and the captured-pieces clusters merge into one row under
-// the board: YOU + captures · turn chip · captures + GLITCH.
-describe('status row', () => {
-  it('merges captures and the turn chip into one row', async () => {
+// Captures split to their owners: Glitch's sit under the agent bubble, the
+// player's under the board. The turn pill is gone — board orientation already
+// says which side the player is — and the board slot doubles as the one place
+// the non-idle statuses speak from.
+describe('captures and status', () => {
+  it('splits the two sides onto their own rows, in their own places', async () => {
     served = state({ captured: { white: ['p', 'n'], black: ['p'] }, history: ['e4', 'e5'] })
     render(<App />)
-    const row = await screen.findByLabelText(/game status/i)
-    expect(within(row).getByText('YOU')).toBeInTheDocument()
-    expect(within(row).getByText('GLITCH')).toBeInTheDocument()
-    // Sentence case, in the chip — the old capitalized standalone <p> is gone.
-    expect(within(row).getByText('White to move')).toBeInTheDocument()
-    expect(document.querySelector('.status')).not.toBeInTheDocument()
+    const you = await screen.findByLabelText(/captured by you/i)
+    const glitch = screen.getByLabelText(/captured by glitch/i)
+    // The player took black pieces (hollow glyphs read black on the dark
+    // theme); Glitch took a white one (filled reads light).
+    expect(within(you).getByText('♙︎')).toBeInTheDocument()
+    expect(within(you).getByText('♘︎')).toBeInTheDocument()
+    expect(within(glitch).getByText('♟︎')).toBeInTheDocument()
+    // Glitch's row rides with the agent bubble, above the board; the
+    // player's sits below it.
+    const bubble = document.querySelector('.agent-block')!
+    expect(bubble).toContainElement(glitch)
+    expect(bubble).not.toContainElement(you)
+    expect(glitch.compareDocumentPosition(you) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('writes the engine turn in sentence case too', async () => {
+  it('never renders a turn line — the board orientation says it', async () => {
+    served = state({ history: ['e4', 'e5'] })
+    render(<App />)
+    await screen.findByLabelText(/captured by you/i)
+    expect(screen.queryByText(/to move/i)).not.toBeInTheDocument()
+    expect(document.querySelector('.turn-chip')).not.toBeInTheDocument()
+  })
+
+  it('leaves the turn unsaid for the engine too', async () => {
     served = state({ turn: 'black', history: ['e4'] })
     render(<App />)
-    expect(await screen.findByText('Black to move')).toBeInTheDocument()
+    await screen.findByLabelText(/captured by you/i)
+    expect(screen.queryByText(/to move/i)).not.toBeInTheDocument()
   })
 
-  it('shows the connecting chip before the first state arrives', () => {
+  it('shows connecting in the board slot before the first state arrives', () => {
     fetchMock.mockImplementation(() => new Promise(() => {}))
     render(<App />)
     const row = screen.getByLabelText(/game status/i)
     expect(within(row).getByText('Connecting…')).toBeInTheDocument()
   })
 
-  it('routes a rejected move through the chip as an alert', async () => {
+  it('routes a rejected move through the board slot as an alert', async () => {
     render(<App />)
     await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
     fetchMock.mockImplementation((url: string) => {
@@ -324,13 +342,15 @@ describe('status row', () => {
       await boardProps.at(-1)!.onMove?.('e2', 'e5')
     })
     const row = screen.getByLabelText(/game status/i)
-    const alert = within(row).getByRole('alert')
-    expect(alert).toHaveTextContent('Illegal move')
-    // The error replaces the turn text: the chip shows one state at a time.
-    expect(within(row).queryByText('White to move')).not.toBeInTheDocument()
+    expect(within(row).getByRole('alert')).toHaveTextContent('Illegal move')
+    // The status takes the player's capture slot rather than pushing it
+    // aside, so nothing below the board shifts while the error lasts.
+    expect(screen.queryByLabelText(/captured by you/i)).not.toBeInTheDocument()
+    // Glitch's row is on the other side of the board and stays put.
+    expect(screen.getByLabelText(/captured by glitch/i)).toBeInTheDocument()
   })
 
-  it('parks the game-over verdict and the results button in the row', async () => {
+  it('parks the game-over verdict and the results button in the board slot', async () => {
     served = state({
       game_over: true,
       outcome: { termination: 'checkmate', winner: 'white', result: '1-0' },

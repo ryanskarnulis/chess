@@ -87,81 +87,71 @@
   box-shadow: 0 0 12px var(--glow-soft);
 }
 
-/* One row directly under the board: YOU + captures · turn chip · captures +
-   GLITCH. Space-between over three always-present children — an empty
-   cluster collapses to a zero-width sibling that keeps the chip centered. */
-.status-row {
+/* One owner's captures, left-aligned on a full-width row of their own:
+   Glitch's under the agent bubble, the player's under the board. Both hold
+   their height while empty so the board doesn't jump on the first capture
+   of the game. Under the board the same slot carries the status text. */
+.captured-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  min-height: 1.8rem;
-}
-
-.captured-side {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
+  gap: 5px;
+  min-height: 22px;
   text-align: left;
-  /* Equal flex siblings keep the chip dead-center whatever each side holds.
-     When a packed endgame row (captures + verdict + Results) outgrows the
-     column, the clusters yield and clip inside it — glyphs first, labels
-     last — rather than bleed past the viewport padding. */
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
 }
 
-.captured-side-right {
-  text-align: right;
-  justify-content: flex-end;
+/* Grouped by piece type, so five glyphs is the ceiling however many pieces
+   come off the board — that, not wrapping or scrolling, is what keeps a
+   packed endgame row inside the column. */
+.captured-pieces-glyphs {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 20px;
+  line-height: 1;
 }
 
-.captured-label {
-  font: 500 10px/1 var(--mono);
-  letter-spacing: 0.14em;
-  /* Fainter than --muted — the design language's faint ink. silk.css is a
-     verbatim gateway copy with no token for it, so the hex lives here. */
-  color: #5d6577;
-}
-
-.status-center {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex: 0 0 auto;
-}
-
-/* The single status slot: turn, review notice, verdict, connection — and a
-   rejected move, which wears the alert colors while it lasts. One line
-   always: content changes must never shift the row height. */
-.turn-chip {
-  margin: 0;
-  padding: 0.2rem 0.7rem;
-  border: 1px solid var(--silk-border);
-  border-radius: 999px;
-  background: var(--surface-veil);
-  color: var(--muted);
-  font-size: 0.75rem;
-  letter-spacing: 0.02em;
+/* Deliberately a plain inline box, not a flex one: the count is a real
+   superscript, and `vertical-align` is ignored on a flex item. The run above
+   owns the spacing between types. */
+.captured-glyph {
   white-space: nowrap;
 }
 
-.turn-chip-error {
-  color: var(--danger);
-  font-weight: 600;
-}
-
-.captured-pieces-glyphs {
-  font-size: 1.4rem;
-  line-height: 1;
-  letter-spacing: -0.1em;
+.captured-count {
+  font: 600 10px/1 var(--mono);
+  color: var(--muted);
+  vertical-align: super;
 }
 
 .captured-advantage {
   font-weight: 700;
   color: var(--ok);
-  font-size: 0.85rem;
+  font-size: 14px;
+  /* Both tenants of these rows pin their own line box. The root's 145%
+     computes to 26.1px whatever the font-size, which would push the row
+     past its 22px and shift everything below the board on the first
+     capture — the exact jump the min-height is there to prevent. */
+  line-height: 1;
+}
+
+/* The board slot's other tenant: the review notice, the verdict, the
+   connection — and a rejected move, which wears the alert colors while it
+   lasts. One line always; content changes must never shift the row. */
+.board-status-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  /* Fits inside the row's 22px, so taking the slot from the captures moves
+     nothing below the board. */
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.board-status-error {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 /* Post-game review panel. */
@@ -546,7 +536,14 @@
   font-style: italic;
 }
 
-/* Spider mascot + speech bubble */
+/* Spider mascot + speech bubble, over Glitch's captures */
+
+.agent-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
 
 .agent-bubble {
   display: flex;
