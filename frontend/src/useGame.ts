@@ -4,6 +4,7 @@ import {
   fetchHint,
   fetchSettings,
   fetchState,
+  isMoveFailure,
   isStaleStateResponse,
   newGame as apiNewGame,
   resign as apiResign,
@@ -320,6 +321,17 @@ export function useGame(): UseGame {
       const result = await submitMove(uci, stateRef.current?.version)
       if (isStaleStateResponse(result)) {
         apply(result.state)
+        return
+      }
+      // The move never landed and no state came back with the refusal, so
+      // there is nothing to apply — and nothing else will re-sync the board
+      // either, because a rejected move broadcasts no frame (#231). The
+      // revision bump *is* the snap-back on its own: the position is unchanged,
+      // so `fen` alone would leave the piece sitting where chessground dropped
+      // it, exactly as `cancelPromotion` has to bump it for a pawn it parked.
+      if (isMoveFailure(result)) {
+        setMoveError(result.detail)
+        setRevision((r) => r + 1)
         return
       }
       // A WebSocket frame may have advanced the board while this request was
