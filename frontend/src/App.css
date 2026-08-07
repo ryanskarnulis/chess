@@ -7,7 +7,12 @@
 .app {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  /* The column has no vertical budget on a phone: a 440×800 Safari viewport
+     leaves 736px above the fixed bar, and the stack measured 861px with a
+     two-line reply — the move strip sat 44px *under* the bar, reachable only
+     by scrolling. 0.4rem over four gaps is 14px of that back (the frame
+     square above is the other 34). */
+  gap: 0.4rem;
   max-width: 540px;
   margin: 0.5rem auto;
   /* Clear the fixed bottom bar (plus the phone's home-indicator inset). */
@@ -15,11 +20,28 @@
   text-align: center;
 }
 
-/* Chessground sizes to its container; give it a square. */
+/* Chessground sizes to its container; give it a square.
+
+   The square is a padding-bottom ratio and *not* `aspect-ratio`, because
+   this is a flex item and WebKit resolves a flex item's transferred size
+   from the flex *container's* width rather than the item's own. Measured on
+   iOS Safari at three widths: the frame came out 440px tall in a 440px
+   viewport, 390 in 390, 360 in 360 — always the full viewport width, so the
+   column's 1rem padding became dead space under the board (34px on a 440pt
+   phone, enough to push the move strip under the fixed bottom bar). Worse,
+   chessground doesn't force its own square: `updateBounds` reads this box's
+   rect and copies its *ratio* into the container, so the squares rendered
+   50.3 × 50.6 and every piece was stretched. Chrome resolved the same CSS
+   correctly, which is why it only ever showed up on the phone.
+
+   `padding-bottom` is a percentage of the containing block's width, which is
+   this box's own width too (it's `width: 100%` with no margin or cap), so
+   the height is derived from the one dimension every engine agrees on. */
 .board-wrap {
   position: relative;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  height: 0;
+  padding-bottom: 100%;
   /* A silk frame around the board ties it into the theme without touching
      the board colors themselves. */
   border: 1px solid var(--silk-border);
@@ -364,10 +386,14 @@
   box-shadow: 0 0 12px var(--glow-soft);
 }
 
+/* The frame's content box is zero-height (the square is padding), so the
+   board is positioned against the padding box instead of sized as a
+   percentage of nothing. `inset: 0` on an absolute child resolves against
+   the padding box, which is the square. */
 .board-wrap .board,
 .board-wrap .cg-wrap {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0;
 }
 
 /* Direct mode: no brain configured, Stockfish only. A quiet standing label —
@@ -550,8 +576,11 @@
   align-items: flex-start;
   gap: 0.5rem;
   text-align: left;
-  /* Reserve room so the board doesn't jump as commentary changes. */
-  min-height: 4.5rem;
+  /* Reserve room so the board doesn't jump as commentary changes. Two lines
+     plus the bubble's padding, not three — the reserve only binds while
+     Glitch is quiet, and the old 4.5rem held empty space above the board for
+     the whole of every short turn. */
+  min-height: 3.6rem;
 }
 
 .spider-icon {
