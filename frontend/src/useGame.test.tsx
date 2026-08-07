@@ -631,13 +631,20 @@ describe('useGame', () => {
     expect(result.current.revision).toBeGreaterThan(revisionBefore)
   })
 
+  /** Answer any request whose path contains `fragment` with `answer`, leaving
+   * every other route on whatever implementation was installed before the call
+   * — so successive calls compose, each wrapping the last. */
+  function routeAnswers(fragment: string, answer: () => Promise<unknown>) {
+    const rest = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes(fragment) ? answer() : rest?.(url),
+    )
+  }
+
   /** Answer /api/game/move with `answer`, leaving every other route on the
    * default implementation from `beforeEach`. */
   function moveAnswers(answer: () => Promise<unknown>) {
-    const rest = fetchMock.getMockImplementation()
-    fetchMock.mockImplementation((url: string) =>
-      String(url).includes('/api/game/move') ? answer() : rest?.(url),
-    )
+    routeAnswers('/api/game/move', answer)
   }
 
   /** A move that never landed leaves the board exactly where it was, and must
@@ -1331,6 +1338,175 @@ describe('useGame', () => {
       await result.current.newGame('black')
     })
     expect(confirmSpy).not.toHaveBeenCalled()
+  })
+
+  // --- transport failures on the remaining helpers ------------------------
+  //
+  // The defect class #231/#232 fixed for moves, commands and transcription,
+  // applied to the rest of the client: every one of these promises ends in a
+  // handler or mount effect that discards it (a button's onClick, `void
+  // fetchState().then(...)`), so a rejection escapes unhandled — no feedback,
+  // no snap-back, nothing. The backend container restarts on every merge to
+  // main, so a refused connection under any of these is routine, not exotic.
+
+  const REFUSED_CONNECTION = () => Promise.reject(new TypeError('Failed to fetch'))
+  const TRUNCATED_OK_BODY = () =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input')),
+    })
+
+  it('keeps running when the initial state fetch never reaches the server', async () => {
+    routeAnswers('/api/state', REFUSED_CONNECTION)
+    const { result } = renderHook(() => useGame())
+    // Settings still load: the hook did not die with the state fetch.
+    await waitFor(() => expect(result.current.voiceOutput).toBe(false))
+    expect(result.current.state).toBeNull()
+    // The WebSocket snapshot is the retry path: the next frame heals the miss.
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: state() })
+    })
+    expect(result.current.state?.fen).toBe(START_FEN)
+  })
+
+  it('loads the board even when the settings fetch never reaches the server', async () => {
+    routeAnswers('/api/settings', REFUSED_CONNECTION)
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    // No settings arrived, so all three stay null — the hook's word for
+    // "not loaded", which the UI already renders as unknown rather than
+    // claiming a mode or a strength the server never confirmed.
+    expect(result.current.voiceOutput).toBeNull()
+    expect(result.current.tier).toBeNull()
+    expect(result.current.agentAvailable).toBeNull()
+  })
+
+  it('resolves an undo that never reached the server and leaves the board untouched', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    routeAnswers('/api/game/undo', REFUSED_CONNECTION)
+    await act(async () => {
+      // BottomBar discards this promise; a rejection would escape unhandled.
+      await expect(result.current.undo()).resolves.toBeUndefined()
+    })
+    expect(result.current.state?.fen).toBe(START_FEN)
+    expect(result.current.revision).toBe(revisionBefore)
+  })
+
+  it('resolves gated lifecycle calls that never reached the server without asking anything', async () => {
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    routeAnswers('/api/game/new', REFUSED_CONNECTION)
+    routeAnswers('/api/game/resign', REFUSED_CONNECTION)
+    await act(async () => {
+      await expect(result.current.newGame()).resolves.toBeUndefined()
+      await expect(result.current.resign()).resolves.toBeUndefined()
+    })
+    // No state and no question came back: nothing to ask, nothing to move.
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(result.current.revision).toBe(revisionBefore)
+  })
+
+  /** Arm the gate on /api/game/new (its 409 question), so the test can aim a
+   * failure at the /api/game/confirm answer that follows. */
+  function gateAsksFirst() {
+    routeAnswers('/api/game/new', () =>
+      Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () =>
+          Promise.resolve({ detail: 'Start a new one?', confirm: true, op: 'new_game' }),
+      }),
+    )
+  }
+
+  it('resolves a confirmation answer that never reached the server and leaves the board untouched', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: reviewableState() })
+    })
+    const revisionBefore = result.current.revision
+    // The gate asked, the player said yes, and the answer died on the way — a
+    // redeploy mid-dialog. Nothing may move on a state the server never sent.
+    gateAsksFirst()
+    routeAnswers('/api/game/confirm', REFUSED_CONNECTION)
+    await act(async () => {
+      await expect(result.current.newGame()).resolves.toBeUndefined()
+    })
+    expect(result.current.state?.history).toEqual(['e4', 'e5'])
+    expect(result.current.revision).toBe(revisionBefore)
+  })
+
+  it('drops a confirmed answer whose 200 carries no state rather than applying nothing', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'state', state: reviewableState() })
+    })
+    const revisionBefore = result.current.revision
+    gateAsksFirst()
+    // A truncated body still parses as OK at the HTTP layer; `apply` may only
+    // ever be handed a real GameState, never `undefined` off a cast.
+    routeAnswers('/api/game/confirm', TRUNCATED_OK_BODY)
+    await act(async () => {
+      await expect(result.current.newGame()).resolves.toBeUndefined()
+    })
+    expect(result.current.state?.history).toEqual(['e4', 'e5'])
+    expect(result.current.revision).toBe(revisionBefore)
+  })
+
+  it('keeps the confirmed tier when a difficulty change fails in transit', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.tier).toBe('casual'))
+    routeAnswers('/api/game/difficulty', REFUSED_CONNECTION)
+    await act(async () => {
+      await expect(result.current.setDifficulty('advanced')).resolves.toBeUndefined()
+    })
+    expect(result.current.tier).toBe('casual')
+    // A 200 whose body never parsed confirmed nothing either.
+    routeAnswers('/api/game/difficulty', TRUNCATED_OK_BODY)
+    await act(async () => {
+      await expect(result.current.setDifficulty('advanced')).resolves.toBeUndefined()
+    })
+    expect(result.current.tier).toBe('casual')
+  })
+
+  it('keeps the confirmed voice setting when a toggle fails in transit', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.voiceOutput).toBe(false))
+    routeAnswers('/api/settings/voice', REFUSED_CONNECTION)
+    await act(async () => {
+      await expect(result.current.setVoiceOutput(true)).resolves.toBeUndefined()
+    })
+    expect(result.current.voiceOutput).toBe(false)
+    routeAnswers('/api/settings/voice', TRUNCATED_OK_BODY)
+    await act(async () => {
+      await expect(result.current.setVoiceOutput(true)).resolves.toBeUndefined()
+    })
+    expect(result.current.voiceOutput).toBe(false)
+  })
+
+  it('leaves the hint empty when the request fails in transit', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    routeAnswers('/api/game/hint', REFUSED_CONNECTION)
+    await act(async () => {
+      await expect(result.current.requestHint()).resolves.toBeUndefined()
+    })
+    expect(result.current.hintShapes).toEqual([])
+    routeAnswers('/api/game/hint', TRUNCATED_OK_BODY)
+    await act(async () => {
+      await expect(result.current.requestHint()).resolves.toBeUndefined()
+    })
+    expect(result.current.hintShapes).toEqual([])
   })
 
   // --- history review: browse past positions without undoing ------------

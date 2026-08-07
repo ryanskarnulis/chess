@@ -1,6 +1,13 @@
 // Thin typed client over the backend's game API. The backend is the single
 // source of truth: this module fetches state, submits moves, and hands back
 // whatever the server says — it never validates or generates moves itself.
+//
+// No helper here ever rejects. Every failure — a refused connection during a
+// container redeploy, a gateway error page, an unreadable body — resolves to
+// the helper's documented failure shape, because these promises end in button
+// handlers and mount effects that discard them, where a rejection escapes
+// unhandled with no feedback at all (#231/#232 established the pattern for
+// moves, commands and transcription; the rest of the file follows it).
 
 export interface Outcome {
   termination: string
@@ -102,9 +109,19 @@ function refusalDetail(data: unknown): string | null {
   return typeof detail === 'string' && detail !== '' ? detail : null
 }
 
-export async function fetchState(): Promise<GameState> {
-  const res = await fetch('/api/state')
-  return (await res.json()) as GameState
+/** Fetch the authoritative game state, or null when nothing usable came back.
+ * Null rather than a rejection because both callers — the mount fetch and the
+ * reconnect re-sync — discard this promise, and the WebSocket snapshot is the
+ * retry path that heals a missed sync. */
+export async function fetchState(): Promise<GameState | null> {
+  let res: Response
+  try {
+    res = await fetch('/api/state')
+  } catch {
+    return null
+  }
+  if (!res.ok) return null
+  return (await res.json().catch(() => null)) as GameState | null
 }
 
 const MOVE_UNREACHABLE = 'Could not reach the server — the move was not played.'
@@ -147,14 +164,20 @@ const JSON_POST = { method: 'POST', headers: { 'Content-Type': 'application/json
 /**
  * POST a lifecycle mutation and return the authoritative resulting state (also
  * the catch-up state from a stale 409), or null if the backend refused it for
- * another reason. The board only advances on a state the server produced.
+ * another reason — or was never reached at all. The board only advances on a
+ * state the server produced.
  */
 async function postLifecycle(
   path: string,
   body: Record<string, unknown> = {},
   version?: number,
 ): Promise<GameState | null> {
-  const res = await fetch(path, { ...JSON_POST, body: JSON.stringify(versioned(body, version)) })
+  let res: Response
+  try {
+    res = await fetch(path, { ...JSON_POST, body: JSON.stringify(versioned(body, version)) })
+  } catch {
+    return null
+  }
   const data = (await res.json().catch(() => ({}))) as unknown
   if (!res.ok) return isStaleStateResponse(data) ? data.state : null
   return (data as { state: GameState }).state
@@ -187,7 +210,13 @@ async function postGated(
   body: Record<string, unknown> = {},
   version?: number,
 ): Promise<LifecycleOutcome> {
-  const res = await fetch(path, { ...JSON_POST, body: JSON.stringify(versioned(body, version)) })
+  let res: Response
+  try {
+    res = await fetch(path, { ...JSON_POST, body: JSON.stringify(versioned(body, version)) })
+  } catch {
+    // Never reached: no state to adopt and no question to relay.
+    return { state: null, question: null }
+  }
   const data = (await res.json().catch(() => ({}))) as unknown
   if (!res.ok) {
     if (isStaleStateResponse(data)) return { state: data.state, question: null }
@@ -235,15 +264,23 @@ export async function confirmDestructive(
   confirm: boolean,
   version?: number,
 ): Promise<ConfirmOutcome | null> {
-  const res = await fetch('/api/game/confirm', {
-    ...JSON_POST,
-    body: JSON.stringify(versioned({ confirm }, version)),
-  })
+  let res: Response
+  try {
+    res = await fetch('/api/game/confirm', {
+      ...JSON_POST,
+      body: JSON.stringify(versioned({ confirm }, version)),
+    })
+  } catch {
+    return null
+  }
   const data = (await res.json().catch(() => ({}))) as unknown
   if (!res.ok) {
     return isStaleStateResponse(data) ? { state: data.state, stale: true } : null
   }
-  return { state: (data as { state: GameState }).state, stale: false }
+  // A 200 whose body never parsed confirmed nothing the caller could apply —
+  // the board may only ever be handed a real GameState, never a cast's
+  // `undefined`.
+  return carriesState(data) ? { state: data.state, stale: false } : null
 }
 
 /** Take back moves. Without `plies` the backend applies the player's
@@ -268,12 +305,17 @@ export interface DifficultyResponse {
  * applied setting, or null if the backend rejected it. Board state is
  * untouched. */
 export async function setDifficulty(tier: string): Promise<DifficultyResponse | null> {
-  const res = await fetch('/api/game/difficulty', {
-    ...JSON_POST,
-    body: JSON.stringify({ tier }),
-  })
+  let res: Response
+  try {
+    res = await fetch('/api/game/difficulty', {
+      ...JSON_POST,
+      body: JSON.stringify({ tier }),
+    })
+  } catch {
+    return null
+  }
   if (!res.ok) return null
-  return (await res.json()) as DifficultyResponse
+  return (await res.json().catch(() => null)) as DifficultyResponse | null
 }
 
 export interface CommandResponse {
@@ -334,23 +376,38 @@ export interface Settings {
   agent_available?: boolean
 }
 
-/** Fetch the agent-adjustable settings (the same truth the tools mutate). */
-export async function fetchSettings(): Promise<Settings> {
-  const res = await fetch('/api/settings')
-  return (await res.json()) as Settings
+/** Fetch the agent-adjustable settings (the same truth the tools mutate), or
+ * null when nothing usable came back — the caller keeps its "not loaded yet"
+ * rendering rather than adopting a mode the server never confirmed. */
+export async function fetchSettings(): Promise<Settings | null> {
+  let res: Response
+  try {
+    res = await fetch('/api/settings')
+  } catch {
+    return null
+  }
+  if (!res.ok) return null
+  return (await res.json().catch(() => null)) as Settings | null
 }
 
 /** Turn voice output on/off directly (trusted UI path — the mute button
  * shouldn't need the LLM). Returns the confirmed setting, or null if the
  * backend refused. */
 export async function setVoiceOutput(enabled: boolean): Promise<boolean | null> {
-  const res = await fetch('/api/settings/voice', {
-    ...JSON_POST,
-    body: JSON.stringify({ enabled }),
-  })
+  let res: Response
+  try {
+    res = await fetch('/api/settings/voice', {
+      ...JSON_POST,
+      body: JSON.stringify({ enabled }),
+    })
+  } catch {
+    return null
+  }
   if (!res.ok) return null
-  const data = (await res.json()) as { voice_output: boolean }
-  return data.voice_output
+  const data = (await res.json().catch(() => ({}))) as { voice_output?: unknown }
+  // An unreadable 200 confirmed nothing: the toggle reflects only a setting
+  // the server actually reported.
+  return typeof data.voice_output === 'boolean' ? data.voice_output : null
 }
 
 /**
@@ -396,9 +453,14 @@ export interface HintResponse {
  * refused (no engine → 503, game over / no moves → 409). Read-only — never
  * touches board state. */
 export async function fetchHint(): Promise<HintResponse | null> {
-  const res = await fetch('/api/game/hint')
+  let res: Response
+  try {
+    res = await fetch('/api/game/hint')
+  } catch {
+    return null
+  }
   if (!res.ok) return null
-  return (await res.json()) as HintResponse
+  return (await res.json().catch(() => null)) as HintResponse | null
 }
 
 export interface ReviewedMove {
@@ -423,18 +485,29 @@ export interface GameReview {
 /** Fetch the whole-game review, or null if the backend refused (no engine →
  * 503, no moves yet → 409). Read-only — never touches board state. */
 export async function fetchReview(): Promise<GameReview | null> {
-  const res = await fetch('/api/game/review')
+  let res: Response
+  try {
+    res = await fetch('/api/game/review')
+  } catch {
+    return null
+  }
   if (!res.ok) return null
-  return (await res.json()) as GameReview
+  return (await res.json().catch(() => null)) as GameReview | null
 }
 
 /** Fetch the game so far as PGN, or null if the backend refused. Read-only —
  * never touches board state. */
 export async function fetchPgn(): Promise<string | null> {
-  const res = await fetch('/api/game/pgn')
+  let res: Response
+  try {
+    res = await fetch('/api/game/pgn')
+  } catch {
+    return null
+  }
   if (!res.ok) return null
-  const data = (await res.json()) as { pgn: string }
-  return data.pgn
+  const data = (await res.json().catch(() => ({}))) as { pgn?: unknown }
+  // "No transcript" beats handing the clipboard the string "undefined".
+  return typeof data.pgn === 'string' ? data.pgn : null
 }
 
 /**
