@@ -259,6 +259,39 @@ def _state_dict_unlocked(ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+def _session_snapshot(ctx: ToolContext) -> tuple[int, GameSession]:
+    """Detach the game from the live board, under the mutation boundary.
+
+    The reads that take real time — the whole-game review's Stockfish sweep, the
+    hint's search — must not run against `ctx.session` itself. A read that lands
+    between a mutation's two steps walks a half-applied board: a `to_dict()`
+    inside `undo`'s pop found an empty move stack and raised out of
+    `board.root()`, which reached the player as a 500 (#230). Nor may they hold
+    the lock while they run: a turn already holds it while the brain thinks, so
+    a multi-second sweep holding it too would stall every concurrent drag — a
+    worse failure than the tear.
+
+    So the boundary buys a **copy**, and nothing else happens inside it. Held
+    across the cheap, pure serialization only (`to_dict`, plus the version that
+    names it); the replay that turns those strings back into a board is
+    deterministic and touches nothing shared, so it happens after the release.
+    A plain `board.copy()` would not do — it walks the move stack, which is the
+    very thing that tears.
+
+    The version is the one the returned position *is*, captured in the same
+    indivisible step. That is what makes the hint's `version` (#218) exact
+    rather than merely fail-safe: the search runs on this copy, so the number
+    and the analyzed board cannot come apart.
+
+    Callers already inside `_mutation` must not use this: the context
+    deliberately owns a plain, non-reentrant lock.
+    """
+    with ctx.mutation_lock:
+        version = ctx.board_version
+        data = ctx.session.to_dict()
+    return version, GameSession.from_dict(data)
+
+
 def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     """The view the brain reasons from: board truth (fen, turn, check, SAN
     history, captures, legal moves, outcome) plus which color the player is and
@@ -2253,21 +2286,26 @@ def create_app(
         holds the board still while it runs — another client, or this one
         dragging a piece. Without it a client cannot tell an answer about its
         board from an answer about the board before it, and a late response
-        paints the old position's arrow onto the new one (#218). Read *before*
-        the search deliberately: it is the position the engine started from, so
-        a board that moves mid-search yields a version the client already knows
-        is behind and discards, rather than a number whose position was never
-        the one analyzed.
+        paints the old position's arrow onto the new one (#218).
+
+        The version and the searched position come out of one `_session_snapshot`
+        — the same indivisible step — and the engine runs on that snapshot, so
+        the number and the analyzed board are the same board by construction.
+        Reading the version off the live session merely failed *safe* (an old
+        number labelling a newer board, which a client discards); it also left
+        the search itself reading a session another thread was mid-`push` on
+        (#230). The search runs with the lock released: the copy is what the
+        boundary is held for.
         """
         if ctx.engine is None:
             raise HTTPException(status_code=503, detail="hint unavailable: no engine")
-        if ctx.session.is_game_over():
+        version, snapshot = _session_snapshot(ctx)
+        if snapshot.is_game_over():
             raise HTTPException(
                 status_code=409, detail="cannot suggest moves: game is over"
             )
-        version = ctx.board_version
         try:
-            candidates = ctx.engine.get_best_moves(ctx.session, n=1)
+            candidates = ctx.engine.get_best_moves(snapshot, n=1)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not candidates:
@@ -2287,11 +2325,19 @@ def create_app(
         """Whole-game review for the UI (trusted path, same numbers as the
         `review_game` tool). Analysis needs Stockfish (503 without one);
         reviewing an empty game is a domain failure (409). Read-only —
-        nothing is broadcast."""
+        nothing is broadcast.
+
+        Reviewed off a `_session_snapshot` rather than the live game: the sweep
+        is one engine analysis per position — seconds — and it opens by
+        serializing the whole move stack, which is what tore when a mutation
+        landed underneath it (#230). The copy is taken at the mutation boundary
+        and the sweep runs with the lock released, so a review never makes a
+        drag wait for it."""
         if ctx.engine is None:
             raise HTTPException(status_code=503, detail="review unavailable: no engine")
+        _, snapshot = _session_snapshot(ctx)
         try:
-            review = review_game(ctx.engine, ctx.session)
+            review = review_game(ctx.engine, snapshot)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {
@@ -2313,7 +2359,12 @@ def create_app(
 
     @app.get("/api/game/pgn")
     def export_pgn() -> dict[str, Any]:
-        return {"pgn": ctx.session.export_pgn()}
+        """The game so far as PGN, off a `_session_snapshot`. `export_pgn`
+        replays the whole move stack, and replaying one that another thread is
+        popping is what made "Copy PGN" raise out of `board.root()` and answer
+        the player a 500 (#230)."""
+        _, snapshot = _session_snapshot(ctx)
+        return {"pgn": snapshot.export_pgn()}
 
     if static_dir is not None:
         # Serve the built frontend from the same origin as the API, so the
