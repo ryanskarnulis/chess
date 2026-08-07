@@ -228,7 +228,10 @@ export function useGame(): UseGame {
 
     const syncState = () => {
       void fetchState().then((s) => {
-        if (live) apply(s)
+        // Null: the fetch never made it (backend mid-redeploy, gateway drop).
+        // Nothing to do here — the socket's own snapshot on (re)connect is
+        // the retry.
+        if (live && s) apply(s)
       })
     }
     const detach = (target: WebSocket) => {
@@ -286,8 +289,10 @@ export function useGame(): UseGame {
     }
 
     syncState()
+    // Null: settings never arrived. All three stay null — the hook's word for
+    // "not loaded" — rather than adopting values the server never confirmed.
     fetchSettings().then((s) => {
-      if (live) {
+      if (live && s) {
         setVoiceOutputState(s.voice_output)
         setTierState(s.tier)
         // Undefined (an older backend) stays null: unknown is not direct mode,
