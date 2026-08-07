@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { sendCommand } from './api'
 import { MicButton } from './MicButton'
 import { audioIdle, unlockAudio } from './tts'
 import { createVad, type SpeechEvents, type Vad } from './vad'
@@ -78,6 +79,15 @@ async function enterConversation() {
 /** Simulate the VAD reporting a finished utterance. */
 function speak(samples = [0.1, -0.1]) {
   act(() => speechEvents?.onSpeechEnd(new Float32Array(samples)))
+}
+
+/**
+ * The wedge (#232): the "…" working icon with the VAD paused and nothing left
+ * to resume it — hands-free silently deaf until someone notices and taps out.
+ * No path through a turn may end here.
+ */
+function expectNotWedged() {
+  expect(screen.getByRole('button')).not.toHaveClass('mic-working')
 }
 
 beforeEach(() => {
@@ -185,6 +195,78 @@ describe('MicButton (hands-free conversation mode)', () => {
 
     speak()
     expect(await screen.findByRole('alert')).toHaveTextContent(/unavailable/i)
+    expect(fakeVad.destroy).toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /voice conversation/i })).toBeInTheDocument()
+  })
+
+  // --- a turn that dies must still leave the loop recoverable (#232) -------
+  //
+  // The primary voice device is a phone on wifi and the backend container
+  // restarts on every merge to main, so a request that never completes is
+  // routine, not exotic. Whatever a turn's promise does, the session ends
+  // visibly or resumes cleanly — never "…" with the VAD paused and no line.
+
+  it('exits conversation mode when transcription cannot be reached', async () => {
+    // A refused connection: fetch rejects rather than answering 503, so the
+    // rejection used to escape past the resume path entirely.
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))))
+    render(<MicButton onTranscript={vi.fn()} disabled={false} />)
+    await enterConversation()
+
+    speak()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/unavailable/i)
+    expectNotWedged()
+    expect(fakeVad.destroy).toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /voice conversation/i })).toBeInTheDocument()
+  })
+
+  it('exits conversation mode when a transcription response does not parse', async () => {
+    // A gateway that answers 200 with an HTML error page: there is no text to
+    // read, and the .json() rejection wedged the loop exactly like a dead
+    // socket did.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>502</html>', { status: 200 })))
+    render(<MicButton onTranscript={vi.fn()} disabled={false} />)
+    await enterConversation()
+
+    speak()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/unavailable/i)
+    expectNotWedged()
+    expect(screen.getByRole('button', { name: /voice conversation/i })).toBeInTheDocument()
+  })
+
+  it('keeps listening when the command the transcript went to cannot be reached', async () => {
+    // The real sendCommand runs here, so this pins the two layers together: a
+    // dropped command is a turn that says nothing, not a dead session. The mic
+    // reopens because nothing threw — the api client resolved the failure.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).includes('/api/voice/transcribe'))
+          return new Response(JSON.stringify({ text: 'castle' }), { status: 200 })
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    render(<MicButton onTranscript={(text) => sendCommand(text).then(() => {})} disabled={false} />)
+    await enterConversation()
+
+    speak()
+    await waitFor(() => expect(fakeVad.resume).toHaveBeenCalled())
+    expectNotWedged()
+    expect(screen.getByRole('button', { name: /stop listening/i })).toBeInTheDocument()
+  })
+
+  it('exits conversation mode when the agent turn rejects outright', async () => {
+    // handleUtterance does not own onTranscript's promise, so nothing it can
+    // fix upstream makes this unreachable — the belt is for the unknown.
+    stubTranscribeResponse({ ok: true, text: 'castle' })
+    const onTranscript = vi.fn(() => Promise.reject(new Error('turn died')))
+    render(<MicButton onTranscript={onTranscript} disabled={false} />)
+    await enterConversation()
+
+    expect(await screen.findByRole('button', { name: /stop listening/i })).toBeInTheDocument()
+    speak()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/tap to start/i)
+    expectNotWedged()
     expect(fakeVad.destroy).toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /voice conversation/i })).toBeInTheDocument()
   })

@@ -135,6 +135,17 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
       // Empty transcript: a VAD misfire, not worth nagging about.
       vadRef.current?.resume()
       setMicState('listening')
+    } catch {
+      // Nothing above is meant to reject — the api client resolves its failures
+      // to null and tts.ts never rejects — so reaching here means the turn died
+      // somewhere unaccounted for. That is exactly the case that must not be
+      // resumed: an escape past the two lines above leaves the mic showing
+      // 'working' with the VAD paused and nothing left to reopen it, which on
+      // a phone is a session that has silently stopped listening (#232). End
+      // it like the unavailable branch — visibly, one tap from the way back.
+      if (sessionRef.current !== session) return
+      endConversation()
+      setError('Voice conversation stopped — tap to start again.')
     } finally {
       busyRef.current = false
     }
