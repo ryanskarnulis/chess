@@ -396,6 +396,103 @@
   inset: 0;
 }
 
+/* --- Board squares -------------------------------------------------------
+
+   The vendored brown theme draws its dark squares as black at 20% opacity
+   over the light one, which lands on #bdae94 — a light tan, not a dark
+   square. Measured off the board: the two square colors sit at luminance
+   0.715 and 0.436, only 1.37:1 apart, so the pattern reads washed out on a
+   phone and, worse, there is no such thing as a legible light label: white
+   on #bdae94 is 2.2:1, under even the 3:1 large-text floor.
+
+   Restore chessground's classic pair so "ink is the opposite of the square"
+   is actually available: #f0d9b5 / #b58863, 2.53:1 apart. No single alpha
+   reaches #b58863 from #f0d9b5 (the required value differs per channel —
+   0.25 / 0.37 / 0.45; it is browner, not merely darker), so this replaces
+   the theme's background outright rather than tinting it. An SVG tile with
+   crispEdges, not a conic gradient, because the gradient's quadrant
+   boundaries anti-alias into hairline seams at some board sizes.
+
+   The tile is 2×2 squares (background-size 25% = four tiles across) with
+   the dark squares top-right and bottom-left, which puts a light square in
+   the board's top-left corner — a8 unflipped, h1 flipped, both light, which
+   is why one static tile serves either orientation. */
+.board-wrap cg-board {
+  background-color: #f0d9b5;
+  background-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2" shape-rendering="crispEdges"><rect x="1" y="0" width="1" height="1" fill="%23b58863"/><rect x="0" y="1" width="1" height="1" fill="%23b58863"/></svg>');
+  background-size: 25% 25%;
+}
+
+/* --- Board coordinates ---------------------------------------------------
+
+   Rank numbers in the top-left corner of their square, file letters in the
+   bottom-right of theirs — the corners a cburnett piece leaves clearest,
+   and diagonally opposite so a1 and h1 never collide. Both strips are
+   chessground's own <coords> elements, which live inside cg-container and
+   are laid out by flex over it, so 12.5% is exactly one square and the
+   labels track chessground's rounded geometry for free.
+
+   Base chessground put the files *below* the board (`bottom: -4px`) and
+   offset every letter 24px to the right of its own file, which on this
+   layout meant a half-square drift and an `h` clipped by the frame. */
+.board-wrap coords {
+  opacity: 1;
+  font: 700 12px/1 var(--sans);
+  /* Above a resting piece (z-index 2) so a corner label is never buried by
+     one, but below an animating (8) or dragged (11) piece, which should
+     pass over the top. */
+  z-index: 3;
+}
+
+.board-wrap coords.ranks {
+  top: 0;
+  left: 0;
+  width: 12.5%;
+  height: 100%;
+}
+
+.board-wrap coords.ranks coord {
+  /* The 39% nudge existed only to cancel base's `top: -20px`. */
+  transform: none;
+  padding: 2px 0 0 3px;
+  text-align: left;
+}
+
+.board-wrap coords.files {
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 12.5%;
+  align-items: flex-end;
+}
+
+.board-wrap coords.files coord {
+  padding: 0 4px 2px 0;
+  text-align: right;
+}
+
+/* Ink is the opposite of the square underneath, with a soft halo in the
+   same direction so the label survives the piece edge it sits on.
+
+   Both strips share one parity because both start on the same square color:
+   child 1 is rank 1 and file a — a1 and a1's file, dark squares — with
+   white at the bottom, and rank 1 and file a are h1 and a8, both light,
+   when flipped. The vendored theme had the *ranks* half backwards (its
+   `.orientation-white .ranks :nth-child(odd)` paints rank 1 dark, and a1 is
+   a dark square); measured off the reported screenshot, every rank label
+   was the same tone as its square — 6 light-on-light, 5 dark-on-dark. */
+.board-wrap .orientation-white coords coord:nth-child(odd),
+.board-wrap .orientation-black coords coord:nth-child(even) {
+  color: #ffffff;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.6), 0 0 3px rgba(0, 0, 0, 0.45);
+}
+
+.board-wrap .orientation-white coords coord:nth-child(even),
+.board-wrap .orientation-black coords coord:nth-child(odd) {
+  color: #2b2620;
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.6), 0 0 3px rgba(255, 255, 255, 0.45);
+}
+
 /* Direct mode: no brain configured, Stockfish only. A quiet standing label —
    the mode is deliberate, so it reads as information and not as an error. */
 .direct-mode {
