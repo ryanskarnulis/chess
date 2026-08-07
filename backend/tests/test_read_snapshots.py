@@ -51,6 +51,11 @@ from fakes import FakeEngine
 # history is exactly a prefix of this, which is what a coherent read must show.
 STORM_MOVES = ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6")
 
+# The storm is bounded by *work* — this many coherent reads — with the seconds
+# only a cap so a slow host stops rather than hangs. See the test's docstring.
+STORM_READS = 150
+STORM_SECONDS = 20.0
+
 BEST = CandidateMove(uci="e2e4", san="e4", score_cp=30, mate_in=None)
 
 
@@ -281,23 +286,40 @@ def test_a_hint_analyzes_the_board_its_version_names(ctx):
 
 def test_reads_survive_a_storm_of_locked_mutations(ctx):
     """A writer doing what a locked turn does, a reader doing what the read
-    endpoints do — the issue's reproduction with a deadline on it.
+    endpoints do — the issue's reproduction, bounded.
 
     Probabilistic, so the deterministic tests above are the gate; this is the
     shape the failure was actually found in (~1 tear per 20k reads), and it
-    pins the property the others assert about one interleaving over a few
-    thousand: no exception, and every answer is a real position. The writer
-    takes the lock per mutation because that is what the app does — the fix is
-    the reader joining a boundary the writers were already keeping.
+    pins over a few hundred interleavings what the others assert about one: no
+    exception, and every answer is a real position. The writer takes the lock
+    per mutation because that is what the app does — the fix is the reader
+    joining a boundary the writers were already keeping.
+
+    Bounded by **work, not wall clock**: the reader stops at `STORM_READS`, and
+    the seconds are only a cap so a slow host stops rather than hangs. A
+    time-boxed storm makes its own floor an assumption about the machine's
+    throughput — CI's 2-core runner under coverage tracing got 17 reads through
+    a second where this hardware gets thousands, and a green that depends on
+    the host is not a property of the code.
+
+    Too slow even for the cap *skips* rather than fails: too few reads is not
+    evidence of a tear — every coherence assertion that did run still held — it
+    is evidence of no throughput, and a suite cannot conclude anything from an
+    interleaving that never happened. The deterministic tests above are the
+    gate on such a host, exactly as they are on this one. A real regression
+    still fails here on the recorded failure, whatever the read count.
     """
     pgn = endpoint_for(create_app(ctx), "/api/game/pgn")
     stop = threading.Event()
     failures: list[BaseException] = []
     reads = 0
-    deadline = time.monotonic() + 1.0
+    started = time.monotonic()
+    deadline = started + STORM_SECONDS
 
     def writer() -> None:
         try:
+            # The cap is the writer's too: whichever thread reaches it ends the
+            # storm, and neither can outlive it.
             while not stop.is_set() and time.monotonic() < deadline:
                 for san in STORM_MOVES:
                     with ctx.mutation_lock:
@@ -312,7 +334,9 @@ def test_reads_survive_a_storm_of_locked_mutations(ctx):
     def reader() -> None:
         nonlocal reads
         try:
-            while not stop.is_set():
+            while not stop.is_set() and reads < STORM_READS:
+                if time.monotonic() >= deadline:
+                    return
                 game = chess.pgn.read_game(io.StringIO(pgn()["pgn"]))
                 assert game is not None and not game.errors
                 played = tuple(
@@ -332,12 +356,17 @@ def test_reads_survive_a_storm_of_locked_mutations(ctx):
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(30)
+        thread.join(STORM_SECONDS + 10)
         assert not thread.is_alive(), "the storm never finished"
 
+    # The property under test, first and unconditionally: a tear raises here
+    # however few reads reached it.
     if failures:
         raise failures[0]
-    assert reads > 100, f"the storm barely ran ({reads} reads)"
+    if reads < STORM_READS:
+        pytest.skip(
+            f"storm managed only {reads} reads in {time.monotonic() - started:.1f}s"
+        )
 
 
 def test_a_snapshot_is_detached_from_the_live_session(ctx):
