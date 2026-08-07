@@ -40,6 +40,9 @@ let currentPlayback: Promise<void> = Promise.resolve()
 /** Settles the promise of the clip currently in the element; called when a
  * new clip interrupts it, because its own onended will never fire. */
 let settleInterrupted: (() => void) | null = null
+/** The request behind the most recent playback, held so stopPlayback() can
+ * cancel a clip that hasn't started playing yet. */
+let currentRequest: AbortController | null = null
 
 function element(): HTMLAudioElement {
   if (!sharedAudio) sharedAudio = new Audio()
@@ -73,6 +76,31 @@ export function unlockAudio(): void {
  */
 export function audioIdle(): Promise<void> {
   return currentPlayback
+}
+
+/**
+ * Silence playback now and settle audioIdle() with it.
+ *
+ * Ending a voice conversation ends the reply too: the half-duplex loop only
+ * keeps the agent from hearing itself while one component owns both ends, so
+ * a reply still coming out of the speakers when the next session opens the
+ * mic is speech the VAD will happily transcribe as the user's. A clip whose
+ * request is still in flight is cancelled rather than left to arrive and play
+ * into that open mic one round trip later.
+ */
+export function stopPlayback(): void {
+  currentRequest?.abort()
+  currentRequest = null
+  sharedAudio?.pause()
+  if (liveUrl) {
+    URL.revokeObjectURL(liveUrl)
+    liveUrl = null
+  }
+  // A paused clip's onended never fires, so settle its promise by hand —
+  // the same hand-off an interrupting clip does.
+  settleInterrupted?.()
+  settleInterrupted = null
+  currentPlayback = Promise.resolve()
 }
 
 /**
@@ -117,6 +145,7 @@ async function speak(text: string): Promise<void> {
   // rather than rejecting, and it settles the wait even if the request itself
   // stays pending forever.
   const controller = new AbortController()
+  currentRequest = controller
   let expire = () => {}
   const expired = new Promise<null>((resolve) => {
     expire = () => resolve(null)
@@ -134,8 +163,10 @@ async function speak(text: string): Promise<void> {
   } catch {
     return
   } finally {
-    // Every exit — played, unavailable, failed, expired — drops the timer.
+    // Every exit — played, unavailable, failed, expired — drops the timer and
+    // stops offering a settled request to cancel.
     clearTimeout(deadline)
+    if (currentRequest === controller) currentRequest = null
   }
   const el = element()
   // A new clip interrupts whatever was loaded: settle the old clip's promise

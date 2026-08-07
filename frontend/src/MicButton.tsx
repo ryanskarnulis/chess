@@ -1,7 +1,7 @@
 // canonical voice module (chess) — other apps vendor verbatim copies; see agent-standard/voice.md
 import { useEffect, useRef, useState } from 'react'
 import { transcribe } from './api'
-import { audioIdle, unlockAudio } from './tts'
+import { audioIdle, stopPlayback, unlockAudio } from './tts'
 import { createVad, type Vad } from './vad'
 import { encodeWav } from './wav'
 
@@ -52,7 +52,9 @@ const ICONS: Record<MicState, string> = {
  * same pipeline as a typed command, and — once the agent's spoken reply has
  * finished — the mic reopens for the next utterance. Half-duplex by
  * construction: the mic is never open while the agent is thinking or
- * talking, so the agent cannot hear itself. A second tap ends the session.
+ * talking, so the agent cannot hear itself. A second tap ends the session,
+ * and the spoken reply with it — half-duplex holds across sessions too, so a
+ * restart neither inherits the old turn's state nor listens over its audio.
  *
  * When the VAD can't load, degrades to classic push-to-talk (tap to record,
  * tap to send). Renders nothing in browsers without MediaRecorder /
@@ -69,9 +71,12 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
   // Conversation sessions are numbered; async continuations belonging to an
   // exited session must not touch state or reopen the mic.
   const sessionRef = useRef(0)
-  // An utterance is already being processed — drop any VAD event that slips
-  // through before pause() takes effect.
-  const busyRef = useRef(false)
+  // The session whose utterance is being processed, or null: while it is set,
+  // a VAD event that slips through before pause() takes effect is dropped.
+  // Scoped to the session rather than the component, because a latch left
+  // behind by an ended conversation silently swallows the next one's
+  // utterances — the mic reads "listening" and nothing is ever sent.
+  const busyRef = useRef<number | null>(null)
 
   /**
    * Abandon any push-to-talk recording and release the microphone. Handlers
@@ -106,14 +111,22 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
 
   function endConversation() {
     sessionRef.current++
+    // The latch belongs to the session that just ended: whatever it is still
+    // awaiting, nothing is waiting on *it* any more, so the next conversation
+    // must not inherit the block.
+    busyRef.current = null
     vadRef.current?.destroy()
     vadRef.current = null
+    // Ending the conversation ends the reply: a clip still playing would be
+    // audible over the next session's open mic, and "stop" that leaves the
+    // agent talking isn't a stop.
+    stopPlayback()
     setMicState('idle')
   }
 
   async function handleUtterance(audio: Float32Array, session: number) {
-    if (busyRef.current) return
-    busyRef.current = true
+    if (busyRef.current !== null) return
+    busyRef.current = session
     try {
       vadRef.current?.pause()
       setMicState('working')
@@ -147,7 +160,9 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
       endConversation()
       setError('Voice conversation stopped — tap to start again.')
     } finally {
-      busyRef.current = false
+      // Only while the latch is still this session's — an abandoned turn
+      // settling late must not unlock a conversation that started after it.
+      if (busyRef.current === session) busyRef.current = null
     }
   }
 
@@ -155,9 +170,16 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
     const session = ++sessionRef.current
     setError(null)
     setMicState('starting')
+    // Half-duplex across sessions, not just within one: never open the mic
+    // over audio that is still playing. Ending a conversation stops its own
+    // playback, so a restart waits on nothing; a conversation started while a
+    // typed command's reply is still speaking waits it out rather than
+    // transcribing the agent.
+    await audioIdle()
+    if (sessionRef.current !== session) return
     const vad = await createVad({
       onSpeechStart: () => {
-        if (sessionRef.current === session && !busyRef.current) setMicState('capturing')
+        if (sessionRef.current === session && busyRef.current === null) setMicState('capturing')
       },
       onSpeechEnd: (audio) => {
         if (sessionRef.current === session) void handleUtterance(audio, session)

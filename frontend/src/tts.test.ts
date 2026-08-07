@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // element), so every test re-imports a fresh copy via loadTts().
 
 const play = vi.fn()
+const pause = vi.fn()
 let audioInstances: FakeAudio[]
 
 class FakeAudio {
@@ -20,6 +21,7 @@ class FakeAudio {
   }
 
   play = play
+  pause = pause
 }
 
 async function loadTts() {
@@ -35,6 +37,7 @@ async function playbackStarted() {
 beforeEach(() => {
   audioInstances = []
   play.mockReset().mockResolvedValue(undefined)
+  pause.mockReset()
   vi.stubGlobal('Audio', FakeAudio)
   vi.stubGlobal('URL', {
     createObjectURL: vi.fn(() => 'blob:fake-url'),
@@ -267,6 +270,61 @@ describe('audioIdle', () => {
     await done
     await wait
     expect(idle).toBe(true)
+  })
+})
+
+describe('stopPlayback', () => {
+  // The hands-free loop calls this when the user ends a conversation: a reply
+  // still audible when the next session opens the mic is speech the VAD will
+  // transcribe as the user's.
+
+  it('silences the live clip, releases its URL and settles audioIdle()', async () => {
+    const { playText, audioIdle, stopPlayback } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const done = playText('Check!')
+    await playbackStarted()
+
+    stopPlayback()
+    expect(pause).toHaveBeenCalled()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:fake-url')
+    // The paused clip's onended never fires, so the promise (and the wait the
+    // hands-free loop does on it) has to be settled by hand.
+    await expect(done).resolves.toBeUndefined()
+    await expect(audioIdle()).resolves.toBeUndefined()
+  })
+
+  it('cancels a clip whose request has not answered yet', async () => {
+    // Otherwise the reply arrives a round trip after the user tapped out and
+    // plays into the microphone the next session just opened.
+    const { playText, stopPlayback } = await loadTts()
+    const signals: (AbortSignal | undefined)[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            signals.push(init?.signal ?? undefined)
+            init?.signal?.addEventListener('abort', () =>
+              reject(new DOMException('Aborted', 'AbortError')),
+            )
+          }),
+      ),
+    )
+    const done = playText('Check!')
+    await vi.waitFor(() => expect(signals).toHaveLength(1))
+
+    stopPlayback()
+    expect(signals[0]?.aborted).toBe(true)
+    await expect(done).resolves.toBeUndefined()
+    expect(play).not.toHaveBeenCalled()
+    expect(audioInstances).toHaveLength(0)
+  })
+
+  it('is a no-op when nothing has ever played', async () => {
+    const { audioIdle, stopPlayback } = await loadTts()
+    stopPlayback()
+    expect(audioInstances).toHaveLength(0)
+    await expect(audioIdle()).resolves.toBeUndefined()
   })
 })
 

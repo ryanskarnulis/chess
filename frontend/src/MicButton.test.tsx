@@ -2,12 +2,16 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { sendCommand } from './api'
 import { MicButton } from './MicButton'
-import { audioIdle, unlockAudio } from './tts'
+import { audioIdle, stopPlayback, unlockAudio } from './tts'
 import { createVad, type SpeechEvents, type Vad } from './vad'
 
 // Mobile browsers only allow playback primed inside a user gesture; the mic
 // tap is the last gesture before the agent's spoken reply, so it must unlock.
-vi.mock('./tts', () => ({ unlockAudio: vi.fn(), audioIdle: vi.fn(async () => {}) }))
+vi.mock('./tts', () => ({
+  unlockAudio: vi.fn(),
+  audioIdle: vi.fn(async () => {}),
+  stopPlayback: vi.fn(),
+}))
 
 // The real VAD needs an AudioWorklet + WASM model; the wrapper is mocked so
 // tests can fire speech events by hand and simulate load failure.
@@ -70,10 +74,14 @@ function stubTranscribeResponse(response: { ok: boolean; text?: string }) {
 const fakeVad: Vad = { pause: vi.fn(), resume: vi.fn(), destroy: vi.fn() }
 let speechEvents: SpeechEvents | null = null
 
-/** Tap the mic and wait for hands-free listening to engage. */
+/**
+ * Tap the mic and wait for hands-free listening to actually engage — the
+ * label says "stop listening" from the first frame ('starting'), so the class
+ * is the only signal that the VAD is up and speech events will land.
+ */
 async function enterConversation() {
   fireEvent.click(screen.getByRole('button', { name: /voice conversation/i }))
-  await screen.findByRole('button', { name: /stop listening/i })
+  await waitFor(() => expect(screen.getByRole('button')).toHaveClass('mic-listening'))
 }
 
 /** Simulate the VAD reporting a finished utterance. */
@@ -96,6 +104,7 @@ beforeEach(() => {
   getUserMedia.mockResolvedValue(fakeStream)
   fakeTrack.stop.mockReset()
   vi.mocked(unlockAudio).mockClear()
+  vi.mocked(stopPlayback).mockClear()
   vi.mocked(audioIdle).mockReset()
   vi.mocked(audioIdle).mockResolvedValue(undefined)
   speechEvents = null
@@ -153,6 +162,10 @@ describe('MicButton (hands-free conversation mode)', () => {
           finishAgent = resolve
         }),
     )
+    render(<MicButton onTranscript={onTranscript} disabled={false} />)
+    await enterConversation()
+
+    // Installed after the session is up: starting one also waits on playback.
     let finishSpeech!: () => void
     vi.mocked(audioIdle).mockImplementation(
       () =>
@@ -160,9 +173,6 @@ describe('MicButton (hands-free conversation mode)', () => {
           finishSpeech = resolve
         }),
     )
-    render(<MicButton onTranscript={onTranscript} disabled={false} />)
-    await enterConversation()
-
     speak()
     await waitFor(() => expect(onTranscript).toHaveBeenCalled())
     expect(fakeVad.resume).not.toHaveBeenCalled()
@@ -271,13 +281,74 @@ describe('MicButton (hands-free conversation mode)', () => {
     expect(screen.getByRole('button', { name: /voice conversation/i })).toBeInTheDocument()
   })
 
-  it('ends the conversation on a second tap', async () => {
+  it('ends the conversation on a second tap, and the spoken reply with it', async () => {
     render(<MicButton onTranscript={vi.fn()} disabled={false} />)
     await enterConversation()
 
     fireEvent.click(screen.getByRole('button', { name: /stop listening/i }))
     expect(fakeVad.destroy).toHaveBeenCalled()
+    // Tapping out while the agent is talking must silence it: the reply would
+    // otherwise still be audible over the next session's open mic.
+    expect(stopPlayback).toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /voice conversation/i })).toBeInTheDocument()
+  })
+
+  // --- restarting mid-reply must not poison the new session (#257) ---------
+
+  it('accepts utterances again after a restart during the previous reply', async () => {
+    // The busy latch used to be component-scoped: session 1 held it until its
+    // reply finished playing, so everything said to session 2 hit the early
+    // return and vanished while the button still read "listening".
+    stubTranscribeResponse({ ok: true, text: 'castle' })
+    const onTranscript = vi.fn(async () => {})
+    render(<MicButton onTranscript={onTranscript} disabled={false} />)
+    await enterConversation()
+
+    // Only session 1's reply hangs; every other wait resolves at once.
+    let finishSpeech!: () => void
+    vi.mocked(audioIdle).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSpeech = resolve
+        }),
+    )
+    speak()
+    // Session 1 is now parked on the reply's playback, holding the latch.
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: /stop listening/i }))
+    await enterConversation()
+
+    speak()
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledTimes(2))
+    expect(onTranscript).toHaveBeenLastCalledWith('castle')
+
+    // The abandoned turn settling afterwards touches neither the latch nor
+    // the live session's mic.
+    await act(async () => finishSpeech())
+    expectNotWedged()
+    speak()
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledTimes(3))
+  })
+
+  it('does not open the mic until playback is idle', async () => {
+    // Starting a conversation while a typed command's reply is still speaking
+    // would put the VAD in front of the speakers.
+    let finishSpeech!: () => void
+    vi.mocked(audioIdle).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSpeech = resolve
+        }),
+    )
+    render(<MicButton onTranscript={vi.fn()} disabled={false} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /voice conversation/i }))
+    await waitFor(() => expect(unlockAudio).toHaveBeenCalled())
+    expect(createVad).not.toHaveBeenCalled()
+
+    await act(async () => finishSpeech())
+    await waitFor(() => expect(createVad).toHaveBeenCalled())
+    expect(screen.getByRole('button')).toHaveClass('mic-listening')
   })
 
   it('stays tappable (to exit) while the agent is busy', async () => {
