@@ -293,19 +293,29 @@ export interface CommandResponse {
 }
 
 /**
- * Send a free-form command to the agent. Returns its commentary and state, the
- * catch-up state from a stale 409, or null if the agent is unavailable (e.g. no
- * brain is configured → 503). The backend is still the sole move-truth source:
- * the agent acts only through tools, so a command can never corrupt state.
+ * Send a free-form command to the agent. Never throws: returns its commentary
+ * and state, the catch-up state from a stale 409, or null when no turn came
+ * back at all — the agent is unavailable (no brain → 503) or the request never
+ * reached it. A transport failure is null for the same reason a 503 is: both
+ * mean nothing happened, and the callers already say so (#232). It must not be
+ * a rejection, because this promise is discarded by the command box and
+ * awaited by the hands-free loop, where an escape wedges the mic. The backend
+ * is still the sole move-truth source: the agent acts only through tools, so a
+ * command can never corrupt state.
  */
 export async function sendCommand(
   text: string,
   version?: number,
 ): Promise<CommandResponse | StaleStateResponse | null> {
-  const res = await fetch('/api/command', {
-    ...JSON_POST,
-    body: JSON.stringify(versioned({ text }, version)),
-  })
+  let res: Response
+  try {
+    res = await fetch('/api/command', {
+      ...JSON_POST,
+      body: JSON.stringify(versioned({ text }, version)),
+    })
+  } catch {
+    return null
+  }
   const data = (await res.json().catch(() => ({}))) as unknown
   if (!res.ok) return isStaleStateResponse(data) ? data : null
   return data as CommandResponse
@@ -344,20 +354,31 @@ export async function setVoiceOutput(enabled: boolean): Promise<boolean | null> 
 }
 
 /**
- * Send recorded audio to the backend for transcription. Returns the
- * recognized text, or null when voice is unavailable (no speech service →
- * 503, speech backend down → 502). The caller feeds the text into the same
- * command pipeline as typed input — voice never gets its own path.
+ * Send recorded audio to the backend for transcription. Never throws: returns
+ * the recognized text, or null for every way there is no text — voice
+ * unavailable (no speech service → 503, speech backend down → 502), the
+ * request never arriving, or a body with nothing readable in it. The hands-free
+ * loop awaits this between pausing and resuming the mic, so a rejection here is
+ * a session that stops listening with no diagnostic (#232); null is the shape
+ * it already handles. The caller feeds the text into the same command pipeline
+ * as typed input — voice never gets its own path.
  */
 export async function transcribe(audio: Blob, filename = 'clip.webm'): Promise<string | null> {
   const form = new FormData()
   // The filename extension tells the speech backend the container format
   // (webm from MediaRecorder push-to-talk, wav from the hands-free VAD).
   form.append('audio', audio, filename)
-  const res = await fetch('/api/voice/transcribe', { method: 'POST', body: form })
+  let res: Response
+  try {
+    res = await fetch('/api/voice/transcribe', { method: 'POST', body: form })
+  } catch {
+    return null
+  }
   if (!res.ok) return null
-  const data = (await res.json()) as { text: string }
-  return data.text
+  const data = (await res.json().catch(() => ({}))) as { text?: unknown }
+  // A body that never parsed leaves `{}` behind. Its missing text is "no
+  // transcript", not an empty utterance the loop would silently swallow.
+  return typeof data.text === 'string' ? data.text : null
 }
 
 export interface HintResponse {

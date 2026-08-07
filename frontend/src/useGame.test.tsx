@@ -1135,6 +1135,29 @@ describe('useGame', () => {
     expect(result.current.agentThinking).toBe(false)
   })
 
+  it('reports an unavailable agent when the command never reaches the server', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    // The container restarts on every merge to main, so a refused connection
+    // mid-command is routine. It has to land on the same documented
+    // "unavailable" line: this promise is discarded by CommandBox's
+    // `void onSubmit` and awaited by the hands-free loop, so a rejection is
+    // either silence or a wedged mic (#232).
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return Promise.reject(new TypeError('Failed to fetch'))
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await expect(result.current.sendCommand('play e4')).resolves.toBeUndefined()
+    })
+    expect(result.current.commentary).toMatch(/unavailable/i)
+    expect(result.current.state?.fen).toBe(START_FEN)
+    expect(result.current.revision).toBe(revisionBefore)
+    expect(result.current.agentThinking).toBe(false)
+  })
+
   // --- agent mode on the board: a drag is a turn -------------------------
   //
   // In agent mode the move endpoint runs the same beats a typed move does, so
