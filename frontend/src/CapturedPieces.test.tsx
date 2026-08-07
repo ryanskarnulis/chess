@@ -3,12 +3,13 @@ import { describe, expect, it } from 'vitest'
 import { CapturedPieces } from './CapturedPieces'
 
 describe('CapturedPieces', () => {
-  it('renders each side captures under its role cluster', () => {
+  it('renders the captures of the owner it was asked for', () => {
     // The player is white and has captured a black pawn and knight; Glitch
-    // (black) has captured a white pawn.
-    render(
-      <CapturedPieces captured={{ white: ['p', 'n'], black: ['p'] }} playerColor="white" />,
-    )
+    // (black) has captured a white pawn. Each owner now gets its own row —
+    // Glitch's under the agent bubble, the player's under the board — so the
+    // component renders one cluster, not both.
+    const captured = { white: ['p', 'n'], black: ['p'] }
+    render(<CapturedPieces captured={captured} playerColor="white" owner="you" />)
     const you = screen.getByLabelText(/captured by you/i)
     // The dark theme renders glyphs in the light ink color, so the *filled*
     // ("black") glyphs read as white pieces. White's captures — black
@@ -17,79 +18,116 @@ describe('CapturedPieces', () => {
     // renders as text at the same size as the other pieces.
     expect(within(you).getByText('♙︎')).toBeInTheDocument()
     expect(within(you).getByText('♘︎')).toBeInTheDocument()
+    // Glitch's pawn belongs to the other row and must not leak into this one.
+    expect(within(you).queryByText('♟︎')).not.toBeInTheDocument()
+  })
+
+  it("renders Glitch's captures — the player's own color — on its own row", () => {
+    const captured = { white: ['p', 'n'], black: ['p'] }
+    render(<CapturedPieces captured={captured} playerColor="white" owner="glitch" />)
     const glitch = screen.getByLabelText(/captured by glitch/i)
     // Glitch's capture (a white pawn) gets the filled glyph, which renders
     // light: ♟.
     expect(within(glitch).getByText('♟︎')).toBeInTheDocument()
+    expect(within(glitch).queryByText('♙︎')).not.toBeInTheDocument()
   })
 
   it('follows the player to the black side', () => {
-    // Same position, player playing black: the YOU cluster now holds black's
+    // Same position, player playing black: the YOU row now holds black's
     // captures and Glitch's holds white's.
-    render(
-      <CapturedPieces captured={{ white: ['p', 'n'], black: ['p'] }} playerColor="black" />,
-    )
-    const you = screen.getByLabelText(/captured by you/i)
-    expect(within(you).getByText('♟︎')).toBeInTheDocument()
+    const captured = { white: ['p', 'n'], black: ['p'] }
+    render(<CapturedPieces captured={captured} playerColor="black" owner="you" />)
+    expect(within(screen.getByLabelText(/captured by you/i)).getByText('♟︎')).toBeInTheDocument()
+    render(<CapturedPieces captured={captured} playerColor="black" owner="glitch" />)
     const glitch = screen.getByLabelText(/captured by glitch/i)
     expect(within(glitch).getByText('♙︎')).toBeInTheDocument()
     expect(within(glitch).getByText('♘︎')).toBeInTheDocument()
   })
 
-  it('labels the clusters YOU and GLITCH, never by chess color', () => {
-    // The old two-cluster row was anonymous; the merged row names the
-    // owners. The micro-labels are the only visible text — the color words
-    // stay out (they are what the labels replace).
+  // The overflow fix: one glyph per piece *type* with a ×N count, not one
+  // glyph per capture. Five types is the ceiling, so the row cannot outgrow
+  // the column however long the game runs.
+  it('groups repeated captures into one glyph with a count', () => {
     render(
-      <CapturedPieces captured={{ white: ['p'], black: ['n'] }} playerColor="white" />,
+      <CapturedPieces
+        captured={{ white: ['p', 'p', 'p', 'n', 'n', 'b'], black: [] }}
+        playerColor="white"
+        owner="you"
+      />,
     )
-    expect(screen.getByText('YOU')).toBeInTheDocument()
-    expect(screen.getByText('GLITCH')).toBeInTheDocument()
-    expect(screen.queryByRole('heading')).not.toBeInTheDocument()
+    const you = screen.getByLabelText(/captured by you/i)
+    // Three pawns, one glyph.
+    expect(within(you).getAllByText('♙︎')).toHaveLength(1)
+    expect(within(you).getByText('×3')).toBeInTheDocument()
+    expect(within(you).getByText('×2')).toBeInTheDocument()
+    // A lone capture carries no count — "×1" is noise.
+    expect(within(you).queryByText('×1')).not.toBeInTheDocument()
+  })
+
+  it('reads heaviest piece first, whatever order they were taken in', () => {
+    render(
+      <CapturedPieces
+        captured={{ white: ['p', 'q', 'n'], black: [] }}
+        playerColor="white"
+        owner="you"
+      />,
+    )
+    const glyphs = screen
+      .getByLabelText(/captured by you/i)
+      .querySelectorAll('.captured-glyph')
+    expect([...glyphs].map((g) => g.textContent)).toEqual(['♕︎', '♘︎', '♙︎'])
+  })
+
+  it('drops the YOU and GLITCH micro-labels — position identifies the owner', () => {
+    render(
+      <CapturedPieces captured={{ white: ['p'], black: ['n'] }} playerColor="white" owner="you" />,
+    )
+    expect(screen.queryByText('YOU')).not.toBeInTheDocument()
+    expect(screen.queryByText('GLITCH')).not.toBeInTheDocument()
     expect(screen.queryByText(/^white$/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/^black$/i)).not.toBeInTheDocument()
   })
 
-  it('collapses a cluster with no captures, label included', () => {
-    render(<CapturedPieces captured={{ white: ['p'], black: [] }} playerColor="white" />)
-    expect(screen.getByText('YOU')).toBeInTheDocument()
-    // Glitch has taken nothing: no stray GLITCH label sitting on an empty
-    // cluster (the empty flex sibling still keeps the chip centered).
-    expect(screen.queryByText('GLITCH')).not.toBeInTheDocument()
-  })
-
-  it('centers the children between the two clusters', () => {
-    // The turn chip arrives as children so the row owns the layout while the
-    // app owns the status text.
-    render(
-      <CapturedPieces captured={{ white: ['p'], black: ['p'] }} playerColor="white">
-        <p>White to move</p>
-      </CapturedPieces>,
-    )
-    const row = screen.getByLabelText(/game status/i)
-    const chip = screen.getByText('White to move')
-    const you = screen.getByLabelText(/captured by you/i)
-    const glitch = screen.getByLabelText(/captured by glitch/i)
-    expect(row).toContainElement(chip)
-    // DOM order: YOU cluster, then the chip, then Glitch's cluster.
-    expect(you.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(chip.compareDocumentPosition(glitch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  })
-
-  it('shows the material advantage for the side that is ahead', () => {
+  it('shows the material advantage only on the leading side', () => {
     // Pawns traded; the player is additionally up a knight, so +3.
-    render(
-      <CapturedPieces captured={{ white: ['p', 'n'], black: ['p'] }} playerColor="white" />,
-    )
-    const you = screen.getByLabelText(/captured by you/i)
-    expect(within(you).getByText('+3')).toBeInTheDocument()
-    // Even material shows no advantage badge.
+    const captured = { white: ['p', 'n'], black: ['p'] }
+    render(<CapturedPieces captured={captured} playerColor="white" owner="you" />)
+    expect(within(screen.getByLabelText(/captured by you/i)).getByText('+3')).toBeInTheDocument()
+    render(<CapturedPieces captured={captured} playerColor="white" owner="glitch" />)
     const glitch = screen.getByLabelText(/captured by glitch/i)
     expect(within(glitch).queryByText(/^\+/)).not.toBeInTheDocument()
   })
 
-  it('renders empty sides without crashing', () => {
-    render(<CapturedPieces captured={{ white: [], black: [] }} playerColor="white" />)
-    expect(screen.getByLabelText(/captured by you/i)).toBeInTheDocument()
+  it('renders nothing inside an empty side but keeps the row', () => {
+    // Nothing to show, yet the row survives: it holds its min-height so the
+    // board does not jump on the first capture of the game.
+    render(<CapturedPieces captured={{ white: [], black: [] }} playerColor="white" owner="you" />)
+    const you = screen.getByLabelText(/captured by you/i)
+    expect(you).toBeInTheDocument()
+    expect(you).toBeEmptyDOMElement()
+  })
+
+  // The visible YOU/GLITCH labels are gone, so the accessible name is now the
+  // only thing that says whose captures these are — and it spells out the
+  // glyphs, which a screen reader cannot read.
+  it('names the owner and the pieces in the accessible label', () => {
+    render(
+      <CapturedPieces
+        captured={{ white: ['p', 'p', 'n'], black: [] }}
+        playerColor="white"
+        owner="you"
+      />,
+    )
+    // Spelled in the order the glyphs read: heaviest piece first.
+    expect(
+      screen.getByLabelText('Captured by you: 1 knight, 2 pawns, up 5'),
+    ).toBeInTheDocument()
+  })
+
+  it('says so when a side has captured nothing', () => {
+    render(
+      <CapturedPieces captured={{ white: [], black: ['p'] }} playerColor="white" owner="you" />,
+    )
+    expect(screen.getByLabelText('Captured by you: nothing')).toBeInTheDocument()
   })
 })
