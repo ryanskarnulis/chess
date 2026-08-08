@@ -93,6 +93,21 @@ afterEach(() => {
   window.history.replaceState({}, '', '/')
 })
 
+// Answer on a real timer rather than instantly, the way a fetch over a wire
+// answers. An instant mock lands inside `act`'s own flush loop, which is why
+// "wait for the container, then assert its content" usually passes and only
+// falls over under load — a delay makes the pre-fetch render observable every
+// run instead of on CI's bad days.
+const RESPONSE_DELAY_MS = 50
+
+function deferState() {
+  const respond = fetchMock.getMockImplementation()!
+  fetchMock.mockImplementation(async (url: string) => {
+    await new Promise((resolve) => setTimeout(resolve, RESPONSE_DELAY_MS))
+    return respond(url)
+  })
+}
+
 // The conductor hands a user off to chess by navigating here with the thing
 // they actually said (`/?intent=…`); we run it through the agent so Glitch
 // opens the session already acting on it.
@@ -356,9 +371,17 @@ describe('captures and status', () => {
       outcome: { termination: 'checkmate', winner: 'white', result: '1-0' },
       history: ['e4', 'f6', 'd4', 'g5', 'Qh5#'],
     })
+    // The state document lands a tick late, as a real one does. The status
+    // row is already mounted saying "Connecting…" before it arrives, so
+    // waiting for the *row* resolves against the pre-fetch text and the
+    // verdict assertion fires too early — the flake this pins.
+    deferState()
     render(<App />)
-    const row = await screen.findByLabelText(/game status/i)
-    expect(within(row).getByText(/game over — 1-0/i)).toBeInTheDocument()
+    // Wait for the verdict, not for the row that holds it: the row is on
+    // screen either way, so it is no signal that the state has landed.
+    const verdict = await screen.findByText(/game over — 1-0/i)
+    const row = screen.getByLabelText(/game status/i)
+    expect(row).toContainElement(verdict)
     expect(within(row).getByRole('button', { name: /results/i })).toBeInTheDocument()
   })
 })
