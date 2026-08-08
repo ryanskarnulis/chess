@@ -544,7 +544,7 @@ export function useGame(): UseGame {
     // equality, so it also fails safe either way round if the two halves ever
     // disagree about carrying a version at all.
     if (hint.version !== stateRef.current?.version) return
-    setHintShapes([{ orig: hint.from, dest: hint.to, brush: 'green' }])
+    setHintShapes([{ orig: hint.from, dest: hint.to, brush: 'hint' }])
   }, [])
 
   const setVoiceOutput = useCallback(async (enabled: boolean) => {

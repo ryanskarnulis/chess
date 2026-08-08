@@ -1592,7 +1592,7 @@ describe('useGame', () => {
     await act(async () => {
       await result.current.requestHint()
     })
-    expect(result.current.hintShapes).toEqual([{ orig: 'e2', dest: 'e4', brush: 'green' }])
+    expect(result.current.hintShapes).toEqual([{ orig: 'e2', dest: 'e4', brush: 'hint' }])
   })
 
   it('clears the hint arrow when a new authoritative state arrives', async () => {
