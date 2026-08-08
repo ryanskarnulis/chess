@@ -41,6 +41,18 @@ describe('BottomBar', () => {
     expect(onUndo).toHaveBeenCalled()
   })
 
+  // Reported from an iPhone: U+21A9 rendered as the blue color ↩️ tile and
+  // the flag/bulb as color emoji, against an otherwise monochrome UI. The
+  // guard is the character class, not the specific glyphs, so putting any
+  // emoji-presentation character back here fails.
+  it('marks each button with a monochrome inline icon, never a color emoji', () => {
+    const { container } = render(bar())
+    expect(container.textContent).not.toMatch(/\p{Extended_Pictographic}/u)
+    const icons = container.querySelectorAll('button svg')
+    expect(icons).toHaveLength(4)
+    for (const svg of icons) expect(svg).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('honours the disabled flags', () => {
     render(bar({ resignDisabled: true, hintDisabled: true, undoDisabled: true }))
     expect(screen.getByRole('button', { name: /resign/i })).toBeDisabled()

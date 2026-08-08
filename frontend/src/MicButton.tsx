@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { transcribe } from './api'
 import { audioIdle, unlockAudio } from './tts'
 import { createVad, type Vad } from './vad'
+import { ListeningIcon, MicIcon } from './icons'
 import { encodeWav } from './wav'
 
 export interface MicButtonProps {
@@ -36,11 +37,15 @@ const LABELS: Record<MicState, string> = {
   transcribing: 'Transcribing',
 }
 
-const ICONS: Record<MicState, string> = {
-  idle: '🎤',
+// Inline icons, not emoji: iOS renders an emoji-presentation character in
+// Apple Color Emoji whatever the surrounding style says, which put a color
+// mic in an otherwise monochrome row. The typographic states ('…', '■') are
+// text glyphs already and stay as they are.
+const ICONS: Record<MicState, React.ReactNode> = {
+  idle: <MicIcon />,
   starting: '…',
-  listening: '👂',
-  capturing: '👂',
+  listening: <ListeningIcon />,
+  capturing: <ListeningIcon />,
   working: '…',
   recording: '■',
   transcribing: '…',

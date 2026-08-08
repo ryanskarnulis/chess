@@ -22,7 +22,10 @@ html {
 
 body {
   margin: 0;
-  min-height: 100vh;
+  /* dvh, not vh: on iOS `100vh` is the *large* viewport (URL bar hidden), so
+     a page that fits is still scrollable and the fixed bottom bar sits over
+     content. dvh tracks the viewport actually on screen. */
+  min-height: 100dvh;
   /* A faint quarter orb-web in the top-right corner over the night vignette —
      the launcher's motif, kept subtle so the board stays the focus. */
   background:

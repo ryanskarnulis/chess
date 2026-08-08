@@ -119,7 +119,7 @@ function App() {
       : state.game_over
         ? `Game over — ${state.outcome?.result ?? ''}`
         : reviewing
-          ? 'Reviewing — press ▶ to return'
+          ? 'Reviewing — press the forward arrow to return'
           : null
 
   return (

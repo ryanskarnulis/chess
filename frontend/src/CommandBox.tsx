@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { GatewayLink } from './GatewayLink'
+import { SpeakerOffIcon, SpeakerOnIcon } from './icons'
 import { MicButton } from './MicButton'
 import { unlockAudio } from './tts'
 
@@ -88,14 +89,14 @@ export function CommandBox({
               onToggleVoice(!voiceOutput)
             }}
           >
-            {voiceOutput ? '🔊' : '🔇'}
+            {voiceOutput ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
           </button>
         )}
         <div className={sendable ? 'command-input command-input-sendable' : 'command-input'}>
           <input
             type="text"
             aria-label="Command"
-            placeholder={disabled ? 'No agent — play on the board' : 'Tell the agent what to do…'}
+            placeholder={disabled ? 'No agent — play on' : 'Talk to Glitch…'}
             value={text}
             onChange={(e) => setText(e.target.value)}
             disabled={locked}

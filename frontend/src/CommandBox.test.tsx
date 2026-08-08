@@ -134,6 +134,13 @@ describe('CommandBox', () => {
     expect(screen.getByText('A bold opening!')).toBeInTheDocument()
   })
 
+  it('draws the voice toggle as a monochrome inline icon, never a color emoji', () => {
+    setup({ voiceOutput: true })
+    expect(document.body.textContent).not.toMatch(/\p{Extended_Pictographic}/u)
+    const icon = screen.getByRole('button', { name: /turn voice output off/i }).querySelector('svg')
+    expect(icon).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('offers a voice-output toggle that reports the opposite of the current state', () => {
     const props = setup({ voiceOutput: false })
     const toggle = screen.getByRole('button', { name: /turn voice output on/i })

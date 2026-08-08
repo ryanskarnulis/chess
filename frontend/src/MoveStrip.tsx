@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { ChevronLeftIcon, ChevronRightIcon } from './icons'
 
 export interface MoveStripProps {
   /** Moves played so far, in SAN. */
@@ -36,7 +37,7 @@ export function MoveStrip({
   return (
     <div className="move-strip">
       <button type="button" aria-label="Previous move" onClick={onBack} disabled={!canBack}>
-        ◀
+        <ChevronLeftIcon />
       </button>
       <div className="move-strip-moves">
         {history.map((san, i) => (
@@ -52,7 +53,7 @@ export function MoveStrip({
         ))}
       </div>
       <button type="button" aria-label="Next move" onClick={onForward} disabled={!canForward}>
-        ▶
+        <ChevronRightIcon />
       </button>
     </div>
   )

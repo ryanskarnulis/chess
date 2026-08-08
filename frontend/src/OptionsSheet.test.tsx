@@ -23,6 +23,12 @@ describe('OptionsSheet', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
+  it('renders the voice row with an inline icon, never a color emoji', () => {
+    const { container } = render(sheet())
+    expect(container.textContent).not.toMatch(/\p{Extended_Pictographic}/u)
+    expect(container.querySelector('button svg')).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('shows a dialog with the game options when open', () => {
     render(sheet())
     expect(screen.getByRole('dialog', { name: /options/i })).toBeInTheDocument()

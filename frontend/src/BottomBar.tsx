@@ -1,3 +1,5 @@
+import { BulbIcon, FlagIcon, MenuIcon, UndoIcon } from './icons'
+
 export interface BottomBarProps {
   onOptions: () => void
   onResign: () => void
@@ -24,19 +26,19 @@ export function BottomBar({
   return (
     <nav className="bottom-bar" aria-label="Game controls">
       <button type="button" onClick={onOptions}>
-        <span aria-hidden="true">☰</span>
+        <MenuIcon />
         Options
       </button>
       <button type="button" onClick={onResign} disabled={resignDisabled}>
-        <span aria-hidden="true">🏳</span>
+        <FlagIcon />
         Resign
       </button>
       <button type="button" onClick={onHint} disabled={hintDisabled}>
-        <span aria-hidden="true">💡</span>
+        <BulbIcon />
         Hint
       </button>
       <button type="button" onClick={onUndo} disabled={undoDisabled}>
-        <span aria-hidden="true">↩</span>
+        <UndoIcon />
         Undo
       </button>
     </nav>
