@@ -1,12 +1,29 @@
 import { useEffect, useRef } from 'react'
 import { Chessground } from 'chessground'
 import type { Api } from 'chessground/api'
-import type { DrawShape } from 'chessground/draw'
+import type { DrawBrush, DrawBrushes, DrawShape } from 'chessground/draw'
 import type { Key } from 'chessground/types'
 
 import 'chessground/assets/chessground.base.css'
-import 'chessground/assets/chessground.brown.css'
-import 'chessground/assets/chessground.cburnett.css'
+import './chessground.nightsilk.css'
+
+/**
+ * Glitch's voice on the board. Chessground resolves shape colours from a JS
+ * brush table rather than from CSS, so the hint arrow is the one part of the
+ * night-silk theme that can't live in the stylesheet. Deliberately `--warn`
+ * and not `--glow`: glow is the player's own hue everywhere else on the board
+ * (last move, selection, legal destinations), so advice must not read as
+ * something the player selected.
+ *
+ * Typed as a plain record and cast at the call site because `DrawBrushes`
+ * demands its four built-in keys. That's a gap between chessground's types
+ * and its behaviour, not a real requirement: `configure` deep-merges this
+ * table into the defaults, so naming one brush adds it and leaves
+ * green/red/blue/yellow available.
+ */
+const BOARD_BRUSHES: Record<string, DrawBrush> = {
+  hint: { key: 'hint', color: '#eec98a', opacity: 0.9, lineWidth: 10 },
+}
 
 export interface BoardProps {
   /** Board position as a FEN (piece-placement field is enough). */
@@ -68,7 +85,10 @@ export function Board({
   // after mount), keeping this effect free of prop dependencies.
   useEffect(() => {
     if (!mountRef.current) return
-    apiRef.current = Chessground(mountRef.current, { coordinates: true })
+    apiRef.current = Chessground(mountRef.current, {
+      coordinates: true,
+      drawable: { brushes: BOARD_BRUSHES as DrawBrushes },
+    })
     // Chessground caches its screen bounds and only re-measures on window
     // resize/scroll. Content-driven layout shifts (commentary appearing,
     // panels growing, a scrollbar showing up) move the board without either

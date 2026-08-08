@@ -93,7 +93,7 @@ describe('Board', () => {
       .mockReturnValue(rect)
     try {
       const { container, rerender } = render(
-        <Board fen={START_FEN} autoShapes={[{ orig: 'e2', dest: 'e4', brush: 'green' }]} />,
+        <Board fen={START_FEN} autoShapes={[{ orig: 'e2', dest: 'e4', brush: 'hint' }]} />,
       )
       // Chessground renders each auto-shape as a group in its shapes svg
       // (on its next animation frame, hence the waits).
