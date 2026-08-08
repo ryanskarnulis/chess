@@ -115,6 +115,13 @@ afterEach(() => {
 })
 
 describe('MicButton (hands-free conversation mode)', () => {
+  it('draws the mic as a monochrome inline icon, never a color emoji', () => {
+    render(<MicButton onTranscript={vi.fn()} disabled={false} />)
+    expect(document.body.textContent).not.toMatch(/\p{Extended_Pictographic}/u)
+    const icon = screen.getByRole('button', { name: /start voice conversation/i }).querySelector('svg')
+    expect(icon).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('enters listening on a single tap and unlocks audio in the gesture', async () => {
     render(<MicButton onTranscript={vi.fn()} disabled={false} />)
     await enterConversation()

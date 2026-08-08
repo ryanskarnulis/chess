@@ -48,6 +48,13 @@
   border-radius: 4px;
 }
 
+/* Inline icons (icons.tsx) draw in currentColor, so a control's own color
+   and its disabled state carry them. Never let a flex row squash one. */
+.icon {
+  display: block;
+  flex: 0 0 auto;
+}
+
 /* Small-caps card headings. */
 .app h2 {
   font-size: 0.78rem;
@@ -534,6 +541,9 @@
 .command-box .voice-toggle {
   min-width: 48px;
   min-height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
 }
 
 /* The input owns the row's remaining width; the ↑ submit docks inside its
@@ -726,13 +736,32 @@
 }
 
 .move-strip button {
+  position: relative;
   flex: 0 0 auto;
-  padding: 0.35rem 0.7rem;
+  /* 36px of *layout*, 44px of *touch* (the ::after below). The column has
+     4px of slack over the fixed bar on the reported phone, so spending 7px
+     of it to satisfy the tap-target minimum would put the strip back under
+     the bar — the very thing the frame fix moved it out from. */
+  min-width: 44px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0 0.4rem;
   background: var(--surface);
   color: var(--ink);
   border: 1px solid var(--silk-border);
   border-radius: 8px;
   cursor: pointer;
+}
+
+/* Extends the hit area to the 44px minimum without taking the height: a
+   pseudo-element inside the button still targets the button. The inset is
+   5px, not 4: an absolute child's containing block is the *padding* box, so
+   the 1px border leaves 34px to grow from (34 + 5 + 5 = 44). */
+.move-strip button::after {
+  content: '';
+  position: absolute;
+  inset: -5px 0;
 }
 
 .move-strip button:disabled {
@@ -796,9 +825,11 @@
   cursor: pointer;
 }
 
-.bottom-bar button span {
-  font-size: 1.25rem;
-  line-height: 1;
+.bottom-bar button .icon {
+  /* Exactly the glyph size this replaced (1.25rem at line-height 1), so the
+     bar's height — and everything measured against it — is unchanged. */
+  width: 22px;
+  height: 22px;
 }
 
 .bottom-bar button:disabled {
@@ -853,6 +884,13 @@
   text-align: left;
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.options-sheet .voice-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
 }
 
 .options-sheet .options-close {

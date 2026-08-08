@@ -1,4 +1,5 @@
 import { DIFFICULTY_LEVELS } from './difficulty'
+import { SpeakerOffIcon, SpeakerOnIcon } from './icons'
 
 export interface OptionsSheetProps {
   open: boolean
@@ -62,11 +63,12 @@ export function OptionsSheet({
         {voiceOutput !== null && (
           <button
             type="button"
-            className="voice-toggle"
+            className="voice-toggle voice-row"
             aria-label={voiceOutput ? 'Turn voice output off' : 'Turn voice output on'}
             onClick={() => onToggleVoice(!voiceOutput)}
           >
-            {voiceOutput ? '🔊 Voice on' : '🔇 Voice off'}
+            {voiceOutput ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
+            {voiceOutput ? 'Voice on' : 'Voice off'}
           </button>
         )}
         <button type="button" className="options-close" onClick={onClose}>

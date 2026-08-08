@@ -26,6 +26,16 @@ describe('MoveStrip', () => {
     expect(screen.getByText('2.')).toBeInTheDocument()
   })
 
+  it('draws the review arrows as monochrome inline icons, never color emoji', () => {
+    const { container } = render(strip())
+    // U+25C0/U+25B6 are emoji-presentation capable and render as blue tiles
+    // on iOS, the same defect the bottom bar had.
+    expect(container.textContent).not.toMatch(/\p{Extended_Pictographic}/u)
+    const icons = container.querySelectorAll('button svg')
+    expect(icons).toHaveLength(2)
+    for (const svg of icons) expect(svg).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('highlights the move at the current ply', () => {
     render(strip({ currentPly: 2 }))
     expect(screen.getByText('e5')).toHaveClass('current')
