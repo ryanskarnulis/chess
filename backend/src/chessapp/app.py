@@ -7,10 +7,11 @@ the tools the brain calls and the state the API serves are the same truth.
 
 Live prompt settings land here: the brain is built with a
 `system_prompt_provider` and a `planner_prompt_provider` that both read
-`ctx.settings`, and `set_verbosity` / `set_hints_mode` mutate exactly those
-settings — so a change takes effect on the very next command, no rebuild.
-Verbosity only reaches the narrator (the planner has no words to lengthen);
-hints reach both, as tone on one side and tool permission on the other.
+`ctx.settings`, and `set_verbosity` mutates exactly those settings — so a
+change takes effect on the very next command, no rebuild. Verbosity only
+reaches the narrator (the planner has no words to lengthen); the planner's
+contract is static, but the provider seam stays, because the next live-tuned
+prompt input will want the same wire.
 
 `main()` reads config from the environment and runs the app under uvicorn.
 Basic gameplay works with the LLM off (no brain / no `/api/command`) and with
@@ -29,7 +30,7 @@ from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
-from chessapp.personality import planner_prompt_for, system_prompt_for
+from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider
 from chessapp.tools import ToolContext, brain_tool_exclusions, build_registry
@@ -64,11 +65,11 @@ def build_app(
 
     Pass a `brain` to inject one (tests, or an alternate backend); otherwise a
     `LlamaBrain` is built against `llama_base_url`, wired to resolve both of its
-    prompts from `ctx.settings` on every command so `set_verbosity` and
-    `set_hints_mode` take effect live. `provider` injects a fake `ChatProvider`
-    into that default brain without a real llama-server. `planner_temperature`
-    samples the planner phase apart from the narrator (None: both on the
-    provider's default).
+    prompts from `ctx.settings` on every command so `set_verbosity` takes
+    effect live. `provider` injects a fake `ChatProvider` into that default
+    brain without a real llama-server. `planner_temperature` samples the
+    planner phase apart from the narrator (None: both on the provider's
+    default).
 
     `agent_enabled=False` is **direct mode**: no brain is constructed at all, so
     `/api/command` 503s and the board plays the deterministic exchange. It needs
@@ -113,8 +114,8 @@ def build_app(
 
     def offered_tools() -> list[dict[str, Any]]:
         """What the brain may call this command, resolved live off the shared
-        context by `brain_tool_exclusions` — the pure reads always, plus whatever
-        the app already knows the answer to (hints off, no claimable draw).
+        context by `brain_tool_exclusions` — the pure reads always, plus
+        whatever the app already knows the answer to (no claimable draw).
         Callers with no such injection (MCP, the delegate wire, /api/game/hint)
         keep the full registry.
         """
@@ -126,17 +127,14 @@ def build_app(
             model=model,
             dispatcher=registry,
             # The brain dispatches through the registry but is *offered* less
-            # (`offered_tools` above), re-resolved per command so the hints
-            # gate tracks the live setting.
+            # (`offered_tools` above), re-resolved per command so the offer
+            # tracks the live board (a draw becoming claimable).
             tool_definitions=offered_tools,
-            # The narrator's prompt (personality + verbosity + hints tone) and
-            # the planner's (the compact tool contract, plus the hints
-            # permission), each re-resolved per command off the live settings.
-            system_prompt_provider=lambda: system_prompt_for(
-                ctx.settings.verbosity,
-                ctx.settings.hints_mode,
-            ),
-            planner_prompt_provider=lambda: planner_prompt_for(ctx.settings.hints_mode),
+            # The narrator's prompt (personality + verbosity), re-resolved per
+            # command off the live settings; the planner's compact tool
+            # contract is static but rides the same provider seam.
+            system_prompt_provider=lambda: system_prompt_for(ctx.settings.verbosity),
+            planner_prompt_provider=lambda: PLANNER_PROMPT,
             planner_temperature=planner_temperature,
             provider=provider,
             # The brain's own two phases, live (`progress.py`). Nothing else

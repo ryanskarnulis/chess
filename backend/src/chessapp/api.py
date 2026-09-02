@@ -310,8 +310,8 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     a save sitting on disk (the self-poisoning bug, trace review 2026-07-13).
     Read fresh every turn, so a game saved this session is visible the next.
 
-    `settings` is here for that same reason. Verbosity and hints re-resolve into
-    the system prompt per command, but difficulty and voice-output appeared
+    `settings` is here for that same reason. Verbosity re-resolves into the
+    system prompt per command, but difficulty and voice-output appeared
     nowhere in the agent's per-turn view, so "how hard am I playing?" could only
     be answered from stale conversation text — the self-poisoning shape again.
     Kept small (it ships in the prompt every turn on a 12B): only the one
@@ -518,14 +518,15 @@ _PIECE_NAMES = {
     "k": "king",
 }
 
-# What the player hears instead of a hint they turned off. The advice guard
-# catches commentary that hands over a currently-playable move when hints are
-# off and no analysis tool the player asked for reported it (audit item 11's
-# response check — the capability cut stops the tool call, this stops the
-# model's own head). Public so tests pin the substitution, not a wording.
+# What the player hears instead of a move the turn never verified. The advice
+# guard catches commentary that hands over a currently-playable move no
+# analysis tool reported this turn (audit item 11's response check — with
+# hints mode retired, evidence is the only license: a suggestion must come
+# from the engine, never from the model's own head). Public so tests pin the
+# substitution, not a wording.
 MOVE_ADVICE_REPLY = (
-    "Hints are off, so you're not getting a move out of me. "
-    "Ask me to turn hints on if you want help."
+    "Scratch that — I almost handed you a move I never actually checked. "
+    "Ask me for a hint and I'll get you a real one."
 )
 
 # The confirmation question for a resignation the pipeline itself dispatched.
@@ -601,8 +602,8 @@ def _reported_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
 
     The advice guard's licence, and it is scoped to these moves rather than
     switched off wholesale. Analysis the player asked for reports moves, and
-    commentary repeating one is a fact — "what was my mistake?" works with
-    hints off, and its answer names the move played and the move that beat it.
+    commentary repeating one is a fact — "what was my mistake?" names the move
+    played and the move that beat it, and both are the analysis's own report.
     What a *successful analysis call* is not is a licence for every other legal
     move: live, the planner answered "what should I play here?" with
     `evaluate_position` + `analyze_last_move` and the old boolean test read
@@ -750,7 +751,6 @@ def _verified_facts(
             by_opponent.add(played["san"])
         checked = checked or result.get("check") is True
     settings = {
-        "hints": "on" if ctx.settings.hints_mode else "off",
         "voice": "on" if ctx.settings.voice_output else "off",
         "verbosity": ctx.settings.verbosity,
     }
@@ -1833,14 +1833,6 @@ def create_app(
         turn_id = coordinator.turn_id
         correlation_id = new_correlation_id()
         version_before = ctx.board_version
-        # The hints setting that governs this turn is the one the player asked
-        # under, snapshotted here for the advice guard below. App assembly
-        # resolves the tool *offer* off the same instant, and the two must not
-        # disagree: live, the planner answered "what should I play here?" by
-        # calling `set_hints_mode(True)` and then naming moves — the model
-        # granting itself the permission the player had switched off. The
-        # change stands; it takes effect from the next turn.
-        hints_at_ask = ctx.settings.hints_mode
         # One user interaction, one destructive op: the brain loop is the only
         # thing in the app that can chain several dispatches inside a single
         # command, so it is the only surface that needs the coordinator's
@@ -2095,16 +2087,17 @@ def create_app(
                 commentary = f"{lost}\n\n{commentary}" if commentary else lost
             agent_state = _agent_state_dict(ctx)
             # The advice guard, same convergence point (audit item 11's second
-            # half): with hints off, a currently-playable move in the
-            # commentary is a hint whatever prose carries it. It only fires on
+            # half): a currently-playable move in the commentary is a hint
+            # whatever prose carries it, and with hints mode retired the only
+            # license is evidence — a suggestion must trace to an analysis
+            # tool's own report, never to the model's head. It only fires on
             # a turn that changed nothing — reacting to a move just played is
             # description, not advice — and never over the moves an analysis
-            # the player asked for actually reported, which are verified facts.
-            # Those moves, and only those, come off the list the guard checks.
+            # actually reported this turn, which are verified facts. Those
+            # moves, and only those, come off the list the guard checks.
             unlicensed = set(ctx.session.legal_moves()) - _reported_moves(tool_results)
             if (
                 not guarded
-                and not hints_at_ask
                 and agent_state == before
                 and names_a_legal_move(commentary, unlicensed)
             ):
@@ -2217,7 +2210,6 @@ def create_app(
         s = ctx.settings
         return {
             "verbosity": s.verbosity,
-            "hints_mode": s.hints_mode,
             "voice_output": s.voice_output,
             "tier": s.tier,
             "skill_level": s.skill_level,

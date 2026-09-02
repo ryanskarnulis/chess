@@ -365,7 +365,6 @@ export async function sendCommand(
 
 export interface Settings {
   verbosity: string
-  hints_mode: boolean
   voice_output: boolean
   tier: string | null
   skill_level: number | null

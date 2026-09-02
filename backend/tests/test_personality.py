@@ -17,7 +17,6 @@ import pytest
 from chessapp.personality import (
     PLANNER_PROMPT,
     SYSTEM_PROMPT,
-    planner_prompt_for,
     system_prompt_for,
 )
 
@@ -232,15 +231,10 @@ def test_unknown_verbosity_falls_back_to_normal():
 # leaking back in is a regression, not a style choice.
 
 
-def test_planner_prompt_default_lookup():
-    assert planner_prompt_for() == PLANNER_PROMPT
-    assert PLANNER_PROMPT.strip()
-
-
 def test_planner_prompt_carries_no_persona():
     # The diagnosis the split exists to fix: on a 12B, tone instructions
     # compete with tool selection for attention. None of Glitch reaches here.
-    prompt = planner_prompt_for().lower()
+    prompt = PLANNER_PROMPT.lower()
     for token in ("glitch", "troll", "swear", "cope", "props", "bro"):
         assert token not in prompt, f"persona token leaked into the planner: {token}"
 
@@ -248,7 +242,6 @@ def test_planner_prompt_carries_no_persona():
 def test_planner_prompt_carries_no_verbosity_layer():
     # Verbosity shapes what the player is *told*, and the planner tells them
     # nothing — so it takes no verbosity layer at any setting.
-    assert planner_prompt_for() == planner_prompt_for(hints_mode=False)
     assert "talk less" not in PLANNER_PROMPT.lower()
 
 
@@ -261,7 +254,7 @@ def test_planner_prompt_is_compact():
 def test_planner_prompt_keeps_the_load_bearing_rules():
     # Persona-free, not contract-free. Everything the base layer guaranteed
     # about *acting* has to survive the compaction.
-    prompt = planner_prompt_for().lower()
+    prompt = PLANNER_PROMPT.lower()
     assert "referee" in prompt  # the board and engine own legality
     assert "tool" in prompt  # act only through tools
     assert "legal_moves" in prompt  # map phrasing onto the injected list
@@ -273,33 +266,24 @@ def test_planner_prompt_keeps_the_load_bearing_rules():
 def test_planner_prompt_states_the_handoff_contract():
     # Its closing text is an internal note, not commentary: a separate voice
     # writes what the player reads.
-    prompt = planner_prompt_for().lower()
+    prompt = PLANNER_PROMPT.lower()
     assert "separate voice" in prompt
     assert "never address the player" in prompt
 
 
-def test_planner_prompt_adds_a_hints_line_when_hints_are_on():
-    with_hints = planner_prompt_for(hints_mode=True)
-    assert with_hints.startswith(PLANNER_PROMPT)
-    assert "get_best_moves" in with_hints
-    assert "get_best_moves" not in PLANNER_PROMPT
+def test_planner_prompt_teaches_the_advice_path():
+    # Hints are on-request (hints mode was retired 2026-09-01): an ask for
+    # advice routes to `get_best_moves` on every turn, so the line that used to
+    # arrive with hints-on is part of the standing contract now.
+    assert "get_best_moves" in PLANNER_PROMPT
 
 
-# --- hints mode ---------------------------------------------------------------
+# --- hints retirement ----------------------------------------------------------
 
 
-def test_hints_off_leaves_the_prompt_unchanged():
-    assert system_prompt_for(hints_mode=False) == SYSTEM_PROMPT
-
-
-def test_hints_on_appends_a_hint_instruction():
-    prompt = system_prompt_for(hints_mode=True)
-    assert prompt.startswith(SYSTEM_PROMPT)
-    assert "hint" in prompt[len(SYSTEM_PROMPT) :].lower()
-
-
-def test_hints_and_verbosity_layer_together():
-    prompt = system_prompt_for(verbosity="low", hints_mode=True)
-    assert prompt.startswith(SYSTEM_PROMPT)
-    assert "hint" in prompt.lower()
-    assert prompt != system_prompt_for(verbosity="low")
+def test_the_narrator_prompt_never_tells_glitch_to_volunteer_hints():
+    # With hints mode retired there is no state in which Glitch is told to
+    # volunteer suggestions: a hint exists only as an answer to an ask, and the
+    # advice guard holds him to moves a tool actually reported.
+    for verbosity in ("low", "normal", "high"):
+        assert "volunteer" not in system_prompt_for(verbosity).lower()

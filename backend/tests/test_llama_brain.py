@@ -28,7 +28,7 @@ from chessapp.llama_brain import (
     _fast_path_brief,
     create_llama_brain,
 )
-from chessapp.personality import PLANNER_PROMPT, planner_prompt_for, system_prompt_for
+from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.provider import (
     ProviderError,
     ProviderFailure,
@@ -425,11 +425,12 @@ def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
 
 
 def test_a_planner_turn_that_only_repeats_itself_ends_the_loop():
-    # The recorded defect: asked "what should I play?" with hints off, the
-    # planner re-ran the reads it had already run and burned all four
-    # iterations, so the turn ended on a budget stop and the player got the
-    # canned stuck line. A call it already made against this turn cannot bring
-    # anything new back, so the second one is the planner's last word.
+    # The recorded defect: asked "what should I play?" under the retired
+    # hints-off mode, the planner re-ran the reads it had already run and
+    # burned all four iterations, so the turn ended on a budget stop and the
+    # player got the canned stuck line. A call it already made against this
+    # turn cannot bring anything new back, so the second one is the planner's
+    # last word.
     brain, provider = make_brain(
         tool_calls_turn(("evaluate_position", {})),
         tool_calls_turn(("evaluate_position", {})),
@@ -1218,7 +1219,7 @@ def test_create_llama_brain_defaults_to_the_planner_prompt_for_the_loop():
         dispatcher=FakeDispatcher(),
         tool_definitions=[],
     )
-    assert brain.planner_prompt == planner_prompt_for()
+    assert brain.planner_prompt == PLANNER_PROMPT
     assert brain.planner_temperature is None  # the provider's default
 
 
@@ -1238,7 +1239,7 @@ def test_create_llama_brain_carries_a_planner_temperature():
 
 def test_callable_system_prompt_is_resolved_per_request():
     # Live switching: the brain may carry a provider instead of a frozen
-    # string, so a settings change (verbosity/hints) between commands takes
+    # string, so a settings change (verbosity) between commands takes
     # effect on the very next command — the prompt is resolved fresh each
     # request. Verbosity lands on the narrator, the phase that has words.
     live = {"verbosity": "normal"}
@@ -1260,30 +1261,31 @@ def test_callable_system_prompt_is_resolved_per_request():
 
 
 def test_callable_planner_prompt_is_resolved_per_request():
-    # Same live-settings seam, planner side: hints mode changes what the loop is
-    # told about `get_best_moves`, so the planner prompt is resolved fresh too.
-    live = {"hints": False}
+    # Same seam, planner side: the shipped contract is static today, but the
+    # wire must keep resolving fresh — the next live-tuned prompt input will
+    # arrive on it.
+    live = {"suffix": ""}
     provider = ScriptedProvider(text_turn("a"), text_turn("b"))
     brain = LlamaBrain(
         provider=provider,
         dispatcher=FakeDispatcher(),
         tool_definitions=TOOLS,
         system_prompt=PERSONA,
-        planner_prompt=lambda: planner_prompt_for(hints_mode=live["hints"]),
+        planner_prompt=lambda: PLANNER_PROMPT + live["suffix"],
     )
     brain.get_agent_response(board_state={}, command="hi")
     assert provider.calls[0]["messages"][0]["content"] == PLANNER_PROMPT
-    live["hints"] = True
+    live["suffix"] = "\nExtra line.\n"
     brain.get_agent_response(board_state={}, command="what should I play?")
-    assert provider.calls[2]["messages"][0]["content"] == planner_prompt_for(
-        hints_mode=True
+    assert provider.calls[2]["messages"][0]["content"] == (
+        PLANNER_PROMPT + "\nExtra line.\n"
     )
 
 
 def test_callable_tool_definitions_are_resolved_per_request():
-    # Live capability switching (audit 11): hints gating changes what tools the
-    # loop is *offered*, so the offer may be a provider too — resolved fresh per
-    # command, the same seam as the two prompts.
+    # Live capability switching (audit 11): the offer changes with live state
+    # (a draw becoming claimable), so it may be a provider too — resolved fresh
+    # per command, the same seam as the two prompts.
     live = {"tools": TOOLS[:1]}
     provider = ScriptedProvider(text_turn("a"), text_turn("b"))
     brain = LlamaBrain(
@@ -1301,9 +1303,10 @@ def test_callable_tool_definitions_are_resolved_per_request():
 
 
 def test_a_withheld_tool_is_never_dispatched():
-    # The capability side of hints gating: a tool outside the resolved offer is
-    # a schema-level unknown, even when the registry behind the dispatcher
-    # could run it — what the model may call is exactly what it was offered.
+    # The capability restriction's enforcement: a tool outside the resolved
+    # offer is a schema-level unknown, even when the registry behind the
+    # dispatcher could run it — what the model may call is exactly what it was
+    # offered.
     dispatcher = FakeDispatcher()
     offered = [t for t in TOOLS if t["function"]["name"] != "get_best_moves"]
     provider = ScriptedProvider(
@@ -1355,20 +1358,18 @@ def test_create_llama_brain_accepts_a_live_prompt_provider():
 
 
 def test_create_llama_brain_accepts_a_live_planner_prompt_provider():
-    from chessapp.tools import Settings
-
-    settings = Settings()  # hints default to off
+    live = {"suffix": ""}
     brain = create_llama_brain(
         base_url="http://localhost:8200/v1",
         model="gemma",
         dispatcher=FakeDispatcher(),
         tool_definitions=[],
-        planner_prompt_provider=lambda: planner_prompt_for(settings.hints_mode),
+        planner_prompt_provider=lambda: PLANNER_PROMPT + live["suffix"],
         provider=ScriptedProvider(text_turn("ok")),
     )
-    assert brain.planner_prompt() == planner_prompt_for()
-    settings.hints_mode = True
-    assert brain.planner_prompt() == planner_prompt_for(hints_mode=True)
+    assert brain.planner_prompt() == PLANNER_PROMPT
+    live["suffix"] = "\nExtra line.\n"
+    assert brain.planner_prompt() == PLANNER_PROMPT + "\nExtra line.\n"
 
 
 def test_create_llama_brain_accepts_an_injected_provider():

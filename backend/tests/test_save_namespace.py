@@ -43,13 +43,13 @@ def test_setting_change_after_saving_settings_cannot_overwrite_the_game(tmp_path
     registry.dispatch("make_move", {"move": "e4"})
     assert registry.dispatch("save_game", {"name": "settings"})["ok"] is True
 
-    ctx.settings.hints_mode = True
+    ctx.settings.voice_output = True
 
     fresh = ToolContext(session=GameSession(), save_dir=tmp_path)
     resumed = build_registry(fresh).dispatch("resume_game", {"name": "settings"})
     assert resumed["ok"] is True
     assert fresh.session.move_history() == ["e4"]
-    assert fresh.settings.hints_mode is True
+    assert fresh.settings.voice_output is True
 
 
 def test_restart_preserves_settings_and_a_game_with_the_same_name(tmp_path):

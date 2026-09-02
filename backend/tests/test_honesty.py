@@ -74,15 +74,15 @@ def test_ordinary_commentary_is_not_a_claim(text):
     assert claims_destructive_outcome(text) is False
 
 
-# --- naming a playable move (the hints-off advice leak) ------------------------
+# --- naming a playable move (the invented-advice leak) -------------------------
 #
-# Audit item 11's second half: with hints off the model can no longer *call*
-# get_best_moves (the offer withholds it), but it can still invent a move from
-# its own head — the 2026-07-13 trace leak, still measured live after the
-# capability cut (2/5–3/5). The payload of a hint is a SAN token the player
-# could play right now, whatever prose surrounds it, so that is what the
-# predicate matches. The pipeline pairs it with the settings and the turn's
-# evidence: analysis the player explicitly asked for keeps its moves.
+# Audit item 11's second half: the model can invent a move from its own head —
+# the 2026-07-13 trace leak, still measured live after the capability cut
+# (2/5–3/5). The payload of a hint is a SAN token the player could play right
+# now, whatever prose surrounds it, so that is what the predicate matches. The
+# pipeline pairs it with the turn's evidence: a move is licensed exactly when
+# an analysis tool reported it this turn (hints mode is gone, 2026-09-01 — the
+# license is evidence now, never a setting).
 
 LEGAL = ["Nf3", "Nc3", "e4", "d4", "Bc4", "O-O"]
 
@@ -105,9 +105,10 @@ def test_naming_a_playable_move_is_advice(text):
     "text",
     [
         # Declining, needling, or talking about the position without handing
-        # over a move — the commentary hints-off is supposed to produce.
+        # over a move — commentary with no engine consult behind it is
+        # supposed to look like this.
         "Figure it out yourself.",
-        "Hints are off. You wanted a fair fight, remember?",
+        "Ask me for a hint if you actually want help.",
         "Your knight is hanging, just saying.",
         # A move that is not currently playable is not a hint.
         "That e5 push last game was rough.",
@@ -528,7 +529,7 @@ def test_talking_about_saving_is_not_a_claim(text):
 # a lie however confidently it is announced.
 
 CASUAL = VerifiedFacts(
-    settings={"difficulty": "casual", "hints": "off", "voice": "on", "verbosity": "low"}
+    settings={"difficulty": "casual", "voice": "on", "verbosity": "low"}
 )
 
 
@@ -537,7 +538,6 @@ CASUAL = VerifiedFacts(
     [
         ("Difficulty's on advanced now.", "difficulty"),
         ("You're playing maximum strength.", "difficulty"),
-        ("Hints are on.", "hints"),
         ("Turned off your voice.", "voice"),
         ("Verbosity is high now.", "verbosity"),
     ],
@@ -550,7 +550,6 @@ def test_a_setting_that_is_not_set_is_a_claim(text, claim):
     "text",
     [
         "Difficulty is casual.",
-        "Hints are off, so you're on your own.",
         "Voice output is on.",
         "Verbosity is low. Keeping it short.",
     ],
@@ -562,9 +561,11 @@ def test_a_setting_that_is_set_is_reportable(text):
 @pytest.mark.parametrize(
     "text",
     [
-        "Want hints on?",
-        "Say the word and I'll turn the difficulty up to advanced.",
-        "Turn hints on if you want help.",
+        "Want the difficulty up to advanced? Say the word.",
+        "I can turn the voice off if it's annoying you.",
+        # Hint talk is ordinary prose since the mode retired (2026-09-01):
+        # there is no hints setting left to claim a value of.
+        "Ask me for a hint if you want help.",
     ],
 )
 def test_offering_a_setting_change_is_not_a_claim(text):

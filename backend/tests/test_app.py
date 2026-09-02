@@ -2,9 +2,9 @@
 
 `build_app` is where the pieces finally meet — session, settings, optional
 engine, and a `Brain` all share one context. This is also where live prompt
-settings land: `set_verbosity`/`set_hints_mode` record onto `ctx.settings`,
-and the brain resolves its system prompt from those settings per command, so
-a change takes effect on the next command.
+settings land: `set_verbosity` records onto `ctx.settings`, and the brain
+resolves its system prompt from those settings per command, so a change takes
+effect on the next command.
 
 Exercised only through a `ScriptedProvider` that records the `chat()` requests
 and returns scripted `ChatResult`s — never a live LLM.
@@ -22,7 +22,7 @@ from chessapp.app import (
 )
 from chessapp.brain import AgentResponse
 from chessapp.engine import DEFAULT_TIER
-from chessapp.personality import planner_prompt_for, system_prompt_for
+from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.tools import BOARD_STATE_TOOLS
 from fakes import (
     FakeEngine,
@@ -142,8 +142,8 @@ def test_build_app_wires_the_planner_and_narrator_prompts():
     body = client.post("/api/command", json={"text": "play the king's pawn"}).json()
 
     assert [call["messages"][0]["content"] for call in fake.calls] == [
-        planner_prompt_for(),
-        planner_prompt_for(),
+        PLANNER_PROMPT,
+        PLANNER_PROMPT,
         system_prompt_for(),
     ]
     assert [call["tools"] is None for call in fake.calls] == [False, False, True]
@@ -168,64 +168,33 @@ def test_build_app_wires_live_verbosity_switching():
     client.post("/api/command", json={"text": "hello"})
 
     # The command that made the switch planned under the plain planner prompt...
-    assert fake.calls[0]["messages"][0]["content"] == planner_prompt_for()
+    assert fake.calls[0]["messages"][0]["content"] == PLANNER_PROMPT
     # ...and the last command's narrator gets the low-verbosity layer.
     assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
         verbosity="low"
     )
 
 
-def test_build_app_wires_live_hints_switching():
-    # "Give me hints": set_hints_mode must change *both* prompts on the next
-    # command — the narrator's tone layer and the planner's permission to reach
-    # for get_best_moves — the same live-settings seam as verbosity.
-    fake = ScriptedProvider(
-        tool_calls_turn(("set_hints_mode", {"enabled": True})),
-        text_turn("ok"),
-    )
+def test_build_app_offers_get_best_moves_every_command():
+    # Hints are on-request (the mode retired 2026-09-01): the tool that answers
+    # an advice ask is on the table from the first command, no setting to flip
+    # first — what keeps advice honest is the pipeline's evidence guard, not a
+    # capability cut.
+    fake = ScriptedProvider(text_turn("ok"))
     client = TestClient(build_app(model="gemma", provider=fake))
 
-    client.post("/api/command", json={"text": "give me hints"})
-    client.post("/api/command", json={"text": "hello"})
-
-    assert fake.calls[0]["messages"][0]["content"] == planner_prompt_for()
-    # cmd 2: the planner turn, then the narrator, both with hints on.
-    assert fake.calls[-2]["messages"][0]["content"] == planner_prompt_for(
-        hints_mode=True
-    )
-    assert fake.calls[-1]["messages"][0]["content"] == system_prompt_for(
-        hints_mode=True
-    )
-
-
-def test_build_app_gates_get_best_moves_on_hints_mode():
-    # Audit 11, code-owned: hints off is a capability restriction, not a prompt
-    # line. With hints off (the default) the brain is not *offered*
-    # `get_best_moves` at all; turning hints on offers it on the very next
-    # command — the same live seam the prompts already use. The registry keeps
-    # the tool for the trusted callers (MCP, the delegate wire, /api/game/hint).
-    fake = ScriptedProvider(
-        tool_calls_turn(("set_hints_mode", {"enabled": True})),
-        text_turn("ok"),
-    )
-    client = TestClient(build_app(model="gemma", provider=fake))
-
-    client.post("/api/command", json={"text": "give me hints"})
     client.post("/api/command", json={"text": "what should I play?"})
 
-    # cmd 1 planned with hints off: no get_best_moves on the table.
-    assert "get_best_moves" not in offered(fake.calls[0])
-    # cmd 2's planner turn: the switch took effect without a rebuild.
-    assert "get_best_moves" in offered(fake.calls[-2])
-    # The other analysis reads are ungated — hints only gates move advice.
+    assert "get_best_moves" in offered(fake.calls[0])
+    # The rest of the analysis roster rides along, as it always did.
     assert {"evaluate_position", "analyze_last_move"} <= offered(fake.calls[0])
 
 
 def test_build_app_offers_claim_draw_only_when_a_draw_is_claimable():
-    # The same live seam as the hints gate, off board truth instead of settings:
-    # whether a draw can be claimed is something the app knows, so the tool is
-    # simply absent until it can be used and the model is never asked to judge
-    # it. Every turn with no claim available plans against the unchanged schema.
+    # The offer's one remaining live gate, off board truth: whether a draw can
+    # be claimed is something the app knows, so the tool is simply absent until
+    # it can be used and the model is never asked to judge it. Every turn with
+    # no claim available plans against the unchanged schema.
     fake = ScriptedProvider(text_turn("ok"))
     client = TestClient(build_app(model="gemma", provider=fake))
 

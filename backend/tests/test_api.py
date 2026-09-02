@@ -458,7 +458,6 @@ def test_get_settings_returns_the_full_settings_document(client):
     body = client.get("/api/settings").json()
     assert body == {
         "verbosity": "normal",
-        "hints_mode": False,
         "voice_output": False,
         "tier": DEFAULT_TIER,
         "skill_level": None,

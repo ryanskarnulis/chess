@@ -45,7 +45,8 @@ it.
 One thing was added to the loop after the split, from a measurement rather than
 a design: **a planner turn whose every tool call repeats one the turn already
 made is its last.** Asked "what should I play?" with hints off — an ask whose
-right answer is "no, hints are off" — the planner re-ran the reads it had
+right answer, under the since-retired hints mode, was "no, hints are off" —
+the planner re-ran the reads it had
 already run (`evaluate_position → analyze_last_move → analyze_last_move →
 evaluate_position`) and spent the whole iteration budget doing it: 2 of 20
 samples in the recorded run, and a budget stop reaches no narrator, so the
@@ -125,21 +126,22 @@ rejection). Both are contract lines, not tone — the compactness tripwire in
 `test_personality.py` still holds with them in.
 
 …and drops everything about **speaking**, including the verbosity layer: the
-planner has no words to lengthen or shorten. Hints mode still reaches it, as one
-line about `get_best_moves` when hints are on — but since the Sprint 3 gating
-slice the *permission* itself is not the prompt's: with hints off the tool is
-withheld from the offer entirely (the offer, like the prompts, resolves per
-command off live settings), so a call at it is a schema-level unknown that never
-dispatches. The prompt line is orientation; the code is the gate. The same
-setting reaches the narrator too, as tone.
+planner has no words to lengthen or shorten. The advice line — an ask for a
+hint routes to `get_best_moves` — is part of the standing contract since hints
+mode retired (2026-09-01; it arrived as a hints-on-only layer, and the Sprint 3
+era gated the tool out of the offer with hints off — the offer still resolves
+per command off live state, `claim_draw` being the remaining case, and a call
+outside it is a schema-level unknown that never dispatches). The prompt line is
+orientation; what keeps advice honest now is the pipeline's evidence guard.
 
 Its closing instruction is the handoff: one short factual line about what
 happened or what needs answering, *never* addressed to the player.
 
 ## What the narrator runs on
 
-The existing `system_prompt_for(verbosity, hints_mode)` — the full Glitch
-prompt, unchanged, layers and all. One model call, given:
+The existing `system_prompt_for(verbosity)` — the full Glitch prompt,
+unchanged, layers and all (the hints tone layer left with the mode,
+2026-09-01). One model call, given:
 
 - the transcript window
 - the player's utterance

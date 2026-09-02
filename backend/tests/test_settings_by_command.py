@@ -109,13 +109,6 @@ def test_verbosity_by_speech():
     assert client.get("/api/settings").json()["verbosity"] == "low"
 
 
-def test_hints_mode_by_speech():
-    client, ctx = make_client(ToolCall(name="set_hints_mode", args={"enabled": True}))
-    command(client, "give me hints")
-    assert ctx.settings.hints_mode is True
-    assert client.get("/api/settings").json()["hints_mode"] is True
-
-
 def test_voice_output_by_speech_flips_the_speak_flag():
     client, ctx = make_client(ToolCall(name="set_voice_output", args={"enabled": True}))
     body = command(client, "turn on voice")
@@ -143,12 +136,12 @@ def test_bad_setting_from_the_brain_is_data_not_an_error():
 
 
 def test_several_settings_in_one_utterance():
-    # "Talk less and give me hints" — one utterance, two tool calls, both
+    # "Talk less and turn the voice on" — one utterance, two tool calls, both
     # land.
     client, ctx = make_client(
         ToolCall(name="set_verbosity", args={"verbosity": "low"}),
-        ToolCall(name="set_hints_mode", args={"enabled": True}),
+        ToolCall(name="set_voice_output", args={"enabled": True}),
     )
-    command(client, "talk less and give me hints")
+    command(client, "talk less and turn the voice on")
     assert ctx.settings.verbosity == "low"
-    assert ctx.settings.hints_mode is True
+    assert ctx.settings.voice_output is True

@@ -315,13 +315,16 @@ def test_a_repeat_stop_speaks_for_itself_instead_of_the_stuck_line():
     """`no_progress` is the loop ending a planner that had started repeating
     itself — the narrator still ran, so the turn has real commentary and the
     pipeline must not paper over it with the canned stuck reply (the whole point
-    of the stop: the hints-off ask used to reach the player as "I lost the
-    thread" for want of one more iteration it had no use for)."""
+    of the stop: under the retired hints mode, the advice ask used to reach the
+    player as "I lost the thread" for want of one more iteration it had no use
+    for)."""
     client, _ = make_client(
-        AgentResponse(text="Hints are off. Figure it out.", stop_reason="no_progress"),
+        AgentResponse(
+            text="Asked and answered. Figure it out.", stop_reason="no_progress"
+        ),
     )
     body = client.post("/api/command", json={"text": "what should I play?"}).json()
-    assert body["commentary"] == "Hints are off. Figure it out."
+    assert body["commentary"] == "Asked and answered. Figure it out."
 
 
 def test_command_mutation_broadcasts_state_to_ws():
@@ -1317,42 +1320,32 @@ def test_a_brain_routed_move_turn_is_remembered_by_its_own_words_too():
     assert assistant_turns(ctx) == ["King's pawn, obviously."]
 
 
-# --- The advice guard: hints off means no move is handed over.
+# --- The advice guard: an unbacked move is never handed over.
 #
-# Audit item 11's second half. The capability cut (get_best_moves withheld from
-# the offer) killed the tool half of the leak, but the model still invents a
-# move from its own head — measured live at 2/5–3/5 after the cut. Same shape
-# as the honesty guard: the board knows what is playable and the settings know
-# whether help was wanted, so the code, not the prompt, gets the last word.
+# Audit item 11's second half. The model can invent a move from its own head —
+# measured live at 2/5–3/5 under the old hints-off capability cut. With hints
+# mode retired (2026-09-01) the license is evidence alone: the board knows what
+# is playable and the turn's tool results know what the engine actually said,
+# so the code, not the prompt, gets the last word. A suggestion must trace to
+# an analysis tool's report; `get_best_moves` is always on offer to produce one.
 
 
-def test_hints_off_commentary_may_not_hand_over_a_move():
+def test_commentary_may_not_hand_over_an_unbacked_move():
     ctx = ToolContext(session=GameSession())
     app, _ = scripted_app(ctx, AgentResponse(text="Easy: play Nf3 and thank me later."))
     client = TestClient(app)
 
     response = client.post("/api/command", json={"text": "what should I play?"}).json()
 
-    assert ctx.settings.hints_mode is False  # the default
     assert "Nf3" not in response["commentary"]
     assert response["commentary"] == MOVE_ADVICE_REPLY
 
 
-def test_hints_on_lets_advice_through():
-    ctx = ToolContext(session=GameSession())
-    ctx.settings.hints_mode = True
-    app, _ = scripted_app(ctx, AgentResponse(text="Play Nf3."))
-    client = TestClient(app)
-
-    response = client.post("/api/command", json={"text": "what should I play?"}).json()
-
-    assert response["commentary"] == "Play Nf3."
-
-
-def test_hints_off_analysis_the_player_asked_for_keeps_its_moves():
+def test_analysis_the_player_asked_for_keeps_its_moves():
     """The guard checks evidence, not vocabulary: a move a successful analysis
     tool reported this turn is a verified fact the commentary may repeat —
-    "what was my mistake?" works with hints off, and its answer names moves."""
+    "what's the best move?" is answered by consulting the engine and naming
+    what it said."""
     ctx = ToolContext(session=GameSession())
     ctx.engine = FakeEngine(
         best_moves=(CandidateMove(uci="g1f3", san="Nf3", score_cp=30, mate_in=None),)
@@ -1399,27 +1392,26 @@ def test_analysis_licenses_only_the_moves_it_reported():
     assert response["commentary"] == MOVE_ADVICE_REPLY
 
 
-def test_the_model_cannot_turn_hints_on_to_license_its_own_advice():
-    """The setting that governs a turn is the one in force when the player
-    asked. Live, "what should I play here?" got answered by a planner that
-    called `set_hints_mode(True)` and then handed over moves — the model
-    granting itself the permission the player had switched off. The offer is
-    resolved once per command for the same reason; the guard reads the same
-    snapshot, so a settings change takes effect from the *next* turn."""
+def test_a_settings_call_does_not_license_advice():
+    """The license is an *analysis* result, not tool activity in general: a
+    turn that successfully called a setter and then named a move it never
+    checked is still handing over an unbacked move. (Under the retired hints
+    mode this was the model flipping hints on to grant itself permission —
+    the modern shape is any non-analysis call standing in for evidence.)"""
     ctx = ToolContext(session=GameSession())
     app, _ = scripted_app(
         ctx,
         AgentResponse(
-            text="Hints on. Play Nc3.",
-            tool_calls=(ToolCall(name="set_hints_mode", args={"enabled": True}),),
+            text="Keeping it brief. Play Nc3.",
+            tool_calls=(ToolCall(name="set_verbosity", args={"verbosity": "low"}),),
         ),
     )
     client = TestClient(app)
 
-    body = {"text": "what should I play here?"}
+    body = {"text": "talk less and tell me what to play"}
     response = client.post("/api/command", json=body).json()
 
-    assert ctx.settings.hints_mode is True, "the setting change itself stands"
+    assert ctx.settings.verbosity == "low", "the setting change itself stands"
     assert response["commentary"] == MOVE_ADVICE_REPLY
 
 
@@ -1450,7 +1442,7 @@ def test_a_mistake_analysis_licenses_its_played_and_best_moves():
     assert response["commentary"] == "Nf3 was fine; Bc4 was the sharper try."
 
 
-def test_a_played_move_may_be_named_with_hints_off():
+def test_a_played_move_may_be_named():
     """Reacting to what just happened is not advice: the turn changed the
     board, and the commentary describes it."""
     client, _ = make_client(move("e4", text="e4. Predictable."))
