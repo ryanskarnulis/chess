@@ -2,8 +2,8 @@
 
 Two model phases, two prompts (`docs/planner-narrator.md`). `system_prompt_for`
 is the **narrator's**: the full personality, used for the turn that speaks to
-the player and is offered no tools. `planner_prompt_for` is the **planner's**:
-the compact, persona-free contract the bounded tool loop runs under, because on
+the player and is offered no tools. `PLANNER_PROMPT` is the **planner's**: the
+compact, persona-free contract the bounded tool loop runs under, because on
 a 12B a page of tone competes with the tool decision for attention. Everything
 below the planner section is the narrator's prompt, layered as follows.
 
@@ -61,25 +61,14 @@ Rules you must never break:
 - Work only from what the tools reported back; never assert a move, capture,
   or threat they did not report.
 
+When the player asks for a hint or advice on what to play, `get_best_moves`
+is the tool that answers it.
+
 When the work is done, or no tool is needed, reply with one short factual
 line: what happened, or what the player should be asked or told. There is a
 separate voice that phrases the reply the player sees, and it is what talks —
 never address the player directly.
 """
-
-# Hints mode, planner side: purely about whether the engine may be asked for a
-# move to play. The tone half of the same setting is the narrator's layer below.
-_PLANNER_HINTS_INSTRUCTION = (
-    "\nHints are on: when the player wants advice on what to play, "
-    "`get_best_moves` is the tool that answers it.\n"
-)
-
-
-def planner_prompt_for(hints_mode: bool = False) -> str:
-    """The planner's system prompt, plus the hints line when hints are on."""
-    if hints_mode:
-        return PLANNER_PROMPT + _PLANNER_HINTS_INSTRUCTION
-    return PLANNER_PROMPT
 
 
 # --- the narrator's prompt ----------------------------------------------------
@@ -149,24 +138,16 @@ _VERBOSITY_INSTRUCTIONS: dict[str, str] = {
 }
 
 
-# Hints mode: with hints on, the agent volunteers help; with hints off it
-# stays a fair opponent and keeps the engine's secrets unless asked.
-_HINTS_INSTRUCTION = (
-    "\nHints are on: the player wants help. When it is their turn and they "
-    "seem unsure, volunteer a suggestion for a strong move — but only suggest, "
-    "never make the move for them.\n"
-)
-
-
-def system_prompt_for(verbosity: str = "normal", hints_mode: bool = False) -> str:
-    """The system prompt at `verbosity`, plus the hints instruction when
-    `hints_mode` is on.
+def system_prompt_for(verbosity: str = "normal") -> str:
+    """The system prompt at `verbosity`.
 
     An unknown verbosity adds no extra instruction: the setting tool is
     enum-guarded so this shouldn't happen, but the lookup must never leave
     the agent without a valid prompt.
+
+    Hints take no layer here (the mode was retired 2026-09-01): a hint exists
+    only as the answer to an ask — the planner routes it to `get_best_moves`,
+    and the advice guard holds the commentary to moves a tool actually
+    reported — so there is no state in which Glitch is told to volunteer one.
     """
-    prompt = SYSTEM_PROMPT + _VERBOSITY_INSTRUCTIONS.get(verbosity, "")
-    if hints_mode:
-        prompt += _HINTS_INSTRUCTION
-    return prompt
+    return SYSTEM_PROMPT + _VERBOSITY_INSTRUCTIONS.get(verbosity, "")

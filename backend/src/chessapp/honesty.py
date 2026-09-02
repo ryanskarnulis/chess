@@ -114,14 +114,14 @@ _TOKEN_WRAPPING = ".,!?`*()[]{}:;\"'—"
 def names_a_legal_move(text: str, legal_moves: Iterable[str]) -> bool:
     """True when the text names a move playable in the current position.
 
-    The other honesty predicate's sibling, for the hints-off advice leak
-    (audit item 11): with `get_best_moves` withheld the model can no longer
-    *ask* for a move, but it can still invent one — and the payload of a hint
-    is a SAN token from the current `legal_moves`, whatever prose surrounds
-    it. No hedge analysis here: with hints off there is no sentence shape
-    that makes handing over a playable move fine. Whether the setting and the
-    turn's evidence *license* the move (analysis the player asked for) is the
-    pipeline's half, exactly as with `claims_destructive_outcome`.
+    The other honesty predicate's sibling, for the invented-advice leak
+    (audit item 11): the model can hand over a move it never checked with the
+    engine — and the payload of a hint is a SAN token from the current
+    `legal_moves`, whatever prose surrounds it. No hedge analysis here: there
+    is no sentence shape that makes handing over an unbacked playable move
+    fine. Whether the turn's evidence *licenses* the move (an analysis tool
+    reported it) is the pipeline's half, exactly as with
+    `claims_destructive_outcome`.
     """
     legal = set(legal_moves)
     return any(token.strip(_TOKEN_WRAPPING) in legal for token in text.split())
@@ -316,19 +316,9 @@ _SAVE = re.compile(
 # against is the *live* setting, not a tool call, because the live setting is
 # the truth either way — one the player changed three turns ago is as true as
 # one changed this turn, and a value nothing ever set is a lie however
-# confidently it is announced.
-_HINTS = re.compile(
-    r"""
-    \b hints? \s+ (?: are | is | 're | 's ) \s+ (?: now \s+ )?
-        (?P<value> on | off | enabled | disabled )\b
-    | \b (?: turn | turned | turning | switch | switched | switching ) \s+
-        (?: the \s+ )? hints? \s+ (?P<value_b> on | off )\b
-    | \b (?: turned | switched ) \s+ (?P<value_c> on | off ) \s+
-        (?: the \s+ )? hints? \b
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
+# confidently it is announced. (Hints had a class here until the mode was
+# retired 2026-09-01 — with no setting to be right or wrong about, hint talk
+# is ordinary prose, and unbacked move advice is the pipeline's guard's job.)
 _VOICE = re.compile(
     r"""
     \b voice (?: \s+ output )? \s+ (?: is | 's | are ) \s+ (?: now \s+ )?
@@ -608,7 +598,6 @@ _CLAIM_CLASSES = (
     _ClaimClass("move", _SAN_CLAIM, _move_happened),
     _ClaimClass("owned_move", _OWNED_MOVE, _owned_move_happened),
     _ClaimClass("save", _SAVE, lambda match, facts: facts.saved),
-    _ClaimClass("hints", _HINTS, _setting_is("hints")),
     _ClaimClass("voice", _VOICE, _setting_is("voice")),
     _ClaimClass("difficulty", _DIFFICULTY, _setting_is("difficulty")),
     _ClaimClass("verbosity", _VERBOSITY, _setting_is("verbosity")),

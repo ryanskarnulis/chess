@@ -323,25 +323,6 @@
   },
   {
     "function": {
-      "description": "Turn move hints on or off.",
-      "name": "set_hints_mode",
-      "parameters": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "type": "object"
-      }
-    },
-    "type": "function"
-  },
-  {
-    "function": {
       "description": "Turn spoken (TTS) output on or off.",
       "name": "set_voice_output",
       "parameters": {

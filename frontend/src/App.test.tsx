@@ -72,7 +72,6 @@ beforeEach(() => {
     const body = path.includes('/api/settings')
       ? {
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,
@@ -266,7 +265,6 @@ describe('direct mode', () => {
       const body = path.includes('/api/settings')
         ? {
             verbosity: 'normal',
-            hints_mode: false,
             voice_output: false,
             tier: 'casual',
             skill_level: null,

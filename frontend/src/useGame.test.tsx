@@ -106,7 +106,6 @@ beforeEach(() => {
     if (path.includes('/api/settings'))
       return jsonResponse({
         verbosity: 'normal',
-        hints_mode: false,
         voice_output: false,
         tier: 'casual',
         skill_level: null,
@@ -166,7 +165,6 @@ describe('useGame', () => {
       if (String(url).includes('/api/settings'))
         return jsonResponse({
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,
@@ -274,7 +272,6 @@ describe('useGame', () => {
       if (String(url).includes('/api/settings'))
         return jsonResponse({
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,
@@ -314,7 +311,6 @@ describe('useGame', () => {
       if (String(url).includes('/api/settings'))
         return jsonResponse({
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,
@@ -368,7 +364,6 @@ describe('useGame', () => {
       if (String(url).includes('/api/settings'))
         return jsonResponse({
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,
@@ -421,7 +416,6 @@ describe('useGame', () => {
       if (path.includes('/api/settings'))
         return jsonResponse({
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,
@@ -473,7 +467,6 @@ describe('useGame', () => {
       if (path.includes('/api/settings'))
         return jsonResponse({
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,
@@ -501,7 +494,6 @@ describe('useGame', () => {
       if (String(url).includes('/api/settings'))
         return jsonResponse({
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,
@@ -1216,7 +1208,6 @@ describe('useGame', () => {
       if (String(url).includes('/api/settings'))
         return jsonResponse({
           verbosity: 'normal',
-          hints_mode: false,
           voice_output: false,
           tier: 'casual',
           skill_level: null,

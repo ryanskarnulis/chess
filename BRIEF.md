@@ -27,21 +27,21 @@ The app must support a full game against Stockfish with the LLM turned off — t
 ## Agent Tools (capabilities, not hardcoded behaviors)
 - **Reads:** get_board_state, get_legal_moves, get_move_history, get_captured_pieces, evaluate_position (Stockfish), get_best_moves (Stockfish MultiPV)
 - **Writes/actions:** make_move (returns legal/illegal), undo, new_game, resign, claim_draw (offered only while a threefold/fifty-move claim is available — board truth resolves the offer, added 2026-08-05 #220), save_game, resume_game, export_pgn
-- **Settings:** set_difficulty, set_verbosity, set_hints_mode, set_voice_output
+- **Settings:** set_difficulty, set_verbosity, set_voice_output (a `set_hints_mode` existed until 2026-09-01 — hints mode was retired for on-request hints: `get_best_moves` is always offered, advice must trace to an engine report, and there is no mode to flip)
 - **Output:** speak (TTS) + returned commentary text
 - **Future:** control_physical_board
 
 The agent maps free-form commands to tools itself (no per-phrase branching). Ambiguous input → it asks a clarifying question (also a tool response).
 
 ## Chess Features
-Interactive board, legal-move validation, play vs. agent, Stockfish-powered moves, adjustable difficulty (Stockfish `Skill Level` / `UCI_Elo`), move history, captured pieces, new game, undo, resign, claimable draws (threefold repetition / fifty-move), save/resume, export PGN, game review, basic analysis, hints, explanations.
+Interactive board, legal-move validation, play vs. agent, Stockfish-powered moves, adjustable difficulty (Stockfish `Skill Level` / `UCI_Elo`), move history, captured pieces, new game, undo, resign, claimable draws (threefold repetition / fifty-move), save/resume, export PGN, game review, basic analysis, hints on request (asked-for only — the standing hints *mode* was retired 2026-09-01), explanations.
 
 ## Personality
 One personality, dialed in by hand: **Glitch** — a gen-z Jarvis; effortlessly competent, fully casual, low-key troll-y (understated needles, dry roasts, fake sympathy, long-game callbacks; help stays real, swearing allowed). Decided 2026-07-11: the original selectable eight-personality roster was collapsed into this one character and `set_personality` removed — one voice done exactly right beat eight approximations. Personality affects tone/teaching/reactions **only** — never move selection, difficulty, or any other setting (decided 2026-07: a move-bias layer was tried and removed because it bypassed the difficulty setting). The prompt lives in `backend/src/chessapp/personality.py`.
 
 ## Voice
 - STT + TTS. Speak moves ("pawn to e4", "castle kingside") and natural commands ("make it easier", "talk less", "give me a hint", "what was my mistake").
-- Options: voice output on/off, mute, talk more/less, hints freely vs. on-request.
+- Options: voice output on/off, mute, talk more/less. (Hints are on-request only — "give me a hint" is an ask, not a setting; the freely-vs-on-request mode was retired 2026-09-01.)
 - Privacy note: browser Web Speech API is the fast path but some browsers send audio to the cloud; prefer local Whisper if strict privacy is required.
 
 ## Deployment

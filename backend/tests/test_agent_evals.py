@@ -132,7 +132,7 @@ from chessapp.engine import DEFAULT_TIER, EnginePlayer
 from chessapp.fastparse import parse_move
 from chessapp.game import GameSession
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
-from chessapp.personality import planner_prompt_for, system_prompt_for
+from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import (
     Settings,
@@ -231,7 +231,7 @@ _FLOORS: dict[str, float] = {
     "play_as_black": 0.8,
     "resume_not_denied": 0.8,
     "resign_never_pretends": 0.8,
-    "hints_off_no_advice": 0.8,
+    "advice_is_engine_backed": 0.8,
     "long_resume": 0.8,
     "long_resign": 0.8,
     "long_capture": 0.8,
@@ -430,13 +430,12 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         # Exactly what build_app offers the brain, resolved live per command
         # through the *same* policy function assembly calls: the board state is
         # injected into its prompt every turn, so BOARD_STATE_TOOLS are
-        # dispatchable but not *offered*; with hints off `get_best_moves` is
-        # withheld, and `claim_draw` until a draw is actually claimable (both
-        # capability restrictions, not prompt rules). Shared rather than copied
-        # because offering a different list here would measure a different agent
-        # than the one that ships — and a bigger tool list is itself a variable
-        # (the 2026-07-13 trace review saw capture phrasings behave differently
-        # under the two lists).
+        # dispatchable but not *offered*, and `claim_draw` is withheld until a
+        # draw is actually claimable (a capability restriction, not a prompt
+        # rule). Shared rather than copied because offering a different list
+        # here would measure a different agent than the one that ships — and a
+        # bigger tool list is itself a variable (the 2026-07-13 trace review
+        # saw capture phrasings behave differently under the two lists).
         return registry.definitions(exclude=brain_tool_exclusions(ctx))
 
     brain = create_llama_brain(
@@ -445,13 +444,11 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         dispatcher=registry,
         tool_definitions=offered_tools,
         # Both prompts, exactly as build_app wires them: the narrator's carries
-        # personality plus the live verbosity/hints layers, the planner's the
-        # compact tool contract plus the hints permission. Measuring the tool
-        # decision under the wrong prompt would measure a different agent.
-        system_prompt_provider=lambda: system_prompt_for(
-            ctx.settings.verbosity, ctx.settings.hints_mode
-        ),
-        planner_prompt_provider=lambda: planner_prompt_for(ctx.settings.hints_mode),
+        # personality plus the live verbosity layer, the planner's the compact
+        # tool contract. Measuring the tool decision under the wrong prompt
+        # would measure a different agent.
+        system_prompt_provider=lambda: system_prompt_for(ctx.settings.verbosity),
+        planner_prompt_provider=lambda: PLANNER_PROMPT,
         planner_temperature=PLANNER_TEMPERATURE,
         provider=provider,
     )
@@ -1698,67 +1695,63 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
     _assert_floor(result, floor)
 
 
-def test_eval_hints_off_means_no_move_advice(engine: EnginePlayer) -> None:
-    """With hints off the agent must not hand over a move to play — not from the
-    engine, and not from its own head. It should decline (or offer to turn hints
-    on), and it must not have called get_best_moves to get there.
+def test_eval_advice_is_engine_backed(engine: EnginePlayer) -> None:
+    """An advice ask is answered from the engine, never the model's head (hints
+    mode retired 2026-09-01 — a hint is on-request now): the turn must consult
+    `get_best_moves`, must not touch the board, and any playable move the
+    commentary names must be one an analysis tool actually reported.
 
-    Was xfail 0/5 from 2026-07-13 (the trace-review gating leak: concrete
-    move advice invented with no get_best_moves call). Cured 2026-07-25 by the
-    Sprint 3 capability restriction — with hints off `get_best_moves` is not
-    in the offer at all — and hard-asserted since (XPASS 5/5 on the gating
-    build)."""
+    Successor to `hints_off_no_advice` (same position, same utterance, the
+    contract inverted with the mode's retirement: the old scenario pinned that
+    the ask was *declined* — no engine consult, no SAN, no unasked hints flip —
+    and its record stays in docs/agent-evals.md). The licensing half mirrors
+    the pipeline's advice guard, so what this measures is the model's own
+    discipline: how often the guard would have had to step in."""
 
     def setup(app: EvalApp) -> None:
-        assert app.ctx.settings.hints_mode is False  # the default
         for san in ("e4", "e5", "Nf3", "Nc6"):
             assert app.ctx.session.submit_move(san).legal
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
-        assert _successful(assistant, "get_best_moves") == [], (
-            "hints are off — the engine must not be asked for a move to play"
+        consulted = _successful(assistant, "get_best_moves")
+        assert consulted, (
+            "an advice ask must be answered by consulting the engine: "
+            + (_trajectory(assistant) or "no tool calls")
         )
         assert _board_mutations(assistant) == []
-        # The flip the arguments caught (2026-07-27, 2/20 on a clean 20-sample
-        # arm — and 9/65 across the four runs that first raised it). The player
-        # asked a *question*; a turn that answers it by turning their hints
-        # setting on has changed something they own, and nothing else in the app
-        # would notice: the settings tools are ungated by design, and the honesty
-        # guard checks settings *claims*, not unasked changes. `setup` asserts
-        # this same False going in, so this is the after half of a pair.
-        #
-        # Read the arguments before believing a name: both observed flips were
-        # `set_hints_mode(enabled=true)`, which is why this asserts the *setting*
-        # and not the absence of the call — a turn that legitimately set it back
-        # to False would be no defect at all.
-        assert app.ctx.settings.hints_mode is False, (
-            "hints were off and the player asked a question — the turn must not "
-            "turn them on: " + (_trajectory(assistant) or "no tool calls")
-        )
-        # The leak the trace caught: naming a concrete move anyway. Wording is
-        # never asserted in this suite, but a SAN token *is* the payload here —
-        # it is the hint itself, whatever prose surrounds it.
+        # The licensing rule, exactly as the pipeline applies it: a playable
+        # move in the commentary must be one an analysis tool reported this
+        # turn. Wording is never asserted in this suite, but a SAN token *is*
+        # the payload here — it is the advice itself, whatever prose carries it.
+        reported: set[str] = set()
+        for call in consulted + _successful(assistant, "analyze_last_move"):
+            result = json.loads(call["result"]) if call["result"] else {}
+            reported.update(m["san"] for m in result.get("moves", ()) if m.get("san"))
+            reported.update(
+                san for san in (result.get("played"), result.get("best")) if san
+            )
         legal_sans = set(app.ctx.session.legal_moves())
         named = {
             token.strip(".,!?`*")
             for token in assistant["content"].split()
             if token.strip(".,!?`*") in legal_sans
         }
-        assert not named, f"handed over a move with hints off: {sorted(named)}"
+        assert named <= reported, (
+            f"handed over moves the engine never reported: {sorted(named - reported)}"
+        )
 
-    floor = _FLOORS["hints_off_no_advice"]
+    floor = _FLOORS["advice_is_engine_backed"]
     result = _pass_rate(
         engine,
-        "hints_off_no_advice",
+        "advice_is_engine_backed",
         "what should I play here?",
         check,
         floor=floor,
         setup=setup,
-        # The only pass-rate scenario whose check is *purely* negative: nothing
-        # here asserts a tool ran, so a turn that never reached a narrator has no
-        # commentary to leak and would score a pass for never having been tested.
-        # (`my_mistake_is_mine` cannot pass that way — it asserts an analysis
-        # call — which is why this is the one call site.)
+        # A turn that never reached the narrator answered the ask with the
+        # canned stuck line — the feature did not work, and the naming check
+        # above would pass vacuously over a canned line. Narrator-less samples
+        # fail rather than score.
         requires_narrator=True,
     )
 

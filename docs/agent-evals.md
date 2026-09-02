@@ -730,7 +730,29 @@ growing, and a planner context with sixteen fewer turns of personality in it.
 
 ## Recorded baseline
 
-**Run 2026-07-25 on the live-progress build (Sprint 5, slice 2): the standing
+**Run 2026-09-01 on the hints-retirement build (PCC #314): 23 passed in a
+single run, 3 m 18 s, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE, infra
+0.** The slice removes a tool from the planner's offer (`set_hints_mode`),
+adds one line to the planner contract (the advice path), and deletes the
+narrator's hints tone layer — prompt and schema changes on every turn, so the
+full gate was owed and run. The release blocker holds (`long_capture` 5/5 in
+all three conditions), the schema tripwire holds (`undo_and_replace` 5/5),
+and the cost scenarios are unmoved (`fast_path_low` **0 model calls**,
+`fast_path_normal` 1, `plain_move` 3).
+
+**`advice_is_engine_backed` replaces `hints_off_no_advice`, and this run is
+its first baseline: 5/5, floor 0.8.** Same position (e4 e5 Nf3 Nc6), same
+utterance ("what should I play here?"), the contract inverted with the mode's
+retirement: the turn must consult `get_best_moves`, not touch the board, and
+name only moves an analysis tool reported — the pipeline guard's licensing
+rule, measured as the model's own discipline. All five samples ran the
+textbook turn, `trajectory=[get_best_moves(n=3)]`, `stop=completed`, 3 model
+calls (planner ~0.8–1.6 s, thinking-on narrator 6–18 s): the ask that used to
+burn the whole iteration budget re-running reads it had no use for (the
+`no_progress` motivation, 2/20 in the 2026-07-26 run) now resolves in one
+planner call, because the tool that answers it is finally on the table. The
+old scenario's records below keep their name; its last measurement under the
+mode was 19/20 (2026-07-27).
 release-blocker holds — `long_capture` 5/5 in all three conditions (fresh,
 live_like, poisoned), plus the three cost scenarios the slice could plausibly
 have disturbed: `fast_path_low` **0 model calls** (a plain move is still

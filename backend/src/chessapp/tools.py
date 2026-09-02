@@ -154,7 +154,6 @@ class Settings:
     through, so no `set_*` tool or endpoint can forget to persist."""
 
     verbosity: str = "normal"
-    hints_mode: bool = False
     voice_output: bool = False
     tier: str | None = DEFAULT_TIER
     skill_level: int | None = None
@@ -181,7 +180,10 @@ def _valid_setting(name: str, value: Any) -> bool:
     turn into an unconfigured engine or a crash at assembly."""
     if name == "verbosity":
         return value in ("low", "normal", "high")
-    if name in ("hints_mode", "voice_output"):
+    if name == "voice_output":
+        # A settings file written before 2026-09-01 may still carry a
+        # `hints_mode` key; the restore loop reads only current dataclass
+        # fields, so the stale key is skipped without needing a rule here.
         return isinstance(value, bool)
     if name == "tier":
         return value is None or value in DIFFICULTY_TIERS
@@ -438,25 +440,27 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     one (and a bigger or different tool list is itself a variable: the 2026-07-13
     trace review saw capture phrasings behave differently under two lists).
 
-    Three reasons a tool is withheld, and none of them is a prompt rule:
+    Two reasons a tool is withheld, and neither is a prompt rule:
 
     - `BOARD_STATE_TOOLS`, always: their answers are strict subsets of the state
       block the brain is handed every turn, so a call only burns a round trip.
-    - `get_best_moves` while hints are off (audit item 11): hints-off is a
-      capability the code withholds, not a line the model is asked to obey.
     - `claim_draw` while no draw is claimable: whether the rules allow a claim is
       board truth, so the tool simply is not there until it can be used — never
       the model's judgment. This also keeps the planner's schema unchanged on
       every turn where no claim exists, which is what the eval baseline is
       measured against.
 
+    `get_best_moves` used to be the third (audit item 11: withheld while hints
+    were off). Hints mode was retired 2026-09-01 — a hint is on-request now, so
+    the tool that answers the ask is in the offer on every turn, and what keeps
+    advice honest is the pipeline's guard: commentary may name a legal move only
+    if an analysis tool reported it this turn.
+
     Callers with no state injection (the MCP server, the delegate wire,
     `/api/game/hint`) still get the full registry; a withheld tool stays
     registered and dispatchable, and refuses on its own terms when it cannot run.
     """
     exclude = list(BOARD_STATE_TOOLS)
-    if not ctx.settings.hints_mode:
-        exclude.append("get_best_moves")
     if not ctx.session.claimable_draws():
         exclude.append("claim_draw")
     return exclude
@@ -1342,12 +1346,6 @@ def build_registry(
         "How chatty the agent's commentary is."
         ctx.settings.verbosity = verbosity
         return {"ok": True, "verbosity": verbosity}
-
-    @registry.tool()
-    def set_hints_mode(enabled: bool) -> dict[str, Any]:
-        "Turn move hints on or off."
-        ctx.settings.hints_mode = enabled
-        return {"ok": True, "hints_mode": enabled}
 
     @registry.tool()
     def set_voice_output(enabled: bool) -> dict[str, Any]:

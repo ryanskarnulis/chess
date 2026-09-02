@@ -54,7 +54,6 @@ const TOOL_LABELS: Record<string, string> = {
   get_captured_pieces: 'Counting the captures',
   set_difficulty: 'Changing the difficulty',
   set_verbosity: 'Changing the verbosity',
-  set_hints_mode: 'Changing hints',
   set_voice_output: 'Changing voice output',
 }
 

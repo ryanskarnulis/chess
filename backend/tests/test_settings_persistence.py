@@ -85,7 +85,10 @@ def test_invalid_values_in_the_file_are_ignored(tmp_path):
                 "skill_level": 999,
                 "elo": "high",
                 "verbosity": "shouting",
-                "hints_mode": "yes",
+                # A file written before hints mode retired (2026-09-01) carries
+                # this key with a perfectly valid-looking value; the field no
+                # longer exists, so it must be skipped like any unknown key.
+                "hints_mode": True,
                 "unknown_key": True,
             }
         )

@@ -106,7 +106,7 @@ def test_excluded_tools_are_still_dispatchable(registry):
 # eval harness both ask this function what to withhold, so what is measured is
 # what ships. The reads are always out (the state block already answers them);
 # the rest is a *capability* the code withholds when the app knows the answer —
-# `get_best_moves` with hints off, `claim_draw` with no claim to make.
+# `claim_draw` with no claim to make.
 
 
 def test_the_brain_offer_always_withholds_the_board_state_reads(session):
@@ -114,11 +114,11 @@ def test_the_brain_offer_always_withholds_the_board_state_reads(session):
     assert set(BOARD_STATE_TOOLS) <= excluded
 
 
-def test_the_brain_offer_withholds_get_best_moves_while_hints_are_off(session):
-    ctx = ToolContext(session=session)
-    assert "get_best_moves" in brain_tool_exclusions(ctx)
-    ctx.settings.hints_mode = True
-    assert "get_best_moves" not in brain_tool_exclusions(ctx)
+def test_the_brain_offer_always_carries_get_best_moves(session):
+    # Hints are on-request (the mode was retired 2026-09-01): the tool that
+    # answers an advice ask must be in the offer on every turn, or the planner
+    # is back to burning iterations hunting for a capability that isn't there.
+    assert "get_best_moves" not in brain_tool_exclusions(ToolContext(session=session))
 
 
 def test_the_brain_offer_withholds_claim_draw_until_a_draw_is_claimable(session):
@@ -1346,18 +1346,19 @@ def test_registry_lists_all_settings_tools(registry):
     assert names >= {
         "set_difficulty",
         "set_verbosity",
-        "set_hints_mode",
         "set_voice_output",
     }
     # The personality is fixed (Glitch); there is no set_personality tool.
     assert "set_personality" not in names
+    # Hints are on-request, not a mode (retired 2026-09-01): there is nothing
+    # for a setter to set, and the flip-it-on-unasked failure dies with it.
+    assert "set_hints_mode" not in names
 
 
 def test_settings_defaults(session):
     ctx = ToolContext(session=session)
     assert ctx.settings == Settings()
     assert ctx.settings.verbosity == "normal"
-    assert ctx.settings.hints_mode is False
     assert ctx.settings.voice_output is False
     # A real default strength, not None: without one the engine silently
     # plays at Stockfish's full-strength default.
@@ -1437,21 +1438,18 @@ def test_set_verbosity(session):
     assert registry.dispatch("set_verbosity", {"verbosity": "shouty"})["ok"] is False
 
 
-def test_set_hints_mode_and_voice_output(session):
+def test_set_voice_output(session):
     ctx = ToolContext(session=session)
     registry = build_registry(ctx)
-    assert registry.dispatch("set_hints_mode", {"enabled": True})["ok"] is True
-    assert ctx.settings.hints_mode is True
     assert registry.dispatch("set_voice_output", {"enabled": True})["ok"] is True
     assert ctx.settings.voice_output is True
-    assert registry.dispatch("set_hints_mode", {})["ok"] is False
+    assert registry.dispatch("set_voice_output", {})["ok"] is False
     assert registry.dispatch("set_voice_output", {"enabled": "yes"})["ok"] is False
 
 
 def test_settings_results_are_json_serializable(registry):
     json.dumps(registry.dispatch("set_difficulty", {"skill_level": 5}))
     json.dumps(registry.dispatch("set_verbosity", {"verbosity": "high"}))
-    json.dumps(registry.dispatch("set_hints_mode", {"enabled": False}))
     json.dumps(registry.dispatch("set_voice_output", {"enabled": False}))
 
 

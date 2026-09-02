@@ -11,9 +11,10 @@ and closes the residue the sweep found:
   **plus the delegate wire, below.**
 - *a command cannot produce duplicate moves* — `test_closing_pass.py`,
   `test_trace.py`'s mutation counts, `test_coordinator.py`'s rejections.
-- *hints-off never exposes advice* — `test_app.py` (the withheld offer),
-  `test_command.py` (the advice guard); **plus the delegate wire and the line
-  between the agent's advice and the player's own ask, below.**
+- *unbacked advice never reaches the player* (originally "hints-off never
+  exposes advice"; the mode retired 2026-09-01 and the evidence rule is what
+  remains) — `test_command.py` (the advice guard); **plus the delegate wire
+  and the line between the agent's advice and the player's own ask, below.**
 - *pending destructive ops cannot be overwritten* — `test_tools.py`,
   `test_command.py`, `test_board_controls.py`; **plus staleness across
   surfaces, below.**
@@ -346,16 +347,15 @@ def test_the_delegate_wire_observes_the_player_move_before_the_reply():
     assert ctx.session.move_history() == ["e4", "e5"]
 
 
-def test_the_delegate_wire_scrubs_move_advice_with_hints_off():
+def test_the_delegate_wire_scrubs_unbacked_move_advice():
     """The advice guard is the pipeline's, so it holds at every entry point:
-    hints off means no move is handed over, whoever asked."""
+    a move no analysis tool reported is never handed over, whoever asked."""
     ctx = ToolContext(session=GameSession())
     app, _ = scripted_app(ctx, AgentResponse(text="Easy — play Nf3 and thank me."))
     client = TestClient(app)
 
     exchange = say(client, conversation_on(client), "what should I play?")
 
-    assert ctx.settings.hints_mode is False
     assert exchange["assistant_message"]["content"] == MOVE_ADVICE_REPLY
 
 
@@ -384,15 +384,14 @@ def test_a_provider_failure_on_the_delegate_wire_keeps_the_move_and_says_so():
 
 
 def test_the_hint_button_is_the_players_own_ask_not_the_agents_advice():
-    """The boundary the hints setting draws, pinned so it stays deliberate:
-    `hints_mode` governs what *Glitch* volunteers — the tool it is offered and
-    the moves its commentary may name. `/api/game/hint` is the player pressing
-    Hint, on the trusted path with no model in it, and it answers (the recorded
-    decision when hints gating shipped: MCP, the delegate wire and this
-    endpoint keep the full registry)."""
+    """The boundary, pinned so it stays deliberate: the advice guard governs
+    what *Glitch's commentary* may name — moves an analysis tool reported.
+    `/api/game/hint` is the player pressing Hint, on the trusted path with no
+    model in it, and it answers unconditionally (the recorded decision when
+    hints gating shipped, and it survives the mode's retirement: MCP, the
+    delegate wire and this endpoint keep the full registry)."""
     best = CandidateMove(uci="g1f3", san="Nf3", score_cp=30, mate_in=None)
     ctx = ToolContext(session=GameSession(), engine=FakeEngine(best_moves=(best,)))
     client = TestClient(create_app(ctx))
 
-    assert ctx.settings.hints_mode is False
     assert client.get("/api/game/hint").json()["san"] == "Nf3"

@@ -40,12 +40,13 @@ without ever being able to spin.
 **A turn that asks for nothing new is the planner's last** (`no_progress`, a
 fifth stop reason beside the standard's three and chess's `provider_error`).
 Measured, not theoretical: asked "what should I play?" with hints off — an ask
-whose right answer is "no, hints are off" — the planner re-ran reads it had
-already run and spent the whole budget doing it (2 of 20 samples,
-`docs/agent-evals.md`), and a budget stop reaches no narrator, so the player
-got the pipeline's canned stuck line. A call identical to one this turn already
-made cannot bring anything new back, so the loop ends the planning phase itself
-rather than granting iterations that can only repeat. It is a *termination*
+whose right answer, under the since-retired hints mode, was "no, hints are
+off" — the planner re-ran reads it had already run and spent the whole budget
+doing it (2 of 20 samples, `docs/agent-evals.md`), and a budget stop reaches no
+narrator, so the player got the pipeline's canned stuck line. A call identical
+to one this turn already made cannot bring anything new back, so the loop ends
+the planning phase itself rather than granting iterations that can only
+repeat. It is a *termination*
 rule and nothing more: the repeated call is still dispatched, because whether a
 repeat may run is the tool layer's judgment (the phase machine already refuses
 a second player move), and the results are real — so unlike a budget stop this
@@ -98,7 +99,7 @@ from typing import Any
 import jsonschema
 
 from chessapp.brain import AgentResponse, Narration, ToolDispatcher, _RunState
-from chessapp.personality import planner_prompt_for, system_prompt_for
+from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING
 from chessapp.provider import (
     ChatProvider,
@@ -171,14 +172,14 @@ class LlamaBrain:
     # What the loop is *offered* — and therefore all it may call: a call
     # outside this list is a schema-level unknown even when the dispatcher
     # behind it could run it. A callable is re-resolved per command, the same
-    # live-settings seam as the two prompts, because settings change what
-    # exists for the model (hints off withholds `get_best_moves`), not just
+    # live seam as the two prompts, because live state changes what exists
+    # for the model (no claimable draw withholds `claim_draw`), not just
     # what it is told.
     tool_definitions: list[dict[str, Any]] | Callable[[], list[dict[str, Any]]]
     system_prompt: str | Callable[[], str]
     # The loop's own prompt. Defaults to the shipped planner contract so a
     # caller that only cares about the persona still gets the split.
-    planner_prompt: str | Callable[[], str] = planner_prompt_for()
+    planner_prompt: str | Callable[[], str] = PLANNER_PROMPT
     enable_thinking: bool = False
     max_iterations: int = _DEFAULT_MAX_ITERATIONS
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS
@@ -207,14 +208,15 @@ class LlamaBrain:
 
     def _resolve_system_prompt(self) -> str:
         """The narrator's system prompt for this request. A callable is
-        re-resolved every call, so a live settings change (verbosity/hints
-        mutating what the provider reads) takes effect on the next command; a
-        plain string is a fixed prompt."""
+        re-resolved every call, so a live settings change (verbosity mutating
+        what the provider reads) takes effect on the next command; a plain
+        string is a fixed prompt."""
         return _resolve(self.system_prompt)
 
     def _resolve_planner_prompt(self) -> str:
-        """The loop's system prompt for this request, resolved per call for the
-        same reason (hints mode changes what the planner is told)."""
+        """The loop's system prompt for this request, resolved per call
+        through the same seam — the contract is static today, but the wire
+        must not assume it stays that way."""
         return _resolve(self.planner_prompt)
 
     def get_agent_response(
@@ -225,8 +227,9 @@ class LlamaBrain:
     ) -> AgentResponse:
         messages = self._messages(board_state, command, transcript)
         # One resolution per command: the offer and the schemas it is validated
-        # against must be the same list for the whole run, even if a tool the
-        # run itself calls (set_hints_mode) changes what the *next* command gets.
+        # against must be the same list for the whole run, even if the run's
+        # own work (a move that makes a draw claimable) changes what the
+        # *next* command gets.
         tools = _resolve(self.tool_definitions)
         schemas = _schemas_of(tools)
         run = _RunState()
@@ -431,7 +434,7 @@ class LlamaBrain:
         A schema-invalid call is never dispatched: the registry would only
         turn it into the same error, and the model needs the error either way.
         `schemas` are the run's offered tools' — so a tool withheld from the
-        offer (hints off) is an unknown here too, never a dispatch.
+        offer (no claimable draw) is an unknown here too, never a dispatch.
         """
         error = _validate_call(call, schemas)
         if error is not None:
@@ -647,14 +650,14 @@ def create_llama_brain(
     `dispatcher` and `tool_definitions` should come from the same registry —
     the app assembly passes one `ToolRegistry` for both, so what the agent is
     offered is exactly what can be run. Like the prompts, `tool_definitions`
-    may be a zero-arg callable resolved per command, so live settings can
-    change the offer itself (hints off withholds `get_best_moves`).
+    may be a zero-arg callable resolved per command, so live state can change
+    the offer itself (a draw becoming claimable adds `claim_draw`).
 
     Two prompts, because a turn is two phases: `system_prompt_provider` is the
     narrator's (the personality) and `planner_prompt_provider` is the loop's
     (the tool contract). Each defaults to being resolved once into a fixed
     string; pass a zero-arg callable — which the brain calls per command — so
-    live settings changes (verbosity, hints) take effect immediately (the
+    live settings changes (verbosity) take effect immediately (the
     app-assembly wires both to read `ctx.settings`). Either way the brain stays
     prompt-agnostic: it just carries a string or a callable.
 
@@ -680,7 +683,7 @@ def create_llama_brain(
     planner_prompt: str | Callable[[], str] = (
         planner_prompt_provider
         if planner_prompt_provider is not None
-        else planner_prompt_for()
+        else PLANNER_PROMPT
     )
     return LlamaBrain(
         provider=provider,
