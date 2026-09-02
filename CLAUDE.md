@@ -1,14 +1,18 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repo.
 
-## Project Status
+## What this is
 
-Feature-complete core (as of 2026-07-11): board + deterministic engine, voice (STT/TTS), the Glitch agent, analysis/whole-game review, and the workspace delegate API + eval harness. `BRIEF.md` is the full project brief — the chosen stack, licensing analysis, LLM serving details (model + quant), difficulty-tier design, and agent tool list all live there and are authoritative. The llama-server *flags* are owned by the shared workspace `../llama-swap/config.yaml` (one GPU server serves chess and project-command-center); change them there, not here. Read it before making design decisions; this file holds only the always-needed rules. Monorepo layout: Python backend lives in `backend/` (src-layout package `chessapp`); the React/Vite web UI lives in `frontend/`.
+A local-first, self-hosted chess app for the home network, played from any
+browser. The core experience is a game against a tool-using AI agent (Glitch,
+voice-first) that acts as opponent, interface, and game controller.
 
-## Task Tracking
-
-`TODO.md` is the living backlog (prioritized, one task = one branch = one PR). `DONE.md` is the completion log. When picking up work, take the next relevant task from TODO.md; when it's merged, move the line to DONE.md under the current date. Re-plan TODO.md freely between slices.
+Layout: Python backend in `backend/` (src-layout package `chessapp`), React
+web UI in `frontend/`, decision records in `docs/`. `BRIEF.md` is the design
+reference. `TODO.md` is the backlog; `DONE.md` is the completion log (move a
+finished item there with the date). The llama-server flags live in the shared
+`../llama-swap/config.yaml`, not here.
 
 ## Commands
 
@@ -17,82 +21,41 @@ All Python commands run from `backend/`:
 ```bash
 cd backend
 source .venv/bin/activate && pip install -e .[dev]   # setup
-pytest                                               # run tests
-pytest tests/test_smoke.py -k <name>                 # single file / test
+pytest                                               # tests
 ruff check . && ruff format --check .                # lint (what CI runs)
 ruff format .                                        # auto-format
 
 CHESSAPP_TRACE_PATH=/tmp/turns.jsonl chessapp        # trace every agent turn
+CHESSAPP_AGENT_EVALS=1 pytest tests/test_agent_evals.py -v -s   # live-model evals (needs GPU)
 ```
 
-**Debugging agent behavior:** set `CHESSAPP_TRACE_PATH` and each interaction appends one JSONL record — the utterance, which road took it (`confirmation` / `fast_path` / `resign` / `brain` / `board` for a drag / `control` for a button-answered destructive op), the full tool trajectory (name, args, result), the loop's `stop_reason` (and, when that is `provider_error`, the `provider_failure` naming which death it was — a dead socket wants a different fix from a request llama-server refuses), the FEN before/after, the honesty guard's decision, and what it cost (`model_calls`, tokens, `model_latencies_ms` per call + their `model_ms` sum). Off by default. It is the first thing to reach for when a turn misbehaves: the suite pins the tool boundary, not live behavior, so a trace is the only record of what actually happened. A traced misfire is also a ready-made eval scenario (it carries its own `fen_before` + `utterance`).
+Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 
-**A record says which turn it was and how much it moved.** `turn_id` is the coordinator's turn counter, `correlation_id` identifies the one interaction (and is stamped on the warnings that turn logged), and `mutations` counts board changes off `ToolContext.board_version` — the chokepoint every mutation already passes through, never a hand-kept tally. Read together they are how the failures the coordinator exists to prevent become visible: a healthy agent-mode move turn is **2 mutations** (the player's move, the engine's answer), so a third under one `turn_id` is a duplicated move, and a mutation on a route that should have had none is a bypass.
+## Rules
 
-## Development Process (required)
+- **Deterministic code owns game truth.** `python-chess` decides legality and
+  holds state; Stockfish calculates; the model only routes language to tools
+  and must never be able to corrupt the game. The app plays a full game with
+  the LLM off (`CHESSAPP_AGENT=off`).
+- **Prefer code over prompts.** When correct behavior is derivable from state,
+  derive it — a prompt rule holds ~half the time, a code rule always.
+- **Personality is tone only** — never move choice, difficulty, or settings.
+  The global Glitch text is vendored from `../agent-standard/`; fix drift by
+  re-copying, never by editing the copy.
+- **Never feed model thought blocks back into history** — final answers only.
+- **Git:** never commit to `main`. Branch → PR → squash-merge on green CI
+  (`gh pr checks --watch`, then `gh pr merge --squash`).
+- **Tests ship with changes.** The deterministic core stays thoroughly
+  tested; agent behavior is tested at the tool boundary, never against live
+  LLM output.
+- **Eval gate:** a change to prompts, the model, or the agent loop runs the
+  eval suite before merge and must not regress the recorded baseline
+  (`docs/agent-evals.md`). Evals stay a manual local command — never in CI.
 
-- **TDD, strictly:** write the failing test first (red), then minimal code to pass (green), then refactor. No production code without a test that demanded it. The deterministic core (board truth, tools) gets exhaustive unit tests; agent behavior is tested at the tool boundary — never write tests that depend on live LLM output.
-- **Eval gate:** before merging any prompt, model, or loop change, run the opt-in agent eval harness (`cd backend && CHESSAPP_AGENT_EVALS=1 .venv/bin/pytest tests/test_agent_evals.py -v -s`); the recorded baseline in `docs/agent-evals.md` must not regress (it's the only live-model test — default `pytest` skips it). **A green means "not statistically below the floor", not "works 80% of the time":** each pass rate is judged against a one-sided Wilson bound with block-sequential sampling (`tests/evalstats.py`, unit-tested off the GPU), infra deaths are retried rather than scored, and the gate resolves ≈0.95 from ≈0.5–0.6 and nothing finer — so a red is strong evidence of harm and a green is weak evidence of health. Never lower a floor for quiet; power depends on it.
-- **Agile:** the phases in BRIEF.md are the epics; work in small vertical slices tracked as GitHub issues, one slice = one branch = one PR.
+## Debugging agent behavior
 
-## Git Workflow
-
-- **Never commit or push directly to `main`.** For every change: create a branch (`feat/<slug>`, `fix/<slug>`, `chore/<slug>`, `docs/<slug>`), commit, push, and open a PR with `gh pr create`.
-- PRs are **squash-merged once CI is green**. GitHub's native auto-merge and branch protection are unavailable (private repo on the Free plan), so after opening a PR run `gh pr checks --watch` and, when green, `gh pr merge --squash`. Never merge with failing or pending checks.
-- CI (`.github/workflows/ci.yml`) runs three jobs on every PR and push to main: `lint` (ruff check + format-check), `test` (pytest), and `frontend` (npm lint → build → test). All three must pass; run them locally before pushing.
-
-## What This Is
-
-A local-first, self-hosted, containerized chess app for a home network, played from any browser. The core experience is playing against a tool-using AI agent (voice-first input) that acts as opponent, interface, and game controller.
-
-## Core Architecture Principle (non-negotiable)
-
-The agent is the **orchestrator and personality, NOT the referee**:
-
-- **Deterministic code owns truth.** Board state, legal-move validation, and move history live in `python-chess`. Its answers are authoritative and final.
-- **Stockfish is a calculation tool** (evaluation, MultiPV candidate moves), not the app's personality. Driven via python-chess's UCI support.
-- **The agent never decides legality "in its head" and never knows the board directly** — it submits moves through tools and the engine accepts/rejects; it reads state through tools. The LLM must be unable to corrupt game state.
-- The app must support a full game against Stockfish **with the LLM turned off** — the agent layer is an optional enhancement on top.
-
-## Game Loop
-
-Agent-in-the-path, single pipeline: all input (voice/text/board) becomes a string → agent → tool call(s) → deterministic engine executes → results go **back to the agent** → it acts again or answers. One road in, one brain, no dual-path race conditions.
-
-**The deterministic turn coordinator owns the turn sequence** (`coordinator.py`, `docs/turn-coordinator.md`): `player_move → (observe) → engine_reply → (close)`, with explicit phases, a turn id, and rejection of any action that doesn't belong in the current phase (`TurnStateError`, a `ValueError` so the agent reads it as a tool result and the API answers 409). **The engine's reply is the coordinator's job and never a model-callable tool** — a model that could ask for the reply could also fail to, and the LLM-off game must play on regardless; the model gets the observation slots, never the wheel.
-
-**The move flow is split, and the observe beat is free.** `make_move` applies the player's move only (`atomic_exchange=False`, how the app assembles it) and reports what it did — the piece taken, whether it checks, **and whose move it was**: a `mover` field plus a code-composed `summary` sentence ("The player played Nxe5, capturing your pawn."), because attribution left to be inferred from move-history parity is how the narrator claimed the player's captures as his own (#186) — so the narration a turn produces is a reaction to a *verified player move*, never to a finished exchange. **The narrator is offered no side to play for, as data, not just prose** (#188, #193): the beat runs while the reply is still being computed, so the view it is handed (`api._narrator_state_dict`) carries no `turn`, no `legal_moves`, no FEN, and the split `make_move` result reports no mid-exchange `fen`/`turn` either (the atomic/MCP payload keeps them — a settled position) — a narrator that can see whose move it is announces one. It costs nothing extra in wall clock because the engine starts computing the moment the move lands and the reaction runs while it does; the pipeline then collects the reply and appends a **deterministic** announcement (`api._reply_announcement`) rather than paying for a second narration to react to a reply Glitch hasn't seen. The beat is skippable by construction: at verbosity=low, or when the provider fails, one canned line covers the whole turn and a plain move stays zero-LLM. Any non-move mutation (undo, new game, resign, resume) abandons the open turn first — its position is the thing being replaced. MCP keeps the atomic exchange: same boundary, different sequencing owner, because a caller with no pipeline must not leave a game mid-turn.
-
-The loop lives in the brain (`get_agent_response`), in the fleet's standard shape (`../agent-standard/STANDARD.md` §3): call the model with tools, append its turn, dispatch each call through the registry, append each result as a `role: "tool"` message, repeat. **One turn is two model phases** (`docs/planner-narrator.md`): that loop is the **planner**, and it runs on a compact, persona-free tool contract, because on a 12B a page of tone competes with the tool decision for attention. Its first turn that asks for no tools ends the loop and is an internal handoff note — the planner never speaks to the player. The **narrator** is one further call on the personality prompt, offered **no tools**, given the utterance, the turn's tool results and that note; its text is the commentary. Being structurally unable to act is what the old "react from new state, never the raw utterance" rule was protecting, and the phase boundary enforces it rather than a withheld utterance. A budget stop reaches no narrator: nothing verified came back to speak from. This is enforced, not just described: `tests/test_closing_pass.py` pins it route-by-route — on every route (brain loop, fast path, board drag) the model call that produces player-facing text carries no tools, and once the turn's mutation budget is spent (the phase machine's one player move, the command window's one destructive op) the tools the planner still holds cannot mutate.
-
-Bounded by `max_iterations` (4) plus a separate, smaller correction budget for schema-level failures; `stop_reason` is `completed | no_progress | max_iterations | correction_limit | provider_error` (the last carries whatever tool results verifiably ran before the provider died, so the pipeline still closes the turn and tells the player the truth — a landed move stands and is never replayed). **A planner turn that only repeats itself is its last** (`no_progress`, `docs/planner-narrator.md`): a call identical to one the turn already made cannot bring anything new back, so the loop ends the planning phase rather than granting iterations that can only repeat — measured, as a "what should I play?" under the since-retired hints-off mode burning all four on re-runs and reaching no narrator. The repeat is still *dispatched* (whether it may run is the tool layer's judgment, not the loop's) and the stop reaches the narrator, because verified results did come back. **Domain rejections are results, not corrections** — an illegal move comes back as a tool result the agent reads and corrects from, inside the same turn. **And a refusal carries what correcting it needs** (`tools.py`): every "no" the tool layer produces says `retry` (`different_args` or `never` — code's answer, not the model's inference from wording) and `board_version`, and names a better call where one exists (legal `alternatives` for a rejected move, which for an ambiguous SAN *are* the disambiguated candidates; the saves that exist for a bad save name). The confirmation gate's pattern — the refusal carries the exact line to relay — generalized.
-
-**A turn says what it is doing while it does it** (`progress.py`, `docs/turn-coordinator.md`). The phases are broadcast live on the state websocket (`type: "progress"`), and nothing narrates them: each event comes from the chokepoint that already owns the fact — the coordinator's one phase setter, `ToolRegistry.dispatch`, the brain's own `planning`/`narrating` — stamped with the interaction's `correlation_id`, the same id the trace record carries. The UI owns the words; the backend ships phase names. This is what finally made `agent_observing` a phase the app enters: on the fast path and the board drag the pipeline marks it (`mark_observation`), and on the brain route the narrator's phase report is the only signal the app gets, because the brain holds no coordinator. **The pipeline's blocking steps therefore run off the event loop** (`api._offloop`) — a loop parked inside a model call or a Stockfish search delivers nothing, so without that hop every event would arrive in a burst after the turn had already ended. Reporting never costs a turn: every observer is swallowed, like the tracer.
-
-**The board controls are in the machine too** (`docs/turn-coordinator.md`). In agent mode a dragged move runs the fast path's beats through the same helper — the structured move (`e2e4`), never prose — so a drag-played game gets Glitch's reactions and its own trace route (`board`); the UI's new-game and resign buttons dispatch through the registry, so the *same* deterministic gate arms `ctx.pending` and the endpoint relays its question (409 + `confirm: true`, answered at `/api/game/confirm`) — one gate, one armed op, either surface. **And an armed op is a question about a *position*:** it carries the `board_version` it was armed against and is read through `ctx.live_pending()`, so a board that moved in between (a drag, an undo, another client) drops the question rather than letting a later "yes" answer it — live, "I resign" → drag → "yes" ended a game two plies on. **Direct mode is deliberate and visible:** with no brain, `/api/game/move` answers exactly what it always did, and `/api/settings.agent_available` tells the UI to say so rather than let the player discover it. **And it is selectable:** `CHESSAPP_AGENT=off` (`build_app(agent_enabled=False)`) is what a deployment sets to get there — `brain=None` means *construct one*, so until that switch existed every direct-mode branch was written, tested and unreachable, and the LLM-off invariant held everywhere except in the running app. Agent-on stays the no-config default and an unrecognized value refuses to start: the failure being fixed is the app advertising an agent it hasn't got, so a typo must not resolve to "on".
-
-The one commentary path outside the loop is the fast path: an utterance that is exactly one unambiguous legal move (`parse_move`) goes straight to `make_move` with no model call, so there is no planner turn for the narrator to close — `Brain.narrate` is that same narrator phase on its own, and on that route it *is* the observe beat (at verbosity=low a canned confirmation stands in for that too, making a plain move zero-LLM). An explicit resignation (`parse_resign`) is settled the same way — whether the player conceded is not a judgment call — and dispatches `resign` into the same confirmation gate, so a mis-parse costs a question, never a game.
-
-**Commentary may not announce what didn't happen.** Whatever route produced it, the pipeline checks the **model's** closing text against the turn's record before the player sees it — the model's half only, with the app's own lines (the reply announcement, the canned confirmation, the lost-brain line) composed around whatever survives, since those are deterministic truth by construction and running them through the guard only risked taking the engine's move back along with the lie, and the check is over **verified facts, not just endings** (`honesty.unverified_claims` against a `VerifiedFacts` set `api._verified_facts` assembles from the tool results, the engine's reply and the board): an unhedged claim of an ending, a draw, a capture, check, a move, a save, a settings value, an engine number or a material count that the turn cannot back is replaced with the truth and the turn is traced as `guarded`. **Who did it is a fact too** (#185): a capture claim is checked for direction — the subject when there is one, the possessive when there isn't ("snagged *your* bishop" pins it as well as "I took" does) — and a move credited to a side ("I played Nf3") is checked against the moves that side really played (`moves_by_player`/`moves_by_opponent`, the history split by whose turn it was); only phrasing that pins nobody falls to the union. Each class is verified by whatever owns that fact, which for material is arithmetic rather than a tool result: `GameSession.material_balance` counts the board, the claim must be quantified ("two pawns down", not "getting crushed" — an opinion is not a count), and direction is the fact while magnitude is checked to within a pawn, because "up a knight" for a knight-for-a-pawn trade is how everybody says it. **The facts span every board the turn held, not just the last one.** The narrator reacts during the observation beat — after the player's move, while Stockfish is still computing — so it is judged from a position its own commentary never saw: a recapture flips the material count between the two, and a move playable only mid-turn is legal in neither the turn's opening position nor its closing one. So `_verified_facts` takes the observed FEN too (`_MoveBeats.observed_fen`) and counts material and legal moves across all of them. Staleness is not invention — the same reasoning already lets a capture from ten moves ago be a fact — and an invented move is still invented from all three. Getting this wrong is not a quiet bug: ordinary trades were guarded as lies, and because the canned correction was recorded as Glitch's own turn, he learned to apologise for things he never said. The model may neither *do* a destructive op unasked (the gate) nor *say* it did (the guard); live, it did the latter — *"Word. Game over."* on a live board. The bar is "asserts", not "mentions" — threats, questions and hypotheticals are the personality and must survive, so each class is hedge-aware and the guard fails *permissive* on ambiguity; what it must never do is let an invented event through. Personality varies the wording, never the facts.
-
-## Entry Points
-
-The board UI (`/`), the delegate API (`/api/agent`, still served but no longer advertised in `app.yaml`), and the **conductor handoff deep link**: the fleet's conductor sends a user here with what they said (`/?intent=let's+play+chess+as+black`). `App.tsx` scrubs the param on mount and feeds the intent to `sendCommand` — the same pipeline as the command box, so a handoff opens the session already acting on it. It is one utterance in, nothing more: the intent is capped, and scrubbing the URL first means a reload never replays it. The `open:` block in `app.yaml` is what tells conductor this link exists (`../agent-standard/app-yaml-open-block.md`).
-
-## Binding Invariants (details in BRIEF.md)
-
-- **Swappable brain module:** all model-specific logic lives behind one interface — `get_agent_response(board_state, command, transcript) → {text, tool_calls}`. Nothing else in the app may know which model/backend is behind it.
-- **Agent tools are capabilities, not hardcoded behaviors** — the agent maps free-form commands to tools itself (no per-phrase branching); ambiguous input → clarifying question. The full tool list is in BRIEF.md; `control_physical_board` stays a future seam only.
-- **Never make the model decide what deterministic state already knows.** A rule the prompt asks for is a rule the model follows ~half the time (the destructive-op gate's finding); a policy the code owns holds always. Undo's ply count and the confirm-before-`new_game` rule were both this bug. When a tool's correct behavior is derivable from the session, derive it — don't document it in the docstring and hope.
-- **The brain is offered fewer tools than the registry holds.** It gets the board state in its prompt every turn, so `BOARD_STATE_TOOLS` (the pure reads) are registered and dispatchable but not *offered* to it — a call it already has the answer to only burns a round trip out of `max_iterations`. The offer is resolved per command off live state: `claim_draw` is withheld until the rules actually allow a claim (a capability restriction, not a prompt rule — a call outside the offer is a schema-level unknown and never dispatches). Callers with no such injection (MCP, the delegate wire, `/api/game/hint`) still see the full list. Hints stopped being an offer condition 2026-09-01: the mode was retired, `get_best_moves` is always on the table, and what keeps advice honest is the pipeline's guard — commentary may name a playable move only if an analysis tool reported it this turn.
-- **Personality is tone only:** it shapes commentary, never move choice, difficulty, or any other setting.
-- **Never leave an engine unconfigured:** a real default difficulty tier is applied at app assembly (Stockfish's own default is full strength).
-- **Local-only voice by decision** — no browser Web Speech API path (see `docs/voice-fast-path-evaluation.md`).
-- **Never feed LLM thought blocks back into multi-turn history** — final answers only.
-- **Conversation memory is condensed, and it is code that condenses it** (`conversation.condense`, `docs/turn-memory.md`). A brain gets the last few turns verbatim behind a deterministic digest of what the player asked for earlier; Glitch's older prose is dropped, because personality competing with the tool decision is this project's measured failure mode. The digest holds **no** board facts, settings or saves — those are injected fresh into the state block every turn, and a summary restating them would be the second, ageing copy that caused the self-poisoning bug. No model writes the summary: everything code can verify is already injected, and the residue is the player's own words. **And what the app says — in Glitch's place or after him — is never remembered as his** (`api.CommandOutcome.memory`, `api._remembered_facts`): every canned substitution — a guarded claim, a budget stop, a dead provider — is written in the first person, and recording one as the assistant's turn hands the narrator its own apology as something it said. It imitates the register from there, on turns where nothing was guarded at all; live, that is where *"I almost said something that didn't happen. That's my bad."* came from. The appended lines poison the same way (#193): a move turn remembered as the composed commentary ends in the app's bare reply announcement, and given "\n\ne5." back as his own words the narrator completed the format at the beat where the reply doesn't exist yet — announcing a move of his own one line before the real one. So a move turn is remembered by the reaction alone (the reply is board history, injected fresh every turn), and a substituted turn remembers what the turn **did** — the deterministic move confirmation — or nothing, which `condense` renders as the inert ack rather than shipping an empty assistant message at a chat template that alternates. The player gets the correction; the model gets his own words or the facts. Both entry points, panel and delegate (`StoredMessage.memory`).
-
-## Phasing
-
-1. **MVP:** web board + python-chess + Stockfish + **text** commands to the agent. Get the tool boundaries right with text first.
-2. Voice (STT/TTS).
-3. Settings-by-voice + the single dialed-in personality (Glitch) and a custom voice.
-4. Physical board (Chessnut Move) — walled-off separate project; do not let it shape core architecture.
+Set `CHESSAPP_TRACE_PATH` and every interaction appends one JSONL record:
+utterance, route, tool trajectory, stop reason, FENs, guard decision, and
+cost. It is the first thing to reach for when a turn misbehaves, and a traced
+misfire is a ready-made eval scenario. `docs/turn-coordinator.md` and
+`docs/planner-narrator.md` explain the turn architecture.
