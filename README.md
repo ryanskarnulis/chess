@@ -15,7 +15,7 @@ Everything runs in containers on your own hardware (the app, Speaches for STT, K
 
 ## Status
 
-Playable end-to-end: web board, voice in and out, the Glitch agent, analysis and whole-game review, and a delegate API the workspace conductor drives. See the next-sprint and current-focus sections of [`TODO.md`](TODO.md) for what's next and [`DONE.md`](DONE.md) for progress. The full design rationale lives in [`BRIEF.md`](BRIEF.md).
+Playable end-to-end: web board, voice in and out, the Glitch agent, analysis and whole-game review, and a delegate API the workspace conductor drives. See [`TODO.md`](TODO.md) for what's next and [`DONE.md`](DONE.md) for progress. The full design rationale lives in [`BRIEF.md`](BRIEF.md).
 
 Roadmap:
 

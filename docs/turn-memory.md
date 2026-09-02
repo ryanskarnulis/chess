@@ -1,139 +1,46 @@
 # Turn memory: what the model remembers between turns
 
-*Design note for the Sprint 4 slice "turn summaries replace the raw transcript
-window" (audit item 17). Read `docs/planner-narrator.md` first — this describes
-what goes **into** those two phases, not how they run.*
-
-## What it replaced
-
-`Transcript.window(20)` handed both model phases up to **40 raw messages** —
-every prior command and every line of Glitch's commentary, verbatim, oldest
-first. That was the agent's entire memory, and it had three faults:
-
-1. **It grew.** Twenty turns of prose is a large, ever-shifting prompt prefix on
-   a 12B, and every turn of a long game made it larger.
-2. **It was mostly the wrong content.** Older assistant turns are personality —
-   trash talk, hedges, threats. That prose competing with the tool decision is
-   the measured failure mode this project already has a name for
-   (self-poisoning, trace review 2026-07-13; the `long_capture[poisoned]`
-   regression). The planner needs to know *what was asked*, not how Glitch said
-   it.
-3. **It was a second copy of facts the app already holds.** A stale sentence
-   about saving beat a save sitting on disk, until `saved_games` and `settings`
-   were injected fresh into the state block (#154, #155).
+`conversation.condense` (2026-07-25; full design narrative in git history).
+Read `docs/planner-narrator.md` first — this is what goes *into* the phases.
 
 ## The shape
 
-One deterministic transform, `conversation.condense`, applied to the message
-list before it reaches a brain:
+One deterministic transform applied to the message list before it reaches a
+brain:
 
 ```
-[ digest(user) , "Noted."(assistant) , …the last RECENT_TURNS turns verbatim… ]
+[ digest(user) , "Noted."(assistant) , …last RECENT_TURNS turns verbatim… ]
 ```
 
-- **The recent turns stay verbatim.** Reference-following ("do the second one",
-  "no, the other rook") only reaches back a turn or two, and that is exactly
-  what stays untouched.
-- **Everything older collapses to the player's own requests** — their words,
-  whitespace-collapsed, truncated on a word boundary, capped oldest-dropped-
-  first with an explicit `(+N earlier requests not listed)` line. Glitch's side
-  of those turns is dropped entirely.
+- **Recent turns stay verbatim** — reference-following ("no, the other rook")
+  only reaches back a turn or two.
+- **Everything older collapses to the player's own requests**, their words
+  only, capped with an explicit `(+N earlier requests not listed)` line.
+  Glitch's older prose is dropped entirely: personality competing with the
+  tool decision is this project's measured failure mode (self-poisoning;
+  `long_capture[poisoned]`).
 
-## What is deliberately *not* in the digest
+## Rules that keep it honest
 
-The audit's list was "game events / user preferences / active settings /
-unresolved requests / lightweight conversational context". Two of those
-categories are already solved better elsewhere, and putting them in a summary
-would recreate the bug the injection cured:
-
-- **Game events** — the moves, the captures, the result — are board truth, and
-  board truth comes from the current state (`api._agent_state_dict`), never from
-  history. The digest contains no moves. It goes further: an older turn whose
-  whole command *was* a move (`e4`, `Bxe6`, `e2e4` — how a board drag records
-  itself) is dropped from the request list, because that turn's content is
-  already in `history` and repeating it is noise wearing a fact's clothes.
-- **Active settings and saved games** are injected fresh every turn. A digest
-  line saying "the player asked for hard mode" would be a second, ageing copy of
-  `settings.difficulty` — the exact self-poisoning shape.
-
-What survives is what genuinely only exists in the conversation: the standing
-asks and preferences the player expressed in their own words. Unresolved
-requests are covered by the same list — an ask that was never settled is an ask
-that appears there and nowhere in the state block.
-
-## Why no model writes it
-
-An LLM-written rollup was the obvious reading of "summarize older turns", and it
-is rejected here for the house reasons:
-
-- It is a third model phase per turn (or per rollup) on a local 12B whose budget
-  is already four planner iterations plus a narrator.
-- It would be the model deciding what happened — the thing `honesty.py` exists
-  to stop it doing out loud. A summary is not guarded, and a hallucinated one
-  would be *harder* to catch than a hallucinated reply, because nobody reads it.
-- Everything worth summarizing that code can verify is already injected. The
-  residue is the player's literal words, and copying words needs no model.
-
-So `condense` is pure, deterministic, and unit-tested — no provider, no
-sampling, no eval dependency for its own correctness.
-
-## Delivery, and the two synthetic messages
-
-The digest rides as a `user` message followed by a one-word `assistant`
-acknowledgement. The pair, rather than a lone message, because the transcript
-feeds a chat template that expects user and assistant turns to alternate; a bare
-digest message would put two user turns back to back. `Transcript`'s role
-whitelist is unchanged — the pair is built at read time and never recorded, so a
-save file still cannot smuggle in a role.
-
-The ack does a second job for the same reason. A turn the app spoke on Glitch's
-behalf is recorded with an empty assistant message (below), and the model's view
-cannot ship one at a template that alternates — so `condense` stands the ack in
-its place. It is the one line in the app already chosen for having no voice to
-imitate.
-
-## What the app said is not what Glitch said
-
-Every canned substitution is written in the first person — *"Scratch that — I
-said something the board doesn't back up"*, *"I lost the thread on that one"*,
-*"My brain cut out mid-turn"* — and the pipeline used to record the substituted
-text as the assistant's turn. `condense` gives the last `RECENT_TURNS` back
-verbatim, so the narrator read its own apology as something it had said and
-started producing the register itself, on turns where nothing was guarded at
-all. Live, that is where *"I almost said something that didn't happen. That's my
-bad."* came from — and because each imitation was recorded too, the voice
-outlived the window that seeded it.
-
-The rule: **what the app says — substituted *for* what the model said, or
-*appended* around it — is for the player, not for the model's memory.** The
-first cut of this rule kept the appended reply announcement on the grounds that
-it is true, and it is; the next live game showed truth was never the issue,
-register is (#193). Every remembered move turn ended in the app's bare
-`\n\ne5.` line, and the narrator completed that format at the beat where the
-reply does not exist yet — announcing a move of its own one line before the
-app announced the real one, on the brain route too, whose brief carries no
-board at all. So a move turn is remembered by the reaction alone; the engine's
-reply is board history, and board history is injected fresh into the state
-block every turn rather than restated in memory (the same reasoning as the
-digest's).
-
-A turn Glitch said nothing usable on — a substitution, a silent low-verbosity
-move — is remembered by what the turn *did* (`api._remembered_facts`): the
-deterministic move confirmation (`"Bxc6. dxc6."`) where a move landed, and an
-empty assistant message where nothing did. The player's ask keeps its place
-either way, so the digest of what they asked for earlier is never punched full
-of holes by a guarded turn. The carrier is `api.CommandOutcome.memory`, which
-equals the reaction on every turn Glitch really spoke on; the delegate store
-carries the same divergence as `StoredMessage.memory`, kept off the wire so
-`MessageRead` stays byte-compatible.
+- **No board facts, settings, or saves in the digest.** Those are injected
+  fresh into the state block every turn; a digest line restating them would be
+  a second, ageing copy — the exact self-poisoning shape. Older turns that
+  were just a move (`e4`) are dropped too: they already live in `history`.
+- **No model writes the summary.** Code copies the player's words; a
+  model-written rollup would be an unguarded place to hallucinate, plus a
+  third model phase per turn.
+- **What the app said is never remembered as Glitch's.** Canned substitutions
+  (guard corrections, lost-brain lines) and appended announcements are for the
+  player, not the model's memory — remembered as such, the narrator imitates
+  the register (live: "I almost said something that didn't happen") or
+  completes the format (announcing a move before the reply exists, #193). A
+  move turn is remembered by the reaction alone; a substituted turn by what it
+  *did* (the deterministic move confirmation) or an empty message, which
+  `condense` renders as the inert ack (chat templates must alternate roles).
+  Carriers: `api.CommandOutcome.memory`, `StoredMessage.memory`.
 
 ## Call sites
 
-- `Transcript.memory()` — what `/api/command` and the board-drag beat pass to the
-  brain. `window()` is unchanged and still the raw record (serialization, tests,
-  anything that wants what was actually said).
-- `agent_api.history_for_loop` — the delegate wire condenses too, off its own
-  store, so both entry points have one memory policy.
-
-The `Brain` seam is untouched: a brain still receives `transcript` as a sequence
-of chat messages and neither knows nor cares that some of them were condensed.
+`Transcript.memory()` (command pipeline + board drag) and
+`agent_api.history_for_loop` (delegate wire) — one memory policy, both entry
+points. `window()` stays the raw record. The `Brain` seam is untouched.
