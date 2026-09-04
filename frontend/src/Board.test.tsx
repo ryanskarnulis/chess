@@ -39,48 +39,41 @@ describe('Board', () => {
     expect(container.querySelectorAll('piece:not(.ghost)')).toHaveLength(1)
   })
 
-  it('tells chessground to re-measure when the page layout shifts', () => {
-    // Chessground caches its screen bounds and only refreshes them on window
-    // resize/scroll. Content growth (commentary, panels, a scrollbar) moves
-    // the board without either event, so clicks land on stale coordinates.
-    // The board must watch the page size and fire chessground's re-measure
-    // event ('chessground.resize' on document.body) when it changes.
-    interface StubObserver {
-      cb: () => void
-      targets: Element[]
-    }
-    const observers: StubObserver[] = []
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        cb: () => void
-        targets: Element[] = []
-        constructor(cb: () => void) {
-          this.cb = cb
-          observers.push(this)
-        }
-        observe(target: Element) {
-          this.targets.push(target)
-        }
-        disconnect() {
-          this.targets = []
-        }
-      },
-    )
-    const remeasured = vi.fn()
-    document.body.addEventListener('chessground.resize', remeasured)
+  it('drops chessground\'s cached board rect at the start of every interaction', () => {
+    // Chessground measures the board's screen box once and caches it, and
+    // drops the cache only on a window resize, a scroll, or a *size* change
+    // of the mount element. A board that merely moves keeps the box it had —
+    // and it moves all the time, because Glitch's bubble grows above it: a
+    // three-line reply slides the board 112px down the page, after which
+    // clicking a piece picks up the one below it (walkthrough #2).
+    //
+    // So the board fires chessground's own "your box may have moved" signal,
+    // a `scroll` at the document, at the start of every interaction —
+    // `pointerdown`, which runs ahead of the `mousedown`/`touchstart` that
+    // chessground starts a click or a drag from. What is asserted here is the
+    // signal and its lifetime; that it lands the clicks is a browser fact,
+    // measured in Chromium, Firefox and WebKit (jsdom has no layout).
+    const dropped = vi.fn()
+    document.addEventListener('scroll', dropped, { capture: true })
     try {
-      const { unmount } = render(<Board fen={START_FEN} />)
-      const bodyObserver = observers.find((o) => o.targets.includes(document.body))
-      expect(bodyObserver).toBeDefined()
-      bodyObserver!.cb()
-      expect(remeasured).toHaveBeenCalled()
-      // Unmount must stop watching so a dead board can't keep firing.
+      const { container, unmount } = render(
+        <Board fen={START_FEN} turnColor="white" dests={{ e2: ['e3', 'e4'] }} />,
+      )
+      const board = container.querySelector('cg-board')!
+      board.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      expect(dropped).toHaveBeenCalledTimes(1)
+
+      // Every interaction, not just the first.
+      board.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      expect(dropped).toHaveBeenCalledTimes(2)
+
+      // A destroyed board stops signalling.
+      const mount = container.querySelector('.board')!
       unmount()
-      expect(bodyObserver!.targets).toHaveLength(0)
+      mount.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      expect(dropped).toHaveBeenCalledTimes(2)
     } finally {
-      document.body.removeEventListener('chessground.resize', remeasured)
-      vi.unstubAllGlobals()
+      document.removeEventListener('scroll', dropped, { capture: true })
     }
   })
 

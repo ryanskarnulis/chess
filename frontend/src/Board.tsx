@@ -89,21 +89,35 @@ export function Board({
       coordinates: true,
       drawable: { brushes: BOARD_BRUSHES as DrawBrushes },
     })
-    // Chessground caches its screen bounds and only re-measures on window
-    // resize/scroll. Content-driven layout shifts (commentary appearing,
-    // panels growing, a scrollbar showing up) move the board without either
-    // event, so clicks would map through stale coordinates. Any such shift
-    // changes the page's size, so watch it and fire chessground's own
-    // re-measure event. (Guarded: jsdom has no ResizeObserver.)
-    let observer: ResizeObserver | null = null
-    if (typeof ResizeObserver !== 'undefined') {
-      observer = new ResizeObserver(() =>
-        document.body.dispatchEvent(new Event('chessground.resize')),
-      )
-      observer.observe(document.body)
-    }
+    // Chessground measures the board's screen box once and caches it. It
+    // drops that cache on a window resize, on a scroll, and when the mount
+    // element's own *size* changes (its ResizeObserver) — and on nothing at
+    // all when the board merely *moves*. It moves constantly: Glitch's bubble
+    // sits above it in the column, so a three-line reply slides the whole
+    // board down the page and leaves the remembered box behind. Measured
+    // here, that slide is 112px — a square and a half — after which clicking
+    // a piece picks up the one below it and clicking its middle picks up
+    // nothing (walkthrough #2).
+    //
+    // The rendered geometry was never the problem: Chromium and Firefox both
+    // draw exactly-square 67px squares inside a square frame, agreeing with
+    // the measured rect to within 0.06 of a square. Only the *remembered*
+    // rect goes stale. So the fix is to stop carrying one across a layout
+    // change — and rather than guess which ancestor's resize implies a move
+    // (a column growing inside a taller viewport never reaches `body`, and a
+    // swap above the board need not change any height at all), re-measure at
+    // the one moment the number is used: the start of an interaction.
+    //
+    // `pointerdown` runs ahead of both `mousedown` and `touchstart`, which
+    // are what chessground starts a click or a drag from, and a `scroll` at
+    // the document is chessground's own "your box may have moved" signal —
+    // it drops the cached rect and does nothing else. One `getBoundingClientRect`
+    // per interaction, and no layout shift can outrun it.
+    const remeasure = () => document.dispatchEvent(new Event('scroll'))
+    const mount = mountRef.current
+    mount.addEventListener('pointerdown', remeasure)
     return () => {
-      observer?.disconnect()
+      mount.removeEventListener('pointerdown', remeasure)
       apiRef.current?.destroy()
       apiRef.current = null
     }
