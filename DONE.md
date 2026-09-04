@@ -6,6 +6,7 @@ before 2026-09-01 are in this file's git history; measurement records live in
 
 ## 2026-09-04
 
+- [x] "talk more" sets verbosity (walkthrough #3) — the live setting is now in the agent's per-turn view and `set_verbosity`'s description says it is the only way to change it; the guard suppresses a narrated change over a turn that called no setter. Eval `verbosity_up_from_low` 5/5, full gate 25 passed (#252)
 - [x] Board clicks land on the square you clicked (walkthrough #2) — chessground's cached screen rect went stale whenever the reply above the board moved it; the board now drops the rect at the start of every interaction. Reproduced and verified in Chromium, Firefox and WebKit (#251)
 - [x] Guard stops eating correct hints (walkthrough #1) — a bare "take" is advice, not a report, and capture talk hung on an unplayed move describes a line; new eval `advice_capture_survives_guard` 5/5, full gate 24 passed (#250)
 - [x] Design stance: code owns truth and safety, the model owns understanding — CLAUDE.md's "prefer code over prompts" rule amended before the walkthrough fixes (#249)

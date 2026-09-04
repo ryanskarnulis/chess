@@ -613,6 +613,49 @@ def test_a_setting_that_is_set_is_reportable(text):
     assert unverified_claims(text, CASUAL) == ()
 
 
+# A *change* of how much gets said is its own claim, and the live value cannot
+# settle it: "more detail from now on" names no level. What settles it is
+# whether the turn moved the setting, so the fact is the narrower
+# `settings_changed`. Twice in the 2026-09-04 walkthrough the model answered
+# "talk more" by narrating the change and never calling `set_verbosity`; the
+# setting stayed `low` on disk and the next turn was as terse as the last.
+
+TALKED_MORE = VerifiedFacts(
+    settings={"verbosity": "high"}, settings_changed=frozenset({"verbosity"})
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Alright, more detail from now on.",
+        "Talking more from here.",
+        "Fewer words from me.",
+        "Going chattier.",
+        "You'll get more of the breakdown.",
+    ],
+)
+def test_a_narrated_verbosity_change_needs_the_call(text):
+    assert "verbosity_change" in unverified_claims(text, VerifiedFacts())
+    assert unverified_claims(text, TALKED_MORE) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A question and a condition — the shared hedges, doing their job.
+        "Want me to talk more?",
+        "If you want more detail, just ask.",
+        # "More" of something that is not the talking.
+        "e4 gives you more space.",
+        "That rook is doing more work than your queen.",
+        "Two more moves and this is over.",
+    ],
+)
+def test_talk_that_is_not_a_verbosity_change_is_not_a_claim(text):
+    assert unverified_claims(text, VerifiedFacts()) == ()
+
+
 @pytest.mark.parametrize(
     "text",
     [

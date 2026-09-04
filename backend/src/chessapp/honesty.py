@@ -180,6 +180,14 @@ class VerifiedFacts:
     because a level board is itself a claimable fact ("we're dead even") and
     the guard fails closed on evidence, never on a default that happens to
     read as one.
+
+    `settings` is the live value of each setting; `settings_changed` is the
+    narrower fact of which ones a tool actually moved *this turn*. They answer
+    different claims and only one of them can answer the second: "verbosity is
+    high" is true whenever it is high, whoever set it and whenever, while
+    "alright, more detail from now on" names no level at all and is true only
+    if the turn really changed one. Announcing a change that never happened is
+    the whole of walkthrough #3.
     """
 
     ended: bool = False
@@ -192,6 +200,7 @@ class VerifiedFacts:
     moves_by_opponent: frozenset[str] = frozenset()
     saved: bool = False
     settings: Mapping[str, str] = field(default_factory=dict)
+    settings_changed: frozenset[str] = frozenset()
     numbers: frozenset[str] = frozenset()
     material: tuple[int, ...] = ()
 
@@ -357,6 +366,33 @@ _VERBOSITY = re.compile(
     r"""
     \b verbosity \b [^.!?]{0,16}? \b (?P<value> low | normal | high )\b
     | \b (?P<value_b> low | normal | high ) \s+ verbosity \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# The *change* the value class cannot see. Nobody asks for "verbosity high" —
+# they say "talk more", and the answer that came back twice in the 2026-09-04
+# walkthrough narrated the change without calling the tool, leaving the
+# setting `low` on disk and the next turn as terse as the one before. Naming
+# no level, the sentence has nothing to check against the live value; what
+# settles it is whether the turn actually moved the setting.
+#
+# Two halves in either order, built the way the material class is: a
+# direction, and the thing being measured, which is the talking. Neither half
+# alone is a claim — "more space" is a position and "the breakdown" is a noun
+# — and the few words carrying both halves at once get their own branch.
+_TALK = (
+    r"(?: talk | talking | chat | chatter | say | saying | detail | details "
+    r"| breakdown | commentary | words | rambling | explanation )"
+)
+_MORE_OR_LESS = r"(?: more | less | fewer | longer | shorter )"
+
+_VERBOSITY_CHANGE = re.compile(
+    rf"""
+    \b (?: chattier | quieter | wordier | briefer | terser
+          | (?: more | less ) \s+ talkative )\b
+    | \b {_MORE_OR_LESS} \b [^.!?]{{0,20}}? \b {_TALK} \b
+    | \b {_TALK} \b [^.!?]{{0,20}}? \b {_MORE_OR_LESS} \b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -634,6 +670,17 @@ _CLAIM_CLASSES = (
     _ClaimClass("voice", _VOICE, _setting_is("voice")),
     _ClaimClass("difficulty", _DIFFICULTY, _setting_is("difficulty")),
     _ClaimClass("verbosity", _VERBOSITY, _setting_is("verbosity")),
+    # Reads no tense, for the ending class's reason: a promise about how much
+    # will be said from here *is* the claim that the setting moved, and the
+    # only thing that can make it true is the call. "Want me to talk more?"
+    # and "if you want more detail" are a question and a condition, which the
+    # shared hedges take out already.
+    _ClaimClass(
+        "verbosity_change",
+        _VERBOSITY_CHANGE,
+        lambda match, facts: "verbosity" in facts.settings_changed,
+        hedges=None,
+    ),
     _ClaimClass("evaluation", _EVALUATION, _number_reported),
     _ClaimClass("material", _MATERIAL, _material_matches),
 )

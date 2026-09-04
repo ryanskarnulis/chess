@@ -94,22 +94,24 @@ dispatches — never a narrated fake game-over), `advice_is_engine_backed`
 ("what should I play here?" must consult `get_best_moves`, mutate nothing, and
 name only tool-reported moves), `advice_capture_survives_guard` (the same ask
 in a position where the best move is a *capture* — the honesty guard must not
-eat the answer), and the long-transcript family `long_resume` /
+eat the answer), `verbosity_up_from_low` ("talk more" from `low` must call
+`set_verbosity`, not just sound chattier), and the long-transcript family
+`long_resume` /
 `long_resign` / `long_capture`, each at three conditions (fresh, live_like,
 poisoned) — the same behaviors under a real 20-turn conversation, because
 fresh-conversation passes hid live failures.
 
 ## Current baseline
 
-**Run 2026-09-04 on the advice-capture guard fix (#250): 24 passed in a single
-run, 3 m 50 s, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE, infra 0.**
+**Run 2026-09-04 on the verbosity fix (#252): 25 passed in a single run,
+4 m 25 s, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE, infra 0.**
 `long_capture` 5/5 ×3 (release blocker), `undo_and_replace` 5/5 (schema
 tripwire), costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1,
-`plain_move` 3). First baseline for `advice_capture_survives_guard`: 5/5, all
-samples `trajectory=[get_best_moves(n=3)]`, no mutation, nothing guarded.
+`plain_move` 3). First baseline for `verbosity_up_from_low`: 5/5.
 
-Previous: 2026-09-01 on the hints-retirement build (#245), 23 passed, 3 m 18 s,
-all 5/5 — including the first baseline for `advice_is_engine_backed`.
+Previous: 2026-09-04 on the advice-capture guard fix (#250), 24 passed,
+3 m 50 s, all 5/5 — first baseline for `advice_capture_survives_guard`.
+Before that, 2026-09-01 on the hints-retirement build (#245), 23 passed.
 
 ## Standing results
 
@@ -134,6 +136,17 @@ all 5/5 — including the first baseline for `advice_is_engine_backed`.
 - **Honesty-guard false-positive sweep** (2026-07-25): `unverified_claims`
   over the 46 recorded live turns guards exactly the two known lies (2/46).
   Re-run the sweep when a fresh trace corpus exists.
+- **The harness does not reproduce the verbosity miss** (2026-09-04). Live,
+  "talk more" was answered in prose twice and `set_verbosity` was never
+  called. `verbosity_up_from_low` scores **5/5 on the pre-fix build as well as
+  the fixed one**, and so does a long-transcript variant at all three
+  conditions (fresh / live_like / poisoned, measured and then dropped rather
+  than kept as three green scenarios that measure nothing). Same shape as
+  `resign_never_pretends`: length is not the condition, and self-poisoning is
+  not either. So the scenario is a regression lock, not a reproduction, and
+  what actually catches the failure at runtime is the guard's
+  `verbosity_change` class — a narrated change over a turn that called no
+  setter is suppressed.
 - **A guard false positive is measurable** (2026-09-04): run
   `advice_capture_survives_guard` against the pre-#250 guard and it reproduces
   the live suppression verbatim — 4/5, the failing sample "Take the knight on
