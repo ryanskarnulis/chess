@@ -13,10 +13,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Next
 
-- [ ] **Board click hit-testing offset half a square up** (walkthrough #2,
-      Firefox desktop 100%): top half of a square selects the piece below.
-      Reproduce in Playwright with `elementFromPoint`; check Chromium; likely
-      the measured rect vs rendered squares after #240/#241/#243.
 - [ ] **"talk more" never sets verbosity** (walkthrough #3): model claims the
       change, `set_verbosity` not called, guard misses the claim. Fix on the
       model side (tool description, current setting in context) and have the
@@ -80,6 +76,10 @@ Record: `docs/qa-walkthrough-2026-09-04.md`. Small items, unprioritized:
 - [ ] Illegal-for-every-piece requests answered as ambiguous, not illegal
 - [ ] Illegal drags snap back silently — decide if that wants a message
 - [ ] Desktop stacked column: too much dead space
+- [ ] The board jumps ~112px down the page when a multi-line reply lands —
+      the bubble above it grows. Clicks survive it now (#251), but a board
+      that moves under the cursor is its own annoyance; fixing the layout
+      would also make the re-measure belt-and-braces rather than load-bearing
 - [ ] "Switch To White" Title Case vs sentence-case aria label
 - [ ] Not exercised: 40+ move game late-tool reliability; exported PGN in an
       external viewer; Android Chrome hands-free
