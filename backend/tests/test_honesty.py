@@ -268,6 +268,61 @@ def test_a_possessive_does_not_turn_talk_into_a_claim(text):
     assert unverified_claims(text, NOTHING) == ()
 
 
+# Advice, which is the other half of what Glitch says about captures and the
+# half that used to die. The player asks "what should I play?", the engine says
+# Rxd1, and every natural way to hand that over reads like a capture report to
+# a class that cannot tell an imperative from a past tense. All three such
+# turns in the 2026-09-04 walkthrough were replaced with "Scratch that — I said
+# something the board doesn't back up."
+#
+# Two things tell advice from a report and both come off the board: the verb is
+# a bare stem (an imperative or an infinitive reports nothing), or the sentence
+# hangs on a move that is playable but that nobody has played.
+
+ROOK_IS_HANGING = VerifiedFacts(moves=frozenset({"Rxd1", "Rd8", "Kf8"}))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The two strings the walkthrough actually lost, verbatim.
+        "Take the rook. Rxd1 is the move, bro.",
+        "Take that rook on d1. It's clean.",
+        # The same advice in the tense the verb list cannot rule out.
+        "Rxd1 takes the rook. Free material.",
+        "Rxd1 and that rook is gone.",
+        "Grab the queen while it's sitting there.",
+    ],
+)
+def test_advice_about_a_capture_is_not_a_report(text):
+    assert unverified_claims(text, ROOK_IS_HANGING) == ()
+
+
+def test_a_played_move_still_reports_its_capture():
+    """The unplayed-move reading is about advice, not about SAN: once the move
+    is one somebody played, the sentence is a report again and the record
+    decides."""
+    played_rxd1 = VerifiedFacts(
+        moves=frozenset({"Rxd1"}), moves_by_opponent=frozenset({"Rxd1"})
+    )
+    assert "capture" in unverified_claims("Rxd1 takes the rook.", played_rxd1)
+
+
+def test_a_subject_outranks_the_advice_reading():
+    """A person is not a line. "I took your queen with Qxe2" names a move that
+    was never played and is still a claim that an event happened — which is
+    exactly the shape of the mistake narration that invents a victim."""
+    available = VerifiedFacts(moves=frozenset({"Qxe2"}))
+    assert "capture" in unverified_claims("I took your queen with Qxe2.", available)
+
+
+def test_a_false_past_tense_capture_survives_the_loosening():
+    """The class still exists. Advice got quieter; the invention did not."""
+    assert "capture" in unverified_claims("Took your rook.", ROOK_IS_HANGING)
+    assert "capture" in unverified_claims("Your rook is gone.", ROOK_IS_HANGING)
+    assert "capture" in unverified_claims("I grabbed the rook.", ROOK_IS_HANGING)
+
+
 @pytest.mark.parametrize(
     "text",
     [
