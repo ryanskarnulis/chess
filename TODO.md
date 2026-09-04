@@ -13,10 +13,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Next
 
-- [ ] **"talk more" never sets verbosity** (walkthrough #3): model claims the
-      change, `set_verbosity` not called, guard misses the claim. Fix on the
-      model side (tool description, current setting in context) and have the
-      guard catch a narrated change with no matching call. No phrase list.
 - [ ] **Container ignores SIGTERM** (walkthrough #4): `compose stop` runs the
       full 10 s grace then SIGKILL; process outlives uvicorn shutdown (engine
       child?); health stays green while the API is down.

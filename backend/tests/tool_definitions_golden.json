@@ -299,7 +299,7 @@
   },
   {
     "function": {
-      "description": "How chatty the agent's commentary is.",
+      "description": "Set how much the app says back: low is one short line, normal is\nthe default, high adds a remark on the position. This is the only way\nto change it \u2014 the setting persists across turns and the player owns\nit, so any ask to talk more or less, be briefer, chattier, or quieter\nis this call and not a change of style in one reply.",
       "name": "set_verbosity",
       "parameters": {
         "additionalProperties": false,

@@ -310,13 +310,20 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     a save sitting on disk (the self-poisoning bug, trace review 2026-07-13).
     Read fresh every turn, so a game saved this session is visible the next.
 
-    `settings` is here for that same reason. Verbosity re-resolves into the
-    system prompt per command, but difficulty and voice-output appeared
-    nowhere in the agent's per-turn view, so "how hard am I playing?" could only
-    be answered from stale conversation text — the self-poisoning shape again.
-    Kept small (it ships in the prompt every turn on a 12B): only the one
-    difficulty field `Settings` actually has set, so the block can never imply
-    two difficulties are in force at once.
+    `settings` is here for that same reason: difficulty, voice output and
+    verbosity appeared nowhere in the agent's per-turn view, so "how hard am I
+    playing?" could only be answered from stale conversation text — the
+    self-poisoning shape again. Kept small (it ships in the prompt every turn
+    on a 12B): only the one difficulty field `Settings` actually has set, so
+    the block can never imply two difficulties are in force at once.
+
+    Verbosity was the last one out, and its absence cost a real behavior
+    (walkthrough #3): the narrator's prompt carries a *layer* for the current
+    verbosity, so the model was told how to talk but never what the setting
+    was. With no setting in view, "talk more" is a note about style that the
+    turn can satisfy by talking more — which it did, twice, while the setting
+    stayed `low` on disk and the next turn was terse again. A player-owned
+    setting the model cannot see is one it cannot be asked to change.
     """
     session = ctx.session
     return {
@@ -336,7 +343,7 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
 
 def _agent_settings_dict(ctx: ToolContext) -> dict[str, Any]:
     """The live settings the brain is shown: difficulty (exactly the one field
-    of tier / skill_level / elo that is set) and voice output."""
+    of tier / skill_level / elo that is set), voice output, and verbosity."""
     settings = ctx.settings
     difficulty: dict[str, Any] = {}
     for field in ("tier", "skill_level", "elo"):
@@ -344,7 +351,11 @@ def _agent_settings_dict(ctx: ToolContext) -> dict[str, Any]:
         if value is not None:
             difficulty = {field: value}
             break
-    return {"difficulty": difficulty, "voice_output": settings.voice_output}
+    return {
+        "difficulty": difficulty,
+        "voice_output": settings.voice_output,
+        "verbosity": settings.verbosity,
+    }
 
 
 def _narrator_state_dict(ctx: ToolContext) -> dict[str, Any]:
@@ -777,12 +788,38 @@ def _verified_facts(
             for r in tool_results
         ),
         settings=settings,
+        settings_changed=frozenset(_settings_changed(tool_results)),
         numbers=frozenset(_analysis_numbers(tool_results)),
         # Board truth, and the one fact here no tool has to have run for: who
         # is ahead is a piece count, so it is always available on every board
         # the turn held — including the one the reaction was written from.
         material=tuple(dict.fromkeys(board.material_balance() for board in boards)),
     )
+
+
+# Which setting each setter owns, for the fact that the live value cannot
+# carry: *that it just changed*. Keyed by tool rather than by result field so
+# a setter that reports nothing still counts as having moved its setting.
+_SETTERS = {
+    "set_verbosity": "verbosity",
+    "set_voice_output": "voice",
+    "set_difficulty": "difficulty",
+}
+
+
+def _settings_changed(tool_results: Sequence[dict[str, Any]]) -> set[str]:
+    """The settings a tool really moved this turn.
+
+    The live value answers "voice output is on"; only this answers "I'm
+    talking more from here", which names no value and is true only of a turn
+    that changed one. Walkthrough #3: the model narrated exactly that twice
+    and the setting never moved.
+    """
+    return {
+        _SETTERS[r["name"]]
+        for r in tool_results
+        if r["name"] in _SETTERS and r["result"].get("ok") is True
+    }
 
 
 def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
@@ -2091,14 +2128,21 @@ def create_app(
             # whatever prose carries it, and with hints mode retired the only
             # license is evidence — a suggestion must trace to an analysis
             # tool's own report, never to the model's head. It only fires on
-            # a turn that changed nothing — reacting to a move just played is
-            # description, not advice — and never over the moves an analysis
-            # actually reported this turn, which are verified facts. Those
-            # moves, and only those, come off the list the guard checks.
+            # a turn that left the *board* alone — reacting to a move just
+            # played is description, not advice — and never over the moves an
+            # analysis actually reported this turn, which are verified facts.
+            # Those moves, and only those, come off the list the guard checks.
+            #
+            # The board, specifically, and not the agent view: a turn that
+            # changed a *setting* changed nothing about what the player should
+            # play, so a setter must not buy an exemption. It used to, for
+            # every setter whose value the view carried — `set_verbosity` was
+            # only ever the exception because verbosity was missing from that
+            # view, which is the very gap walkthrough #3 came out of.
             unlicensed = set(ctx.session.legal_moves()) - _reported_moves(tool_results)
             if (
                 not guarded
-                and agent_state == before
+                and ctx.board_version == version_before
                 and names_a_legal_move(commentary, unlicensed)
             ):
                 logger.warning(

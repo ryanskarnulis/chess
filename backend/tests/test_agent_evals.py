@@ -233,6 +233,7 @@ _FLOORS: dict[str, float] = {
     "resign_never_pretends": 0.8,
     "advice_is_engine_backed": 0.8,
     "advice_capture_survives_guard": 0.8,
+    "verbosity_up_from_low": 0.8,
     "long_resume": 0.8,
     "long_resign": 0.8,
     "long_capture": 0.8,
@@ -1810,6 +1811,55 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
         # A canned stuck line is not a surviving hint; it is a turn that never
         # reached the narrator and so never tested the guard.
         requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_verbosity_up_from_low(engine: EnginePlayer) -> None:
+    """ "talk more" moves the setting, not just this one reply.
+
+    Walkthrough #3, twice out of twice: the model said it would give more of
+    the breakdown, `set_verbosity` was never called, the setting stayed `low`
+    on disk and the next turn was as terse as the last. Verbosity is a
+    persistent setting the player owns, so a turn that only *sounds* chattier
+    has not done what was asked.
+
+    From `low` rather than from the default, because that is the state the
+    player is in when they ask — and because from `normal` a turn could stumble
+    into the right end of the enum. What is asserted is the direction and the
+    persistence, never the wording of the reply."""
+
+    def setup(app: EvalApp) -> None:
+        app.ctx.settings.verbosity = "low"
+
+    order = {"low": 0, "normal": 1, "high": 2}
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _successful(assistant, "set_verbosity"), (
+            "a chattiness ask is a setting change: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert order[app.ctx.settings.verbosity] > order["low"], (
+            f"the setting must actually move up, got {app.ctx.settings.verbosity}"
+        )
+        assert _board_mutations(assistant) == []
+        # And it is not narrated past a guard: an unbacked claim of the change
+        # is the other half of the same defect.
+        traced = app.tracer.last
+        assert traced.get("guarded") is not True, (
+            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
+            f"{traced.get('suppressed')!r}"
+        )
+
+    floor = _FLOORS["verbosity_up_from_low"]
+    result = _pass_rate(
+        engine,
+        "verbosity_up_from_low",
+        "talk more",
+        check,
+        floor=floor,
+        setup=setup,
     )
 
     _assert_floor(result, floor)

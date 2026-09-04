@@ -1343,7 +1343,11 @@ def build_registry(
 
     @registry.tool()
     def set_verbosity(verbosity: Literal["low", "normal", "high"]) -> dict[str, Any]:
-        "How chatty the agent's commentary is."
+        """Set how much the app says back: low is one short line, normal is
+        the default, high adds a remark on the position. This is the only way
+        to change it — the setting persists across turns and the player owns
+        it, so any ask to talk more or less, be briefer, chattier, or quieter
+        is this call and not a change of style in one reply."""
         ctx.settings.verbosity = verbosity
         return {"ok": True, "verbosity": verbosity}
 

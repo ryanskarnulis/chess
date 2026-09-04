@@ -165,14 +165,18 @@ def test_saved_games_is_read_fresh_every_turn(tmp_path):
 
 
 def test_brain_is_told_the_live_settings():
-    """Difficulty and voice-output are facts the app holds. Without them in the
-    state block the model's only source for "how hard am I playing?" is its own
-    past prose — the same self-poisoning shape as `saved_games`."""
+    """Difficulty, voice-output and verbosity are facts the app holds. Without
+    them in the state block the model's only source for "how hard am I
+    playing?" is its own past prose — the same self-poisoning shape as
+    `saved_games`. Verbosity is there for a second reason (walkthrough #3): a
+    setting the model cannot see is one it cannot be asked to change, and
+    "talk more" was answered by talking more while the setting stayed low."""
     client, brain = make_client(AgentResponse(text="hi"))
     client.post("/api/command", json={"text": "how hard are you playing?"})
     assert brain.calls[0][0]["settings"] == {
         "difficulty": {"tier": DEFAULT_TIER},
         "voice_output": False,
+        "verbosity": "normal",
     }
 
 
@@ -207,12 +211,14 @@ def test_settings_are_read_fresh_every_turn():
     assert brain.calls[0][0]["settings"] == {
         "difficulty": {"tier": DEFAULT_TIER},
         "voice_output": False,
+        "verbosity": "normal",
     }
 
     client.post("/api/command", json={"text": "how hard are you playing?"})
     assert brain.calls[1][0]["settings"] == {
         "difficulty": {"skill_level": 7},
         "voice_output": True,
+        "verbosity": "normal",
     }
 
 
@@ -1289,6 +1295,39 @@ def test_a_guarded_turn_with_no_reply_owed_says_only_the_correction():
     body = client.post("/api/command", json={"text": "how's it look?"}).json()
 
     assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
+
+
+def test_a_narrated_verbosity_change_without_the_call_is_guarded():
+    """Walkthrough #3: "talk more" answered by talking more. The setting stayed
+    `low` on disk, the next turn was terse again, and the player was told
+    otherwise. The live value cannot catch it — the sentence names no level —
+    so the fact is whether the turn actually called the setter."""
+    ctx = ToolContext(session=GameSession())
+    ctx.settings.verbosity = "low"
+    app, _ = scripted_app(ctx, AgentResponse(text="Alright, more detail from now on."))
+
+    body = TestClient(app).post("/api/command", json={"text": "talk more"}).json()
+
+    assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
+    assert ctx.settings.verbosity == "low", "and the setting really did not move"
+
+
+def test_a_narrated_verbosity_change_with_the_call_stands():
+    """The same words, over a turn that did the thing."""
+    ctx = ToolContext(session=GameSession())
+    ctx.settings.verbosity = "low"
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Alright, more detail from now on.",
+            tool_calls=(ToolCall(name="set_verbosity", args={"verbosity": "high"}),),
+        ),
+    )
+
+    body = TestClient(app).post("/api/command", json={"text": "talk more"}).json()
+
+    assert body["commentary"] == "Alright, more detail from now on."
+    assert ctx.settings.verbosity == "high"
 
 
 def test_a_move_turn_is_remembered_by_the_reaction_alone():
