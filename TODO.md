@@ -13,10 +13,29 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Next
 
-- [ ] **Phase-4 manual walkthrough** (checklist below) — never done
-      systematically; the UI and turn architecture have both been rebuilt
-      since anything was last exercised by hand. Trace it
-      (`CHESSAPP_TRACE_PATH`) to double as the fresh trace baseline.
+- [ ] **Guard: advice captures read as done captures** (walkthrough #1):
+      "Take the rook. Rxd1 is the move." is suppressed because bare `take`
+      is a done-verb in `honesty.py` and `_CAPTURE_HEDGES` has no imperative
+      hedge. Every hint whose best move is a capture dies. Hedge advice
+      phrasing and/or verify against the suggested move when the turn
+      called `get_best_moves`; regression eval on the traced strings.
+- [ ] **Board click hit-testing offset half a square up** (walkthrough #2,
+      Firefox desktop 100%): top half of a square selects the piece below.
+      Reproduce in Playwright with `elementFromPoint`; check Chromium; likely
+      the measured rect vs rendered squares after #240/#241/#243.
+- [ ] **"talk more" never sets verbosity** (walkthrough #3): model claims the
+      change, `set_verbosity` not called, guard misses the claim. Fast path
+      for verbosity phrases; guard pattern for "more of the breakdown".
+- [ ] **Container ignores SIGTERM** (walkthrough #4): `compose stop` runs the
+      full 10 s grace then SIGKILL; process outlives uvicorn shutdown (engine
+      child?); health stays green while the API is down.
+- [ ] **Mistake narration names the wrong captured piece** (walkthrough #5):
+      "taken that queen with Qxe2" for a pawn capture. Put the captured piece
+      in `analyze_last_move`'s result; guard piece names in capture claims.
+- [ ] **Free-text answers to a pending confirmation** (walkthrough #6): "just
+      do it" after a resign question does nothing. Unparsed answers go to the
+      model to decide confirm/cancel through the same confirm path.
+      Supersedes the "pending-proposal state" someday item.
 - [ ] **Glitch difficulty** (PCC #332): a tier where the LLM picks its own
       moves instead of Stockfish. Design note first — it amends BRIEF's
       "Stockfish is the move source" stance; the coordinator still owns the
@@ -47,8 +66,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Someday / blocked
 
-- [ ] Pending-proposal state for confirmations — only if the bare-"yes"
-      dead-end recurs in live games.
 - [ ] Merge `set_verbosity`/`set_voice_output` into one `set_option` — only
       if token pressure ever shows; decide with evals.
 - [ ] GBNF grammar-constrained decoding — only if tool-call reliability
@@ -58,61 +75,16 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
       actuation is programmatically controllable before any design work;
       until then `control_physical_board` stays a tool seam only.
 
-## Phase-4 manual walkthrough
+## Walkthrough leftovers (2026-09-04)
 
-Go through this at the desk, note anything that feels wrong, turn notes into
-backlog items. Most items have only ever been exercised by automated tests.
+Record: `docs/qa-walkthrough-2026-09-04.md`. Small items, unprioritized:
 
-### Setup / stack
-- [ ] `docker compose up` from cold works against the voice (`../speech/`)
-      and brain (`../llama-swap/`) stacks
-- [ ] Reachable from another device on the home network
-- [ ] Basic gameplay fully offline (network unplugged)
-- [ ] Full game vs Stockfish with the agent off (`CHESSAPP_AGENT=off`)
-
-### Core gameplay (board UI)
-- [ ] Complete game to checkmate; board renders correctly throughout
-- [ ] Illegal drags rejected without corrupting state
-- [ ] Castling (both sides), en passant, promotion (incl. underpromotion)
-- [ ] Check / checkmate / stalemate / draws detected and surfaced
-- [ ] Captured pieces update correctly
-- [ ] New game: random side, board flips as black, "Switch to …" until the
-      first move, undo takes back the full exchange
-- [ ] The stacked layout reads well on a desktop monitor too
-
-### Text agent
-- [ ] Free-form moves land as intended ("knight to f3", "Nf3", "castle")
-- [ ] Ambiguous input gets a clarifying question, not a guess
-- [ ] Illegal requests get a clear rejection, board unchanged
-- [ ] `undo` / `resign` / `new_game` by natural language
-- [ ] Save mid-game, restart app, resume
-- [ ] Exported PGN loads in an external viewer
-- [ ] Reads: "what's the position?", "legal moves?", "history?", "captures?"
-- [ ] Reaction latency feels acceptable
-- [ ] Long game: tool reliability holds late
-
-### Analysis & hints
-- [ ] "What was my mistake?" gives a sensible answer
-- [ ] A hint arrives when asked ("what should I play?") and is the engine's
-      suggestion; nothing volunteered unasked (hints mode retired 2026-09-01)
-- [ ] "Who's winning?" gives a coherent eval
-- [ ] Post-game review: classifications and accuracy plausible; survives
-      dismiss/reopen; "Review unavailable" (not a crash) with engine off;
-      Copy PGN works
-- [ ] Analysis and whole-game review latency tolerable
-
-### Personality & settings
-- [ ] Glitch's tone comes through (tone only — never strength or settings)
-- [ ] Difficulty changes are real and survive restart; UI matches the engine
-- [ ] Verbosity and voice-output switchable mid-game by speech and persist
-- [ ] Verbosity levels actually differ
-
-### Voice
-- [ ] Spoken moves transcribe and execute (noisy vs quiet room)
-- [ ] Hands-free mode on a real phone — iOS verified 2026-07-11; Android
-      Chrome still unverified; feel checks on both (VAD endpointing,
-      half-duplex, autoplay unlock, exit tap)
-- [ ] STT latency acceptable in the play loop
-- [ ] TTS intelligible, right voice, reasonable latency
-- [ ] Voice output on/off actually mutes/unmutes
-- [ ] Misrecognized speech fails safe (question, not a wrong move)
+- [ ] "what's the position?" answers with an eval, not a description
+- [ ] PGN by chat: fill the `?` headers, add a copy affordance
+- [ ] "without changing the difficulty" was overridden by a difficulty change
+- [ ] Illegal-for-every-piece requests answered as ambiguous, not illegal
+- [ ] Illegal drags snap back silently — decide if that wants a message
+- [ ] Desktop stacked column: too much dead space
+- [ ] "Switch To White" Title Case vs sentence-case aria label
+- [ ] Not exercised: 40+ move game late-tool reliability; exported PGN in an
+      external viewer; Android Chrome hands-free
