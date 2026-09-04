@@ -37,8 +37,13 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   holds state; Stockfish calculates; the model only routes language to tools
   and must never be able to corrupt the game. The app plays a full game with
   the LLM off (`CHESSAPP_AGENT=off`).
-- **Prefer code over prompts.** When correct behavior is derivable from state,
-  derive it — a prompt rule holds ~half the time, a code rule always.
+- **Code owns truth and safety; the model owns understanding.**
+  Deterministic code decides legality, what the settings actually are, when a
+  destructive op may run, and whether a claim in the commentary is backed by
+  the board. Working out what the player *meant* is the model's job. So no
+  regex fast paths or literal parsers for language, and when a guard fires on
+  a correct answer, loosen the guard rather than script the answer. Glitch
+  should feel alive, not canned.
 - **Personality is tone only** — never move choice, difficulty, or settings.
   The global Glitch text is vendored from `../agent-standard/`; fix drift by
   re-copying, never by editing the copy.
