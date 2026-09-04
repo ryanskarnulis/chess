@@ -198,10 +198,19 @@ class VerifiedFacts:
 
 _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
 
-# The verbs that report a capture as done. Deliberately missing: "taken", which
-# is nearly always passive and predictive ("that knight is going to get taken").
+# The verbs that report a capture as done — inflected forms only. The bare
+# stem is missing on purpose, and so is "taken": neither reports anything. A
+# bare "take" is an imperative ("Take the rook."), an infinitive ("try to take
+# the rook") or a subjunctive, which is how every piece of *advice* about a
+# capture is phrased — and advice is what the player asked for. "Taken" is
+# nearly always passive and predictive ("that knight is going to get taken").
+#
+# Most bare stems were already absent ("capture", "snatch", "nab", "eat"); the
+# two that were not cost the app every hint whose best move was a capture. All
+# three "what should I play?" turns of the 2026-09-04 walkthrough answered
+# "Take the rook. Rxd1 is the move." and all three were suppressed.
 _TAKE_VERBS = (
-    r"(?: took | takes | taking | take | grabbed | grabs | grabbing | grab "
+    r"(?: took | takes | taking | grabbed | grabs | grabbing "
     r"| captured | captures | capturing | snagged | snags | snatched | nabbed "
     r"| ate | eats | eating )"
 )
@@ -440,15 +449,37 @@ def _setting_is(key: str) -> Callable[[re.Match[str], VerifiedFacts], bool]:
     return lambda match, facts: facts.settings.get(key) == _matched_value(match)
 
 
+def _is_advice(sentence: str, facts: VerifiedFacts) -> bool:
+    """Whether the sentence hangs what it says on a move nobody has played.
+
+    The other half of the advice problem, for the tense the verb list cannot
+    rule out: "Rxd1 takes the rook" and "Rxd1 and that rook is gone" describe
+    what a *recommended* move would do, and the present tense is how anybody
+    describes a line. The move itself is the tell — it is one the turn knows
+    about (legal now, or reported by an analysis) and one that no side has
+    actually played — and the board already holds both halves of that.
+
+    Weaker than an explicit subject, which is why `_capture_happened` reads
+    this only after "I"/"you" have had their say: a person is not a line, and
+    "I took your queen with Qxe2" stays a claim about an event.
+    """
+    played = facts.moves_by_player | facts.moves_by_opponent
+    return any(
+        _names(match.group(0), facts.moves) and not _names(match.group(0), played)
+        for match in _SAN_CLAIM.finditer(sentence)
+    )
+
+
 def _capture_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
     """Whether the board's capture record backs the capture this sentence says.
 
     Direction first, and by the strongest evidence the sentence carries: an
-    explicit subject decides alone, and only when there is none does the
-    possessive get a say — "took *your* bishop" is Glitch taking the player's
-    piece, "*my* bishop is gone" is the player taking his. With neither, the
-    text pins nothing ("a knight came off") and either side's record is enough,
-    because the guard fails permissive on real ambiguity.
+    explicit subject decides alone, then advice about an unplayed move, and
+    only after those does the possessive get a say — "took *your* bishop" is
+    Glitch taking the player's piece, "*my* bishop is gone" is the player
+    taking his. With none of them, the text pins nothing ("a knight came off")
+    and either side's record is enough, because the guard fails permissive on
+    real ambiguity.
     """
     piece = match.group("piece") or match.group("gone_piece")
     # "horse" is a knight; the board only knows the one word for it.
@@ -458,6 +489,8 @@ def _capture_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
         return name in facts.captured_by_opponent
     if subject == "you":
         return name in facts.captured_by_player
+    if _is_advice(match.string, facts):
+        return True
     owner = (match.group("owner") or match.group("gone_owner") or "").lower()
     if owner == "your":  # the speaker is the opponent, so the piece was his to take
         return name in facts.captured_by_opponent

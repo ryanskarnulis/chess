@@ -13,12 +13,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Next
 
-- [ ] **Guard: advice captures read as done captures** (walkthrough #1):
-      "Take the rook. Rxd1 is the move." is suppressed because bare `take`
-      is a done-verb in `honesty.py` and `_CAPTURE_HEDGES` has no imperative
-      hedge. Every hint whose best move is a capture dies. Hedge advice
-      phrasing and/or verify against the suggested move when the turn
-      called `get_best_moves`; regression eval on the traced strings.
 - [ ] **Board click hit-testing offset half a square up** (walkthrough #2,
       Firefox desktop 100%): top half of a square selects the piece below.
       Reproduce in Playwright with `elementFromPoint`; check Chromium; likely

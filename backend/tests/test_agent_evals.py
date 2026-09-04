@@ -232,6 +232,7 @@ _FLOORS: dict[str, float] = {
     "resume_not_denied": 0.8,
     "resign_never_pretends": 0.8,
     "advice_is_engine_backed": 0.8,
+    "advice_capture_survives_guard": 0.8,
     "long_resume": 0.8,
     "long_resign": 0.8,
     "long_capture": 0.8,
@@ -1752,6 +1753,62 @@ def test_eval_advice_is_engine_backed(engine: EnginePlayer) -> None:
         # canned stuck line — the feature did not work, and the naming check
         # above would pass vacuously over a canned line. Narrator-less samples
         # fail rather than score.
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
+    """A hint whose best move is a *capture* reaches the player.
+
+    The pair to `advice_is_engine_backed`: that one measures whether the model
+    earns the right to give advice, this one whether the pipeline lets the
+    advice out. They are different failures with the same symptom — no hint —
+    and the walkthrough hit the second one three times out of three (2026-09-04
+    defect 1). The engine said Rxd1, Glitch said "Take the rook. Rxd1 is the
+    move.", and the honesty guard read the imperative as a completed capture,
+    found no rook in the board's capture record and replaced the whole answer
+    with "Scratch that — I said something the board doesn't back up."
+
+    So the position is one where the recapture is the move and nothing else is
+    close: after 1.e4 d5 2.Nc3 dxe4, `Nxe4` is a pawn back and every candidate
+    the engine names is a capture. Whatever Glitch says about it, the guard
+    must not eat it.
+
+    Scored on the pipeline's verdict rather than on wording — the trace record
+    says whether the guard fired, and which class — because *how* he offers a
+    capture is exactly the thing the suite must not pin."""
+
+    def setup(app: EvalApp) -> None:
+        for san in ("e4", "d5", "Nc3", "dxe4"):
+            assert app.ctx.session.submit_move(san).legal
+        # The premise, asserted rather than assumed: a scenario whose best move
+        # quietly stopped being a capture would pass while measuring nothing.
+        best = app.ctx.engine.get_best_moves(app.ctx.session, n=1)[0]
+        assert "x" in best.san, f"the premise needs a capture, got {best.san}"
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        traced = app.tracer.last
+        assert traced.get("guarded") is not True, (
+            "the honesty guard ate a correct hint "
+            f"({','.join(traced.get('guarded_claims') or ())}): "
+            f"{traced.get('suppressed')!r}"
+        )
+        # And the player got advice, not an apology: the canned replacements
+        # all open the same way, and none of them is an answer to the ask.
+        assert "scratch that" not in assistant["content"].lower()
+
+    floor = _FLOORS["advice_capture_survives_guard"]
+    result = _pass_rate(
+        engine,
+        "advice_capture_survives_guard",
+        "what should I play here?",
+        check,
+        floor=floor,
+        setup=setup,
+        # A canned stuck line is not a surviving hint; it is a turn that never
+        # reached the narrator and so never tested the guard.
         requires_narrator=True,
     )
 

@@ -6,6 +6,8 @@ before 2026-09-01 are in this file's git history; measurement records live in
 
 ## 2026-09-04
 
+- [x] Guard stops eating correct hints (walkthrough #1) — a bare "take" is advice, not a report, and capture talk hung on an unplayed move describes a line; new eval `advice_capture_survives_guard` 5/5, full gate 24 passed (#250)
+- [x] Design stance: code owns truth and safety, the model owns understanding — CLAUDE.md's "prefer code over prompts" rule amended before the walkthrough fixes (#249)
 - [x] Phase-4 manual walkthrough — first systematic hands-on pass, live deployment + phone, traced as the fresh baseline; 6 defects and 8 notes filed to TODO (`docs/qa-walkthrough-2026-09-04.md`)
 
 ## 2026-09-01

@@ -92,20 +92,24 @@ move, not the engine's), `play_as_black` (new game as black), `resume_not_denied
 (a save on disk is resumed, not denied), `resign_never_pretends` (a resignation
 dispatches — never a narrated fake game-over), `advice_is_engine_backed`
 ("what should I play here?" must consult `get_best_moves`, mutate nothing, and
-name only tool-reported moves), and the long-transcript family `long_resume` /
+name only tool-reported moves), `advice_capture_survives_guard` (the same ask
+in a position where the best move is a *capture* — the honesty guard must not
+eat the answer), and the long-transcript family `long_resume` /
 `long_resign` / `long_capture`, each at three conditions (fresh, live_like,
 poisoned) — the same behaviors under a real 20-turn conversation, because
 fresh-conversation passes hid live failures.
 
 ## Current baseline
 
-**Run 2026-09-01 on the hints-retirement build (#245): 23 passed in a single
-run, 3 m 18 s, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE, infra 0.**
+**Run 2026-09-04 on the advice-capture guard fix (#250): 24 passed in a single
+run, 3 m 50 s, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE, infra 0.**
 `long_capture` 5/5 ×3 (release blocker), `undo_and_replace` 5/5 (schema
 tripwire), costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1,
-`plain_move` 3). First baseline for `advice_is_engine_backed` (successor to
-`hints_off_no_advice`, retired with hints mode): 5/5, all samples the textbook
-`trajectory=[get_best_moves(n=3)]` turn.
+`plain_move` 3). First baseline for `advice_capture_survives_guard`: 5/5, all
+samples `trajectory=[get_best_moves(n=3)]`, no mutation, nothing guarded.
+
+Previous: 2026-09-01 on the hints-retirement build (#245), 23 passed, 3 m 18 s,
+all 5/5 — including the first baseline for `advice_is_engine_backed`.
 
 ## Standing results
 
@@ -130,3 +134,11 @@ tripwire), costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1,
 - **Honesty-guard false-positive sweep** (2026-07-25): `unverified_claims`
   over the 46 recorded live turns guards exactly the two known lies (2/46).
   Re-run the sweep when a fresh trace corpus exists.
+- **A guard false positive is measurable** (2026-09-04): run
+  `advice_capture_survives_guard` against the pre-#250 guard and it reproduces
+  the live suppression verbatim — 4/5, the failing sample "Take the knight on
+  e4. It's the cleanest move, bro." replaced by the canned correction. It
+  reproduces at *4/5*, which the floor still passes, so the hard spec for a
+  guard misfire stays the unit tests in `test_honesty.py`; the scenario is
+  there to price the misfire in live turns, which is the number the sweep
+  above cannot give.
