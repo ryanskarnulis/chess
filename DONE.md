@@ -4,6 +4,10 @@ Completed tasks, newest first, one line each. The full narratives for entries
 before 2026-09-01 are in this file's git history; measurement records live in
 `docs/agent-evals.md`.
 
+## 2026-09-04
+
+- [x] Phase-4 manual walkthrough — first systematic hands-on pass, live deployment + phone, traced as the fresh baseline; 6 defects and 8 notes filed to TODO (`docs/qa-walkthrough-2026-09-04.md`)
+
 ## 2026-09-01
 
 - [x] Docs clean slate: CLAUDE/TODO/DONE/BRIEF and the architecture docs cut to readable length; style-police prompt tests removed (rules are behavioral now — the eval gate, the guards)
