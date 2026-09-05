@@ -112,6 +112,43 @@ class Narration:
         return (self.latency_ms,)
 
 
+# How a reply to a pending confirmation question can read. Deliberately three
+# and not two: "actually, undo my last move instead" is neither a yes nor a no,
+# and reading it as either would answer a question the player has stopped
+# asking.
+CONFIRM = "confirm"
+CANCEL = "cancel"
+UNRELATED = "unrelated"
+
+
+@dataclass(frozen=True)
+class Answer:
+    """How the model read a reply to a pending destructive-op question.
+
+    The narrow seam behind walkthrough #6: "just do it" after a resign
+    question did nothing, because the only reader was a set of literal
+    affirmations. Understanding what the player meant is the model's job —
+    *acting* on it stays the pipeline's, which runs the armed op through the
+    same confirm path a bare yes takes, so the model still cannot reach a
+    destructive tool from here. All it returns is one of three words.
+
+    `verdict` defaults to `UNRELATED`, the answer that changes nothing: an
+    implementation that cannot reach the model, or one that has nothing to say,
+    must never land on `CONFIRM` by omission. The cost fields mirror
+    `Narration`'s so the trace accounts for this round trip like any other.
+    """
+
+    verdict: str = UNRELATED
+    model_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: int = 0
+
+    @property
+    def model_latencies_ms(self) -> tuple[int, ...]:
+        return (self.latency_ms,) if self.model_calls else ()
+
+
 @dataclass
 class _RunState:
     """The loop's accumulator: what has been called, what came back, what it cost."""
@@ -201,4 +238,23 @@ class Brain(Protocol):
         because the fast path is deliberately outside the loop; at verbosity=low
         even this is skipped for a canned confirmation, making a plain move
         zero-LLM."""
+        ...
+
+    def read_answer(self, question: str, text: str) -> Answer:
+        """Read a reply to a pending destructive-op question as one of
+        `CONFIRM` / `CANCEL` / `UNRELATED`.
+
+        Called only after the deterministic reader (`fastparse.parse_confirmation`)
+        has already declined the utterance, and only while an op is armed. No
+        tools, so this phase cannot act on what it reads — the pipeline runs the
+        armed op through the same confirm path a bare yes takes, or drops it.
+
+        `question` is what the player is being asked, in the app's own words, so
+        the reading is about *this* question and not about the utterance in the
+        abstract: "no, the other one" answers a choice and cancels a
+        resignation.
+
+        An implementation that cannot answer returns `UNRELATED`. Failing
+        towards "nothing happened" is the whole shape of the destructive gate,
+        and a dead provider must never be able to end a game."""
         ...

@@ -6,6 +6,7 @@ before 2026-09-01 are in this file's git history; measurement records live in
 
 ## 2026-09-04
 
+- [x] A pending confirmation understands the player's own words (walkthrough #6) — the literal reader still goes first and free, and only an answer it cannot place goes to the model, which returns confirm/cancel/unrelated and never touches a destructive tool; "just do it" resigns, "forget it" doesn't, "undo instead" falls through. Full gate 25 passed (#255)
 - [x] Mistake narration stops inventing the captured piece (walkthrough #5) — `analyze_last_move` now reports what the played and best moves each take, and the guard holds a capture claim to what the move it names takes rather than to the game-wide record; full gate 25 passed (#254)
 - [x] Container stops in 0.4 s instead of 10 (walkthrough #4) — python-chess drives Stockfish from a non-daemon thread, so an unclosed engine outlived uvicorn and every `compose stop` ended in SIGKILL; `app.serve` owns and closes it. Health probe is a tested module now and flips unhealthy in ~25 s instead of ~71 (#253)
 - [x] "talk more" sets verbosity (walkthrough #3) — the live setting is now in the agent's per-turn view and `set_verbosity`'s description says it is the only way to change it; the guard suppresses a narrated change over a turn that called no setter. Eval `verbosity_up_from_low` 5/5, full gate 25 passed (#252)

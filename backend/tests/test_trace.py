@@ -16,7 +16,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.brain import AgentResponse, Narration, ToolCall
+from chessapp.brain import CONFIRM, AgentResponse, Answer, Narration, ToolCall
 from chessapp.game import GameSession
 from chessapp.tools import Settings, ToolContext
 from chessapp.trace import JsonlTracer, turn_record
@@ -532,3 +532,29 @@ def test_no_tracer_configured_is_fine(trace_path):
     ctx = ToolContext(session=GameSession())
     app, _ = scripted_app(ctx)
     assert TestClient(app).post("/api/command", json={"text": "e4"}).status_code == 200
+
+
+def test_a_free_text_confirmation_bills_both_of_its_round_trips(trace_path):
+    """The confirmation route can now spend two model calls — reading what the
+    player's reply meant, then narrating what the op did — and a turn that
+    recorded only the second would under-report every free-text confirmation
+    (walkthrough #6)."""
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5", "Nf3", "Nc6"):
+        assert ctx.session.submit_move(san).legal
+    brain = ScriptedBrain(
+        AgentResponse(text="you sure?", tool_calls=(ToolCall(name="resign", args={}),)),
+        answers=(Answer(verdict=CONFIRM, model_calls=1, prompt_tokens=40),),
+        narrations=(Narration(text="That's game.", model_calls=1, prompt_tokens=310),),
+    )
+    app, _ = scripted_app(ctx, brain=brain, tracer=JsonlTracer(trace_path))
+    client = TestClient(app)
+
+    client.post("/api/command", json={"text": "i resign"})
+    client.post("/api/command", json={"text": "get on with it"})
+
+    assert ctx.session.is_game_over()
+    confirmation = read_records(trace_path)[-1]
+    assert confirmation["route"] == "confirmation"
+    assert confirmation["model_calls"] == 2
+    assert confirmation["prompt_tokens"] == 350

@@ -20,9 +20,10 @@ import json
 
 import pytest
 
-from chessapp.brain import AgentResponse
+from chessapp.brain import CANCEL, CONFIRM, UNRELATED, AgentResponse
 from chessapp.game import GameSession
 from chessapp.llama_brain import (
+    _ANSWER_MAX_TOKENS,
     _NO_PROGRESS_NOTE,
     LlamaBrain,
     _fast_path_brief,
@@ -1459,3 +1460,87 @@ def test_a_failing_phase_report_never_costs_the_turn():
 def test_a_brain_with_no_observer_is_the_default():
     brain, _ = make_brain(text_turn("done"), text_turn("Quiet."))
     assert brain.get_agent_response({"fen": "x"}, "hello").text == "Quiet."
+
+
+# --- reading a free-text answer to a pending question (walkthrough #6) --------
+#
+# One tool-free round trip that returns one of three words. It sits in front of
+# a destructive op, so every way it can go wrong has to land on `unrelated` —
+# the answer that changes nothing.
+
+
+@pytest.mark.parametrize(
+    ("content", "verdict"),
+    [
+        ("confirm", CONFIRM),
+        ("cancel", CANCEL),
+        ("unrelated", UNRELATED),
+        # A 12B wraps its one word in whatever it likes.
+        ("  Confirm.  ", CONFIRM),
+        ("CANCEL", CANCEL),
+    ],
+)
+def test_read_answer_returns_the_verdict(content, verdict):
+    brain, _ = make_brain(text_turn(content))
+    assert brain.read_answer("Resign?", "just do it").verdict == verdict
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        None,
+        "",
+        "yes",  # not on the menu — the menu is the contract
+        "I think they want to resign, probably",
+    ],
+)
+def test_a_word_off_the_menu_is_unrelated(content):
+    """`unrelated` changes nothing, and that is the only safe place for a
+    reading nobody can trust to land."""
+    brain, _ = make_brain(text_turn(content))
+    assert brain.read_answer("Resign?", "mmhm").verdict == UNRELATED
+
+
+def test_a_dead_provider_cannot_confirm_anything():
+    brain, _ = make_brain(ProviderError("llama-server is gone"))
+    answer = brain.read_answer("Resign?", "just do it")
+    assert answer.verdict == UNRELATED
+    assert answer.model_calls == 0
+
+
+def test_read_answer_offers_no_tools_and_does_not_think():
+    """It cannot act on what it reads, and a call in front of a destructive op
+    is not a place for a thought loop to live."""
+    brain, provider = make_brain(text_turn("confirm"))
+    brain.read_answer("Resign?", "just do it")
+
+    call = provider.calls[0]
+    assert call["tools"] is None
+    assert call["enable_thinking"] is False
+    assert call["max_tokens"] == _ANSWER_MAX_TOKENS
+
+
+def test_read_answer_carries_the_question_and_the_reply():
+    """A reply is read against a question: "no, the other one" answers a choice
+    and cancels a resignation."""
+    brain, provider = make_brain(text_turn("cancel"))
+    brain.read_answer("That's the game if you mean it. Resign?", "no, the other one")
+
+    sent = provider.calls[0]["messages"][-1]["content"]
+    assert "That's the game if you mean it. Resign?" in sent
+    assert "no, the other one" in sent
+    assert PERSONA not in provider.calls[0]["messages"][0]["content"], (
+        "no persona: this phase reads, it does not speak"
+    )
+
+
+def test_read_answer_is_billed_as_one_call():
+    brain, _ = make_brain(
+        text_turn("confirm", usage=Usage(prompt_tokens=30, completion_tokens=2))
+    )
+    answer = brain.read_answer("Resign?", "go on then")
+    assert (answer.model_calls, answer.prompt_tokens, answer.completion_tokens) == (
+        1,
+        30,
+        2,
+    )

@@ -75,7 +75,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from chessapp.agent_api import ConversationStore, build_agent_router
 from chessapp.analysis import captured_piece, review_game
-from chessapp.brain import Brain, Narration
+from chessapp.brain import CANCEL, CONFIRM, Brain, Narration
 from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
@@ -552,7 +552,18 @@ _RESIGN_CONFIRM = "That's the game if you mean it. Say yes and I'll resign for y
 _CONFIRM_QUESTIONS = {
     "new_game": "That ends the game in progress. Start a new one?",
     "resign": "That's the game if you mean it. Resign?",
+    "claim_draw": "That ends the game in a draw. Claim it?",
 }
+
+
+def _confirm_question(op: str) -> str:
+    """What the player is being asked, for a reader that needs to know.
+
+    The model gets the app's own wording rather than whatever paraphrase the
+    turn happened to speak, because it is reading a reply *against a question*
+    and the question is the pipeline's fact, not the narration's.
+    """
+    return _CONFIRM_QUESTIONS.get(op, f"Confirm {op}?")
 
 
 def _confirm_required(op: str) -> JSONResponse:
@@ -568,7 +579,7 @@ def _confirm_required(op: str) -> JSONResponse:
     return JSONResponse(
         status_code=409,
         content={
-            "detail": _CONFIRM_QUESTIONS.get(op, f"Confirm {op}?"),
+            "detail": _confirm_question(op),
             "confirm": True,
             "op": op,
         },
@@ -969,6 +980,18 @@ class _ModelCost:
             prompt_tokens=source.prompt_tokens,
             completion_tokens=source.completion_tokens,
             latencies_ms=tuple(source.model_latencies_ms),
+        )
+
+    def plus(self, other: "_ModelCost") -> "_ModelCost":
+        """Two phases of one turn, added. The confirmation route can now spend
+        two round trips — reading the player's answer, then narrating what the
+        op did — and a turn that reported only the second would under-report
+        every free-text confirmation."""
+        return _ModelCost(
+            calls=self.calls + other.calls,
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            latencies_ms=self.latencies_ms + other.latencies_ms,
         )
 
     def as_trace(self) -> dict[str, Any]:
@@ -1955,6 +1978,26 @@ def create_app(
             armed = ctx.live_pending()
             ctx.pending = None
             answer = parse_confirmation(text) if armed is not None else None
+            if armed is not None and answer is None and brain is not None:
+                # Deterministic first, model second (walkthrough #6). The
+                # literal reader is a short list of bare affirmations, and a
+                # player who says "just do it" after a resign question has
+                # answered it as plainly as "yes" — they just did not use the
+                # word. Reading that is understanding, which is the model's
+                # job; *acting* on it is not, so a confirm goes down the same
+                # `confirm_pending` path a bare yes takes and the model never
+                # touches a destructive tool. `unrelated` — the answer for a
+                # new intent, a provider death, or anything the reader could
+                # not place — leaves the op disarmed and the turn falls
+                # through, exactly as it did before.
+                read = await _offloop(
+                    brain.read_answer, _confirm_question(armed.name), text
+                )
+                cost = _ModelCost.of(read) if read.model_calls else cost
+                if read.verdict == CONFIRM:
+                    answer = True
+                elif read.verdict == CANCEL:
+                    answer = False
             route = ROUTE_CONFIRMATION
             if armed is not None and answer is not None:
                 if answer:
@@ -1987,7 +2030,7 @@ def create_app(
                             )
                         else:
                             commentary = narration.text
-                            cost = _ModelCost.of(narration)
+                            cost = cost.plus(_ModelCost.of(narration))
                 else:
                     # Declined: nothing ran, so there is nothing to narrate from.
                     commentary = _DECLINED_REPLY

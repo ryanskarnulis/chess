@@ -13,6 +13,8 @@ fast path.
 from fastapi.testclient import TestClient
 
 from chessapp.api import (
+    _CONFIRM_QUESTIONS,
+    _DECLINED_REPLY,
     MOVE_ADVICE_REPLY,
     PROVIDER_LOST_RETRY,
     PROVIDER_LOST_TURN_STANDS,
@@ -21,7 +23,7 @@ from chessapp.api import (
     UNVERIFIED_CLAIM_REPLY,
     create_app,
 )
-from chessapp.brain import AgentResponse, ToolCall
+from chessapp.brain import CANCEL, CONFIRM, UNRELATED, AgentResponse, Answer, ToolCall
 from chessapp.conversation import RECENT_TURNS
 from chessapp.engine import DEFAULT_TIER, CandidateMove, Evaluation
 from chessapp.game import GameSession
@@ -841,9 +843,13 @@ def developed(ctx: ToolContext) -> ToolContext:
     return ctx
 
 
-def make_developed_client(*responses: AgentResponse, narrations: tuple[str, ...] = ()):
+def make_developed_client(
+    *responses: AgentResponse,
+    narrations: tuple[str, ...] = (),
+    answers: tuple[str, ...] = (),
+):
     ctx = developed(ToolContext(session=GameSession()))
-    brain = ScriptedBrain(*responses, narrations=narrations)
+    brain = ScriptedBrain(*responses, narrations=narrations, answers=answers)
     app, brain = scripted_app(ctx, brain=brain)
     return TestClient(app), brain, ctx
 
@@ -1776,6 +1782,105 @@ def test_an_unrelated_command_drops_the_armed_op():
 
     assert ctx.pending is None, "changing the subject disarms the op"
     assert ctx.session.fen() != GameSession().fen()
+
+
+# --- A pending question answered in the player's own words (walkthrough #6).
+#
+# The literal reader (`fastparse.parse_confirmation`) is a short list of bare
+# affirmations, so "just do it" after a resign question fell through it, dropped
+# the armed op, and did nothing. Reading what a reply *means* is the model's
+# job; acting on it is not — a confirm goes down the same `confirm_pending`
+# path a bare yes takes, and the model never reaches a destructive tool.
+
+
+def test_a_bare_yes_never_asks_the_model():
+    """Deterministic first. The literal reader still answers the ordinary case
+    with zero model calls, which is what makes a plain confirmation free."""
+    client, brain, ctx = make_developed_client()
+    client.post("/api/command", json={"text": "i resign"})
+
+    client.post("/api/command", json={"text": "yes"})
+
+    assert brain.answer_calls == []
+    assert ctx.session.is_game_over()
+
+
+def test_free_text_that_means_yes_runs_the_armed_op():
+    client, brain, ctx = make_developed_client(answers=(CONFIRM,))
+    client.post("/api/command", json={"text": "i resign"})
+
+    body = client.post("/api/command", json={"text": "just do it"}).json()
+
+    assert ctx.session.is_game_over(), "the resignation the player meant"
+    assert body["state"]["game_over"] is True
+    assert ctx.pending is None
+    # Through the confirm path, not through the model: the op is the pipeline's
+    # own dispatch, and it is the only tool result the turn has.
+    assert [r["name"] for r in body["tool_results"]] == ["resign"]
+    assert body["tool_results"][0]["result"]["ok"] is True
+
+
+def test_free_text_that_means_no_drops_the_op():
+    client, _, ctx = make_developed_client(answers=(CANCEL,))
+    client.post("/api/command", json={"text": "i resign"})
+
+    body = client.post("/api/command", json={"text": "actually forget it"}).json()
+
+    assert not ctx.session.is_game_over()
+    assert ctx.pending is None
+    assert body["commentary"] == _DECLINED_REPLY
+    assert body["tool_results"] == []
+
+
+def test_a_new_intent_still_falls_through_to_the_turn():
+    """`unrelated` is the third answer, and it is why there are three: a player
+    who asks for something else has stopped answering the question."""
+    client, _, ctx = make_developed_client(
+        destructive("new_game"), answers=(UNRELATED,)
+    )
+    client.post("/api/command", json={"text": "new game"})
+
+    client.post("/api/command", json={"text": "e5"})  # fast path: a plain move
+
+    assert ctx.pending is None, "changing the subject disarms the op"
+    assert ctx.session.fen() != GameSession().fen()
+
+
+def test_the_reader_is_asked_about_the_question_the_player_was_asked():
+    """A reply is read *against* a question — "no, the other one" answers a
+    choice — so the app hands over its own wording rather than whatever
+    paraphrase the turn happened to speak."""
+    client, brain, _ = make_developed_client(answers=(CANCEL,))
+    client.post("/api/command", json={"text": "i resign"})
+
+    client.post("/api/command", json={"text": "hold on"})
+
+    assert brain.answer_calls == [(_CONFIRM_QUESTIONS["resign"], "hold on")]
+
+
+def test_the_reader_is_only_asked_while_an_op_is_armed():
+    """No question, nothing to answer: an ordinary utterance must not buy a
+    round trip, and must never be readable as a confirmation of anything."""
+    client, brain, _ = make_developed_client(AgentResponse(text="sure"))
+
+    client.post("/api/command", json={"text": "just do it"})
+
+    assert brain.answer_calls == []
+
+
+def test_a_reader_that_cannot_answer_changes_nothing():
+    """The unhappy path is `unrelated` by construction (`Answer`'s default), so
+    a provider death during the reading leaves the game exactly where it was.
+    This is the direction the destructive gate fails in everywhere else."""
+    client, _, ctx = make_developed_client(
+        AgentResponse(text="Didn't catch that."), answers=(Answer(),)
+    )
+    client.post("/api/command", json={"text": "i resign"})
+
+    client.post("/api/command", json={"text": "mmhm"})
+
+    assert not ctx.session.is_game_over()
+    assert ctx.pending is None, "and the op it could not answer for is gone"
 
 
 # --- Recovery: the provider dies mid-turn (audit item 20).

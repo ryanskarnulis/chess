@@ -98,7 +98,16 @@ from typing import Any
 
 import jsonschema
 
-from chessapp.brain import AgentResponse, Narration, ToolDispatcher, _RunState
+from chessapp.brain import (
+    CANCEL,
+    CONFIRM,
+    UNRELATED,
+    AgentResponse,
+    Answer,
+    Narration,
+    ToolDispatcher,
+    _RunState,
+)
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING
 from chessapp.provider import (
@@ -136,6 +145,35 @@ _DEFAULT_MAX_CORRECTIONS = 2
 # every observed real narration intact and bounds a runaway to ~60 s.
 _PLANNER_MAX_TOKENS = 2048
 _NARRATOR_MAX_TOKENS = 4096
+# The answer-reading phase writes one word. Sized for the word plus whatever
+# punctuation or preamble a 12B insists on wrapping it in, and nothing more:
+# this call sits in front of a destructive op and must not be a place a
+# thought loop can live.
+_ANSWER_MAX_TOKENS = 16
+
+# The whole prompt for that phase. No persona and no board — the question is
+# about what the player meant, and every extra line is one more thing for a
+# 12B to answer instead. The three words are the entire output vocabulary, and
+# the pipeline reads anything else as `unrelated`, which changes nothing.
+_ANSWER_PROMPT = """\
+You read one short reply and say what it means. Nothing else.
+
+The player has been asked a yes-or-no question and has answered in their own
+words. Reply with exactly one of these words and no other text:
+
+- confirm — they mean yes, go ahead
+- cancel — they mean no, don't
+- unrelated — they are asking for something else entirely, or you cannot tell
+
+Judge the reply against the question they were asked. Impatience is still a
+yes ("just do it", "get on with it"); reluctance is still a no ("actually,
+forget it"); a different request is unrelated ("undo my last move instead").
+"""
+
+# The word the model settled on, if it settled on one. A model reading its own
+# three-word menu is the one place a literal match is the right reader —
+# nothing here is player language.
+_VERDICTS = {CONFIRM: CONFIRM, CANCEL: CANCEL, UNRELATED: UNRELATED}
 
 # Once one of these has answered, the rest of the run is analysis work and
 # thinking goes ON (BRIEF: thinking OFF for fast move parsing, ON for analysis).
@@ -345,6 +383,42 @@ class LlamaBrain:
             thinking=self.enable_thinking,
         )
         return replace(narration, latency_ms=self._elapsed_ms(started))
+
+    def read_answer(self, question: str, text: str) -> Answer:
+        """One tool-free round trip that classifies a reply, and nothing else.
+
+        Fails to `UNRELATED` on every unhappy path — a dead provider, a
+        truncated reply, a word that is not on the menu. That is the direction
+        the destructive gate fails in everywhere else, and it is the only safe
+        one here: the alternative is a game ended by a provider hiccup.
+        """
+        started = self.clock()
+        messages = [
+            {"role": "system", "content": _ANSWER_PROMPT},
+            {
+                "role": "user",
+                "content": f"Question: {question}\nTheir reply: {text}",
+            },
+        ]
+        try:
+            result = self.provider.chat(
+                messages,
+                tools=None,
+                enable_thinking=False,
+                max_tokens=_ANSWER_MAX_TOKENS,
+            )
+        except ProviderError:
+            logger.warning("answer_reading_failed", exc_info=True)
+            return Answer(latency_ms=self._elapsed_ms(started))
+        prompt_tokens, completion_tokens = _usage_ints(result.usage)
+        word = (result.content or "").strip().strip(".!,'\"").lower()
+        return Answer(
+            verdict=_VERDICTS.get(word, UNRELATED),
+            model_calls=1,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=self._elapsed_ms(started),
+        )
 
     def _close(
         self,
