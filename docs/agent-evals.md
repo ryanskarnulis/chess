@@ -213,7 +213,28 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
-**Run 2026-09-05 on the composition scenarios (#265, harness only, 33 → 47 items), on the fixed main after PR 3 and PR 4: 45 passed, 1 failed, 1 xfailed in a single run, 11 m 29 s, infra 0 — the failure `ambiguous_knight_then_selection` 0/5, xfailed in the same PR as a measured miss (below); `undo_and_replace` 4/5 ABOVE_FLOOR, `ambiguous_move` 8/10 ABOVE_FLOOR (two guessed moves), `undo_twice_and_replace` 1/5 (xfail; `undo(plies=2)`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE — including all nine new locks (`save_then_new_game`, `voice_setting_and_move`, `move_and_judgment`, `resume_and_describe`, `best_move_then_play`, `freeform_confirmation_answers` ×3, `late_game_tool_composition` ×2, `stt_knight_repair` ×2) and `move_save_resume_finishes_exchange`.**
+**Run 2026-09-05 on the `undo` description (#267): 46 passed, 1 xfailed in a single run, 11 m 06 s, infra 0; `undo_twice_and_replace` 4/5 ABOVE_FLOOR — scored unmarked for the first time since #260, the miss two `undo(plies=1)` calls — `undo_and_replace` 5/5, every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE; the one xfail `ambiguous_knight_then_selection` 9/15 (six guessed knights, the measured planner miss).**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The one
+prompt change is `undo`'s description — its docstring and the `plies` field —
+measured at 20 samples an arm on one base:
+
+| text | `undo_and_replace` | `undo_twice_and_replace` |
+| --- | --- | --- |
+| old | 19/20 | 9/20 (eleven `undo(plies=2)`) |
+| A — taught the arithmetic ("the player's move and the engine's reply are two") | 19/20, eighteen of them via `plies=2` | **4/20** (sixteen `plies=2`) |
+| B — no numbers, "never a count, once per named move" | **14/20** (six `plies=1`) | 15/20 |
+| D, shipped — the old text minus its two-item enumeration of what the default pops, plus "call this again for each further named move, plies omitted every time" | 20/20 | 18/20 |
+| confirmation, old vs D in alternating blocks of five on one server | 19/20 vs 20/20 | 7/20 vs **16/20** |
+
+Read down the right column: any number written into these two strings is
+copied into the argument, and the phrase every leaking arm shared was the
+enumeration of the two things the default pops. Over both campaigns D is 34/40
+against the old text's 16/40 on the double takeback and 40/40 against 38/40 on
+the single, so the non-strict xfail comes off; at 4/5 in this gate the scenario
+sits near the floor, which the block-sequential decision exists for.
+
+Previously on the composition scenarios (#265, harness only, 33 → 47 items), on the fixed main after PR 3 and PR 4: 45 passed, 1 failed, 1 xfailed in a single run, 11 m 29 s, infra 0 — the failure `ambiguous_knight_then_selection` 0/5, xfailed in the same PR as a measured miss (below); `undo_and_replace` 4/5 ABOVE_FLOOR, `ambiguous_move` 8/10 ABOVE_FLOOR (two guessed moves), `undo_twice_and_replace` 1/5 (xfail; `undo(plies=2)`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE — including all nine new locks (`save_then_new_game`, `voice_setting_and_move`, `move_and_judgment`, `resume_and_describe`, `best_move_then_play`, `freeform_confirmation_answers` ×3, `late_game_tool_composition` ×2, `stt_knight_repair` ×2) and `move_save_resume_finishes_exchange`.
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0); the new
 scenarios cost what their pins say (3–4 calls thinking-off for the plain
