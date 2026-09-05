@@ -1326,6 +1326,24 @@ def build_registry(
     make_move.__doc__ = _make_move_doc(atomic_exchange)
     registry.tool()(make_move)
 
+    # These two strings are the lever for the two-undo miss: "undo the bishop
+    # move and undo the knight move, then play d4 instead" reached
+    # `undo(plies=2)` — one exchange for two named moves — and the replacement
+    # then landed on a board that still held the knight move
+    # (docs/agent-evals.md, `undo_twice_and_replace`).
+    #
+    # **They carry no numbers at all, and that is measured.** A first cut
+    # explained the arithmetic — a ply is a half-move, a player's move and the
+    # engine's reply are two of them — and it made the miss worse: 4/20 against
+    # the old text's 9/20, sixteen of twenty samples passing `plies=2`. It also
+    # spread to the sibling, where `undo_and_replace` held 19/20 but eighteen of
+    # those passes stopped omitting the argument and passed a count instead. Any
+    # number written here is copied into the argument, so the facts are all
+    # about *calls*: a move the player named is a whole takeback and never a
+    # count, several named moves are that many calls, and the count itself is
+    # the app's to work out. Same lesson as `set_difficulty`'s note below —
+    # facts, not triggers — one level down: not even a fact that contains a
+    # number, in a description whose argument is a number.
     @registry.tool()
     def undo(
         plies: Annotated[
@@ -1341,10 +1359,11 @@ def build_registry(
         ] = None,
     ) -> dict[str, Any]:
         """Take back the player's last move. For any normal takeback ("undo",
-        "take that back") omit plies: the app pops the full exchange — the
-        player's move and the engine's reply — leaving the player to move
-        again. Pass plies only when the player asked for an explicit count of
-        half-moves."""
+        "take that back", "undo the bishop move") omit plies — the app pops the
+        whole exchange itself, leaving the player to move again. When the player
+        names several moves to take back, call this again for each further named
+        move, plies omitted every time. Pass plies only when the player asked for
+        an explicit count of half-moves."""
         # Attempt first, abandon second — and only if the takeback happened.
         # A takeback replaces the position the open turn is about, so the turn
         # goes with it (and any reply being computed for it); a *refused* one

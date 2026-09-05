@@ -144,7 +144,7 @@
   },
   {
     "function": {
-      "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\") omit plies: the app pops the full exchange \u2014 the\nplayer's move and the engine's reply \u2014 leaving the player to move\nagain. Pass plies only when the player asked for an explicit count of\nhalf-moves.",
+      "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit plies \u2014 the app pops the\nwhole exchange itself, leaving the player to move again. When the player\nnames several moves to take back, call this again for each further named\nmove, plies omitted every time. Pass plies only when the player asked for\nan explicit count of half-moves.",
       "name": "undo",
       "parameters": {
         "additionalProperties": false,

@@ -122,7 +122,9 @@ Hard scenarios (single-shot, behavior asserted directly):
 Pass-rate scenarios (sampled, floor 0.8 each): `undo_and_replace` (undo + a
 named replacement is one turn), `undo_twice_and_replace` (two takebacks + a
 named replacement is one turn — the live "undo, undo, then play X" the loop's
-stall rule used to cut off after the second undo), `ambiguous_move` ("move
+stall rule used to cut off after the second undo; what remains is a reading
+miss, so `undo`'s description is this scenario's lever and the non-strict xfail
+comes off when a measured rate clears the floor), `ambiguous_move` ("move
 the rook" with four rook moves on the board must ask, not guess — a hard
 scenario until 2026-09-05, when the honest harness measured it 12/17: the
 model played `Rh3` twice, and twice asked the right question, "Which one? Rh3
