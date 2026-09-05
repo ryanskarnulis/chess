@@ -111,20 +111,59 @@ def claims_destructive_outcome(text: str) -> bool:
 _TOKEN_WRAPPING = ".,!?`*()[]{}:;\"'—"
 
 
-def names_a_legal_move(text: str, legal_moves: Iterable[str]) -> bool:
-    """True when the text names a move playable in the current position.
+def _named_moves(sentence: str, moves: Iterable[str]) -> set[str]:
+    """Which of `moves` this sentence names, the prose wrapping shed."""
+    wanted = set(moves)
+    return {
+        token
+        for raw in sentence.split()
+        for token in (raw.strip(_TOKEN_WRAPPING),)
+        if token in wanted
+    }
+
+
+def unlicensed_advice(
+    text: str, unlicensed_moves: Iterable[str], legal_moves: Iterable[str]
+) -> bool:
+    """True when the text hands over a playable move the turn never licensed.
 
     The other honesty predicate's sibling, for the invented-advice leak
     (audit item 11): the model can hand over a move it never checked with the
     engine — and the payload of a hint is a SAN token from the current
-    `legal_moves`, whatever prose surrounds it. No hedge analysis here: there
-    is no sentence shape that makes handing over an unbacked playable move
-    fine. Whether the turn's evidence *licenses* the move (an analysis tool
-    reported it) is the pipeline's half, exactly as with
-    `claims_destructive_outcome`.
+    position, whatever prose surrounds it. Which moves the turn's evidence
+    *licenses* (an analysis tool reported them) is the pipeline's half,
+    exactly as with `claims_destructive_outcome`; `unlicensed_moves` is what
+    is left of the legal list once that licence is spent.
+
+    Sentence by sentence, for the one shape that is not advice at all: a
+    question naming two or more legal moves is asking the player which one
+    they meant. "Do you mean Nf3 or Nh3?" after "move my kings knight" is the
+    right answer to an ambiguous request, and the old whole-text test replaced
+    it with the advice correction (audit finding 6, 2026-09-05) — a guard
+    firing on a correct answer, so the guard loosens.
+
+    Two moves is the line, because one is a recommendation however it is
+    punctuated ("Nf3?" is a suggestion with a hedge on it). A question is the
+    line, because a *statement* naming two still hands both over ("Nf3 or Nh3
+    both work"). And every other sentence is still judged on its own, so a
+    clarification with a recommendation stapled to it — "Which one — Nf3 or
+    Nh3? I'd go Nf3." — is advice again.
+
+    The count is over `legal_moves` rather than the unlicensed ones: a
+    question weighing a move the engine just reported against one it did not
+    is the same clarification, and which of the two carries a licence says
+    nothing about whether the sentence is asking or telling.
     """
+    unlicensed = set(unlicensed_moves)
     legal = set(legal_moves)
-    return any(token.strip(_TOKEN_WRAPPING) in legal for token in text.split())
+    for sentence in _SENTENCES.split(text):
+        # A sentence's own closing mark, not any `?` in it: the question has to
+        # be the thing the sentence is doing.
+        if sentence.rstrip().endswith("?") and len(_named_moves(sentence, legal)) > 1:
+            continue
+        if _named_moves(sentence, unlicensed):
+            return True
+    return False
 
 
 # --- the verified facts, and the claims that must derive from them -------------
@@ -172,11 +211,15 @@ class VerifiedFacts:
     The narrator reacts during the observation beat, after the player's move
     and while Stockfish is still computing its answer, so the position it
     counted is not the position the guard is standing in when it checks: a
-    recapture is +3 to the reaction and 0 to the check. Every board this turn
-    really had contributes its count and any of them backing a claim is enough,
-    on the same reasoning that lets `captured_by_player` span the whole game —
-    staleness is not invention, and the class exists for the direction no board
-    supports. Empty rather than `(0,)` for a turn that supplied no count,
+    recapture is +3 to the reaction and 0 to the check. The brain's batch has
+    the same gap for its own reason — its narrator speaks from the tool
+    results, and a `describe_position` that ran between `make_move(exd5)` and
+    the engine's Qxd5 counted a board that is neither end of the command
+    (audit finding 7, 2026-09-05). Every board the turn really held contributes
+    its count and any of them backing a claim is enough, on the same reasoning
+    that lets `captured_by_player` span the whole game — staleness is not
+    invention, and the class exists for the direction no board supports.
+    Empty rather than `(0,)` for a turn that supplied no count,
     because a level board is itself a claimable fact ("we're dead even") and
     the guard fails closed on evidence, never on a default that happens to
     read as one.
@@ -708,6 +751,16 @@ class _ClaimClass:
     hedges: re.Pattern[str] | None = _FUTURE
 
 
+# The ending class deliberately does not tell the winner from the termination:
+# every match is checked against the one `facts.ended` boolean, so "you win by
+# checkmate" passes on a game the player lost by resignation (audit 2026-09-05,
+# §"Result shapes, honesty limits, and prompts"). Left as it is on purpose. The
+# class exists for the ending that *never happened* — "Word. Game over." on a
+# live board, which is the lie the traces actually showed and the worst thing
+# the app can say — and a game that really ended is already the smaller error.
+# Widening it to winner and termination means two more facts to assemble and
+# two more classes that can misread trash talk, and it waits for a trace corpus
+# showing the wider lie. Nothing here is a substitute for that evidence.
 _CLAIM_CLASSES = (
     _ClaimClass("ending", _CLAIMS, lambda match, facts: facts.ended, hedges=None),
     _ClaimClass("draw", _DRAW, lambda match, facts: facts.drawn),
