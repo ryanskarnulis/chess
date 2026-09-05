@@ -37,6 +37,7 @@ function App() {
     agentThinking,
     agentProgress,
     sendCommand,
+    pgn,
     voiceOutput,
     setVoiceOutput,
     viewPly,
@@ -152,6 +153,7 @@ function App() {
           commentary={commentary}
           thinking={agentThinking}
           progress={agentProgress}
+          pgn={pgn}
         />
         <CapturedPieces
           captured={state?.captured ?? NO_CAPTURES}

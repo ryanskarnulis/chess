@@ -3,6 +3,8 @@
 Everything here is pure python-chess — no engine, no LLM.
 """
 
+from datetime import date
+
 import pytest
 
 from chessapp.game import GameSession, MoveResult
@@ -43,6 +45,21 @@ def test_session_can_start_from_fen():
 def test_session_rejects_invalid_fen():
     with pytest.raises(ValueError):
         GameSession(fen="not a fen")
+
+
+def test_new_session_records_the_day_it_began():
+    """PGN's `Date` tag wants the day the game was played, and a board holds no
+    clock. A session rooted on a mid-game FEN is still a game starting now."""
+    today = date.today().isoformat()
+    assert GameSession().started == today
+    assert GameSession(fen="4k3/8/8/8/8/8/8/4K2R w K - 0 1").started == today
+
+
+def test_new_game_restamps_the_start_date():
+    session = GameSession()
+    session._started = "2020-01-01"  # a board left up overnight
+    session.new_game()
+    assert session.started == date.today().isoformat()
 
 
 # --- submit_move: accept ------------------------------------------------

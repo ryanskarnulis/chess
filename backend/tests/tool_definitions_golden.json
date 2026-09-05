@@ -249,7 +249,7 @@
   },
   {
     "function": {
-      "description": "Export the game so far as PGN.",
+      "description": "Export the game so far as PGN. The app shows the player the notation\nitself, with a button to copy it, so the reply should say it is ready —\nnever recite the moves or the headers.",
       "name": "export_pgn",
       "parameters": {
         "additionalProperties": false,

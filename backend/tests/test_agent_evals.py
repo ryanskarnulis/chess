@@ -246,6 +246,7 @@ _FLOORS: dict[str, float] = {
     "impossible_capture_is_refused_not_asked": 0.8,
     "constraint_rules_out_the_only_lever": 0.8,
     "constraint_survives_a_live_thread": 0.8,
+    "pgn_is_handed_over_not_recited": 0.8,
     "long_resume": 0.8,
     "long_resign": 0.8,
     "long_capture": 0.8,
@@ -2190,6 +2191,74 @@ def test_eval_constraint_survives_a_live_thread(engine: EnginePlayer) -> None:
         floor=floor,
         setup=setup,
         runner=_run_panel,
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_pgn_is_handed_over_not_recited(engine: EnginePlayer) -> None:
+    """ "export the pgn" hands the notation over; it does not read it out.
+
+    Walkthrough leftover: the narrator pasted the whole dump into the bubble —
+    `[Event "?"] [Site "?"] [Date "????.??.??"] [Round "?"] [White "?"]
+    [Black "?"]` and the movetext after it — which with voice on is also what
+    the player heard. There was nothing else it could do: the reply was the
+    only place the PGN appeared.
+
+    Both halves of that are now the app's. The headers are filled in from what
+    the app knows (`tools.pgn_headers`), and the notation itself is rendered
+    under the reply with a button that copies it, so `export_pgn`'s description
+    says the reply announces it is ready and recites nothing.
+
+    Which makes the notation **app-owned text**, and that is the only reason
+    this scenario may look at the words at all — the precedent is
+    `advice_capture_survives_guard`'s "scratch that" check, where the string
+    asserted against is likewise the app's own and not Glitch's. A recited PGN
+    is the old behaviour reappearing, not a wording preference: how he says the
+    export is ready stays entirely his.
+
+    The two tokens are the two halves of the dump. `[Event` is a header — no
+    prose contains it — and `1. e4` is the movetext's opening, from the fixed
+    line the setup plays.
+    """
+    utterance = "export the pgn"
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        for san in ("e4", "e5", "Nf3", "Nc6"):
+            assert app.ctx.session.submit_move(san).legal
+        assert parse_move(utterance, app.ctx.session.fen()) is None
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _successful(assistant, "export_pgn"), (
+            "an export ask is answered by exporting: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert _board_mutations(assistant) == [], "an export must not move a piece"
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "an export turn must not change a setting the player owns"
+        )
+        traced = app.tracer.last
+        assert traced.get("guarded") is not True, (
+            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
+            f"{traced.get('suppressed')!r}"
+        )
+        content = assistant["content"]
+        assert "[Event" not in content, "the headers are the app's to render"
+        assert "1. e4" not in content, "the movetext is the app's to render"
+
+    floor = _FLOORS["pgn_is_handed_over_not_recited"]
+    result = _pass_rate(
+        engine,
+        "pgn_is_handed_over_not_recited",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        # Every text assertion here is negative, so a turn that stopped on its
+        # budget recites nothing and would pass for never having spoken.
         requires_narrator=True,
     )
 

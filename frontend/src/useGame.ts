@@ -14,6 +14,7 @@ import {
   stateSocketUrl,
   submitMove,
   undo as apiUndo,
+  type CommandResponse,
   type ConfirmQuestion,
   type GameState,
   type LifecycleOutcome,
@@ -53,6 +54,25 @@ interface ArmedPromotion {
  */
 function armedForBoard(armed: ArmedPromotion, board: GameState): boolean {
   return armed.version === board.version && armed.fen === board.fen
+}
+
+/**
+ * The PGN a command's tools exported, or null when none did.
+ *
+ * The notation is the app's to render — Glitch says the export is ready and
+ * recites nothing (`export_pgn`'s description), so the reply text no longer
+ * carries it and this is where the UI gets it from. Read defensively because
+ * `tool_results` is unvalidated wire JSON: only a call that reported `ok` with
+ * a string `pgn` counts, so a refusal can never put a chip on screen.
+ */
+function exportedPgn(results: CommandResponse['tool_results'] | undefined): string | null {
+  let pgn: string | null = null
+  for (const call of results ?? []) {
+    if (call.name !== 'export_pgn') continue
+    const result = call.result as { ok?: unknown; pgn?: unknown } | null
+    if (result?.ok === true && typeof result.pgn === 'string') pgn = result.pgn
+  }
+  return pgn
 }
 
 export interface UseGame {
@@ -111,6 +131,12 @@ export interface UseGame {
   agentProgress: string | null
   /** Send a free-form command to the agent. */
   sendCommand: (text: string) => Promise<void>
+  /**
+   * The PGN the latest reply exported, or null when it exported none. It
+   * belongs to the reply it arrived with: the next command (or a new game)
+   * drops it rather than leaving a copy button pointing at an older game.
+   */
+  pgn: string | null
   /** Whether agent replies are spoken aloud; null until settings load. */
   voiceOutput: boolean | null
   /** Turn voice output on/off (the UI mute toggle). */
@@ -151,6 +177,7 @@ export function useGame(): UseGame {
     null,
   )
   const [commentary, setCommentary] = useState<string | null>(null)
+  const [pgn, setPgn] = useState<string | null>(null)
   const [agentThinking, setAgentThinking] = useState(false)
   const [progress, setProgress] = useState<TurnProgress>(NO_PROGRESS)
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
@@ -349,6 +376,10 @@ export function useGame(): UseGame {
       // mode sends no commentary at all, which leaves the bubble alone.
       if (result.commentary) {
         setCommentary(result.commentary)
+        // A reaction is a new reply, and the chip belongs to the reply it
+        // came with — leaving it would park a copy button under commentary
+        // about a different position.
+        setPgn(null)
         // Fire-and-forget: the words are already on screen and a playback
         // failure must never touch the game.
         if (result.speak) void playText(result.commentary)
@@ -443,6 +474,8 @@ export function useGame(): UseGame {
 
   const newGame = useCallback(
     async (color?: 'white' | 'black' | 'random') => {
+      // Whatever was exported was the old game; its copy button goes with it.
+      setPgn(null)
       await settle(await apiNewGame(color, stateRef.current?.version))
     },
     [settle],
@@ -472,6 +505,11 @@ export function useGame(): UseGame {
   const sendCommand = useCallback(
     async (text: string) => {
       setAgentThinking(true)
+      // Dropped before the turn, not after it: the chip belongs to the reply
+      // it came with, and it must not sit under the *next* answer while that
+      // one is still being thought about — nor survive a turn that comes back
+      // stale, unavailable, or exporting nothing.
+      setPgn(null)
       try {
         const response = await apiSendCommand(text, stateRef.current?.version)
         if (response) {
@@ -484,6 +522,7 @@ export function useGame(): UseGame {
           // belongs to the board now being rendered.
           if (!apply(response.state)) return
           setCommentary(response.commentary)
+          setPgn(exportedPgn(response.tool_results))
           // Voice out is fire-and-forget: the reply is already on screen,
           // and a playback failure must never block the game.
           if (response.speak && response.commentary) void playText(response.commentary)
@@ -572,6 +611,7 @@ export function useGame(): UseGame {
     agentThinking,
     agentProgress: progress.label,
     sendCommand,
+    pgn,
     voiceOutput,
     setVoiceOutput,
     viewPly,

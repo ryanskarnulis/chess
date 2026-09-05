@@ -90,6 +90,7 @@ from chessapp.tools import (
     ToolRegistry,
     build_registry,
     confirm_pending,
+    pgn_headers,
     saved_game_names,
 )
 from chessapp.trace import (
@@ -2504,9 +2505,14 @@ def create_app(
         """The game so far as PGN, off a `_session_snapshot`. `export_pgn`
         replays the whole move stack, and replaying one that another thread is
         popping is what made "Copy PGN" raise out of `board.root()` and answer
-        the player a 500 (#230)."""
+        the player a 500 (#230).
+
+        Headers come from the same composer the `export_pgn` tool uses, so the
+        PGN the post-game screen copies and the one the chat hands over are the
+        same document — and composed for the snapshot, not the live game, so
+        the tags describe the moves that ship with them."""
         _, snapshot = _session_snapshot(ctx)
-        return {"pgn": snapshot.export_pgn()}
+        return {"pgn": snapshot.export_pgn(pgn_headers(ctx, snapshot))}
 
     if static_dir is not None:
         # Serve the built frontend from the same origin as the API, so the
