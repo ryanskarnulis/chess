@@ -141,7 +141,18 @@ three times.
 
 ## Current baseline
 
-**Run 2026-09-05 on the loop and tool hardening (#264): 31 passed, 2 xfailed in a single run, 5 m 48 s, infra 0; `undo_and_replace` 4/5 ABOVE_FLOOR (the miss `undo(plies=1)` then an illegal `d4`, the same shape as the control's), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE; the xfails `undo_twice_and_replace` 0/5 (every miss `undo(plies=2)`, the two-move misread) and `ambiguous_move` 2/5 (all three misses a correct "Rh3 or Rh2?" question replaced by the advice correction — finding 6, PR 4 — and no guessed move this run).**
+**Run 2026-09-05 on the settled restore (#266): 31 passed, 1 xfailed, 1 xpassed in a single run, 6 m 37 s, infra 0; `undo_and_replace` 16/20 ABOVE_FLOOR (3/5, then 13/15 — every miss `undo(plies=1)`, which now pops the engine's reply, has the coordinator settle the board, and lands `d4` two plies later on a board that still holds `Bc4`: the same misread as before with a different symptom, since the settle turns an illegal replacement into a legal one on the wrong board), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE; `undo_twice_and_replace` 5/10 (xfail, every miss `undo(plies=2)`) and `ambiguous_move` 4/5 (XPASS; the miss a guessed move).**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0;
+`play_as_black` 3, its reply now carrying the app's announcement of the
+opening move). No prompt change: `undo`, `resume_game` and `new_game` settle a
+board they leave with the engine to move and report the move as `engine_move`,
+the pipeline announces it, and an engine that raises mid-turn leaves the reply
+owed instead of the machine wedged. PR 5's `move_save_resume_finishes_exchange`,
+which reproduced this finding 0/5 on the pre-fix main, is that PR's gate on
+this fix.
+
+Previously on the loop and tool hardening (#264): 31 passed, 2 xfailed in a single run, 5 m 48 s, infra 0; `undo_and_replace` 4/5 ABOVE_FLOOR (the miss `undo(plies=1)` then an illegal `d4`, the same shape as the control's), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE; the xfails `undo_twice_and_replace` 0/5 (every miss `undo(plies=2)`, the two-move misread) and `ambiguous_move` 2/5 (all three misses a correct "Rh3 or Rh2?" question replaced by the advice correction — finding 6, PR 4 — and no guessed move this run).**
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). No
 prompt change: a refused `undo` leaves the open turn alone, a confirmation
