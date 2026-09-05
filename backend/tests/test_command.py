@@ -899,6 +899,50 @@ def test_yes_executes_the_armed_op_with_no_model_call():
     assert ctx.pending is None
 
 
+def switching_to_black_client(verbosity: str = "normal"):
+    """A game worth confirming away, and an engine to open the next one. The
+    reset puts the player on black, so the fresh board is one more position left
+    with the engine to move."""
+    ctx = developed(ToolContext(session=GameSession(), engine=FakeEngine("e2e4")))
+    ctx.settings.verbosity = verbosity
+    brain = ScriptedBrain(
+        AgentResponse(
+            text="you sure about that?",
+            tool_calls=(ToolCall(name="new_game", args={"player_color": "black"}),),
+        ),
+        narrations=("Fresh board — you're black this time.",),
+    )
+    app, brain = scripted_app(ctx, brain=brain)
+    client = TestClient(app)
+    client.post("/api/command", json={"text": "new game, I'll take black"})
+    return client, ctx
+
+
+def test_a_confirmed_new_game_as_black_announces_the_opening_move():
+    """The engine's opening move is one of three the coordinator settles, and
+    all three are announced by the one deterministic line — so the player who
+    said yes hears what answered them, and hears it once."""
+    client, ctx = switching_to_black_client()
+
+    body = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.player_color == "black"
+    assert ctx.session.move_history() == ["e4"]
+    assert body["commentary"] == "Fresh board — you're black this time.\n\ne4."
+
+
+def test_a_confirmed_new_game_as_black_at_low_verbosity_says_it_once():
+    """The canned line used to spell the opening move itself. It no longer
+    does — two composers for one fact said it twice the moment the appended
+    announcement covered this route as well."""
+    client, ctx = switching_to_black_client(verbosity="low")
+
+    body = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.move_history() == ["e4"]
+    assert body["commentary"] == "New game.\n\ne4."
+
+
 def test_yes_confirms_a_resign_and_ends_the_game():
     client, brain, ctx = make_developed_client(destructive("resign"))
     client.post("/api/command", json={"text": "i resign"})

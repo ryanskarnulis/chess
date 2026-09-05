@@ -293,9 +293,25 @@ class TurnCoordinator:
             self._enter(TurnPhase.ENGINE_MOVE_APPLIED)
             return None
         self._enter(TurnPhase.ENGINE_CALCULATING)
-        uci = pending.result_for(session.fen()) if pending is not None else None
-        if uci is None:
-            uci = engine.choose_move(session)
+        try:
+            uci = pending.result_for(session.fen()) if pending is not None else None
+            if uci is None:
+                uci = engine.choose_move(session)
+        except Exception:
+            # An engine that dies mid-calculation must not take the turn with
+            # it. The player's move stands and the reply is still owed, so the
+            # phase goes back to where that is true rather than staying parked
+            # in `engine_calculating` — where `_require` refuses every ordinary
+            # move for good and only an undo, a reset or a resume can dig the
+            # machine out. Restored, the pipeline's own healing branches
+            # (`api._play_move`'s close beat and the command convergence, both
+            # of which collect from `player_move_applied`) make the next command
+            # finish the turn: its move is refused as mid-turn, the owed reply
+            # is played, and the game goes on — which is what
+            # `docs/turn-coordinator.md` claimed all along and this makes true
+            # (audit 2026-09-05, engine-failure recovery).
+            self._enter(TurnPhase.PLAYER_MOVE_APPLIED)
+            raise
         # Every engine move still enters the game through the session's legality
         # gate — background computation changes when it is decided, never who
         # decides whether it is legal.
@@ -383,25 +399,38 @@ class TurnCoordinator:
         if self._command_open:
             self._destructive_spent = True
 
-    def engine_opening_move(self) -> MoveResult | None:
-        """The engine's opening move on a game the player takes as black.
+    def settle_engine_turn(self) -> MoveResult | None:
+        """Move for the engine on a board that was left with the engine to play.
 
-        Returns None when it owes none — no engine, or the player has white.
-        Whether it does is session state, not a caller's judgment, which is why
-        both `new_game` paths now ask this instead of each testing the color and
-        reaching for the engine themselves.
+        A *restored* position can arrive with nobody scheduled to move it: a new
+        game the player takes as black, a save taken between the player's move
+        and the reply, an explicit odd-ply takeback that pops the reply and
+        leaves the engine on move. In every one of those the board is settled
+        and legal and simply waiting on a side the player does not own, so the
+        turn machine would sit awaiting a player move that cannot come.
 
-        It does not consume a turn: the game's first *player* turn is still to
-        come, so the turn id stands and the phase returns to awaiting the
-        player.
+        Returns None when nothing is owed — no engine, the game is over, or the
+        player is the side to move. That condition is read off the session at
+        call time, never remembered: `resume_game` swaps the session, and whose
+        move it is afterwards is that session's fact, not the caller's judgment.
+        This is why the restoring tools ask rather than each testing a color and
+        reaching for the engine themselves — every engine move in the app comes
+        from this one place, and none of it is a tool the model can call.
+
+        It does not consume a turn: the settle is not an answer to a player
+        move, so nothing was open and the player's next turn is still to come.
+        The turn id stands and the phase comes back to awaiting the player.
         """
-        self._require("play the engine's opening move", TurnPhase.AWAITING_PLAYER)
+        self._require("settle the engine's turn", TurnPhase.AWAITING_PLAYER)
         engine = self._ctx.engine
-        if engine is None or self._ctx.session.player_color != "black":
+        session = self._ctx.session
+        if engine is None or session.is_game_over():
+            return None
+        if session.turn == session.player_color:
             return None
         self._enter(TurnPhase.ENGINE_CALCULATING)
         try:
-            return engine.play_move(self._ctx.session)
+            return engine.play_move(session)
         finally:
             self._enter(TurnPhase.AWAITING_PLAYER)
 

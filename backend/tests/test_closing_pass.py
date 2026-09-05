@@ -26,7 +26,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.api import create_app
-from chessapp.coordinator import TurnCoordinator
+from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain
 from chessapp.tools import BOARD_STATE_TOOLS, ToolContext, build_registry
@@ -57,14 +57,24 @@ class CollectedTurns:
         self.records.append(turn)
 
 
-def make_client(*turns, ctx: ToolContext | None = None, tracer=None):
+def make_client(
+    *turns,
+    ctx: ToolContext | None = None,
+    tracer=None,
+    coordinator: TurnCoordinator | None = None,
+):
     """The full pipeline over a real `LlamaBrain` whose provider is scripted —
     the one wiring that lets a route-level test see which calls carried tools,
     exactly as app assembly builds it (shared registry + coordinator,
-    `atomic_exchange=False`, board-state reads not offered)."""
+    `atomic_exchange=False`, board-state reads not offered).
+
+    `coordinator` is the same escape hatch `ctx` is: pass one to keep a handle
+    on the turn machine when what the test is about is the phase the command
+    left it in, rather than the board or the words."""
     if ctx is None:
         ctx = ToolContext(session=GameSession(), engine=FakeEngine())
-    coordinator = TurnCoordinator(ctx)
+    if coordinator is None:
+        coordinator = TurnCoordinator(ctx)
     registry = build_registry(ctx, coordinator, atomic_exchange=False)
     provider = ScriptedProvider(*turns)
     brain = LlamaBrain(
@@ -315,6 +325,123 @@ def test_a_truncated_reading_leaves_the_armed_resignation_un_run():
     assert ctx.pending is None, "and the op it could not answer for is gone"
     assert body["tool_results"] == []
     assert body["commentary"] == "Still your move, then."
+
+
+# --- a restored position is settled, and the app says what it played
+#
+# A takeback or a restore can hand back a board with the engine to move and no
+# turn open over it — nothing was owed, because nothing was asked. The
+# coordinator settles it inside the tool, and the pipeline announces the move it
+# made with the same deterministic line every other engine move gets: a
+# voice-first player who asked to load a game must not be left with a board that
+# moved twice in silence.
+
+
+def test_a_resumed_mid_exchange_save_finishes_the_exchange(tmp_path):
+    """The audit's second core probe, end to end (finding 2). "play e4 and save
+    this as half" writes the board *between* the player's move and the reply —
+    the live game then settles at [e4, e5], but the file holds one ply — and
+    loading it used to hand back [e4] with Black to move and nobody to move it.
+    """
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(), save_dir=tmp_path)
+    coordinator = TurnCoordinator(ctx)
+    client, _, ctx = make_client(
+        tool_calls_turn(("make_move", {"move": "e4"}), ("save_game", {"name": "half"})),
+        text_turn("moved and saved"),
+        text_turn("Saved."),
+        tool_calls_turn(("resume_game", {"name": "half"})),
+        text_turn("loaded it"),
+        text_turn("Back where you left it."),
+        ctx=ctx,
+        coordinator=coordinator,
+    )
+
+    client.post("/api/command", json={"text": "play e4 and save this as half"})
+    assert ctx.session.move_history() == ["e4", "e5"], "the live game settled"
+
+    body = client.post("/api/command", json={"text": "load half"}).json()
+
+    assert ctx.session.move_history() == ["e4", "e5"], "the save, plus a fresh reply"
+    assert ctx.session.turn == ctx.session.player_color == "white"
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+    resumed = body["tool_results"][0]["result"]
+    assert resumed["engine_move"]["san"] == "e5"
+    assert body["commentary"] == "Back where you left it.\n\ne5."
+
+
+def test_an_odd_takeback_is_announced_like_any_other_engine_move():
+    """The other restore, and the one that makes the announcement's case: the
+    player asked for one half-move back and the board moved twice. The narrator
+    naming the settled move survives the honesty guard — the `engine_move` the
+    result carries is evidence like the reply's own is."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
+    for san in ("e4", "c5"):
+        assert ctx.session.submit_move(san).legal
+    turns = CollectedTurns()
+    client, _, ctx = make_client(
+        tool_calls_turn(("undo", {"plies": 1})),
+        text_turn("popped one half-move"),
+        text_turn("Rolled it back, and I'm on e5 again."),
+        ctx=ctx,
+        tracer=turns,
+    )
+
+    body = client.post(
+        "/api/command", json={"text": "take back just that last half-move"}
+    ).json()
+
+    assert body["tool_results"][0]["result"]["engine_move"]["san"] == "e5"
+    assert body["commentary"] == "Rolled it back, and I'm on e5 again.\n\ne5."
+    assert ctx.session.move_history() == ["e4", "e5"]
+    assert ctx.session.turn == ctx.session.player_color
+    (record,) = turns.records
+    assert record["mutations"] == 2, "the takeback and the move that answered it"
+    assert record["guarded"] is False
+
+
+class FailEngine(FakeEngine):
+    """An engine that dies when asked to think. The background computation
+    swallows its own failure by design, so this surfaces in the collector's
+    synchronous retry — where the turn is."""
+
+    def choose_move(self, session):
+        raise ValueError("engine died")
+
+
+def test_an_engine_that_died_mid_command_is_healed_by_the_next_one():
+    """`docs/turn-coordinator.md` has always said the next command heals a turn
+    a failure left open, and for an engine failure it was not true: the phase
+    stayed at `engine_calculating`, where `_require` refuses every ordinary
+    player move, so only an undo, a reset or a resume could dig the game out.
+    The failure is loud — nothing swallows it, and the command that hit it ends
+    in the error it raised — but the player's move stands and the reply is still
+    owed, so the next command pays one utterance and the game goes on."""
+    ctx = ToolContext(session=GameSession(), engine=FailEngine())
+    coordinator = TurnCoordinator(ctx)
+    client, _, ctx = make_client(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4, then."),
+        tool_calls_turn(("make_move", {"move": "d4"})),
+        text_turn("that one did not land"),
+        text_turn("Couldn't play that."),
+        ctx=ctx,
+        coordinator=coordinator,
+    )
+
+    with pytest.raises(ValueError, match="engine died"):
+        client.post("/api/command", json={"text": "play e4"})
+    assert ctx.session.move_history() == ["e4"], "the player's move stands"
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED, "the reply is owed"
+
+    ctx.engine = FakeEngine("e7e5")
+    body = client.post("/api/command", json={"text": "play d4"}).json()
+
+    assert body["tool_results"][0]["result"]["ok"] is False, "refused as mid-turn"
+    assert ctx.session.move_history() == ["e4", "e5"], "one reply, to e4"
+    assert ctx.session.turn == ctx.session.player_color
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+    assert body["commentary"].startswith("Couldn't play that.")
 
 
 # --- the routes outside the loop: the model is only ever reached tool-free

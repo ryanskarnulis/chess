@@ -903,8 +903,10 @@ def _position_summary(
 def _engine_move_dict(reply: MoveResult | None) -> dict[str, Any] | None:
     """How the move tools report an engine move: `{"san", "uci", "summary"}`, or
     None when the coordinator says the engine owed none. One shape for
-    `make_move`'s reply and `new_game`'s opening move, which is what their
-    results promise."""
+    `make_move`'s reply and for every move that settles a restored board —
+    `new_game`'s opening, an odd-ply `undo`, a `resume_game` that came back
+    mid-exchange — which is what their results promise, and what lets the
+    pipeline announce any of them with one branch."""
     if reply is None:
         return None
     return {
@@ -1360,9 +1362,17 @@ def build_registry(
             # played, so this one is for the player to hear, not to retry.
             return registry.refusal(result.reason or "cannot undo", RETRY_NEVER)
         coordinator.abandon_turn()
+        # An odd count pops the engine's reply and hands the board back with the
+        # engine to move — a settled, legal position with nobody scheduled to
+        # play it, because a takeback is not a turn and opens none. The
+        # coordinator settles it, exactly as it does the opening move of a game
+        # taken as black; the default paired takeback leaves the player to move
+        # and this reports `None` (audit 2026-09-05, finding 2).
+        reply = coordinator.settle_engine_turn()
         return {
             "ok": True,
             "undone": list(result.undone),
+            "engine_move": _engine_move_dict(reply),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }
@@ -1440,11 +1450,14 @@ def build_registry(
         coordinator.record_destructive_op()
         # When the player has black the engine owns white and makes the opening
         # move — otherwise the fresh board would sit waiting for a move only the
-        # engine can make. The coordinator owns that call (and the condition):
-        # every engine move in the app comes from one place.
+        # engine can make. A fresh board as black is one more position left with
+        # the engine to move, so it is settled by the same method an odd
+        # takeback and a resumed mid-exchange save use. The coordinator owns
+        # that call (and the condition): every engine move in the app comes from
+        # one place.
         return {
             "ok": True,
-            "engine_move": _engine_move_dict(coordinator.engine_opening_move()),
+            "engine_move": _engine_move_dict(coordinator.settle_engine_turn()),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }
@@ -1591,9 +1604,18 @@ def build_registry(
         # anything being computed for the *old* session) is abandoned first.
         coordinator.abandon_turn()
         ctx.replace_session(session, transcript)
+        # A save can be taken mid-exchange — "play e4 and save this" writes the
+        # board between the player's move and the reply — so the game that comes
+        # back can be the engine's to move. Nothing was open to collect it: the
+        # obligation died with the session that owed it. The coordinator settles
+        # the restored board instead, which is what makes a resumed exchange
+        # finish rather than park (audit 2026-09-05, finding 2). `None` when the
+        # save was the player's move to make, which is most of them.
+        reply = coordinator.settle_engine_turn()
         return {
             "ok": True,
             "name": name,
+            "engine_move": _engine_move_dict(reply),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }

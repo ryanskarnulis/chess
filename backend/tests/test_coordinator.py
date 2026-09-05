@@ -23,6 +23,10 @@ from fakes import FakeEngine
 # White to move, Qxf7# available (scholar's mate pattern).
 WHITE_MATE_IN_1 = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"
 
+# Fool's mate, from the losing side: the game is over and it is nominally
+# White's move — the parity a restored save of a finished game comes back with.
+BLACK_MATED_WHITE = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+
 
 class MustNotPlay:
     """Engine double that fails the test if asked to move at all."""
@@ -328,6 +332,43 @@ def test_collect_recomputes_when_the_board_moved_under_the_computation(session):
     assert session.move_history() == ["e4"]
 
 
+class FailEngine(FakeEngine):
+    """An engine that dies when asked to think, in the background and in the
+    foreground alike (the background failure is swallowed by design, so the
+    collector's synchronous retry is where it surfaces)."""
+
+    def choose_move(self, session):
+        raise ValueError("engine died")
+
+
+def test_an_engine_that_dies_leaves_the_reply_owed_rather_than_the_turn_wedged(
+    session,
+):
+    """A failed calculation used to park the machine in `engine_calculating` for
+    good: `_require` refuses every ordinary player move from there, so replacing
+    the broken engine with a healthy one bought nothing and only an undo, a
+    reset or a resume could dig the game out. The player's move stands and the
+    reply is still owed, so the phase says exactly that — and the next attempt
+    plays it (audit 2026-09-05, engine-failure recovery)."""
+    ctx = ToolContext(session=session, engine=FailEngine())
+    coordinator = TurnCoordinator(ctx)
+    coordinator.apply_player_move("e4")
+
+    with pytest.raises(ValueError, match="engine died"):
+        coordinator.collect_engine_reply()
+
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
+    assert session.move_history() == ["e4"], "the player's move stands"
+
+    ctx.engine = FakeEngine("e7e5")
+    reply = coordinator.collect_engine_reply()
+
+    assert reply is not None and reply.san == "e5"
+    coordinator.complete_turn()
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+    assert session.move_history() == ["e4", "e5"]
+
+
 def test_a_second_begin_while_one_is_pending_is_rejected(session):
     """Two computations for one turn would mean two candidate replies, and
     nothing sensible to do with the loser."""
@@ -490,38 +531,84 @@ def test_play_exchange_mid_turn_is_rejected(coordinator):
         coordinator.play_exchange("d4")
 
 
-# --- the engine's opening move (player takes black) -------------------------
+# --- settling a restored position -------------------------------------------
+#
+# A board can arrive with the engine to move and *nothing scheduled to move it*:
+# a new game the player takes as black, a save written between the player's move
+# and the reply, an explicit odd-ply takeback that pops the reply alone. None of
+# those is an answer to a player move, so none of them opens a turn — which is
+# exactly why the machine would otherwise sit awaiting a player who cannot move.
+# `engine_opening_move` used to settle the first of the three; one condition,
+# read off the session, covers all of them.
 
 
-def test_engine_opening_move_does_not_consume_a_turn(session):
+def test_settle_plays_the_opening_move_of_a_game_taken_as_black(session):
     session.new_game("black")
     ctx = ToolContext(session=session, engine=FakeEngine("e2e4"))
     coordinator = TurnCoordinator(ctx)
-    reply = coordinator.engine_opening_move()
+    reply = coordinator.settle_engine_turn()
     assert reply is not None and reply.san == "e4"
     # The player's first turn hasn't happened yet, so the turn id stands.
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
     assert coordinator.turn_id == 1
 
 
-def test_engine_opening_move_without_an_engine_is_none(session):
-    session.new_game("black")
-    coordinator = TurnCoordinator(ToolContext(session=session))
-    assert coordinator.engine_opening_move() is None
+def test_settle_finishes_an_exchange_an_odd_takeback_left_open(session):
+    """The case the audit found (finding 2): one half-move popped off a settled
+    exchange leaves the player's move on the board and the engine to answer it
+    again. Settling is not a turn — the player's next one is still to come — so
+    the id stands, and the phase says out loud that the app is waiting on
+    Stockfish while it does."""
+    ctx = ToolContext(session=session, engine=FakeEngine("e7e5"))
+    coordinator = TurnCoordinator(ctx)
+    coordinator.play_exchange("e4")
+    assert session.move_history() == ["e4", "e5"]
+    session.undo(1)  # an explicit odd count: the engine is on move again
+    assert session.turn != session.player_color
+    seen: list[str] = []
+    coordinator.on_phase = seen.append
+
+    reply = coordinator.settle_engine_turn()
+
+    assert reply is not None and reply.san == "e5"
+    assert session.move_history() == ["e4", "e5"]
+    assert session.turn == session.player_color
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+    assert coordinator.turn_id == 2, "settling consumes no turn"
+    assert seen == [TurnPhase.ENGINE_CALCULATING, TurnPhase.AWAITING_PLAYER]
+
+
+def test_settle_is_none_when_the_player_is_to_move(session):
+    """Whose move it is, is session state — not something each caller re-derives
+    before reaching for the engine. A settled board owes nothing."""
+    coordinator = TurnCoordinator(ToolContext(session=session, engine=MustNotPlay()))
+    assert coordinator.settle_engine_turn() is None
     assert coordinator.turn_id == 1
 
 
-def test_engine_owes_no_opening_move_when_the_player_has_white(session):
-    """Whose the opening move is, is session state — not something each caller
-    re-derives before reaching for the engine."""
+def test_settle_without_an_engine_is_none(session):
+    session.new_game("black")
+    coordinator = TurnCoordinator(ToolContext(session=session))
+    assert coordinator.settle_engine_turn() is None
+    assert coordinator.turn_id == 1
+
+
+def test_settle_is_none_on_a_game_that_is_already_over():
+    """A resumed save of a finished game is the engine's move by parity and
+    nobody's move in fact. The condition is re-derived here rather than inferred
+    from whose turn the FEN says it is."""
+    session = GameSession(fen=BLACK_MATED_WHITE, player_color="black")
     coordinator = TurnCoordinator(ToolContext(session=session, engine=MustNotPlay()))
-    assert coordinator.engine_opening_move() is None
+    assert session.turn != session.player_color
+    assert coordinator.settle_engine_turn() is None
 
 
-def test_engine_opening_move_mid_turn_is_rejected(coordinator):
+def test_settle_mid_turn_is_rejected(coordinator):
+    """Only from a board with no turn over it: mid-exchange the engine's move is
+    the *reply*, and that one is collected, not settled."""
     coordinator.apply_player_move("e4")
     with pytest.raises(TurnStateError):
-        coordinator.engine_opening_move()
+        coordinator.settle_engine_turn()
 
 
 # --- the live context: resume_game swaps the session -------------------------

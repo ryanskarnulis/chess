@@ -412,6 +412,32 @@ def _move_reply_dict(reply: MoveResult | None) -> dict[str, Any] | None:
     return {"san": reply.san, "uci": reply.uci}
 
 
+def _settled_engine_move(
+    tool_results: Sequence[dict[str, Any]],
+) -> MoveResult | None:
+    """The engine move a restore already played, rebuilt from the tool result.
+
+    `new_game`, `undo` and `resume_game` can each leave the engine to move —
+    a game taken as black, an odd-ply takeback, a save written mid-exchange —
+    and the coordinator settles that board inside the call rather than opening a
+    turn nobody would close. So by the time the command converges there is
+    nothing left to collect, and the only record of the move is the
+    `engine_move` the result carries, in the same shape `make_move`'s atomic
+    result uses.
+
+    The *last* one, because a command can restore twice (resume, then undo) and
+    the only move worth announcing is the one that answers the board the player
+    is left looking at. None when this command settled nothing.
+    """
+    for record in reversed(tool_results):
+        result = record["result"]
+        if result.get("ok") is not True:
+            continue
+        if played := result.get("engine_move"):
+            return MoveResult(legal=True, san=played["san"], uci=played["uci"])
+    return None
+
+
 def _destructive_confirmation(
     name: str, result: dict[str, Any], session: GameSession
 ) -> str:
@@ -422,13 +448,17 @@ def _destructive_confirmation(
     Only `new_game` leaves a game to play; every other op here ended one, and an
     ending is reported by its outcome (a resignation's result, or the half point a
     claimed draw produces) rather than by name.
+
+    It says nothing about the engine's opening move on a game taken as black.
+    That used to be spelled here, and is now one case of a rule with three: a
+    restored board the coordinator settled reports its move under `engine_move`
+    whichever tool restored it, and the pipeline announces any of them with the
+    one line every other engine move gets (`_reply_announcement`, composed
+    around whatever spoke for the turn). Two composers for one fact would have
+    said it twice on this route.
     """
     if name == "new_game":
-        parts = ["New game."]
-        engine_move = result.get("engine_move")
-        if engine_move:
-            parts.append(f"{engine_move['san']}.")
-        return " ".join(parts)
+        return "New game."
     outcome = result.get("outcome") or _outcome_dict(session)
     if outcome:
         return f"Game over: {outcome['result']} ({outcome['termination']})."
@@ -1769,12 +1799,21 @@ def create_app(
                 session = ctx.session
                 vs_engine = ctx.engine is not None
                 plies = 2 if vs_engine and session.turn == session.player_color else 1
-            # Inside the guard, so a stale takeback costs the open turn nothing:
-            # the position it was about is not the one this request meant.
-            coordinator.abandon_turn()
+            # Attempt first, abandon second, exactly as the `undo` tool does: a
+            # takeback that cannot happen replaces no position, so the open turn
+            # (and the engine reply it is owed) is not this request's to throw
+            # away. All of it inside the guard, so a stale takeback costs the
+            # open turn nothing either: the position it was about is not the one
+            # this request meant.
             result = ctx.session.undo(plies)
             if not result.ok:
                 raise HTTPException(status_code=409, detail=result.reason)
+            coordinator.abandon_turn()
+            # A client may send its own `plies`, and an odd count leaves the
+            # engine to move on a board no turn is open over. The coordinator
+            # settles it before anyone is shown the position — the same rule the
+            # tool follows, because it is the same board either way.
+            coordinator.settle_engine_turn()
             _publish_state()
             return {
                 "undone": list(result.undone),
@@ -2163,6 +2202,17 @@ def create_app(
                 owed_reply = True
                 engine_reply = await _offloop(coordinator.collect_engine_reply)
                 coordinator.complete_turn()
+            elif (settled := _settled_engine_move(tool_results)) is not None:
+                # No turn was open, and the engine moved anyway: a restore left
+                # it on move and the coordinator settled that board inside the
+                # tool (a resumed mid-exchange save, an odd-ply takeback, a new
+                # game as black). Nothing to collect, but the same thing to say
+                # — the player asked to load a game and the board moved twice,
+                # so the app announces the move it made the way it announces
+                # every other one. Voice-first, an unannounced reply is a board
+                # the player cannot see changing under them.
+                owed_reply = True
+                engine_reply = settled
             # The honesty guard, at the one point every route converges: an
             # operational claim the turn cannot back is not shown to the player.
             # The board, the engine's reply and the tool results are the record of

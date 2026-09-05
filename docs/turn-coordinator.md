@@ -18,6 +18,8 @@ awaiting_player → player_move_applied → (agent_observing) →
 engine_calculating → engine_move_applied → completed → awaiting_player
 
 abandon_turn: from anywhere back to awaiting_player (turn_id + 1)
+settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
+                    (same turn_id: no turn was open, and none is consumed)
 ```
 
 - `turn_id` counts turns; a healthy move turn is exactly 2 mutations, so a
@@ -25,7 +27,10 @@ abandon_turn: from anywhere back to awaiting_player (turn_id + 1)
 - An illegal player move is a *result*, not a transition.
 - A game-ending player move completes the turn immediately.
 - `collect_engine_reply` returns None and advances when no reply is owed —
-  derived from the session at collect time, never remembered.
+  derived from the session at collect time, never remembered. An engine that
+  *raises* leaves the phase back at `player_move_applied`: the player's move
+  stands and the reply is still owed, which is the state the next command can
+  heal from.
 - `abandon_turn` is the only other exit: undo, new game, resign, and resume
   each run it on the path where their mutation really happens, dropping any
   pending computation. Only where it happens — a *refused* mutation replaces no
@@ -33,12 +38,27 @@ abandon_turn: from anywhere back to awaiting_player (turn_id + 1)
   `undo` used to abandon before finding out whether it could take anything
   back, and a refused undo beside a move in one batch discarded that move's
   engine reply.
+- `settle_engine_turn` answers a *restored* position: a board with the engine
+  to move and no turn open over it. Three ways in — a new game the player takes
+  as black, a save written between the player's move and the reply, an explicit
+  odd-ply takeback that pops the reply alone — and one condition, read off the
+  session at call time: an engine, a live game, and the side to move is not the
+  player's. `new_game`, `undo` and `resume_game` call it after abandoning, and
+  so does `/api/game/undo`, whose client may send its own `plies`. It is not a
+  reply, so it consumes no turn and there is no observation beat around it.
 
 ## Ownership rules
 
 - **The engine's reply belongs to the coordinator and is never a
   model-callable tool** (`test_engine_reply_is_not_a_callable_tool`). A model
   that could ask for the reply could also fail to.
+- **A restored engine-to-move board is settled by the coordinator, and the app
+  announces the move.** The restoring tools report it under `engine_move` — the
+  shape `make_move`'s atomic result already uses — and the command pipeline
+  appends the same deterministic `_reply_announcement` an ordinary reply gets
+  (the last one, if a command restored twice). Voice-first, a board that moved
+  twice in silence is a board the player cannot follow; and like every other
+  app-composed line it is shown to the player, never remembered as Glitch's.
 - Two ways to run a turn, same boundary: `play_exchange(move)` (atomic — used
   by direct mode and MCP, which have no pipeline behind them) and the beats
   (`apply_player_move` → reaction → `collect_engine_reply` → `complete_turn`),
@@ -111,10 +131,14 @@ the control buttons report nothing (no interaction window).
 
 ## Known edges, deliberately left
 
-- An engine that raises mid-calculation leaves the phase at
-  `engine_calculating`; a route that raises after the player's move landed
-  leaves the turn open — the next command heals it (refused move + owed reply
-  played), at the cost of one utterance.
+- A route that raises after the player's move landed leaves the turn open, and
+  so does an engine that raises mid-calculation — the failure is loud (the
+  command ends in the error) but the phase comes back to `player_move_applied`,
+  so the next command heals it: refused move, owed reply played, at the cost of
+  one utterance. Until 2026-09-05 the engine case did not: the phase stayed at
+  `engine_calculating`, where `_require` refuses every ordinary player move, and
+  only an undo, a reset or a resume could dig the game out. This paragraph
+  claimed otherwise; the code now matches it.
 - `/api/game/confirm` returns only state (the dialog already asked) but is
   traced (route `control`). Undo and direct-mode drags stay untraced — neither
   can be an agent failure.
