@@ -234,6 +234,7 @@ _REPORT_PATH = os.environ.get("CHESSAPP_EVAL_REPORT")
 # 0.8 → 0.7 halves the gate's chance of catching a real drop to 0.6.
 _FLOORS: dict[str, float] = {
     "undo_and_replace": 0.8,
+    "undo_twice_and_replace": 0.8,
     "my_mistake_is_mine": 0.8,
     "play_as_black": 0.8,
     "resume_not_denied": 0.8,
@@ -1524,6 +1525,72 @@ def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
         engine,
         "undo_and_replace",
         "take that bishop move back and play d4 instead",
+        check,
+        floor=floor,
+        setup=setup,
+    )
+
+    _assert_floor(result, floor)
+
+
+@pytest.mark.xfail(
+    reason=(
+        "known gap: gemma-4-12b reads two named moves as a plies count three "
+        "times in four — `undo(plies=2)` (one exchange, not two) or "
+        "`undo(plies=1)` (the engine's reply alone) — then plays the "
+        "replacement onto a board that still holds the second move. Measured "
+        "at 2/10 across the gate's two blocks and 5/20 alone on 2026-09-04, "
+        "with the loop stall this scenario was written for gone from every "
+        "sample. Model understanding, so the lever is `undo`'s description "
+        "(a prompt change, gated on this scenario — TODO.md). Non-strict: the "
+        "invariant is right and it XPASSes when the model reads the count."
+    ),
+    strict=False,
+)
+def test_eval_undo_twice_and_replace_is_one_turn(engine: EnginePlayer) -> None:
+    """ "undo the bishop move and undo the knight move, then play d4" — two
+    takebacks and a replacement, one utterance. Live (2026-07-30 and
+    2026-08-08) the planner did exactly the right thing — `undo`, then `undo`
+    again — and the loop cut it off: the second call carried the same empty
+    arguments as the first, the stall rule read that as a repeat, and the phase
+    ended with the replacement never played ("back to square one, hit me with
+    that bishop move whenever you're ready"). The rule now reads the results,
+    and a second `undo` that pops a different exchange is progress
+    (`llama_brain.py`; the loop itself is pinned in `test_llama_brain.py`).
+
+    Pre-fix this came in 1/5: two samples were that stall (`undo → undo`,
+    `no_progress`, no move), two were the model taking back one exchange for
+    two, and the one pass issued both undos in a single model turn. Post-fix
+    the stall is gone and what remains is the count misread — see the marker.
+
+    Behavioral, like `undo_and_replace`: however the model spells the takeback
+    (two calls, or one asking for four plies), both exchanges must be gone and
+    the replacement must stand where the first of them stood."""
+
+    def setup(app: EvalApp) -> None:
+        for san in ("e4", "b6", "Nf3", "h6", "Bc4", "a5"):
+            assert app.ctx.session.submit_move(san).legal
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        trajectory = [c["tool"] for c in _tool_calls(assistant)]
+        assert "undo" in trajectory, "expected the takebacks"
+        assert "make_move" in trajectory, "expected the replacement move"
+        assert trajectory.index("undo") < trajectory.index("make_move"), (
+            f"the takebacks must precede the replacement: {trajectory}"
+        )
+        history = _history(app.client)
+        # Both of White's last moves and the engine's answers to them are gone;
+        # d4 stands where Nf3 stood (plus whatever the engine answered it with).
+        assert history[:3] == ["e4", "b6", "d4"], history
+        assert "Nf3" not in history and "Bc4" not in history, (
+            f"a takeback did not stick: {history}"
+        )
+
+    floor = _FLOORS["undo_twice_and_replace"]
+    result = _pass_rate(
+        engine,
+        "undo_twice_and_replace",
+        "undo the bishop move and undo the knight move, then play d4 instead",
         check,
         floor=floor,
         setup=setup,

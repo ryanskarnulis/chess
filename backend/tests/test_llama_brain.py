@@ -105,16 +105,22 @@ class FakeDispatcher:
     """`ToolDispatcher` double: records calls, returns canned results.
 
     Default result is a bland success, so a test only scripts the result it
-    actually cares about (a rejected move, a domain error).
+    actually cares about (a rejected move, a domain error). A result scripted
+    as a *list* is dealt out one per call, the last repeating — for a tool
+    whose answer changes from one call to the next.
     """
 
-    def __init__(self, results: dict[str, dict] | None = None) -> None:
+    def __init__(self, results: dict[str, dict | list[dict]] | None = None) -> None:
         self.results = results or {}
         self.calls: list[tuple[str, dict]] = []
 
     def dispatch(self, name: str, args) -> dict:
         self.calls.append((name, args))
-        return self.results.get(name, {"ok": True})
+        scripted = self.results.get(name, {"ok": True})
+        if isinstance(scripted, list):
+            nth = sum(1 for called, _ in self.calls if called == name)
+            return scripted[min(nth, len(scripted)) - 1]
+        return scripted
 
 
 # The two prompts, as recognizable stand-ins: which one a call carries is how a
@@ -407,8 +413,9 @@ def test_unparseable_args_exhaust_the_correction_budget():
 
 def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
     # Distinct calls every turn: a model that keeps finding new work to do runs
-    # out of budget. (A model that asks for the *same* work twice is stopped one
-    # turn earlier by the repeat rule below — a different stop, on purpose.)
+    # out of budget. (A model that asks for the *same* work twice and gets the
+    # same answer is stopped one turn earlier by the stall rule below — a
+    # different stop, on purpose.)
     brain, provider = make_brain(
         tool_calls_turn(("make_move", {"move": "e4"})),
         tool_calls_turn(("make_move", {"move": "e5"})),
@@ -422,16 +429,16 @@ def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
     assert len(resp.tool_results) == 3  # everything it did is still reported
 
 
-# --- the repeat rule: a turn that asks for nothing new is the planner's last --
+# --- the stall rule: a turn that learns nothing new is the planner's last -----
 
 
 def test_a_planner_turn_that_only_repeats_itself_ends_the_loop():
     # The recorded defect: asked "what should I play?" under the retired
     # hints-off mode, the planner re-ran the reads it had already run and
     # burned all four iterations, so the turn ended on a budget stop and the
-    # player got the canned stuck line. A call it already made against this
-    # turn cannot bring anything new back, so the second one is the planner's
-    # last word.
+    # player got the canned stuck line. A call it already made this turn,
+    # answered exactly as it was then, brought nothing new back, so the second
+    # one is the planner's last word.
     brain, provider = make_brain(
         tool_calls_turn(("evaluate_position", {})),
         tool_calls_turn(("evaluate_position", {})),
@@ -543,6 +550,127 @@ def test_a_repeat_stop_hands_the_narrator_the_loops_own_note():
     brief = provider.calls[-1]["messages"][-1]["content"]
     assert _NO_PROGRESS_NOTE in brief
     assert "repeat" not in brief.lower()  # the machinery stays in the trace
+
+
+# --- the stall is read off the results: a repeat that did new work is not one --
+
+
+def _exchanges(session: GameSession, *sans: str) -> None:
+    """Play `sans` straight onto the session, both sides' moves, so there are
+    exchanges on the board to take back."""
+    for san in sans:
+        assert session.submit_move(san).legal, san
+
+
+def test_a_second_undo_pops_a_different_exchange_and_the_move_still_lands():
+    # The live defect (2026-07-30, 2026-08-08): "undo my knight move and undo
+    # the bishop move and then play my knight move". The planner did exactly
+    # that — `undo`, then `undo` again — and the loop, keying the stall on the
+    # call alone, read the second `undo {}` as a repeat and ended the phase with
+    # the move never played. Each `undo` pops a different exchange and its
+    # result says so; a repeat that comes back different is progress.
+    registry, session = real_registry()
+    _exchanges(session, "d4", "d5", "Bf4", "Nf6", "Nc3", "Nc6")
+    brain, provider = make_brain(
+        tool_calls_turn(("undo", {})),
+        tool_calls_turn(("undo", {})),
+        tool_calls_turn(("make_move", {"move": "Nf3"})),
+        text_turn("took back two exchanges, played Nf3"),
+        text_turn("Knight's on f3. Your move."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+    )
+    resp = brain.get_agent_response(
+        board_state={},
+        command="undo my knight move and undo the bishop move, then play knight f3",
+    )
+
+    assert resp.stop_reason == "completed"
+    assert [tc.name for tc in resp.tool_calls] == ["undo", "undo", "make_move"]
+    first, second = (r["result"] for r in resp.tool_results[:2])
+    assert first["undone"] == ["Nc6", "Nc3"]
+    assert second["undone"] == ["Nf6", "Bf4"]
+    # Four planner turns and the narrator: the loop ran on to the planner's
+    # own note instead of ending after the second undo.
+    assert system_prompts(provider) == [PLANNER] * 4 + [PERSONA]
+    # The move really landed, on the board the takebacks left behind (and the
+    # fake engine answered it).
+    assert session.move_history() == ["d4", "d5", "Nf3", "e5"]
+    assert resp.text == "Knight's on f3. Your move."
+
+
+def test_an_identical_read_answered_identically_still_ends_the_loop():
+    # The original protection, kept, on the real executor: the same question
+    # asked twice of the same board gets the same answer, and the second one is
+    # the planner's last word — not a third and a fourth iteration of it.
+    registry, _ = real_registry()
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn("dead even, as I said"),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+        max_iterations=4,
+    )
+    resp = brain.get_agent_response(board_state={}, command="how am I doing?")
+
+    assert resp.stop_reason == "no_progress"
+    assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]
+    results = [r["result"] for r in resp.tool_results]
+    assert results[0] == results[1]
+
+
+def test_a_repeat_that_stops_changing_anything_is_where_the_loop_stops():
+    # Progress is judged answer by answer, so a call that keeps doing new work
+    # keeps the loop alive exactly as long as it does: two takebacks pop two
+    # different exchanges, a third finds nothing left and is refused, and the
+    # fourth — the same refusal again — is the stall.
+    registry, session = real_registry()
+    _exchanges(session, "d4", "d5", "Nf3", "Nc6")
+    brain, provider = make_brain(
+        *(tool_calls_turn(("undo", {})) for _ in range(4)),
+        text_turn("nothing left to take back"),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+        max_iterations=6,
+    )
+    resp = brain.get_agent_response(board_state={}, command="undo everything")
+
+    assert resp.stop_reason == "no_progress"
+    assert [tc.name for tc in resp.tool_calls] == ["undo"] * 4
+    results = [r["result"] for r in resp.tool_results]
+    assert [r["ok"] for r in results] == [True, True, False, False]
+    assert results[2] == results[3]
+    assert session.move_history() == []
+    # Four planner turns and the narrator — the stall, not the budget.
+    assert system_prompts(provider) == [PLANNER] * 4 + [PERSONA]
+
+
+def test_a_repeat_answered_differently_is_progress_whatever_the_tool():
+    # The loop holds no board and no list of which tools mutate: it judges
+    # progress from what came back and from nothing else. So a repeated read
+    # that answers differently keeps the loop going too — an engine re-search
+    # whose score jitters is bounded by the iteration budget, as it was before
+    # the rule existed.
+    dispatcher = FakeDispatcher(
+        {
+            "evaluate_position": [
+                {"ok": True, "score_cp": 12},
+                {"ok": True, "score_cp": 15},
+            ]
+        }
+    )
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn("about even"),
+        text_turn("roughly level"),
+        dispatcher=dispatcher,
+    )
+    resp = brain.get_agent_response(board_state={}, command="how am I doing?")
+
+    assert resp.stop_reason == "completed"
+    assert len(provider.calls) == 4  # three planner turns and the narrator
 
 
 def test_an_empty_planner_note_leaves_the_heading_out_of_the_brief():
