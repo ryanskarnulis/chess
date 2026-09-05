@@ -87,8 +87,11 @@ Hard scenarios (single-shot, behavior asserted directly):
 | `destructive_confirm` | "new game" mid-game, then "yes" | No reset on the first ask; the yes resets. |
 
 Pass-rate scenarios (sampled, floor 0.8 each): `undo_and_replace` (undo + a
-named replacement is one turn), `my_mistake_is_mine` (analyzes the player's
-move, not the engine's), `play_as_black` (new game as black), `resume_not_denied`
+named replacement is one turn), `undo_twice_and_replace` (two takebacks + a
+named replacement is one turn — the live "undo, undo, then play X" the loop's
+stall rule used to cut off after the second undo), `my_mistake_is_mine`
+(analyzes the player's move, not the engine's), `play_as_black` (new game as
+black), `resume_not_denied`
 (a save on disk is resumed, not denied), `resign_never_pretends` (a resignation
 dispatches — never a narrated fake game-over), `advice_is_engine_backed`
 ("what should I play here?" must consult `get_best_moves`, mutate nothing, and
@@ -116,7 +119,29 @@ fresh-conversation passes hid live failures.
 
 ## Current baseline
 
-**Run 2026-09-04 on the PGN-by-chat slice (#258): 31 passed in a single run, 5 m 13 s, infra 0; `undo_and_replace` 4/5 at the floor (the same wrong replacement move, `Bc4` for `d4`, with the undo clean — re-run alone at 10 samples: 9/10, the miss again a wrong replacement move), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+**Run 2026-09-04 on the results-keyed stall rule (#260): 31 passed in a single run, 5 m 59 s, infra 0; `undo_and_replace` 8/10 ABOVE_FLOOR (3/5 then 5/5 — both misses `undo(plies=1)`, the engine's reply alone taken back, then an illegal `d4`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3). No prompt change: the loop's
+`no_progress` stall rule now keys a repeat on the call *and its result*, so a
+second `undo` — same empty arguments, a different exchange popped — is
+progress rather than the planner's last word (`docs/planner-narrator.md`).
+
+The new scenario `undo_twice_and_replace` is the traced live misfire ("undo
+my knight move and undo the bishop move and then play my knight move",
+2026-07-30 and 2026-08-08: `undo → undo`, `no_progress`, the move never
+played). Pre-fix 1/5 — two samples that stall, two the model taking back one
+exchange for two, the one pass issuing both undos in a single model turn.
+Post-fix the stall is gone from every sample (each `undo → undo` trajectory
+goes on to `make_move`), and the scenario is still red — 1/5 in the gate,
+5/20 alone — because what remains is a *reading* miss: two named moves become
+`undo(plies=2)` (one exchange) or `undo(plies=1)` (the reply alone), and the
+replacement lands on a board that still holds the second move. That is model
+understanding with `undo`'s description as its lever (TODO.md), so the
+scenario ships as a non-strict xfail with the measurement in its marker: the
+loop fix is pinned deterministically in `test_llama_brain.py`, and this
+scenario waits for the description PR that will gate on it.
+
+Previously on the PGN-by-chat slice (#258): 31 passed in a single run, 5 m 13 s, infra 0; `undo_and_replace` 4/5 at the floor (the same wrong replacement move, `Bc4` for `d4`, with the undo clean — re-run alone at 10 samples: 9/10, the miss again a wrong replacement move), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.
 `long_capture` 5/5 ×3, costs unmoved. The one prompt change is
 `export_pgn`'s description (the reply says the export is ready and recites
 nothing, because the app now renders the notation with a copy button); the

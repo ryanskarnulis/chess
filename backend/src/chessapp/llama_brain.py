@@ -37,20 +37,30 @@ with tools, append its turn, dispatch each call, append each result as a
 still holds tools (that is what makes `get_best_moves` → `make_move` possible)
 without ever being able to spin.
 
-**A turn that asks for nothing new is the planner's last** (`no_progress`, a
+**A turn that learns nothing new is the planner's last** (`no_progress`, a
 fifth stop reason beside the standard's three and chess's `provider_error`).
 Measured, not theoretical: asked "what should I play?" with hints off — an ask
 whose right answer, under the since-retired hints mode, was "no, hints are
 off" — the planner re-ran reads it had already run and spent the whole budget
 doing it (2 of 20 samples, `docs/agent-evals.md`), and a budget stop reaches no
-narrator, so the player got the pipeline's canned stuck line. A call identical
-to one this turn already made cannot bring anything new back, so the loop ends
-the planning phase itself rather than granting iterations that can only
-repeat. It is a *termination*
-rule and nothing more: the repeated call is still dispatched, because whether a
-repeat may run is the tool layer's judgment (the phase machine already refuses
-a second player move), and the results are real — so unlike a budget stop this
-one reaches the narrator and the player gets an answer.
+narrator, so the player got the pipeline's canned stuck line. The stall is read
+off the *results*, not the calls: a repeated call that comes back with an
+answer this turn has already seen brought nothing new, so the loop ends the
+planning phase itself rather than granting iterations that can only repeat.
+The first cut keyed on the call alone — "an identical call cannot bring
+anything new back" — and that premise is false for a mutation: `undo` takes
+the same empty arguments every time and pops a different exchange every time,
+so "undo my knight move and undo the bishop move and then play my knight move"
+ended after the second undo with the move never played (live, 2026-07-30 and
+2026-08-08). A repeat that comes back different — another `undone`, another
+`fen` — did new work and the loop goes on; a repeat that comes back the same,
+read or mutation, is the spin the rule exists for. (A read whose numbers
+jitter, an engine score re-searched, is then bounded by the iteration budget
+alone, as it was before the rule.) It is a *termination* rule and nothing
+more: the repeated call is still dispatched, because whether a repeat may run
+is the tool layer's judgment (the phase machine already refuses a second
+player move), and the results are real — so unlike a budget stop this one
+reaches the narrator and the player gets an answer.
 
 Failures, and why they are not all the same:
 
@@ -272,9 +282,10 @@ class LlamaBrain:
         schemas = _schemas_of(tools)
         run = _RunState()
         corrections = 0
-        # Every call this turn has already asked for, so a turn that asks for
-        # nothing new can be recognized as the planner's last (see `_call_key`).
-        asked: set[tuple[str, str]] = set()
+        # Every exchange this turn has already had — a call and what it brought
+        # back — so a turn that learns nothing new can be recognized as the
+        # planner's last (see `_exchange_key`).
+        seen: set[tuple[str, str, str]] = set()
 
         for _ in range(self.max_iterations):
             self._report(BRAIN_PLANNING)
@@ -332,11 +343,14 @@ class LlamaBrain:
             schema_error = False
             progressed = False
             for call in result.tool_calls:
-                key = _call_key(call.name, call.arguments)
-                progressed = progressed or key not in asked
-                asked.add(key)
                 payload, bad_schema = self._dispatch(call, schemas)
                 schema_error = schema_error or bad_schema
+                # Judged after the dispatch, on what came back: a repeated call
+                # is a stall only when it is answered as it already was this
+                # turn. A second `undo` pops a different exchange and says so.
+                exchange = _exchange_key(call.name, call.arguments, payload)
+                progressed = progressed or exchange not in seen
+                seen.add(exchange)
                 run.record(call.name, call.arguments, payload)
                 messages.append(_tool_message(call.id, payload))
             if schema_error:
@@ -348,9 +362,10 @@ class LlamaBrain:
                 # that budget (smaller than the iteration one) already ends the
                 # turn early. Leave this turn to it.
             elif not progressed:
-                # Every call this turn repeated one the turn had already made,
-                # so no further iteration can bring anything new back — the
-                # planner has stopped making progress and this turn is its last.
+                # Every call this turn repeated one the turn had already made
+                # and came back with the same answer, so no further iteration
+                # can bring anything new back — the planner has stopped making
+                # progress and this turn is its last.
                 # Not a budget stop: results *did* come back, so the narrator
                 # closes the turn from them and the player gets an answer
                 # instead of the pipeline's canned stuck line. The note is the
@@ -436,9 +451,9 @@ class LlamaBrain:
         extra call shows up in the trace and the eval baseline.
 
         `stop_reason` is how the planning phase ended: `completed` when the
-        planner declared itself done, `no_progress` when it repeated itself and
-        the loop ended the phase for it. Both reach the narrator — the
-        distinction is what the trace and the eval report read.
+        planner declared itself done, `no_progress` when it repeated itself to
+        no effect and the loop ended the phase for it. Both reach the narrator —
+        the distinction is what the trace and the eval report read.
         """
         self._report(BRAIN_NARRATING)
         started = self.clock()
@@ -590,14 +605,22 @@ def _schemas_of(tools: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {d["function"]["name"]: d["function"]["parameters"] for d in tools}
 
 
-def _call_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
-    """Identity of one call — the tool plus its arguments — for telling a repeat
-    from new work. Sorted keys and `default=str` because the key must be the
-    *call*, not how the model happened to serialize it, and an argument value
-    that will not serialize must still produce a key rather than raise inside
-    the loop.
+def _exchange_key(
+    name: str, args: dict[str, Any], result: dict[str, Any]
+) -> tuple[str, str, str]:
+    """Identity of one exchange — the tool, its arguments and what it answered —
+    for telling a stall from new work. The result is part of the identity
+    because the call alone is not: `undo` with the same empty arguments pops a
+    different exchange every time, and it is the answer that says so. Sorted
+    keys and `default=str` because the key must be the *exchange*, not how the
+    model happened to serialize the call, and a value that will not serialize
+    must still produce a key rather than raise inside the loop.
     """
-    return name, json.dumps(args, sort_keys=True, default=str)
+    return (
+        name,
+        json.dumps(args, sort_keys=True, default=str),
+        json.dumps(result, sort_keys=True, default=str),
+    )
 
 
 # Whose move the narrator is about to react to. The brief used to open "You

@@ -30,9 +30,13 @@ not asking one call to do both jobs. The split cured the release-blocking
 
 A budget stop reaches no narrator — nothing verified came back to speak from.
 A `no_progress` stop (a planner turn whose every call repeats one this turn
-already made) *does* reach the narrator: real results came back, and the loop
-just refuses iterations that can only repeat. The repeated call is still
-dispatched — whether a repeat may run is the tool layer's judgment.
+already made *and is answered as it was then*) *does* reach the narrator: real
+results came back, and the loop just refuses iterations that can only repeat.
+The repeated call is still dispatched — whether a repeat may run is the tool
+layer's judgment — and a repeat that comes back different is progress, not a
+stall: a second `undo` carries the same empty arguments as the first and pops
+a different exchange, and keying the stall on the call alone once ended
+"undo, undo, then play X" with X never played.
 
 ## What the narrator is not given
 
