@@ -54,7 +54,13 @@ a different exchange, and keying the stall on the call alone once ended
 The fast path is unchanged (0 calls at verbosity=low, 1 otherwise); brain
 turns pay one extra short tool-free completion (plain move 2 → 3 calls).
 Ceilings: planner 2048 / narrator 4096 `max_tokens`; a truncated call is a
-failed turn, never a truncated reply that travels.
+failed turn, never a truncated reply that travels — and the reader in front of
+the destructive gate fails the same way, to the `unrelated` that changes
+nothing. A truncated planner response that nevertheless *carries tool calls*
+runs them and the loop goes on (decided 2026-09-05): the provider parses each
+call's arguments before the response exists, so a call that arrived is a whole
+call, and only the prose is lost — the fragment beside them is never the
+handoff note.
 `CHESSAPP_PLANNER_TEMPERATURE` samples the planner apart from the narrator;
 the eval harness reads the same variable.
 

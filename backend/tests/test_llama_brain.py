@@ -17,10 +17,19 @@ reply (which is the `AgentResponse.text`).
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
-from chessapp.brain import CANCEL, CONFIRM, UNRELATED, AgentResponse
+from chessapp.brain import (
+    CANCEL,
+    CONFIRM,
+    RETRY_DIFFERENT_ARGS,
+    RETRY_NEVER,
+    UNRELATED,
+    AgentResponse,
+)
+from chessapp.coordinator import TurnCoordinator
 from chessapp.game import GameSession
 from chessapp.llama_brain import (
     _ANSWER_MAX_TOKENS,
@@ -122,6 +131,16 @@ class FakeDispatcher:
             return scripted[min(nth, len(scripted)) - 1]
         return scripted
 
+    def refusal(self, error: str, retry: str, **details) -> dict:
+        """The other half of the dispatcher protocol: the shape a "no" takes.
+
+        The real registry's, minus the `board_version` only a bound context can
+        supply — this double holds no board. The loop builds its own schema
+        refusals through here, so the shape is one implementation's rather than
+        two.
+        """
+        return {"ok": False, "error": error, "retry": retry, **details}
+
 
 # The two prompts, as recognizable stand-ins: which one a call carries is how a
 # test tells a planner turn from the narrator's.
@@ -161,11 +180,29 @@ def system_prompts(provider: ScriptedProvider) -> list[str]:
     return [call["messages"][0]["content"] for call in provider.calls]
 
 
-def real_registry() -> tuple[object, GameSession]:
-    """The actual registry over a real game — the brain's real executor."""
+def real_registry(save_dir: Path | None = None) -> tuple[object, GameSession]:
+    """The actual registry over a real game — the brain's real executor.
+
+    `save_dir` gives it somewhere to write, for the tests about a tool whose
+    result has to say *which* board it acted on.
+    """
     session = GameSession()
-    ctx = ToolContext(session=session, engine=FakeEngine())
+    ctx = ToolContext(session=session, engine=FakeEngine(), save_dir=save_dir)
     return build_registry(ctx), session
+
+
+def app_shaped_registry(save_dir: Path | None = None) -> tuple[object, ToolContext]:
+    """The registry as app assembly builds it: one shared coordinator and
+    `atomic_exchange=False`, so `make_move` applies the player's move and
+    leaves the turn open for the pipeline to finish.
+
+    That wiring is what puts the phase machine inside a planner batch — a
+    second `make_move` in the same batch is a `TurnStateError` — and it is the
+    one the mixed-batch precedence tests need, because the failures they
+    parameterize over have to be the failures the shipped app can produce.
+    """
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(), save_dir=save_dir)
+    return build_registry(ctx, TurnCoordinator(ctx), atomic_exchange=False), ctx
 
 
 # --- the loop: a tool result reaches the model while it still holds tools ---
@@ -370,6 +407,94 @@ def test_repeated_schema_failures_exhaust_the_correction_budget():
     assert resp.text == ""
 
 
+@pytest.mark.parametrize(
+    ("call", "retry"),
+    [
+        # The offer is the offer: no arguments reach a name that is not in it.
+        (("teleport_king", {}), RETRY_NEVER),
+        # Arguments the schema rejected are exactly what a corrected call fixes.
+        (("undo", {"plies": 0}), RETRY_DIFFERENT_ARGS),
+    ],
+)
+def test_a_refusal_the_loop_wrote_says_how_to_recover_from_it(call, retry):
+    """A call the loop refuses before dispatch is still a refusal, and it owes
+    what every other refusal carries.
+
+    These two were the exception: built by hand as a bare `{ok, error}`, they
+    were the only failures in a turn with no `retry` and no `board_version` —
+    while the planner's contract tells the model that every failure says how to
+    recover from it (audit 2026-09-05). The loop asks the dispatcher for the
+    shape now, so a "no" it wrote and a "no" a handler raised read alike.
+    """
+    registry, _ = real_registry()
+    brain, _ = make_brain(
+        tool_calls_turn(call),
+        text_turn("nothing doing"),
+        text_turn("Can't do that one."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+    )
+    resp = brain.get_agent_response(board_state={}, command="do the impossible")
+
+    result = resp.tool_results[0]["result"]
+    assert result["ok"] is False
+    assert result["retry"] == retry
+    # Which board it was about — from the registry, because the loop holds none.
+    assert result["board_version"] == registry.context.board_version
+
+
+def test_two_schema_failures_in_one_response_spend_one_correction():
+    """The charge is per *response*, not per bad call: a model that fumbles two
+    calls in one turn has had one bad turn, and paying twice for it would end
+    the turn a whole recovery early."""
+    brain, provider = make_brain(
+        tool_calls_turn(("teleport_king", {}), ("make_move", {"move": 5})),
+        max_iterations=8,
+        max_corrections=1,
+    )
+    resp = brain.get_agent_response(board_state={}, command="win instantly")
+
+    # Two calls, two answers, and the first response survived on a budget of
+    # one — the *second* faulty response is the one too many.
+    assert resp.stop_reason == "correction_limit"
+    assert len(provider.calls) == 2
+    assert [r["name"] for r in resp.tool_results] == [
+        "teleport_king",
+        "make_move",
+    ] * 2
+
+
+def test_the_correction_that_ends_the_turn_still_runs_the_batchs_valid_calls():
+    """Partial success by design, right to the last response: the budget ends
+    the turn *after* the batch, never instead of it. Three faulty responses,
+    each carrying one good call beside the bad one — and the third one's still
+    lands before the loop gives up."""
+    registry, ctx = app_shaped_registry()
+    brain, provider = make_brain(
+        tool_calls_turn(
+            ("undo", {"plies": 0}), ("set_voice_output", {"enabled": True})
+        ),
+        tool_calls_turn(
+            ("undo", {"plies": 0}), ("set_verbosity", {"verbosity": "high"})
+        ),
+        tool_calls_turn(
+            ("undo", {"plies": 0}), ("set_difficulty", {"tier": "beginner"})
+        ),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+        max_iterations=8,
+    )
+    resp = brain.get_agent_response(
+        board_state={}, command="undo nothing, and settings"
+    )
+
+    assert resp.stop_reason == "correction_limit"
+    assert len(provider.calls) == 3  # the default budget: two recoveries, then out
+    assert ctx.settings.voice_output is True
+    assert ctx.settings.verbosity == "high"
+    assert ctx.settings.tier == "beginner", "the last response's sibling ran too"
+
+
 # --- unparseable arguments: the one case with nowhere to attach ------------
 
 
@@ -427,6 +552,203 @@ def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
     assert len(provider.calls) == 3  # the loop's turns only — no narrator
     assert resp.text == ""
     assert len(resp.tool_results) == 3  # everything it did is still reported
+
+
+# --- one batch, one failing call: what runs, what is answered, what it costs --
+#
+# A composed request arrives as one response holding several calls, and the
+# interesting shape is the one where a call in the middle fails: "turn voice on,
+# take that back, and talk more" is two settings the player will notice either
+# way. The rule the audit asked to see pinned (2026-09-05) is that the batch is
+# dispatched whole, in order, before anything is decided about it — every call
+# the model made gets exactly one answer, the siblings on both sides of the
+# failure run, and only *schema-level* failures cost a correction. The five
+# failures below are every kind the shipped registry can produce in that
+# position.
+
+
+# `prelude` is the state a failure needs before the batch's own three calls: a
+# player move already made this turn, for the two that are about the game rather
+# than about the arguments (a second move is the phase machine's "no"; a reset
+# is only gated once there is an investment to guard).
+MIXED_BATCH_FAILURES = [
+    pytest.param((), ("teleport_king", {}), True, id="unknown-tool"),
+    pytest.param((), ("undo", {"plies": 0}), True, id="schema-invalid"),
+    pytest.param((), ("resume_game", {"name": "nope"}), False, id="tool-error"),
+    pytest.param(
+        (("make_move", {"move": "e4"}),),
+        ("make_move", {"move": "d4"}),
+        False,
+        id="turn-state",
+    ),
+    pytest.param(
+        (("make_move", {"move": "e4"}),),
+        ("new_game", {}),
+        False,
+        id="destructive-gate",
+    ),
+]
+
+
+def _mixed_batch(prelude, failing):
+    """One planner response: the failing call between two settings that must
+    land whatever it does."""
+    return tool_calls_turn(
+        *prelude,
+        ("set_voice_output", {"enabled": True}),
+        failing,
+        ("set_verbosity", {"verbosity": "high"}),
+    )
+
+
+@pytest.mark.parametrize(("prelude", "failing", "schema_level"), MIXED_BATCH_FAILURES)
+def test_a_failing_call_is_answered_and_its_siblings_still_run(
+    prelude, failing, schema_level, tmp_path
+):
+    registry, ctx = app_shaped_registry(save_dir=tmp_path)
+    batch = _mixed_batch(prelude, failing)
+    brain, provider = make_brain(
+        batch,
+        text_turn("did what I could"),
+        text_turn("Voice on, chattier. The rest, no."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+    )
+    resp = brain.get_agent_response(
+        board_state={}, command="voice on, that thing, and talk more"
+    )
+
+    # Every call the model made is answered exactly once and in call order: the
+    # model's next prompt holds its own batch, not a filtered version of it.
+    answered = [m for m in provider.calls[1]["messages"] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in answered] == [
+        call.id for call in batch.tool_calls
+    ]
+    # The siblings ran, on both sides of the failure.
+    assert ctx.settings.voice_output is True
+    assert ctx.settings.verbosity == "high"
+    # And the failure itself is result data — never an exception out of the
+    # loop, whichever of the five it was.
+    middle = resp.tool_results[len(prelude) + 1]["result"]
+    assert middle["ok"] is False
+    assert middle["retry"] in (RETRY_NEVER, RETRY_DIFFERENT_ARGS)
+    assert middle["board_version"] == ctx.board_version
+    # One refused call is not a failed turn: with a correction to spare, all
+    # five carry on to the planner's note and the narrator speaks.
+    assert resp.stop_reason == "completed"
+
+
+@pytest.mark.parametrize(("prelude", "failing", "schema_level"), MIXED_BATCH_FAILURES)
+def test_only_a_schema_failure_in_a_batch_costs_a_correction(
+    prelude, failing, schema_level, tmp_path
+):
+    """The line between the two budgets, drawn on the same five failures. An
+    unknown name and rejected arguments are the model failing to *form* a call,
+    which is what the (smaller) correction budget exists to end early. A move
+    the phase machine refuses, a save that is not there, a reset the gate holds
+    — those are the game answering, and the model reading the answer and going
+    on is the loop working, not misbehaving.
+
+    Run with no corrections at all, so the difference is the whole outcome: the
+    two schema cases end the turn on the spot, the three domain cases carry on
+    to the planner's note and the narrator.
+    """
+    registry, ctx = app_shaped_registry(save_dir=tmp_path)
+    brain, provider = make_brain(
+        _mixed_batch(prelude, failing),
+        text_turn("did what I could"),
+        text_turn("Voice on, chattier. The rest, no."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+        max_corrections=0,
+    )
+    resp = brain.get_agent_response(
+        board_state={}, command="voice on, that thing, and talk more"
+    )
+
+    assert resp.stop_reason == ("correction_limit" if schema_level else "completed")
+    assert len(provider.calls) == (1 if schema_level else 3)
+    # Either way the batch had already run in full before the budget was
+    # consulted: partial success by design, not a transaction rolled back.
+    assert ctx.settings.voice_output is True
+    assert ctx.settings.verbosity == "high"
+
+
+def test_a_batch_whose_arguments_would_not_parse_runs_none_of_it():
+    """The one exception to "every call is answered": arguments that are not
+    JSON abort the whole batch *before* dispatch. The provider raises instead
+    of returning a result, so there is no assistant turn to append and no call —
+    valid sibling or not — for a `tool` message to answer. What goes back is
+    the user-role repair, and the next prompt carries no orphan answer to a call
+    the conversation never records having made.
+
+    The recovery itself is pinned above; this is about the siblings.
+    """
+    registry, ctx = app_shaped_registry()
+    brain, provider = make_brain(
+        _bad_json_call(),
+        tool_calls_turn(("set_voice_output", {"enabled": True})),
+        text_turn("voice on, then"),
+        text_turn("Voice is on."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+    )
+    resp = brain.get_agent_response(board_state={}, command="voice on and undo")
+
+    assert resp.stop_reason == "completed"
+    # Nothing from the unusable response reached the registry: the only result
+    # the turn has is the one the recovered response asked for.
+    assert [r["name"] for r in resp.tool_results] == ["set_voice_output"]
+    assert ctx.settings.voice_output is True
+    second = provider.calls[1]["messages"]
+    assert [m["role"] for m in second if m["role"] in ("assistant", "tool")] == []
+    assert second[-1]["role"] == "user"
+
+
+def test_on_the_last_allowed_iteration_a_repeat_still_reaches_the_narrator():
+    """Precedence where two stops could both apply: the turn brought results
+    back, so the stall wins over exhaustion and the player gets an answer
+    rather than the pipeline's canned line. The iteration budget is spent
+    either way — what differs is whether anyone speaks."""
+    registry, _ = real_registry()
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn("Dead even, as I said."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+        max_iterations=2,
+    )
+    resp = brain.get_agent_response(board_state={}, command="how am I doing?")
+
+    assert resp.stop_reason == "no_progress"
+    assert resp.text == "Dead even, as I said."
+    assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]
+
+
+def test_on_the_last_allowed_iteration_a_schema_error_ends_it_silently():
+    """The other side of that precedence. A schema failure skips the stall test
+    — a malformed call never dispatched cannot be a repeat — and its own budget
+    still has room, so nothing returns early and the loop simply runs out of
+    iterations. `max_iterations` reaches no narrator: correction budget left is
+    not an answer to speak from."""
+    registry, _ = real_registry()
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("undo", {"plies": 0})),
+        text_turn("never reached"),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+        max_iterations=2,
+        max_corrections=2,
+    )
+    resp = brain.get_agent_response(board_state={}, command="check it, then undo")
+
+    assert resp.stop_reason == "max_iterations"
+    assert resp.text == ""
+    assert system_prompts(provider) == [PLANNER, PLANNER]
+    # Both calls are still reported: the budget ended the turn, not the record.
+    assert [r["name"] for r in resp.tool_results] == ["evaluate_position", "undo"]
 
 
 # --- the stall rule: a turn that learns nothing new is the planner's last -----
@@ -671,6 +993,85 @@ def test_a_repeat_answered_differently_is_progress_whatever_the_tool():
 
     assert resp.stop_reason == "completed"
     assert len(provider.calls) == 4  # three planner turns and the narrator
+
+
+def test_a_second_save_of_a_changed_board_is_progress(tmp_path):
+    """A stateful tool whose result omits what changed reads as a stall.
+
+    `save_game` answered `{ok, name}` for two different games, so
+    "save as checkpoint, undo, save it again, then play e4" ended the planning
+    phase on the second save and the replacement move was never asked for
+    (audit 2026-09-05, finding 8). The loop holds no board and cannot know that
+    different bytes went to disk — it can only read the answer — so the answer
+    now says which board it was: the same `board_version` stamp every refusal
+    carries.
+    """
+    registry, session = real_registry(save_dir=tmp_path)
+    _exchanges(session, "d4", "d5", "Nf3", "Nc6")
+    brain, provider = make_brain(
+        tool_calls_turn(("save_game", {"name": "checkpoint"}), ("undo", {})),
+        tool_calls_turn(("save_game", {"name": "checkpoint"})),
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("saved, took it back, saved again, played e4"),
+        text_turn("e4 instead, then."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+    )
+    resp = brain.get_agent_response(
+        board_state={},
+        command="save this as checkpoint, undo, save it again, then play e4",
+    )
+
+    assert resp.stop_reason == "completed"
+    assert [tc.name for tc in resp.tool_calls] == [
+        "save_game",
+        "undo",
+        "save_game",
+        "make_move",
+    ]
+    first, second = resp.tool_results[0]["result"], resp.tool_results[2]["result"]
+    assert first["ok"] is True and second["ok"] is True
+    assert first != second, "two names for two boards is two answers"
+    # The replacement really landed, on the board the takeback left behind.
+    assert session.move_history() == ["d4", "d5", "e4", "e5"]
+    assert resp.text == "e4 instead, then."
+
+
+def test_a_setting_toggled_away_and_back_ends_the_phase_after_it_lands():
+    """The accepted cost of reading progress off results, pinned so it is a
+    decision and not a surprise.
+
+    Three responses, three single calls: voice on, off, on. The third exchange
+    is identical to the first in everything the loop can see — same tool, same
+    arguments, same `{ok, voice_output}` — so the phase ends under
+    `no_progress` *after* running it. All three land, the final value is the one
+    the player asked for, and what the verdict costs is at most a step the model
+    had not asked for yet: a re-ask on the next turn. That is the right side of
+    the trade — the rule exists to keep a genuine loop off the GPU, and paying
+    for it with a re-ask is cheaper than paying for the loop. A settings
+    revision stamp, the counterpart of the board version `save_game` now
+    carries, would make the third exchange distinguishable if a live turn ever
+    needs the step after it.
+    """
+    registry, _ = real_registry()
+    brain, provider = make_brain(
+        tool_calls_turn(("set_voice_output", {"enabled": True})),
+        tool_calls_turn(("set_voice_output", {"enabled": False})),
+        tool_calls_turn(("set_voice_output", {"enabled": True})),
+        text_turn("Voice is on."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+        max_iterations=6,
+    )
+    resp = brain.get_agent_response(
+        board_state={}, command="voice on — no, off — no, on"
+    )
+
+    assert resp.stop_reason == "no_progress"
+    assert [call.args["enabled"] for call in resp.tool_calls] == [True, False, True]
+    assert registry.context.settings.voice_output is True
+    # Three planner turns and the narrator: the third ran, and was the last.
+    assert system_prompts(provider) == [PLANNER] * 3 + [PERSONA]
 
 
 def test_an_empty_planner_note_leaves_the_heading_out_of_the_brief():
@@ -1066,6 +1467,45 @@ def test_a_truncated_planner_turn_keeps_what_the_turn_verified():
     assert resp.stop_reason == "no_progress"
     assert [call.name for call in resp.tool_calls] == ["make_move"]
     assert resp.text == "e4, done."
+
+
+def test_a_truncated_turn_that_still_carries_tool_calls_runs_them():
+    """Decided 2026-09-05, and pinned because either answer is defensible.
+
+    The cap can cut a response short *after* the model finished asking for
+    tools, and every call that arrived is a whole call: the provider parses
+    each one's arguments before this result exists, so a half-written call
+    raises upstream and never reaches here. So the batch runs and the loop goes
+    on to the next iteration — dropping the calls instead would strand work the
+    model had finished asking for, and leave a mutation half-applied for no
+    better reason than that the sentence beside it ran long.
+
+    What the truncation does cost is the prose. The fragment riding along in
+    `content` is never the handoff note: a note comes from a tool-free turn,
+    and this turn is not one.
+    """
+    registry, ctx = app_shaped_registry()
+    cut = tool_calls_turn(("set_voice_output", {"enabled": True})).model_copy(
+        update={"finish_reason": "length", "content": "okay so first I should"}
+    )
+    brain, provider = make_brain(
+        cut,
+        tool_calls_turn(("set_verbosity", {"verbosity": "high"})),
+        text_turn("voice on, verbosity up"),
+        text_turn("Loud and chatty. Your move."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+    )
+    resp = brain.get_agent_response(
+        board_state={}, command="turn voice on and talk more"
+    )
+
+    assert ctx.settings.voice_output is True, "the cut-off turn's call still ran"
+    assert ctx.settings.verbosity == "high", "and the loop went on to the next"
+    assert resp.stop_reason == "completed"
+    assert resp.text == "Loud and chatty. Your move."
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert "okay so first" not in brief
 
 
 def test_a_truncated_narrator_says_nothing_but_still_costs():
@@ -1634,6 +2074,32 @@ def test_a_dead_provider_cannot_confirm_anything():
     answer = brain.read_answer("Resign?", "just do it")
     assert answer.verdict == UNRELATED
     assert answer.model_calls == 0
+
+
+def test_a_truncated_reading_cannot_confirm_anything_either():
+    """A cut-off call is not a verdict, whatever word its fragment happens to
+    spell. `finish_reason == "length"` means the generation stopped where the
+    cap was, not where the model was done — and this is the one call in the app
+    standing between a reply and a game ending, so it fails where every other
+    truncated call fails: the words are dropped.
+
+    Unlike a dead provider, the round trip happened and the turn pays for it —
+    the tokens were generated and the trace is what the eval baseline's cost
+    lines are read from.
+    """
+    brain, _ = make_brain(
+        text_turn(
+            "confirm",
+            finish_reason="length",
+            usage=Usage(prompt_tokens=28, completion_tokens=16),
+        )
+    )
+
+    answer = brain.read_answer("That's the game if you mean it. Resign?", "go on then")
+
+    assert answer.verdict == UNRELATED
+    assert answer.model_calls == 1
+    assert (answer.prompt_tokens, answer.completion_tokens) == (28, 16)
 
 
 def test_read_answer_offers_no_tools_and_does_not_think():

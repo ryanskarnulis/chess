@@ -40,6 +40,23 @@ class ToolCall:
     args: dict[str, Any]
 
 
+# The two answers to "is calling again worth a round trip?" — the `retry` key on
+# every refusal a dispatcher produces. Two rather than a scale because the agent
+# only ever does one of two things with the answer: fix the arguments and call
+# again, or stop and tell the player. `never` is the default for an
+# unclassified failure: a loop that does not know why it failed must not spend
+# its budget finding out.
+#
+# They live beside `ToolDispatcher` rather than in `tools.py` because they are
+# part of that protocol's contract, not the tool layer's private vocabulary: a
+# brain that builds a refusal (the loop answers a call it never dispatched)
+# needs the same two words, and the seam is what both sides share. `tools.py`
+# re-exports them, so every `tools.RETRY_*` reference still reads from the one
+# definition.
+RETRY_DIFFERENT_ARGS = "different_args"
+RETRY_NEVER = "never"
+
+
 class ToolDispatcher(Protocol):
     """Whatever executes a named tool call and answers with a result dict.
 
@@ -50,6 +67,19 @@ class ToolDispatcher(Protocol):
     """
 
     def dispatch(self, name: str, args: Any) -> dict[str, Any]: ...
+
+    def refusal(self, error: str, retry: str, **details: Any) -> dict[str, Any]:
+        """One "no" in the shape every refusal from this dispatcher takes.
+
+        Part of the protocol because the loop has its own refusals to make: a
+        call whose name is not in the offer, or whose arguments the schema
+        rejects, is never dispatched, and a "no" the loop wrote by hand used to
+        be the one failure in the turn carrying neither `retry` nor
+        `board_version` — while the planner's contract promises every failure
+        says how to recover from it. The dispatcher owns that shape, so the
+        loop asks for it rather than imitating it.
+        """
+        ...
 
 
 @dataclass(frozen=True)

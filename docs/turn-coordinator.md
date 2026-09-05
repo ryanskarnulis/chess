@@ -27,7 +27,12 @@ abandon_turn: from anywhere back to awaiting_player (turn_id + 1)
 - `collect_engine_reply` returns None and advances when no reply is owed —
   derived from the session at collect time, never remembered.
 - `abandon_turn` is the only other exit: undo, new game, resign, and resume
-  each run it before mutating, dropping any pending computation.
+  each run it on the path where their mutation really happens, dropping any
+  pending computation. Only where it happens — a *refused* mutation replaces no
+  position, so it leaves the open turn (and the reply that turn is owed) alone.
+  `undo` used to abandon before finding out whether it could take anything
+  back, and a refused undo beside a move in one batch discarded that move's
+  engine reply.
 
 ## Ownership rules
 
