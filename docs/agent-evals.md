@@ -181,8 +181,8 @@ snapshot, plus the guard verdict wherever text reaches the player.
 | Scenario | Utterance(s); seam | Pins | Kind |
 | --- | --- | --- | --- |
 | `undo_twice_and_replace` | (strengthened, not new) | Adds exactly four plies, the player to move, nothing armed, `completed`, 3–5 calls — a history *prefix* used to accept a turn that landed the position and kept working | Recorded miss (5/20), non-strict xfail |
-| `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, is **not guarded**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | **Expected reproduction** — audit finding 6; PR 4's gate |
-| `move_save_resume_finishes_exchange` | "play e4 and save this as checkpoint" → "load the game named checkpoint"; panel | Move *before* save, the file loads; then a resume leaving history `["e4", reply]`, White to move, no illegal attempt | **Expected reproduction** — audit finding 2; PR 3's gate |
+| `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, is **not guarded**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | **Measured miss** — the planner plays one of the two knights instead of asking, 26 of 50 samples on both sides of the guard fix; non-strict xfail until the planner's ambiguity procedure is re-measured |
+| `move_save_resume_finishes_exchange` | "play e4 and save this as checkpoint" → "load the game named checkpoint"; panel | Move *before* save, the file loads; then a resume leaving history `["e4", reply]`, White to move, no illegal attempt | **Reproduced** audit finding 2 — 0/5 on the pre-fix main, 5/5 on the settled restore (#266) |
 | `save_then_new_game` | "save this as checkpoint and start a new game" (then "yes"); delegate | Save *before* an attempted reset the gate refuses; the file holds the game; `new_game` armed; the yes resets at **0 model calls** (verbosity `low`) | Lock |
 | `voice_setting_and_move` | "turn voice output off and play e4" | `set_voice_output` and one legal move; the whole settings snapshot with one key changed; 3–4 calls, thinking off | Lock |
 | `move_and_judgment` | "play e4, and how am I doing?" | Move *before* a successful verdict tool (`evaluate_position` or `analyze_last_move`, as `judgment_question` already allows); every planner turn thinking-off, the narrator on | Lock |
@@ -193,17 +193,42 @@ snapshot, plus the guard verdict wherever text reaches the player.
 | `late_game_tool_composition` | "save this as late_game and tell me the position"; panel, the 84-ply fixture, `seeded` (20 exchanges from the replay) paired with a `control` (same position, empty transcript) | Save and describe; the file reloads to the setup FEN and full history; board version unchanged; 3–4 calls. Prompt tokens are **recorded, not capped** — they are on the per-sample report line, and a ceiling waits for a baseline to set it against | Lock |
 | `stt_knight_repair` | "please put my night on f three" / "uh knight f three please" | One legal `make_move` landing Nf3, read off the board (`_expect_san`). The first deliberate STT-error family here; the fix for a miss is the model's understanding, never a parser rule | Locks |
 
-Two of these are expected to be **red on the pre-fix build and that is the
-point**: `ambiguous_knight_then_selection` fails its first step on the advice
-guard (finding 6, PR 4) and `move_save_resume_finishes_exchange` fails its
-final step with a restored `["e4"]` and the engine to move (finding 2, PR 3).
-Both reproduce deterministically against a scripted provider, so neither is
-waiting on GPU time to be believed. Everything else in the table is a lock: a
-useful regression condition with no evidence of a present live failure.
+Two of these were expected to be **red on the pre-fix build**, and both were
+measured on the same harness before and after PR 3 and PR 4 landed.
+`move_save_resume_finishes_exchange` did exactly what the audit said: 0/5 on the
+pre-fix main ("the restored position owes an engine reply nobody collected:
+['e4']") and 5/5 once the coordinator settles a restored board (#266).
+`ambiguous_knight_then_selection` did not. It went 4/5 on the pre-fix main and
+0/5 on the fixed one, and fifty samples of its first step across eight runs on
+both sides of the guard fix came in 24 asked / 26 played: the planner picks one
+of the two knights instead of asking about half the time, the five-sample
+blocks cluster (4/5, 0/5, 5/5, 1/5, 4/10, 2/5, 1/5, 7/15), and the guard eating
+the question (finding 6) was the smaller of its two failure modes all along. It
+ships as a measured-miss xfail (`raises=AssertionError`, non-strict) with the
+planner's one/several/none procedure filed as the lever in `TODO.md`.
+Everything else in the table is a lock — a useful regression condition with no
+evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
-**Run 2026-09-05 on the guard loosening (#263): 31 passed, 1 xfailed, 1 xpassed in a single run, 6 m 08 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except `ambiguous_move` 4/5 (XPASS; the miss a guessed `Rh3`) and the xfail `undo_twice_and_replace` 2/5 (every miss `undo(plies=2)`).**
+**Run 2026-09-05 on the composition scenarios (#265, harness only, 33 → 47 items), on the fixed main after PR 3 and PR 4: 45 passed, 1 failed, 1 xfailed in a single run, 11 m 29 s, infra 0 — the failure `ambiguous_knight_then_selection` 0/5, xfailed in the same PR as a measured miss (below); `undo_and_replace` 4/5 ABOVE_FLOOR, `ambiguous_move` 8/10 ABOVE_FLOOR (two guessed moves), `undo_twice_and_replace` 1/5 (xfail; `undo(plies=2)`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE — including all nine new locks (`save_then_new_game`, `voice_setting_and_move`, `move_and_judgment`, `resume_and_describe`, `best_move_then_play`, `freeform_confirmation_answers` ×3, `late_game_tool_composition` ×2, `stt_knight_repair` ×2) and `move_save_resume_finishes_exchange`.**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0); the new
+scenarios cost what their pins say (3–4 calls thinking-off for the plain
+compositions, 4–5 where the reader or a read-then-act adds a round trip, the
+confirmed and cancelled answers 1). The same harness on the pre-fix main
+(`534465b`, before PR 3 and PR 4; 10 m 39 s, infra 0) came in 44 passed, 1
+failed, 1 xfailed, 1 xpassed: `move_save_resume_finishes_exchange` 0/5 —
+finding 2, reproduced exactly as the audit described — and 5/5 above once #266
+settles the board, while `ambiguous_knight_then_selection` was 4/5 there and
+0/5 here. That flip is not the fixes: fifty samples of its first step across
+eight runs, on both sides of the guard fix, came in 24 asked / 26 played (per
+run 4/5, 0/5, 5/5, 1/5, 4/10, 2/5, 1/5, 7/15), so the planner plays one of the
+two knights instead of asking about half the time and the guard eating the
+question was the smaller failure mode. `undo_twice_and_replace` was 6/15 on the
+pre-fix run.
+
+Previously on the guard loosening (#263): 31 passed, 1 xfailed, 1 xpassed in a single run, 6 m 08 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except `ambiguous_move` 4/5 (XPASS; the miss a guessed `Rh3`) and the xfail `undo_twice_and_replace` 2/5 (every miss `undo(plies=2)`).**
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The run
 was taken on `main@dbce5c3` plus this PR's source while its rebase still had a

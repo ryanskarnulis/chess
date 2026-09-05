@@ -23,20 +23,6 @@ Work in this order — one PR each, tool-boundary tests with every change, a
 gate run after every loop or prompt change, and the baseline re-recorded
 whenever the harness itself changes.
 
-- [ ] **PR 5 — Eval coverage: compositions and loop paths** (all twelve
-      proposed scenarios, audit §"Proposed live scenarios"). Strengthen
-      `undo_twice_and_replace` (length 4, player to move, completed, 3–5
-      calls); `ambiguous_knight_then_selection`;
-      `move_save_resume_finishes_exchange`; `save_then_new_game`;
-      `voice_setting_and_move`; `move_and_judgment`; `resume_and_describe`;
-      `best_move_then_play`; `resign_intent_reaches_planner`;
-      `freeform_confirmation_answers` (cancel / confirm / unrelated);
-      `late_game_tool_composition` on `tests/late_game_84_plies.pgn` (84
-      plies, move 43, transcript seeded from the replay, paired with a
-      small-history control); `stt_knight_repair` ("put my night on f three").
-      Every one asserts route, stop reason, call count, board end-state and
-      settings snapshot. Record which reproduce a miss on the pre-fix build
-      and which are locks. Claimed description effects get 20 samples an arm.
 - [ ] **PR 6 — `undo` plies description** — the item under Next; run it
       after PR 5 so its scenario is the strengthened one.
 - [ ] **Later — MCP confirmation surface** (finding 3): standalone MCP
@@ -52,14 +38,18 @@ whenever the harness itself changes.
 - [ ] **Later — schema snapshot**: the golden normalizes away `title`,
       `default` and nullable unions, the very keys the standing prohibition
       protects; add an exact emitted-schema snapshot beside it.
-- [ ] **Later — "move the rook" is sometimes played, not asked** (measured
-      2026-09-05 by the honest harness, PR 1): with four rook moves on the
-      board the planner submits one (`Rh3`) instead of asking — 3 samples in
-      37 across the day (2/17 on the pre-fix builds, 1/20 on the guard fix,
-      where the guard's own share of the misses is gone and the scenario runs
-      unmarked at 19/20). Model understanding — the planner's one/several/none
-      matching procedure is the lever, and a change to it is a prompt change
-      gated on `ambiguous_move` at 20 samples an arm.
+- [ ] **Later — an ambiguous piece ask is sometimes played, not asked**
+      (measured 2026-09-05 by the honest harness): with four rook moves on the
+      board, "move the rook" is played (`Rh3`) 3 samples in 37 across the day
+      (2/17 on the pre-fix builds, 1/20 on the guard fix, where the guard's
+      own share of the misses is gone and `ambiguous_move` runs unmarked at
+      19/20); with two knight moves, "move my kings knight" is played rather
+      than asked in 26 of 50 samples across eight runs on both sides of the
+      guard fix (`ambiguous_knight_then_selection`, a measured-miss xfail —
+      the fewer the candidates, the more the model picks one). Model
+      understanding — the planner's one/several/none matching procedure is
+      the lever ("several fit → ask"), and a change to it is a prompt change
+      gated on both scenarios at 20 samples an arm.
 
 ## Next
 
