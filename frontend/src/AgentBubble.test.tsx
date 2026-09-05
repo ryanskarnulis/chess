@@ -12,6 +12,20 @@ describe('AgentBubble', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Nice move!')
   })
 
+
+  it('draws a paragraph break as a gap, not an empty line', () => {
+    // A move reply is "reaction\n\nNf6.", and at pre-wrap the blank line was a
+    // whole one of the three lines the clamped bubble shows — on a phone it
+    // scrolled the engine's move out of sight. The break becomes a block
+    // boundary (App.css spaces them); a single newline stays inside its
+    // paragraph for pre-wrap to draw.
+    render(<AgentBubble commentary={'Bold.\n\nNf6.'} thinking={false} />)
+    const paragraphs = screen.getByRole('status').querySelectorAll('.bubble-paragraph')
+    expect(Array.from(paragraphs, (p) => p.textContent)).toEqual(['Bold.', 'Nf6.'])
+    render(<AgentBubble commentary={'one\ntwo'} thinking={false} />)
+    const single = screen.getAllByRole('status')[1].querySelectorAll('.bubble-paragraph')
+    expect(Array.from(single, (p) => p.textContent)).toEqual(['one\ntwo'])
+  })
   it('shows a thinking hint while a command is in flight', () => {
     render(<AgentBubble commentary="Old reply" thinking={true} />)
     expect(screen.getByRole('status')).toHaveTextContent(/thinking/i)

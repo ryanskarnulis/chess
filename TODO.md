@@ -53,12 +53,8 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 Record: `docs/qa-walkthrough-2026-09-04.md`. Small items, unprioritized:
 
-- [ ] Illegal drags snap back silently — decide if that wants a message
-- [ ] Desktop stacked column: too much dead space
-- [ ] The board jumps ~112px down the page when a multi-line reply lands —
-      the bubble above it grows. Clicks survive it now (#251), but a board
-      that moves under the cursor is its own annoyance; fixing the layout
-      would also make the re-measure belt-and-braces rather than load-bearing
-- [ ] "Switch To White" Title Case vs sentence-case aria label
+- [ ] Desktop stacked column: too much dead space — proposed answer: a
+      two-column layout on wide screens (board left, agent column right);
+      decided 2026-09-04 to take separately from the bubble clamp
 - [ ] Not exercised: 40+ move game late-tool reliability; exported PGN in an
       external viewer; Android Chrome hands-free

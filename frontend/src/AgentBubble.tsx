@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { COPY_IDLE, copyText } from './clipboard'
 
 export interface AgentBubbleProps {
@@ -32,12 +32,31 @@ export function AgentBubble({
   // would say so.
   const busy = thinking || progress !== null
   const text = busy ? (progress ?? 'Thinking…') : (commentary ?? 'Your move.')
+  // The bubble is clamped to three lines and scrolls inside itself (App.css),
+  // which is what stops a long reply from moving the board. A scrolled box
+  // keeps its offset when the text changes, so without this the next reply
+  // would open partway down itself — every reply starts at its first line.
+  // jsdom has no layout and never scrolls anything, so `scrollTop` is 0 there
+  // whatever we do: nothing in this file's tests can observe the reset.
+  const bubbleRef = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    if (bubbleRef.current) bubbleRef.current.scrollTop = 0
+  }, [text])
   return (
     <div className="agent-bubble">
       <img className="spider-icon" src="/glitch.png" alt="" aria-hidden="true" />
       <div className="bubble-column">
-        <p className={busy ? 'bubble bubble-thinking' : 'bubble'} role="status">
-          {text}
+        {/* A move reply is "reaction\n\nNf6." and at pre-wrap the blank line
+            costs a whole one of the three lines the bubble shows: on a phone a
+            two-line reaction scrolled the engine's move out of sight. So a
+            paragraph break renders as a small gap (`.bubble-paragraph`), and
+            single newlines stay as pre-wrap draws them. */}
+        <p ref={bubbleRef} className={busy ? 'bubble bubble-thinking' : 'bubble'} role="status">
+          {text.split(/\n{2,}/).map((paragraph, index) => (
+            <span key={index} className="bubble-paragraph">
+              {paragraph}
+            </span>
+          ))}
         </p>
         {/* Keyed on the notation: a second export is a different game, and a
             button still reading "Copied ✓" from the first would tell the

@@ -91,14 +91,19 @@
   box-shadow: 0 0 12px var(--glow-soft);
 }
 
-/* Pre-game side switch: shown until the player makes their first move. */
+/* Pre-game side switch: shown until the player makes their first move.
+
+   Deliberately no `text-transform: capitalize` on either rule. A transform
+   changes the paint and not the text, so the button read "Switch To White"
+   while its accessible name stayed "Switch to white" — two strings for one
+   control, and the transform title-cased the "To" as well. App.tsx
+   capitalizes the colour in the DOM text instead. */
 .side-picker {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.6rem;
   color: var(--muted);
-  text-transform: capitalize;
 }
 
 .side-picker button {
@@ -108,7 +113,6 @@
   border: 1px solid var(--silk-border);
   border-radius: 8px;
   cursor: pointer;
-  text-transform: capitalize;
   transition: border-color 0.25s, box-shadow 0.25s;
 }
 
@@ -647,11 +651,29 @@
   align-items: flex-start;
   gap: 0.5rem;
   text-align: left;
-  /* Reserve room so the board doesn't jump as commentary changes. Two lines
-     plus the bubble's padding, not three — the reserve only binds while
-     Glitch is quiet, and the old 4.5rem held empty space above the board for
-     the whole of every short turn. */
-  min-height: 3.6rem;
+  /* The row is one height whatever Glitch says. The bubble below is clamped
+     to three lines and scrolls inside itself, and this reserve is exactly a
+     full three-line bubble: 3 × 1.3rem of text (70.2px at the root's 18px)
+     + the 0.3rem paragraph gap a move reply carries (5.4px) + 1rem of
+     padding + the two 1px borders + the 0.25rem top margin = 100.1px. One
+     line and a hundred measure the same, so the board underneath never
+     moves.
+
+     It used to move with every reply. Measured 2026-09-04: a one-line bubble
+     left the row at the spider's own 72px, the second line took it to 83px,
+     and every line after that added another 25.2px — 61px of travel for a
+     four-line reply in the 459px-wide desktop bubble, 112px for the
+     walkthrough's six-line one, and 162px on a phone, where the same words
+     wrap to seven or eight lines in a 258–323px bubble.
+
+     The reserve costs 28.1px over that 72px row and stops there because the
+     phone has no vertical budget (see `.app`): on a 440×800 viewport the
+     stack ends 5px above the fixed bar before the first move and 43px above
+     it after — the side picker, 38px, is the difference.
+
+     One thing still grows the row: the Copy PGN chip under the bubble
+     (`.bubble-pgn`). Exporting is an explicit ask, not play. */
+  min-height: calc(3 * 1.3rem + 0.3rem + 1rem + 2px + 0.25rem);
 }
 
 .spider-icon {
@@ -664,22 +686,56 @@
 .agent-bubble .bubble {
   position: relative;
   flex: 1;
-  margin: 0.5rem 0 0;
-  padding: 0.6rem 0.75rem;
+  /* Both trimmed to buy the third line back out of the reserve above: the
+     margin 9px → 4.5px, the padding 10.8px → 9px a side. */
+  margin: 0.25rem 0 0;
+  padding: 0.5rem 0.75rem;
   background: var(--surface-veil);
   border: 1px solid var(--silk-border);
   border-radius: var(--radius);
-  line-height: 1.4;
+  /* Tighter than the 1.4 the prose elsewhere wears: three lines of it is
+     70.2px against 75.6px, and on the phone that 5.4px is most of the slack
+     the stack has over the fixed bar. */
+  line-height: 1.3;
+  /* Three lines of text plus one paragraph gap — nothing here is border-box,
+     so a content-box max-height needs no arithmetic for the padding. Three
+     and not two: a move reply is a reaction, then the move ("Nf6.") as its
+     own paragraph, so a one-line reaction is two lines and a two-line
+     reaction — the phone's usual, at 40-odd characters a line — is three, and
+     a two-line clamp would scroll the engine's move out of sight. The gap is
+     budgeted here so that third line is whole. Anything longer scrolls in
+     the bubble; AgentBubble puts each new reply back at its first line. */
+  max-height: calc(3 * 1.3em + 0.3em);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--silk-border) transparent;
   overflow-wrap: break-word;
   white-space: pre-wrap;
 }
 
-/* Speech-bubble tail pointing at the spider. */
+/* The paragraphs of one reply. A move reply arrives as "reaction\n\nNf6."
+   and at pre-wrap that blank line is a full 23.4px line — a third of the
+   bubble spent on nothing, and on a phone the line that scrolled the engine's
+   move out of sight. AgentBubble splits on the double newline and the break
+   is this gap instead; single newlines inside a paragraph still draw as
+   pre-wrap. */
+.bubble-paragraph {
+  display: block;
+}
+
+.bubble-paragraph + .bubble-paragraph {
+  margin-top: 0.3em;
+}
+
+/* Speech-bubble tail pointing at the spider. 16px, not the old 14: the
+   bubble's top margin gave up 4.5px to the clamp, and the tail went with it —
+   its centre now sits 28.5px down the row (4.5 margin + 1 border + 16 + half
+   the 14px triangle) against 31px before, still on the spider's face. */
 .agent-bubble .bubble::before {
   content: '';
   position: absolute;
   left: -7px;
-  top: 14px;
+  top: 16px;
   border: 7px solid transparent;
   border-left: none;
   border-right-color: var(--silk-border);
@@ -700,7 +756,12 @@
 }
 
 /* What an exported PGN gets: a copy button and the notation itself, folded
-   away. Chip register, `.status-results` being the model. */
+   away. Chip register, `.status-results` being the model.
+
+   The one accepted exception to the clamped row above: this sits under the
+   bubble, inside the column, so a reply that exported a PGN does push the
+   board down by the chip's height. Reserving for it would cost every turn of
+   every game a row of dead space for something the player asked for once. */
 .bubble-pgn {
   display: flex;
   flex-wrap: wrap;
