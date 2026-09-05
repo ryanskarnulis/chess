@@ -122,9 +122,9 @@ Hard scenarios (single-shot, behavior asserted directly):
 Pass-rate scenarios (sampled, floor 0.8 each): `undo_and_replace` (undo + a
 named replacement is one turn), `undo_twice_and_replace` (two takebacks + a
 named replacement is one turn — the live "undo, undo, then play X" the loop's
-stall rule used to cut off after the second undo; what remains is a reading
-miss, so `undo`'s description is this scenario's lever and the non-strict xfail
-comes off when a measured rate clears the floor), `ambiguous_move` ("move
+stall rule used to cut off after the second undo; what remained was a reading
+miss, and `undo`'s description was its lever: the rewrite measured 34/40 against
+the old text's 16/40 at 20 samples an arm, so the xfail is off since 2026-09-05), `ambiguous_move` ("move
 the rook" with four rook moves on the board must ask, not guess — a hard
 scenario until 2026-09-05, when the honest harness measured it 12/17: the
 model played `Rh3` twice, and twice asked the right question, "Which one? Rh3
@@ -182,7 +182,7 @@ snapshot, plus the guard verdict wherever text reaches the player.
 
 | Scenario | Utterance(s); seam | Pins | Kind |
 | --- | --- | --- | --- |
-| `undo_twice_and_replace` | (strengthened, not new) | Adds exactly four plies, the player to move, nothing armed, `completed`, 3–5 calls — a history *prefix* used to accept a turn that landed the position and kept working | Recorded miss (5/20), non-strict xfail |
+| `undo_twice_and_replace` | (strengthened, not new) | Adds exactly four plies, the player to move, nothing armed, `completed`, 3–5 calls — a history *prefix* used to accept a turn that landed the position and kept working | Was a recorded miss (5/20, then 7–9/20 on the old `undo` text); the description rewrite measured 34/40 against 16/40 and the xfail is off |
 | `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, is **not guarded**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | **Measured miss** — the planner plays one of the two knights instead of asking, 26 of 50 samples on both sides of the guard fix; non-strict xfail until the planner's ambiguity procedure is re-measured |
 | `move_save_resume_finishes_exchange` | "play e4 and save this as checkpoint" → "load the game named checkpoint"; panel | Move *before* save, the file loads; then a resume leaving history `["e4", reply]`, White to move, no illegal attempt | **Reproduced** audit finding 2 — 0/5 on the pre-fix main, 5/5 on the settled restore (#266) |
 | `save_then_new_game` | "save this as checkpoint and start a new game" (then "yes"); delegate | Save *before* an attempted reset the gate refuses; the file holds the game; `new_game` armed; the yes resets at **0 model calls** (verbosity `low`) | Lock |

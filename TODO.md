@@ -23,8 +23,6 @@ Work in this order — one PR each, tool-boundary tests with every change, a
 gate run after every loop or prompt change, and the baseline re-recorded
 whenever the harness itself changes.
 
-- [ ] **PR 6 — `undo` plies description** — the item under Next; run it
-      after PR 5 so its scenario is the strengthened one.
 - [ ] **Later — MCP confirmation surface** (finding 3): standalone MCP
       exposes the gate but nothing can confirm it, so `new_game`/`resign`/
       `claim_draw` are unreachable there. Needs a trusted human confirmation
@@ -63,17 +61,6 @@ whenever the harness itself changes.
       the registry (same gate as resign) and the frontend button. The
       `_CONFIRM_QUESTIONS` entry landed with #255. Until then claims are
       unreachable in direct mode.
-- [ ] **A named move is a whole takeback, not a plies count** (found
-      measuring #260): "undo the bishop move and undo the knight move, then
-      play d4" gets `undo(plies=2)` — one exchange, not two — or
-      `undo(plies=1)` — the engine's reply alone — three times in four, and
-      the replacement then lands on a board that still holds the second move;
-      `undo_and_replace`'s residual misses are the same `plies=1` for one
-      named move. Model understanding, so the lever is `undo`'s `plies`
-      description (half-moves, which a player's move plus the reply is two
-      of; a move named by piece is a full takeback; several named moves are
-      several calls). Eval-gated on `undo_twice_and_replace`, a non-strict
-      xfail until then — remove the marker in the same PR.
 - [ ] **Re-vendor the voice module downstream** (#232 follow-up): PCC's and
       conductor's `MicButton.tsx` copies predate the #232 wedge fix and the
       #242 inline icons. Their host api clients also need the

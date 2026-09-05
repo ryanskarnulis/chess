@@ -1330,20 +1330,20 @@ def build_registry(
     # move and undo the knight move, then play d4 instead" reached
     # `undo(plies=2)` — one exchange for two named moves — and the replacement
     # then landed on a board that still held the knight move
-    # (docs/agent-evals.md, `undo_twice_and_replace`).
-    #
-    # **They carry no numbers at all, and that is measured.** A first cut
-    # explained the arithmetic — a ply is a half-move, a player's move and the
-    # engine's reply are two of them — and it made the miss worse: 4/20 against
-    # the old text's 9/20, sixteen of twenty samples passing `plies=2`. It also
-    # spread to the sibling, where `undo_and_replace` held 19/20 but eighteen of
-    # those passes stopped omitting the argument and passed a count instead. Any
-    # number written here is copied into the argument, so the facts are all
-    # about *calls*: a move the player named is a whole takeback and never a
-    # count, several named moves are that many calls, and the count itself is
-    # the app's to work out. Same lesson as `set_difficulty`'s note below —
-    # facts, not triggers — one level down: not even a fact that contains a
-    # number, in a description whose argument is a number.
+    # (docs/agent-evals.md, `undo_twice_and_replace`). Measured 2026-09-05 at
+    # 20 samples an arm on one base. The old text: 19/20 on the single takeback,
+    # 9/20 on the double. An arm that explained the arithmetic — a ply is a
+    # half-move, the player's move and the reply are two — made it worse, 4/20,
+    # with sixteen samples passing `plies=2` and the single takeback passing
+    # `plies=2` too: any number written here is copied into the argument. An arm
+    # with no numbers that said "never a count, once per named move" traded one
+    # misread for another, 14/20 on the single takeback with six `plies=1`. This
+    # text is the old wording minus the one phrase every leaking arm shared — the
+    # two-item enumeration of what the default pops — plus one sentence saying to
+    # call again for each further named move: 20/20 and 18/20, then 20/20 and
+    # 16/20 against the old text's 19/20 and 7/20 in alternating blocks on one
+    # server. Facts, not triggers (`set_difficulty`'s note below), and not even a
+    # fact that counts anything, in a description whose argument is a number.
     @registry.tool()
     def undo(
         plies: Annotated[

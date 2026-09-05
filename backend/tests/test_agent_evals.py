@@ -2079,29 +2079,6 @@ def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
     _assert_floor(result, floor)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "known gap: gemma-4-12b reads two named moves as a plies count three "
-        "times in four — `undo(plies=2)` (one exchange, not two) or "
-        "`undo(plies=1)` (the engine's reply alone) — then plays the "
-        "replacement onto a board that still holds the second move. Measured "
-        "at 2/10 across the gate's two blocks and 5/20 alone on 2026-09-04, "
-        "with the loop stall this scenario was written for gone from every "
-        "sample. Model understanding, so the lever is `undo`'s description "
-        "(a prompt change, gated on this scenario — TODO.md). Non-strict: the "
-        "invariant is right and it XPASSes when the model reads the count. "
-        "Filtered to AssertionError: an unfiltered xfail also absorbs a "
-        "harness bug or an infra abort (`pytest.fail` raises `Failed`, a bad "
-        "check raises `KeyError`), and an xfail line is then no longer "
-        "evidence of the known understanding miss (audit 2026-09-05). PR 5 "
-        "strengthened what a pass means here — exactly four plies on the "
-        "board, the player to move, nothing left armed, a `completed` stop and "
-        "3–5 model calls — so the marker now also covers a turn that reaches "
-        "the right prefix and then keeps working past it."
-    ),
-    raises=AssertionError,
-    strict=False,
-)
 def test_eval_undo_twice_and_replace_is_one_turn(engine: EnginePlayer) -> None:
     """ "undo the bishop move and undo the knight move, then play d4" — two
     takebacks and a replacement, one utterance. Live (2026-07-30 and
@@ -2115,8 +2092,16 @@ def test_eval_undo_twice_and_replace_is_one_turn(engine: EnginePlayer) -> None:
 
     Pre-fix this came in 1/5: two samples were that stall (`undo → undo`,
     `no_progress`, no move), two were the model taking back one exchange for
-    two, and the one pass issued both undos in a single model turn. Post-fix
-    the stall is gone and what remains is the count misread — see the marker.
+    two, and the one pass issued both undos in a single model turn. With the
+    stall gone, what remained was the count misread — `undo(plies=2)` for two
+    named moves, 9/20 and 7/20 on the old `undo` description — and that is
+    model understanding, so the description was the lever (2026-09-05,
+    `tools.py`). The two strings carry no numbers and say to call again for
+    each further named move, and the rewrite measured 34/40 here against the
+    old text's 16/40, at 20 samples an arm on one base with the arms alternated
+    on one server; an arm that explained the arithmetic instead measured 4/20.
+    So the non-strict xfail this scenario carried since #260 is off, and it is
+    scored at the floor like the rest.
 
     Behavioral, like `undo_and_replace`: however the model spells the takeback
     (two calls, or one asking for four plies), both exchanges must be gone and
