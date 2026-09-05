@@ -35,18 +35,29 @@ from typing import Any
 import pytest
 
 from chessapp.api import STUCK_REPLY
-from chessapp.fastparse import parse_resign
+from chessapp.fastparse import parse_confirmation, parse_resign
 from chessapp.game import GameSession
 from chessapp.tools import DESTRUCTIVE_TOOLS, ToolContext, build_registry
 from chessapp.trace import ROUTE_BRAIN, ROUTE_FAST_PATH, ROUTE_RESIGN
-from evalstats import Attribution, Decision, VacuousRun, split_latencies, split_tokens
+from evalstats import (
+    STOP_PROVIDER_ERROR,
+    Attribution,
+    Decision,
+    Outcome,
+    VacuousRun,
+    classify,
+    split_latencies,
+    split_tokens,
+)
 from fakes import CountingProvider, FakeEngine, ModelCall
 from test_agent_evals import (
     _BLOCK_RUNS,
     _BOARD_TOOLS,
+    _FREEFORM_ANSWERS,
     _LIVE_FEN,
     _RESIGN_LITERAL,
     _RESIGN_UTTERANCE,
+    _STT_UTTERANCES,
     _VERDICT_TOOLS,
     EvalApp,
     EvalRun,
@@ -56,7 +67,13 @@ from test_agent_evals import (
     _expect_san,
     _measured,
     _pass_rate,
+    _replay_late_game,
+    _run,
+    _run_panel,
+    _run_steps,
+    _seam_name,
     _stays_a_model_eval,
+    _step,
     _trajectory,
 )
 
@@ -637,6 +654,218 @@ def test_a_different_move_on_the_board_fails_whatever_the_wire_says() -> None:
         _expect_san("Bxe6")(app, _assistant(_ACCEPTED_BXE6))
 
 
+# --- the multi-step runner ----------------------------------------------------
+#
+# `_run_steps` composes a probe out of several utterances: earlier steps set up
+# the state, and the last one is what `_pass_rate` scores. It touches the model
+# only through the seam it is given, so all of its own behavior — the order, the
+# meter resets, what it snapshots, and what it does when a step dies — is
+# testable here with a scripted seam where the wire would be.
+#
+# The one rule it must not break is that it never asserts: `_sample` calls the
+# runner *outside* the try/except that classifies a sample, so an AssertionError
+# raised inside it aborts the scenario instead of scoring one miss. Everything
+# it learns therefore has to travel in the record.
+
+
+def _composite_app() -> EvalApp:
+    """An `EvalApp` with a real game and real meters, and no wire.
+
+    `client` is None on purpose: `_run_steps` reaches for the HTTP seam only
+    through the runner it is handed, so a version that posted for itself should
+    fail here rather than be accommodated.
+    """
+    return EvalApp(
+        client=None,  # type: ignore[arg-type]
+        ctx=ToolContext(session=GameSession(), engine=FakeEngine()),
+        provider=CountingProvider(inner=None),
+        tracer=_CollectingTracer(),
+    )
+
+
+def _scripted_seam(
+    deaths: dict[str, EvalRun] | None = None,
+    plays: dict[str, str] | None = None,
+) -> tuple[Any, list[dict[str, Any]]]:
+    """A stand-in for `_run_panel`: records what it was handed, spends one model
+    round trip and one trace record, and answers.
+
+    Deliberately does **not** reset the meters, which both real seams do — that
+    is what makes "the composite resets them itself" an assertion rather than an
+    accident of which seam it happens to be given.
+
+    `deaths` maps an utterance to the `EvalRun` it should come back as (a 502, a
+    provider death); `plays` maps one to a SAN the step submits, so a step's
+    effect on the board is real and the snapshot can be checked against it.
+    """
+    deaths = deaths or {}
+    plays = plays or {}
+    seen: list[dict[str, Any]] = []
+
+    def seam(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
+        seen.append(
+            {
+                "scenario": scenario,
+                "utterance": utterance,
+                # What the composite left standing when this step started.
+                "calls_at_entry": len(app.provider.calls),
+                "traced_at_entry": len(app.tracer.turns),
+            }
+        )
+        app.provider.calls.append(ModelCall(thinking=False, seconds=0.1))
+        app.tracer.record(
+            {"route": ROUTE_BRAIN, "stop_reason": "completed", "said": utterance}
+        )
+        if utterance in plays:
+            assert app.ctx.session.submit_move(plays[utterance]).legal
+        if utterance in deaths:
+            return deaths[utterance]
+        # The count comes off the meter, exactly as `_measured` builds it.
+        return _finished_run(content=f"said {utterance}")._replace(
+            model_calls=list(app.provider.calls)
+        )
+
+    return seam, seen
+
+
+def test_the_steps_run_in_order_and_the_last_one_is_what_is_scored() -> None:
+    record: dict[str, Any] = {}
+    seam, seen = _scripted_seam()
+
+    final = _run_steps("first", "second", record=record, seam=seam)(
+        _composite_app(), "probe", "last"
+    )
+
+    assert [entry["utterance"] for entry in seen] == ["first", "second", "last"]
+    # Each earlier step gets its own label, so the `[eval]` line and the report
+    # can say which step of which sample a reading came from.
+    assert [entry["scenario"] for entry in seen] == ["probe/1", "probe/2", "probe"]
+    assert [step["utterance"] for step in record["steps"]] == ["first", "second"]
+    assert final.assistant["content"] == "said last", (
+        "the final step's run is what `_pass_rate` scores"
+    )
+
+
+def test_the_meters_are_reset_between_steps() -> None:
+    """Every step is measured on its own, which is the whole reason a
+    multi-utterance probe can pin a per-step call count at all. The scripted
+    seam never resets, so a running total is what would show up here."""
+    record: dict[str, Any] = {}
+    seam, seen = _scripted_seam()
+
+    _run_steps("first", "second", record=record, seam=seam)(
+        _composite_app(), "probe", "last"
+    )
+
+    assert [entry["calls_at_entry"] for entry in seen] == [0, 0, 0]
+    assert [entry["traced_at_entry"] for entry in seen] == [0, 0, 0]
+    assert [step["model_calls"] for step in record["steps"]] == [1, 1]
+
+
+def test_each_step_records_the_state_it_left_behind() -> None:
+    """The snapshot is taken *after* the step, so a check can say "the first ask
+    moved nothing" — and so the board the *next* utterance met is on the record,
+    which is where a two-step probe's parser premise has to be asserted."""
+    record: dict[str, Any] = {}
+    seam, _ = _scripted_seam(plays={"open with e4": "e4"})
+    app = _composite_app()
+
+    _run_steps("open with e4", record=record, seam=seam)(app, "probe", "and now?")
+
+    step = _step(record, 1)
+    assert step["history"] == ["e4"]
+    assert step["fen"] == app.ctx.session.fen()
+    assert step["settings"] == app.ctx.settings.snapshot()
+    assert step["traced"]["said"] == "open with e4", (
+        "the trace record is copied, so the next step's reset cannot take it"
+    )
+    assert step["pending"] is None
+
+
+@pytest.mark.parametrize(
+    "dead",
+    [
+        pytest.param(_finished_run()._replace(status_code=502), id="transport"),
+        pytest.param(
+            _finished_run(stop_reason=STOP_PROVIDER_ERROR), id="provider_error"
+        ),
+    ],
+)
+def test_a_dead_step_short_circuits_and_is_returned_as_the_final(
+    dead: EvalRun,
+) -> None:
+    """A step the provider died on is not a miss — the model was never asked.
+    So the runner stops there and hands that run back as though it were the
+    final one, which is the only way `classify` gets to see the death and
+    `_pass_rate` gets to re-take the sample rather than score it."""
+    record: dict[str, Any] = {}
+    seam, seen = _scripted_seam(deaths={"first": dead})
+
+    final = _run_steps("first", "second", record=record, seam=seam)(
+        _composite_app(), "probe", "last"
+    )
+
+    assert final is dead
+    assert [entry["utterance"] for entry in seen] == ["first"], (
+        "nothing after a dead step should have run"
+    )
+    assert len(record["steps"]) == 1, "the dead step is still on the record"
+    assert (
+        classify(
+            status_code=final.status_code,
+            stop_reason=final.stop_reason,
+            error=None,
+        )
+        is Outcome.INFRA
+    )
+
+
+def test_a_composite_runner_is_filed_under_the_seam_it_drove() -> None:
+    """The report names each scenario's seam by identity, and a composite is
+    neither `_run` nor `_run_panel` — so without the seam it carries, every
+    multi-step probe would be recorded against the delegate wire it never
+    touched. The report is the baseline's evidence; it does not get to be
+    wrong about which seam produced a number."""
+    seam, _ = _scripted_seam()
+
+    assert _seam_name(_run_panel) == "panel"
+    assert _seam_name(_run) == "delegate"
+    assert _seam_name(_run_steps("first", record={})) == "panel"
+    assert _seam_name(_run_steps("first", record={}, seam=_run)) == "delegate"
+    assert _seam_name(_run_steps("first", record={}, seam=seam)) == "delegate"
+
+
+def test_the_record_is_cleared_before_every_sample() -> None:
+    """A retry or an escalation rebuilds the whole app (`_sample`), and the
+    record is the scenario's, not the sample's — so last sample's steps would be
+    read as this one's if it were merely appended to."""
+    record: dict[str, Any] = {"steps": [{"utterance": "a previous sample"}], "old": 1}
+    seam, _ = _scripted_seam()
+
+    _run_steps("first", record=record, seam=seam)(_composite_app(), "probe", "last")
+
+    assert [step["utterance"] for step in record["steps"]] == ["first"]
+    assert "old" not in record
+
+
+def test_a_step_that_never_ran_is_a_harness_bug_not_a_missed_sample() -> None:
+    """`_step` raises `LookupError` rather than asserting, and the difference is
+    what an xfail or a rate line then means: `classify` reads a non-assertion as
+    HARNESS, which is never retried and never scored, while an AssertionError
+    would be written down as the model getting it wrong."""
+    with pytest.raises(LookupError, match="never recorded"):
+        _step({"steps": []}, 1)
+
+    assert (
+        classify(
+            status_code=200,
+            stop_reason="completed",
+            error=LookupError("step 1 was never recorded"),
+        )
+        is Outcome.HARNESS
+    )
+
+
 # --- the scenarios' premises, pinned in CI ------------------------------------
 #
 # A premise that only holds inside an opt-in suite is a premise nobody checks:
@@ -702,6 +931,52 @@ def test_every_way_to_end_a_game_counts_as_a_board_mutation() -> None:
         set(DESTRUCTIVE_TOOLS) - _BOARD_TOOLS
     )
     assert "claim_draw" in _BOARD_TOOLS
+
+
+def test_the_stt_phrasings_still_reach_the_planner() -> None:
+    """`stt_knight_repair` measures the model repairing a mangled transcript, so
+    the day `parse_move` learns to read "night" or to skip a filler, the
+    scenario silently becomes a parser test. Pinned where every commit runs,
+    because the alternative is finding out from a suspiciously perfect rate."""
+    fresh = GameSession().fen()
+    for utterance, _label in (param.values for param in _STT_UTTERANCES):
+        _stays_a_model_eval(utterance, fresh)
+
+
+def test_the_freeform_confirmation_answers_need_a_model_to_read_them() -> None:
+    """And the same premise for the confirmation family, against the third
+    parser: `parse_confirmation` is a short list of bare affirmations, and an
+    answer it settles costs no reader call at all — which would make every one
+    of that scenario's call counts a measurement of the list."""
+    fresh = GameSession().fen()
+    for answer, _label, _route in (param.values for param in _FREEFORM_ANSWERS):
+        assert parse_confirmation(answer) is None, answer
+        _stays_a_model_eval(answer, fresh)
+
+
+def test_the_late_game_fixture_is_the_game_the_scenario_claims() -> None:
+    """84 legal plies, White to move at move 43, not over.
+
+    `late_game_tool_composition` asserts these as premises per sample, but the
+    fixture is a checked-in file and this is the cheapest place to notice it
+    being edited or truncated — and the replay itself is the point: a FEN alone
+    would give the same position with an empty move stack, which is exactly the
+    condition this fixture exists to escape.
+    """
+    app = EvalApp(
+        client=None,  # type: ignore[arg-type]
+        ctx=ToolContext(session=GameSession(), engine=FakeEngine()),
+        provider=CountingProvider(inner=None),
+        tracer=_CollectingTracer(),
+    )
+
+    history = _replay_late_game(app)
+
+    assert len(history) == 84
+    assert app.ctx.session.turn == "white" == app.ctx.session.player_color
+    _stays_a_model_eval(
+        "save this as late_game and tell me the position", app.ctx.session.fen()
+    )
 
 
 def test_a_whole_game_review_is_a_verdict() -> None:

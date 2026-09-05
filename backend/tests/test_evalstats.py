@@ -39,6 +39,7 @@ from evalstats import (
     DETERMINISTIC_FAILURES,
     NARRATE_ROUTES,
     ROUTE_BRAIN,
+    ROUTE_CONFIRMATION,
     Z_ONE_SIDED_95,
     Attribution,
     Decision,
@@ -635,6 +636,60 @@ def test_a_narrate_route_has_no_planner_phase_at_all() -> None:
         assert latencies.attribution is Attribution.SPLIT, route
         assert latencies.planner_ms == 0, route
         assert latencies.narrator_ms == 3400, route
+
+
+def test_one_confirmation_call_is_still_the_whole_turn() -> None:
+    """A confirmation turn that spent exactly one round trip is attributed the
+    way every other narrate route is — because at one call it does not matter
+    which phase made it. That is the common shape: a cancel, or a confirm at
+    verbosity `low`, is the reader alone; a literal "yes" at normal verbosity is
+    the narrator alone. Either way the turn's whole model time is that call's
+    and the planner's zero is real."""
+    latencies = split_latencies(
+        (900,), route=ROUTE_CONFIRMATION, stop_reason="completed"
+    )
+    assert latencies.attribution is Attribution.SPLIT
+    assert latencies.planner_ms == 0
+    assert latencies.narrator_ms == 900
+
+
+def test_a_two_call_confirmation_cannot_say_which_call_narrated() -> None:
+    """The honest correction (audit 2026-09-05, "Statistical interpretation").
+    Since the free-text reader landed, a confirmation turn can be reader-only,
+    reader-plus-narrator, or narrator-only, and the trace record carries nothing
+    that tells them apart. This branch used to call all of it narrator time, so
+    every narrator median including a confirmation counted the reader's round
+    trip as narration.
+
+    UNKNOWN rather than a reader phase: naming a third phase would need
+    production to record which calls were the reader's, and inventing it here
+    would be the same guess wearing a label."""
+    latencies = split_latencies(
+        (300, 2400), route=ROUTE_CONFIRMATION, stop_reason="completed"
+    )
+    assert latencies.attribution is Attribution.UNKNOWN
+    assert latencies.planner_ms is None
+    assert latencies.narrator_ms is None
+    assert latencies.total_ms == 2700  # the total is still a fact
+
+    tokens = split_tokens(
+        ((180, 1), (2600, 90)), route=ROUTE_CONFIRMATION, stop_reason="completed"
+    )
+    assert tokens.attribution is Attribution.UNKNOWN
+    assert tokens.planner_out is None
+    assert tokens.narrator_in is None and tokens.narrator_out is None
+    assert tokens.completion_tokens == 91
+
+
+def test_the_other_narrate_routes_keep_their_split_at_any_call_count() -> None:
+    """The confirmation carve-out is exactly one route wide. Nothing else in
+    `NARRATE_ROUTES` has a second kind of model call in front of the narrator,
+    so a multi-call turn on one of them is still all narrator time."""
+    for route in sorted(NARRATE_ROUTES - {ROUTE_CONFIRMATION}):
+        latencies = split_latencies((300, 2400), route=route, stop_reason="completed")
+        assert latencies.attribution is Attribution.SPLIT, route
+        assert latencies.planner_ms == 0, route
+        assert latencies.narrator_ms == 2700, route
 
 
 def test_a_zero_llm_turn_reports_no_readings_rather_than_zeros() -> None:

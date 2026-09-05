@@ -131,8 +131,10 @@ import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, NamedTuple
 
+import chess.pgn
 import pytest
 from fastapi.testclient import TestClient
 
@@ -140,7 +142,7 @@ from chessapp.agent_api import reset_rate_limit
 from chessapp.api import STUCK_REPLY, create_app
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
-from chessapp.fastparse import parse_move, parse_resign
+from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
@@ -152,8 +154,14 @@ from chessapp.tools import (
     _save_path,
     brain_tool_exclusions,
     build_registry,
+    saved_game_names,
 )
-from chessapp.trace import ROUTE_BRAIN, ROUTE_FAST_PATH, ROUTE_RESIGN
+from chessapp.trace import (
+    ROUTE_BRAIN,
+    ROUTE_CONFIRMATION,
+    ROUTE_FAST_PATH,
+    ROUTE_RESIGN,
+)
 from evalstats import (
     BUDGET_STOPS,
     STOP_PROVIDER_ERROR,
@@ -169,7 +177,7 @@ from evalstats import (
     split_latencies,
     split_tokens,
 )
-from fakes import CountingProvider, ModelCall
+from fakes import CountingProvider, FakeEngine, ModelCall
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CHESSAPP_AGENT_EVALS") != "1",
@@ -279,6 +287,22 @@ _FLOORS: dict[str, float] = {
     "long_resume": 0.8,
     "long_resign": 0.8,
     "long_capture": 0.8,
+    # The composition family (audit 2026-09-05, §"Proposed live scenarios"):
+    # several tool capabilities inside one model-routed utterance, which until
+    # this PR only the two undo/replace variants covered at all. Every one
+    # starts at the same 0.8 — none of them has a recorded rate yet, and a
+    # floor invented above what the build achieves is a gate that fails for
+    # being new rather than for a regression.
+    "ambiguous_knight_then_selection": 0.8,
+    "move_save_resume_finishes_exchange": 0.8,
+    "save_then_new_game": 0.8,
+    "voice_setting_and_move": 0.8,
+    "move_and_judgment": 0.8,
+    "resume_and_describe": 0.8,
+    "best_move_then_play": 0.8,
+    "freeform_confirmation_answers": 0.8,
+    "late_game_tool_composition": 0.8,
+    "stt_knight_repair": 0.8,
 }
 
 # The loop's budget stops live in `evalstats.BUDGET_STOPS`, next to the other
@@ -537,6 +561,40 @@ def _successful(assistant: dict[str, Any], tool: str) -> list[dict[str, Any]]:
     ]
 
 
+def _attempted(assistant: dict[str, Any], tool: str) -> list[dict[str, Any]]:
+    """Every call to `tool`, however it ended.
+
+    The counterpart to `_successful` for the gate: a destructive call the gate
+    refuses is a call the model *made*, and "did it go through the tool at all"
+    is a different question from "did the tool run". Was `any(c["tool"] == …)`
+    inline in the two resignation scenarios; the composition scenarios need the
+    same question about `new_game`, so it lives here once.
+    """
+    return [call for call in _tool_calls(assistant) if call["tool"] == tool]
+
+
+def _succeeded(assistant: dict[str, Any], tool: str) -> list[dict[str, Any]]:
+    """Calls to `tool` whose *result* says it ran (``ok: true``).
+
+    `_successful` reads the delegate wire's `error` channel, and the panel seam
+    has none: `_run_panel` adapts `{name, result}` with `error` always null, so
+    a gate refusal (`ok:false`) reads as a success there. Every scenario that
+    asks "did this destructive op actually run" on the panel seam needs the
+    result read instead — which is also the honest reading on the delegate
+    wire, where a refusal arrives as an `error` and is excluded twice over.
+
+    Not for `make_move`: a rejected move is `ok:true, legal:false` on purpose
+    (legality is the engine's answer, not a fault), so accepted moves are
+    `_legal_moves` and rejected ones `_rejected_moves`.
+    """
+    out: list[dict[str, Any]] = []
+    for call in _successful(assistant, tool):
+        result = json.loads(call["result"]) if call["result"] else {}
+        if result.get("ok") is True:
+            out.append(call)
+    return out
+
+
 def _legal_moves(assistant: dict[str, Any]) -> list[dict[str, Any]]:
     """Successful make_move calls the engine actually accepted (result
     ``legal:true``) — the board really changed for each of these."""
@@ -545,6 +603,40 @@ def _legal_moves(assistant: dict[str, Any]) -> list[dict[str, Any]]:
         if call["result"] and json.loads(call["result"]).get("legal") is True:
             out.append(call)
     return out
+
+
+def _rejected_moves(assistant: dict[str, Any]) -> list[dict[str, Any]]:
+    """make_move calls the board turned down (result ``legal:false``).
+
+    Asserted empty where a composition had every fact it needed to submit a
+    legal move: the read-then-act scenarios exist partly because the planner's
+    injected `legal_moves` list is read at command start and a restore changes
+    the board under it (audit, "a concrete planner contract tension"), so an
+    illegal attempt on a resumed board is the symptom to catch rather than
+    absorb.
+    """
+    out: list[dict[str, Any]] = []
+    for call in _successful(assistant, "make_move"):
+        if call["result"] and json.loads(call["result"]).get("legal") is not True:
+            out.append(call)
+    return out
+
+
+def _in_order(assistant: dict[str, Any], first: str, then: str) -> None:
+    """`first` was called before `then` — by first occurrence, like
+    `undo_and_replace`'s own ordering pin.
+
+    A composition is an *order* as much as a set: "play e4 and save this" saves
+    the position after the move, and a save that ran first saved the board the
+    player asked to change. The message carries the whole trajectory, because
+    the useful diagnostic is what the turn did instead.
+    """
+    trajectory = [call["tool"] for call in _tool_calls(assistant)]
+    assert first in trajectory, f"expected {first}: {trajectory}"
+    assert then in trajectory, f"expected {then}: {trajectory}"
+    assert trajectory.index(first) < trajectory.index(then), (
+        f"{first} must precede {then}: {trajectory}"
+    )
 
 
 def _board_mutations(assistant: dict[str, Any]) -> list[dict[str, Any]]:
@@ -896,6 +988,35 @@ def _assert_route(run: EvalRun, expected: str | None) -> None:
         f"routed through {run.route!r}, not {expected!r} — a deterministic "
         "short-circuit swallowed the utterance, so nothing about the model was "
         "measured"
+    )
+
+
+def _assert_not_guarded(traced: dict[str, Any]) -> None:
+    """The player got what the model said, not a correction over it.
+
+    Six scenarios had this three-line read of the trace record copied out; the
+    composition family adds ten more, and the message is the whole value of it
+    — which claim class fired, and what the player would have been told.
+    """
+    assert traced.get("guarded") is not True, (
+        f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
+        f"{traced.get('suppressed')!r}"
+    )
+
+
+def _assert_completed(traced: dict[str, Any]) -> None:
+    """The turn ended because the work was done, not because a budget ran out.
+
+    Off the trace rather than off the `EvalRun`, because a `check` is handed the
+    app and the wire and the panel seam carries no stop reason. Asserted on
+    every composition (audit: "most sampled scenarios assert neither
+    `stop_reason` nor model-call count"): a `no_progress` stop after all the
+    requested work is a real finding, and it must not silently satisfy a
+    completion pin.
+    """
+    assert traced.get("stop_reason") == "completed", (
+        f"the turn stopped on {traced.get('stop_reason')!r} rather than "
+        "finishing on its own"
     )
 
 
@@ -1403,6 +1524,133 @@ def _run_panel(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
     return _measured(app, scenario, assistant, response, duration)
 
 
+def _step_record(app: EvalApp, utterance: str, run: EvalRun) -> dict[str, Any]:
+    """One finished step of a multi-step probe, frozen for the scenario's check.
+
+    Everything a check could want to say about a step *after* the meters have
+    been reset for the next one: the `EvalRun` (route, stop reason, the wire's
+    trajectory), the trace record the reset is about to drop — copied, because
+    `_CollectingTracer.reset` clears the list — the round-trip count, and the
+    board/settings the step left behind.
+
+    `pending` is read through `live_pending`, which drops an op armed against a
+    board that has since moved. That is a read with a side effect, and it is
+    the *same* read the next turn's pipeline makes before anything else
+    (`api._command_turn`), so taking it here changes nothing the probe would
+    not have done a moment later.
+    """
+    pending = app.ctx.live_pending()
+    return {
+        "utterance": utterance,
+        "run": run,
+        "assistant": run.assistant,
+        "traced": dict(app.tracer.last),
+        "model_calls": len(run.model_calls),
+        "fen": app.ctx.session.fen(),
+        "history": app.ctx.session.move_history(),
+        "settings": app.ctx.settings.snapshot(),
+        "version": app.ctx.board_version,
+        "pending": pending,
+    }
+
+
+def _step(record: dict[str, Any], index: int) -> dict[str, Any]:
+    """Step `index` (1-based) out of a multi-step probe's record.
+
+    Raises `LookupError` rather than asserting, so a step the runner never got
+    to reads as a HARNESS bug (`evalstats.classify`) instead of as the model
+    missing — the same reason PR 1 put an exception filter on the two-undo
+    xfail. In practice it is unreachable: a dead step short-circuits the runner
+    and `_sample` skips the check entirely.
+    """
+    steps = record.get("steps") or []
+    if len(steps) < index:
+        raise LookupError(
+            f"step {index} was never recorded — the probe ran {len(steps)} step(s)"
+        )
+    return steps[index - 1]
+
+
+def _run_steps(
+    *earlier: str,
+    record: dict[str, Any],
+    seam: Callable[[EvalApp, str, str], EvalRun] = _run_panel,
+) -> Callable[[EvalApp, str, str], EvalRun]:
+    """A runner for a probe that takes more than one utterance.
+
+    Composed rather than written per scenario: "move my kings knight" then "the
+    one to f3" and "play e4 and save this" then "load it" are the same shape —
+    earlier steps that set up state, and one final utterance whose `EvalRun` is
+    what `_pass_rate` scores. Used as `runner=_run_steps(<earlier…>,
+    record=…)`, with the *last* utterance passed to `_pass_rate` as usual, so
+    the printed line, the report's per-sample record and the route pin all
+    describe the step the scenario is about.
+
+    Panel by default (`seam=`), because that is the only seam with memory: `_run`
+    opens a fresh delegate conversation per call, so "the one to f3" would
+    arrive with nothing to refer back to. `/api/command` reads
+    `ctx.transcript.memory()` and records each settled turn back onto it, which
+    is what makes a reference to an earlier turn resolvable at all.
+
+    **It asserts nothing**, on purpose. `_sample` calls the runner *outside* the
+    try/except that classifies a sample, so an `AssertionError` raised in here
+    would abort the whole scenario instead of scoring one miss. So each step is
+    snapshotted into `record` (`_step_record`) and the scenario's own `check`
+    does the asserting, reading step 1 as `_step(record, 1)`.
+
+    `record` is cleared at the start of every sample: a retried or escalated
+    sample rebuilds the entire app (`_sample`), and a record left standing from
+    the previous one would be read as this one's.
+
+    An earlier step that *died* — a non-200, or the 200 that carries
+    `stop_reason="provider_error"` — is returned as though it were the final
+    step, so `classify` sees the death and `_pass_rate` re-takes the sample
+    instead of scoring a miss on a step that never ran.
+    """
+
+    def runner(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
+        """One sample of a multi-step probe: the earlier steps, then the one
+        being scored."""
+        record.clear()
+        record["steps"] = []
+        for index, said in enumerate(earlier, start=1):
+            # Both seams reset the meters themselves; done here too so an
+            # injected seam cannot leave the previous step's calls standing and
+            # a per-step count read as a running total. Same for the limiter:
+            # `_sample` clears it once a sample, and a probe on the delegate
+            # seam spends one message per step.
+            app.provider.reset()
+            app.tracer.reset()
+            reset_rate_limit()
+            run = seam(app, f"{scenario}/{index}", said)
+            record["steps"].append(_step_record(app, said, run))
+            if run.status_code != 200 or run.stop_reason == STOP_PROVIDER_ERROR:
+                return run
+        app.provider.reset()
+        app.tracer.reset()
+        reset_rate_limit()
+        return seam(app, scenario, utterance)
+
+    # Which seam this composite actually drove, for the report's own honesty:
+    # `_pass_rate` files a sample under `panel` or `delegate` by identity, and
+    # without this every multi-step probe would be recorded against the delegate
+    # wire it never touched.
+    runner.seam = seam  # type: ignore[attr-defined]
+    return runner
+
+
+def _seam_name(runner: Callable[[EvalApp, str, str], EvalRun]) -> str:
+    """Which HTTP seam a scenario's samples went through, as the report says it.
+
+    Reads the composite runner's `.seam` when there is one, and falls back to
+    the runner itself — so `_run`, `_run_panel` and anything built out of them
+    are all named correctly, and a runner nobody has taught it about is named
+    after the default rather than silently.
+    """
+    seam = getattr(runner, "seam", runner)
+    return "panel" if seam is _run_panel else "delegate"
+
+
 def _assert_reached_narrator(run: EvalRun) -> None:
     """The turn got far enough for a commentary check to mean anything.
 
@@ -1560,7 +1808,7 @@ def _pass_rate(
         return {
             "kind": "scenario",
             "seconds": round(time.monotonic() - started, 1),
-            "seam": "panel" if runner is _run_panel else "delegate",
+            "seam": _seam_name(runner),
             "utterance": utterance,
             "samples": samples,
             **meta,
@@ -1845,7 +2093,11 @@ def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
         "Filtered to AssertionError: an unfiltered xfail also absorbs a "
         "harness bug or an infra abort (`pytest.fail` raises `Failed`, a bad "
         "check raises `KeyError`), and an xfail line is then no longer "
-        "evidence of the known understanding miss (audit 2026-09-05)."
+        "evidence of the known understanding miss (audit 2026-09-05). PR 5 "
+        "strengthened what a pass means here — exactly four plies on the "
+        "board, the player to move, nothing left armed, a `completed` stop and "
+        "3–5 model calls — so the marker now also covers a turn that reaches "
+        "the right prefix and then keeps working past it."
     ),
     raises=AssertionError,
     strict=False,
@@ -1868,7 +2120,17 @@ def test_eval_undo_twice_and_replace_is_one_turn(engine: EnginePlayer) -> None:
 
     Behavioral, like `undo_and_replace`: however the model spells the takeback
     (two calls, or one asking for four plies), both exchanges must be gone and
-    the replacement must stand where the first of them stood."""
+    the replacement must stand where the first of them stood.
+
+    **What a pass means here is stricter since the 2026-09-05 audit** (its
+    proposal 1, an edit to this scenario rather than a second green duplicate).
+    A history *prefix* accepts a turn that landed the right position and then
+    kept going — another undo, a second move, a budget stop on top of correct
+    work — so the end state is pinned exactly: four plies, the player to move,
+    nothing armed, a stop the turn chose itself, and a round-trip envelope. The
+    envelope is 3–5 because both spellings are legitimate: one planner turn
+    carrying `undo, undo, make_move` costs the tool turn, the handoff note and
+    the narrator, and a planner that spends a turn per action costs two more."""
     utterance = "undo the bishop move and undo the knight move, then play d4 instead"
 
     def setup(app: EvalApp) -> None:
@@ -1877,18 +2139,32 @@ def test_eval_undo_twice_and_replace_is_one_turn(engine: EnginePlayer) -> None:
         _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
-        trajectory = [c["tool"] for c in _tool_calls(assistant)]
-        assert "undo" in trajectory, "expected the takebacks"
-        assert "make_move" in trajectory, "expected the replacement move"
-        assert trajectory.index("undo") < trajectory.index("make_move"), (
-            f"the takebacks must precede the replacement: {trajectory}"
-        )
+        _in_order(assistant, "undo", "make_move")
         history = _history(app.client)
         # Both of White's last moves and the engine's answers to them are gone;
         # d4 stands where Nf3 stood (plus whatever the engine answered it with).
         assert history[:3] == ["e4", "b6", "d4"], history
         assert "Nf3" not in history and "Bc4" not in history, (
             f"a takeback did not stick: {history}"
+        )
+        # And nothing else happened. Four plies is the *settled* exchange — the
+        # replacement and exactly one engine answer — so a third undo, a second
+        # move or a half-finished exchange all fail here rather than passing on
+        # the prefix above.
+        assert len(history) == 4, (
+            f"expected the two takebacks, d4 and one engine reply: {history}"
+        )
+        assert app.ctx.session.turn == app.ctx.session.player_color, (
+            f"the exchange must settle with the player to move, and it is "
+            f"{app.ctx.session.turn}'s"
+        )
+        assert app.ctx.live_pending() is None, (
+            f"a takeback turn armed something: {app.ctx.live_pending()!r}"
+        )
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 5, (
+            "expected the tool turn(s), the handoff note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
         )
 
     floor = _FLOORS["undo_twice_and_replace"]
@@ -2079,12 +2355,33 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
 
     What the eval still cannot reach is the state live play had and this
     doesn't: a long transcript, and verbosity=low (see the long-transcript
-    family)."""
+    family).
+
+    **This is the audit's proposed `resign_intent_reaches_planner`** (2026-09-05,
+    proposal 9), landed as a strengthening rather than a second scenario: PR 1
+    had already moved this one onto that proposal's exact utterance and setup,
+    so a new green case beside it would have sampled the same thing twice. What
+    the proposal adds is that the outcome is no longer a disjunction. Six
+    replayed plies mean the player has invested in the game and it is not over,
+    so `tools._gate` arms *every* time: the refusal branch is the contract, not
+    one of two acceptable answers, and the armed op has to carry the player's
+    own side (`tools.resign` resolves a bare call to `session.player_color`
+    before the gate sees it — trace review, finding 8, where the default was
+    the side to move and only coincidentally the player's)."""
+
+    before: dict[str, Any] = {}
 
     def setup(app: EvalApp) -> None:
         for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
             assert app.ctx.session.submit_move(san).legal
+        # The gate's own premises, so a scenario that quietly stopped arming
+        # (a rule change about what counts as investment) fails as a premise
+        # rather than as the model.
+        assert not app.ctx.session.is_game_over()
+        assert app.ctx.live_pending() is None
         _stays_a_model_eval(_RESIGN_UTTERANCE, app.ctx.session.fen())
+        before["history"] = app.ctx.session.move_history()
+        before["settings"] = app.ctx.settings.snapshot()
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         assert _tool_calls(assistant), (
@@ -2092,16 +2389,42 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
         )
         # Called, whatever the gate then did with it — a refused resign rides
         # on the wire as an `error`, so this counts attempts, not successes.
-        assert any(c["tool"] == "resign" for c in _tool_calls(assistant)), (
+        assert _attempted(assistant, "resign"), (
             f"expected a resign call: {_trajectory(assistant)}"
         )
-        # Either it was gated (armed, board live) or it ran — never a lie. The
-        # armed op has to *be* the resignation: `live_pending`, and by name, so
-        # some other pending question cannot pass for this one.
+        # And refused: on this board the gate has to arm rather than run, so a
+        # resignation that *went through* means the gate stood aside on a game
+        # the player is six plies into.
+        assert _succeeded(assistant, "resign") == [], (
+            "the gate must refuse an unconfirmed resignation on a played game: "
+            + _trajectory(assistant)
+        )
+        # The armed op has to *be* the resignation: `live_pending`, by name, so
+        # some other pending question cannot pass for this one — and for the
+        # player's own side, which is the fact a bare `resign()` leans on.
         pending = app.ctx.live_pending()
-        assert app.ctx.session.is_game_over() or (
-            pending is not None and pending.name == "resign"
-        ), f"neither resigned nor armed a resignation: pending={pending!r}"
+        assert pending is not None and pending.name == "resign", (
+            f"no resignation was armed for the yes: pending={pending!r}"
+        )
+        assert pending.args.get("color") == app.ctx.session.player_color, (
+            f"armed a resignation for {pending.args.get('color')!r}, and the "
+            f"player is {app.ctx.session.player_color!r}"
+        )
+        # A question is not an ending: the game is still there to lose.
+        assert not app.ctx.session.is_game_over(), "the game ends on the yes"
+        assert app.ctx.session.move_history() == before["history"]
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a resignation ask must not change a setting the player owns"
+        )
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            "expected the planner's resign turn, its note and the narrator "
+            f"(one recovery allowed), got {len(app.provider.calls)} model calls"
+        )
+        assert all(call.thinking is False for call in app.provider.calls), (
+            "a resignation is not analysis — thinking stays OFF"
+        )
 
     floor = _FLOORS["resign_never_pretends"]
     result = _pass_rate(
@@ -2672,6 +2995,1058 @@ def test_eval_pgn_is_handed_over_not_recited(engine: EnginePlayer) -> None:
         # Every text assertion here is negative, so a turn that stopped on its
         # budget recites nothing and would pass for never having spoken.
         requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+# --- compositions: several capabilities inside one utterance ------------------
+#
+# The gap the 2026-09-05 audit found in this file's coverage, stated exactly:
+# "the only scenarios requiring multiple tool capabilities within one
+# model-routed utterance are the two undo/replace variants". No active scenario
+# pinned move-plus-read, save-plus-reset, settings-plus-move, resume-plus-
+# description, or best-move-read-then-act — and a multi-tool request sitting in
+# `_LIVE_TRANSCRIPT` is not coverage, because seeded history is never executed.
+#
+# These are the audit's twelve proposals, in its own order of expected
+# information per GPU-minute, minus the two that were edits to scenarios that
+# already existed (`undo_twice_and_replace` above, and `resign_never_pretends`,
+# which PR 1 had already moved onto proposal 9's utterance and setup).
+#
+# Every one of them asserts the five dimensions the audit found unpinned across
+# most of the suite — route, stop reason, model-call count, board end-state and
+# a settings snapshot — plus the guard verdict wherever text reaches the
+# player. The call envelopes are what the composition *costs*, not a timing
+# estimate: three is the floor for any brain-routed turn (the planner's tool
+# turn, its handoff note, the narrator), and the extra one is a second planner
+# iteration, which several of these legitimately need.
+
+
+def _fresh_save_dir(app: EvalApp, tmp_path: Any, taken: list[Path]) -> None:
+    """Point this sample's saves at a directory nothing has written to yet.
+
+    `tmp_path` is per-*test* and a pass-rate scenario takes five or more samples
+    inside one test, so two samples share a save directory by default. That
+    matters for the save/resume compositions specifically: the save *name* rides
+    inside the utterance ("save this as checkpoint"), which `_pass_rate` holds
+    fixed across samples, so a sample whose save never happened could still be
+    answered by the previous sample's file and pass. The name stays literal and
+    the directory is what varies — and the emptiness is asserted, because a
+    guarantee nobody checks is how the resume scenarios once read 0/5 against a
+    path that had gone stale (#214).
+    """
+    save_dir = Path(tmp_path) / f"sample-{len(taken) + 1}"
+    save_dir.mkdir(parents=True)
+    taken.append(save_dir)
+    app.ctx.save_dir = save_dir
+    assert saved_game_names(app.ctx) == [], "this sample must start with no saves"
+
+
+def _reloaded(path: Path) -> GameSession:
+    """The saved game as the app itself would read it back.
+
+    Wrapped so a corrupt or unreadable save fails the *sample* rather than the
+    scenario: `GameSession.load` raises `ValueError`, which `evalstats.classify`
+    reads as a HARNESS bug and never retries or scores, and a save the model's
+    turn wrote badly is data about the turn.
+    """
+    try:
+        return GameSession.load(path)
+    except (ValueError, OSError) as exc:
+        raise AssertionError(f"the save at {path} does not load: {exc}") from exc
+
+
+_KNIGHT_ASK = "move my kings knight"
+_KNIGHT_PICK = "the one to f3"
+
+
+def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
+    """Ask ambiguously, then answer the question — two turns, one thread.
+
+    On a fresh board "my kings knight" names one piece and two squares, so the
+    only correct first answer is the question "Nf3 or Nh3?". `ambiguous_move`
+    already pins that an ambiguous *piece* ask is not guessed at; what nothing
+    pinned is that the clarification survives to the player and that their
+    answer to it lands the move they picked.
+
+    **The first step is expected to fail on the pre-fix build**, and that is the
+    point of it: audit finding 6, reproduced there over HTTP. A question naming
+    two playable SANs on a board the turn did not change is exactly what the
+    advice guard treats as unlicensed advice, so the correct question is
+    replaced wholesale by the "I can't back that up" correction — leaving the
+    player nothing to answer and the second step nothing to refer to. PR 4
+    licenses a clarification that names two or more legal moves, and this
+    scenario is its gate.
+
+    The panel seam, because the second utterance is a *reference*: `_run` opens
+    a fresh delegate conversation per call, so "the one to f3" would arrive with
+    no question in front of it. `/api/command` reads and records
+    `ctx.transcript`, which is the only place that thread exists.
+
+    Step one's assertions live in `check` rather than in the runner because the
+    runner is called outside `_sample`'s classifier — an assertion there would
+    abort the scenario instead of scoring the miss it found.
+    """
+    before: dict[str, Any] = {}
+    record: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        # The premise the whole scenario rests on: two knight moves, one
+        # phrase. Asserted rather than assumed — a fresh board is only
+        # ambiguous for as long as both squares stay legal.
+        legal = set(app.ctx.session.legal_moves())
+        assert {"Nf3", "Nh3"} <= legal, sorted(legal)
+        _stays_a_model_eval(_KNIGHT_ASK, app.ctx.session.fen())
+        _stays_a_model_eval(_KNIGHT_PICK, app.ctx.session.fen())
+        before["settings"] = app.ctx.settings.snapshot()
+        before["version"] = app.ctx.board_version
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        ask = _step(record, 1)
+        # The question. Nothing may move on it — a turn that guessed a knight
+        # answered a question it was supposed to ask — and it must reach the
+        # player unsuppressed, which is the half PR 4 is about.
+        _assert_route(ask["run"], ROUTE_BRAIN)
+        _assert_completed(ask["traced"])
+        _assert_not_guarded(ask["traced"])
+        assert _board_mutations(ask["assistant"]) == [], (
+            "the ambiguous ask must not move a piece: "
+            + (_trajectory(ask["assistant"]) or "no tool calls")
+        )
+        assert ask["history"] == [], f"the board moved on the ask: {ask['history']}"
+        assert ask["version"] == before["version"]
+        assert ask["settings"] == before["settings"], (
+            "a question turn must not change a setting the player owns"
+        )
+        assert ask["model_calls"] == 2, (
+            "expected the planner's decline plus the narrator's question, got "
+            f"{ask['model_calls']} model calls"
+        )
+        # The selection.
+        assert len(_legal_moves(assistant)) == 1, (
+            "expected exactly one accepted move: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        history = _history(app.client)
+        assert history[:1] == ["Nf3"], f"the player picked f3 and got {history}"
+        assert len(history) == 2, f"expected the move and one engine reply: {history}"
+        assert app.ctx.session.turn == app.ctx.session.player_color
+        assert app.ctx.live_pending() is None
+        assert app.ctx.settings.snapshot() == before["settings"]
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            "expected the planner's move turn, its note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+
+    floor = _FLOORS["ambiguous_knight_then_selection"]
+    result = _pass_rate(
+        engine,
+        "ambiguous_knight_then_selection",
+        _KNIGHT_PICK,
+        check,
+        floor=floor,
+        setup=setup,
+        runner=_run_steps(_KNIGHT_ASK, record=record),
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_move_save_resume_finishes_exchange(
+    engine: EnginePlayer, tmp_path: Any
+) -> None:
+    """Save mid-exchange, then load it back: the restored game must be one the
+    player can move on.
+
+    Audit finding 2, as a live composition. "play e4 and save this" is correctly
+    answered by a move *then* a save, and the save therefore captures the
+    interval between the player's move and the engine's reply — one ply, the
+    engine to move. Nothing restores that obligation: `resume_game` swaps the
+    session in and the pipeline's close beat only collects a reply the
+    *coordinator* is mid-turn on, which a fresh restore is not. So the player
+    loads their game and finds Black to move with nobody to move it.
+
+    **Expected to fail on the pre-fix build**, on the final step: the restored
+    history is `["e4"]` and the turn belongs to the engine. PR 3 hands a
+    restored engine-to-move position to the coordinator to settle, the way
+    `engine_opening_move` already does for a new game as black, and this is its
+    gate.
+
+    The engine's recomputed reply is deliberately not compared to the original
+    one: Stockfish is sampled at the settings tier and a resumed game is a new
+    search, so "the exchange is finished" is the contract and "finished the same
+    way" is not.
+    """
+    step_one = "play e4 and save this as checkpoint"
+    utterance = "load the game named checkpoint"
+    before: dict[str, Any] = {}
+    record: dict[str, Any] = {}
+    taken: list[Path] = []
+
+    def setup(app: EvalApp) -> None:
+        _fresh_save_dir(app, tmp_path, taken)
+        assert app.ctx.session.player_color == "white"
+        _stays_a_model_eval(step_one, app.ctx.session.fen())
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        move = _step(record, 1)
+        _assert_route(move["run"], ROUTE_BRAIN)
+        _assert_completed(move["traced"])
+        # Order is the whole of the first step: a save that ran *before* the
+        # move saved the board the player asked to change.
+        _in_order(move["assistant"], "make_move", "save_game")
+        assert len(_legal_moves(move["assistant"])) == 1
+        assert _succeeded(move["assistant"], "save_game"), "expected the save: " + (
+            _trajectory(move["assistant"]) or "no tool calls"
+        )
+        assert move["history"][:1] == ["e4"], move["history"]
+        assert len(move["history"]) == 2, (
+            f"the live exchange must settle even when the save doesn't: "
+            f"{move['history']}"
+        )
+        path = _save_path(app.ctx, "checkpoint")
+        assert path.exists(), f"nothing was written to {path}"
+        _reloaded(path)  # a file the app can read back, whatever it holds
+        assert 3 <= move["model_calls"] <= 4, (
+            f"expected the move+save turn, the note and the narrator, got "
+            f"{move['model_calls']} model calls"
+        )
+        # The board the resume ask actually met — the first step moved it, so
+        # the premise cannot be settled in `setup` the way a single-turn
+        # scenario's is.
+        _stays_a_model_eval(utterance, move["fen"])
+        # The resume.
+        assert _succeeded(assistant, "resume_game"), "expected the restore: " + (
+            _trajectory(assistant) or "no tool calls"
+        )
+        assert _rejected_moves(assistant) == [], (
+            "a restored board must not be submitted an illegal move: "
+            + _trajectory(assistant)
+        )
+        history = _history(app.client)
+        assert history[:1] == ["e4"], f"the wrong game came back: {history}"
+        assert len(history) == 2, (
+            f"the restored position owes an engine reply nobody collected: {history}"
+        )
+        assert app.ctx.session.player_color == "white"
+        assert app.ctx.session.turn == "white", (
+            f"the player cannot move on a board it is {app.ctx.session.turn}'s turn on"
+        )
+        assert app.ctx.live_pending() is None
+        assert app.ctx.settings.snapshot() == before["settings"]
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the resume turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+
+    floor = _FLOORS["move_save_resume_finishes_exchange"]
+    result = _pass_rate(
+        engine,
+        "move_save_resume_finishes_exchange",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        runner=_run_steps(step_one, record=record),
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_save_then_new_game(engine: EnginePlayer, tmp_path: Any) -> None:
+    """ "save this as checkpoint and start a new game" — a composition whose
+    second half the gate is supposed to stop.
+
+    Two things at once, and they are the two halves the audit says nothing
+    covered: a read-then-write composition inside one utterance, and the
+    destructive gate arming *after* other work in the same turn.
+    `destructive_confirm` pins the arming on its own; this pins that a save
+    beside it still lands, that it holds the game the player asked to keep, and
+    that the reset stays unfired until they say so.
+
+    The order is load-bearing rather than stylistic: a save that ran after a
+    successful reset would be a save of the empty board, which is why the file
+    is reloaded and compared to the game that was on screen.
+
+    Verbosity `low` for the second half. A confirmed destructive op at `low` is
+    answered by the app's own canned line (`api._destructive_confirmation`), so
+    the player's "yes" costs **zero** model round trips — the deterministic
+    half of the gate, and the cheapest assertion in this file.
+    """
+    utterance = "save this as checkpoint and start a new game"
+    before: dict[str, Any] = {}
+    taken: list[Path] = []
+
+    def setup(app: EvalApp) -> None:
+        _fresh_save_dir(app, tmp_path, taken)
+        for san in ("e4", "e5", "Nf3", "Nc6"):
+            assert app.ctx.session.submit_move(san).legal
+        app.ctx.settings.verbosity = "low"
+        assert not app.ctx.session.is_game_over()  # a real game stands to be lost
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["history"] = app.ctx.session.move_history()
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        _in_order(assistant, "save_game", "new_game")
+        assert _succeeded(assistant, "save_game"), "expected the save: " + (
+            _trajectory(assistant) or "no tool calls"
+        )
+        assert _attempted(assistant, "new_game"), (
+            "the reset has to be *called* — that is what arms the gate: "
+            + _trajectory(assistant)
+        )
+        assert _succeeded(assistant, "new_game") == [], (
+            "new_game must wait for a confirmation, not fire on the first ask"
+        )
+        path = _save_path(app.ctx, "checkpoint")
+        assert path.exists(), f"nothing was written to {path}"
+        assert _reloaded(path).move_history() == before["history"], (
+            "the save does not hold the game the player asked to keep"
+        )
+        assert _history(app.client) == before["history"], "the board must stand"
+        pending = app.ctx.live_pending()
+        assert pending is not None and pending.name == "new_game", (
+            f"the reset must be armed for the yes, and what is armed is {pending!r}"
+        )
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a save-and-reset ask must not change a setting the player owns"
+        )
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the save+reset turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+
+        # The other half of the gate, and it is deterministic: no model call
+        # stands between the player's yes and the reset. Metered separately —
+        # the sample's own cost was already recorded by `_measured`.
+        app.provider.reset()
+        answered = app.client.post("/api/command", json={"text": "yes"})
+        assert answered.status_code == 200, answered.text
+        ran = [
+            entry
+            for entry in answered.json()["tool_results"]
+            if entry["name"] == "new_game" and entry["result"].get("ok") is True
+        ]
+        assert len(ran) == 1, f"expected exactly one reset: {answered.json()}"
+        assert app.ctx.session.move_history() == [], "confirmed: the game resets"
+        assert app.ctx.session.player_color == "white", "the side is not the ask"
+        assert app.ctx.pending is None
+        assert app.provider.calls == [], (
+            "a bare yes at verbosity=low is answered by the app's own line, so "
+            f"it costs no model call: {len(app.provider.calls)}"
+        )
+
+    floor = _FLOORS["save_then_new_game"]
+    result = _pass_rate(
+        engine,
+        "save_then_new_game",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_voice_setting_and_move(engine: EnginePlayer) -> None:
+    """ "turn voice output off and play e4" — a setting and a move in one
+    utterance, and neither may cost the other.
+
+    Voice rather than difficulty on purpose (the audit's own note): a
+    `set_difficulty` in the same turn as a move races the engine search that
+    move started, so a scenario built on it would be measuring sequencing where
+    it means to measure language routing. Voice output touches nothing the
+    engine does.
+
+    The settings pin is a whole-snapshot comparison with exactly one key
+    changed, not a read of `voice_output` alone: an agent that turned voice off
+    *and* dialled the difficulty down has done something the player did not ask
+    for, and TODO.md's standing item is that a turn changes only the setting it
+    was asked to change.
+    """
+    utterance = "turn voice output off and play e4"
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        # From on, so "off" is a real change rather than a no-op that a turn
+        # calling nothing at all would also satisfy.
+        app.ctx.settings.voice_output = True
+        before["settings"] = app.ctx.settings.snapshot()
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _succeeded(assistant, "set_voice_output"), (
+            "the setting is a tool call, not a promise: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert len(_legal_moves(assistant)) == 1, (
+            "expected exactly one accepted move: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        history = _history(app.client)
+        assert history[:1] == ["e4"], history
+        assert len(history) == 2, f"expected the move and one engine reply: {history}"
+        assert app.ctx.session.turn == app.ctx.session.player_color
+        expected = {**before["settings"], "voice_output": False}
+        assert app.ctx.settings.snapshot() == expected, (
+            f"expected voice off and nothing else moved: {app.ctx.settings.snapshot()}"
+        )
+        assert app.ctx.live_pending() is None
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the setter+move turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+        assert all(call.thinking is False for call in app.provider.calls), (
+            "a move and a setting are not analysis — thinking stays OFF"
+        )
+
+    floor = _FLOORS["voice_setting_and_move"]
+    result = _pass_rate(
+        engine,
+        "voice_setting_and_move",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_move_and_judgment(engine: EnginePlayer) -> None:
+    """ "play e4, and how am I doing?" — act, then read, in one utterance.
+
+    The composition `judgment_question` and `plain_move` cover only one half of
+    each: a move turn that also has to answer a question is where the two
+    contracts can collide, and where the engine's reply search and the
+    analysis read overlap in time.
+
+    `analyze_last_move` is accepted beside `evaluate_position` because
+    `judgment_question` already accepts it and the tool descriptions make both
+    honest answers to "how am I doing" straight after a move — one scores the
+    position, the other scores the move that made it. What may not happen is the
+    question being answered from the model's head, which is what pinning a
+    *successful* verdict tool after the move is for.
+
+    The thinking pins are the OFF→ON flip end to end (`llama_brain._thinking`):
+    every planner turn is a parse even with an analysis result already in
+    context, and the narrator — the one turn that reasons about it — inherits
+    the flip. Two thinking turns for one analysis question would be the
+    regression.
+    """
+    utterance = "play e4, and how am I doing?"
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert len(_legal_moves(assistant)) == 1, (
+            "expected exactly one accepted move: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        verdicts = [
+            name
+            for name in ("evaluate_position", "analyze_last_move")
+            if _succeeded(assistant, name)
+        ]
+        assert verdicts, "a judgment question must route through an analysis tool: " + (
+            _trajectory(assistant) or "no tool calls"
+        )
+        trajectory = [call["tool"] for call in _tool_calls(assistant)]
+        assert trajectory.index("make_move") < min(
+            trajectory.index(name) for name in verdicts
+        ), f"the move comes first — it is what the judgment is about: {trajectory}"
+        history = _history(app.client)
+        assert history[:1] == ["e4"], history
+        assert len(history) == 2, f"expected the move and one engine reply: {history}"
+        assert app.ctx.session.turn == app.ctx.session.player_color == "white"
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a move-and-read turn must not change a setting the player owns"
+        )
+        assert app.ctx.live_pending() is None
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        calls = app.provider.calls
+        assert 3 <= len(calls) <= 4, (
+            f"expected the move turn, the read, the note and the narrator, got "
+            f"{len(calls)} model calls"
+        )
+        assert all(call.thinking is False for call in calls[:-1]), (
+            "every planner turn is a parse, analysis result in context or not"
+        )
+        assert calls[-1].thinking is True, (
+            "the turn that puts an evaluation into words must think"
+        )
+
+    floor = _FLOORS["move_and_judgment"]
+    result = _pass_rate(
+        engine,
+        "move_and_judgment",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+# The stale prose the resume-and-describe probe has to beat: a description of
+# the board the player is on *now*, one turn before they replace it. Verbatim
+# in shape from what `describe_position` produces, so the temptation is a real
+# one — the model's own last answer, still true of a game that is about to stop
+# existing.
+_STALE_DESCRIPTION = (
+    "Both queen's pawns are out — d4 and d5, and nothing else has left the "
+    "back rank yet."
+)
+
+
+def _described(session: GameSession) -> dict[str, Any]:
+    """What `describe_position` says about `session`, computed independently.
+
+    The oracle for the resume composition: `describe_position` reads nothing but
+    the session (placement, material, castling, check, last move, move number,
+    plies, outcome — `tools.build_registry`), so the description of a restored
+    game is a pure function of the save file and can be recomputed here from the
+    bytes on disk. A fresh `ToolContext` and registry rather than the app's,
+    because the app's are pointed at the live game and the whole question is
+    whether the live game is the saved one.
+
+    `FakeEngine` because no field of the result comes from an engine; passing
+    one at all is only so the registry builds the same tool set.
+    """
+    return build_registry(ToolContext(session=session, engine=FakeEngine())).dispatch(
+        "describe_position", {}
+    )
+
+
+def test_eval_resume_and_describe(engine: EnginePlayer, tmp_path: Any) -> None:
+    """ "resume scholars and tell me where my pieces are" — restore, then
+    describe the board you restored.
+
+    The composition the audit calls out as specifically testing state *after* a
+    replacement: `resume_game` swaps the whole session, and the description has
+    to be of the incoming game rather than of the one that was on screen a
+    moment ago. The transcript is seeded with exactly one turn — the model's own
+    description of the `d4 d5` game it is about to discard — so there is stale
+    prose in context saying something true of the wrong board. That is the
+    self-poisoning shape the long-transcript family found (a stale assistant
+    line outranking a fresh fact), aimed at a description instead of at a tool
+    offer.
+
+    The oracle is the save file, not a hand-typed expectation: the dispatched
+    result must equal what `describe_position` produces from a `GameSession`
+    rebuilt out of the bytes on disk (`_described`). Every field is compared,
+    because every field of that result is a pure function of the session — there
+    is nothing turn-specific in it to exempt.
+
+    Panel seam, because `ctx.transcript` is the only place the stale turn can
+    live; the delegate's fresh conversation would carry none.
+    """
+    utterance = "resume scholars and tell me where my pieces are"
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        app.ctx.save_dir = tmp_path
+        saved = GameSession()
+        for san in ("e4", "e5", "Nf3", "Nc6"):
+            assert saved.submit_move(san).legal
+        # `_save_path`, never a hand-built one — the same reason
+        # `resume_not_denied` uses it: a save has to land where `resume_game`
+        # reads, and a hard-coded path went stale once already (#214).
+        path = _save_path(app.ctx, "scholars")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        saved.save(path)
+        before["save"] = json.loads(path.read_text())
+        # A different game is in progress, and the model has just described it.
+        for san in ("d4", "d5"):
+            assert app.ctx.session.submit_move(san).legal
+        app.ctx.transcript.record("what's the position?", _STALE_DESCRIPTION)
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        _in_order(assistant, "resume_game", "describe_position")
+        assert _succeeded(assistant, "resume_game"), "expected the restore: " + (
+            _trajectory(assistant) or "no tool calls"
+        )
+        described = _succeeded(assistant, "describe_position")
+        assert described, (
+            "a description ask is answered by the tool that describes: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert _history(app.client) == ["e4", "e5", "Nf3", "Nc6"], (
+            "the saved game did not come back"
+        )
+        assert json.loads(described[0]["result"]) == _described(
+            GameSession.from_dict(before["save"])
+        ), "the description is not of the game that was restored"
+        called = {call["tool"] for call in _tool_calls(assistant)}
+        assert not called & _VERDICT_TOOLS, (
+            "a description ask is not a verdict ask: " + _trajectory(assistant)
+        )
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a restore-and-read turn must not change a setting the player owns"
+        )
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the resume+describe turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+        assert all(call.thinking is False for call in app.provider.calls), (
+            "a description is not a verdict — thinking stays OFF"
+        )
+
+    floor = _FLOORS["resume_and_describe"]
+    result = _pass_rate(
+        engine,
+        "resume_and_describe",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        runner=_run_panel,
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_best_move_then_play(engine: EnginePlayer) -> None:
+    """ "ask Stockfish for its top move and play it for me" — read, then act on
+    what came back.
+
+    The read-then-act composition, and the one where the planner's contract is
+    tightest: it is told to submit only moves from the `legal_moves` list
+    injected at command start, and the move it is being asked to play arrives
+    from a *tool result* instead. `get_legal_moves` is deliberately withheld
+    from the HTTP brain, so there is no second list to consult — which is why
+    this scenario does not require that tool and would be measuring the wrong
+    thing if it did.
+
+    Which move Stockfish picks is not pinned, and must not be: it is sampled at
+    the settings tier and would make this a test of the engine. What is pinned
+    is the *link* — the move on the board is the first candidate of the call
+    that was actually made, read both off that call's result and off the board's
+    own UCI history, because the audit's `_played` lesson is that a tool's
+    report of itself is not evidence about the board.
+    """
+    utterance = "ask Stockfish for its top move and play it for me"
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        for san in ("e4", "e5", "Nf3", "Nc6"):
+            assert app.ctx.session.submit_move(san).legal
+        assert app.ctx.session.player_color == "white"
+        assert app.ctx.session.turn == "white"  # the player is the one to move
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["history"] = app.ctx.session.move_history()
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        consulted = _succeeded(assistant, "get_best_moves")
+        assert consulted, "the move has to come from the engine: " + (
+            _trajectory(assistant) or "no tool calls"
+        )
+        played = _legal_moves(assistant)
+        assert len(played) == 1, "expected exactly one accepted move: " + _trajectory(
+            assistant
+        )
+        _in_order(assistant, "get_best_moves", "make_move")
+        candidates = json.loads(consulted[0]["result"])["moves"]
+        assert candidates, "the engine reported no candidates to play"
+        top = candidates[0]["uci"]
+        assert json.loads(played[0]["result"])["uci"] == top, (
+            f"played a move the engine did not put first: {_trajectory(assistant)}"
+        )
+        # And off the board, which is what the player has. `to_dict` is the
+        # session's own UCI record, so this compares like with like without
+        # re-deriving SAN.
+        uci_history = app.ctx.session.to_dict()["moves"]
+        assert len(uci_history) == 6, f"expected A plus one exchange: {uci_history}"
+        assert uci_history[4] == top, (
+            f"the board does not hold the engine's pick: {uci_history}"
+        )
+        history = _history(app.client)
+        assert history[:4] == before["history"], f"the setup moved: {history}"
+        assert app.ctx.session.turn == app.ctx.session.player_color
+        assert app.ctx.live_pending() is None
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a read-and-play turn must not change a setting the player owns"
+        )
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        calls = app.provider.calls
+        assert 4 <= len(calls) <= 5, (
+            f"expected the read, the move, the note and the narrator, got "
+            f"{len(calls)} model calls"
+        )
+        assert all(call.thinking is False for call in calls[:-1]), (
+            "every planner turn is a parse, analysis result in context or not"
+        )
+        assert calls[-1].thinking is True, (
+            "an analysis result landed this turn, so the narrator reasons about "
+            "it — the OFF→ON flip is `llama_brain._thinking`"
+        )
+
+    floor = _FLOORS["best_move_then_play"]
+    result = _pass_rate(
+        engine,
+        "best_move_then_play",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+    )
+
+    _assert_floor(result, floor)
+
+
+# The three ways a player can answer a confirmation question in their own
+# words, with the verdict `llama_brain.read_answer` has to reach for each. The
+# literal "yes"/"no" are `fastparse.parse_confirmation`'s and are hard,
+# zero-model unit tests in `test_command.py`; these are the ones that cost a
+# model round trip, and each of the three takes a *different* route through the
+# pipeline afterwards, which is why the route is parameterized alongside.
+_FREEFORM_ANSWERS = [
+    pytest.param("actually, forget it", "cancel", ROUTE_CONFIRMATION, id="cancel"),
+    pytest.param("just do it", "confirm", ROUTE_CONFIRMATION, id="confirm"),
+    pytest.param(
+        "show me the position instead", "unrelated", ROUTE_BRAIN, id="unrelated"
+    ),
+]
+
+
+@pytest.mark.parametrize(("answer", "label", "route"), _FREEFORM_ANSWERS)
+def test_eval_freeform_confirmation_answers(
+    engine: EnginePlayer, answer: str, label: str, route: str
+) -> None:
+    """A confirmation answered in words no parser claims — cancelled, confirmed,
+    or changed to something else entirely.
+
+    The confirmation reader (`LlamaBrain.read_answer`) is the one model call in
+    the app outside the planner/narrator pair, and no live scenario measured it:
+    a player who says "just do it" after a resign question has answered it as
+    plainly as "yes", and reading that is understanding, which is the model's
+    job. *Acting* on it is not — a confirm goes down the same `confirm_pending`
+    path a bare yes takes, so the model never touches a destructive tool.
+
+    Each condition pins a different shape of turn, and the route is the first
+    thing that tells them apart:
+
+    - **cancel** disarms and stops. No tools, no narrator, one round trip.
+    - **confirm** runs the armed op deterministically. At verbosity `low` the
+      reply is the app's own canned line, so the reader is again the only call —
+      which is what makes "no planner stands between the answer and the
+      resignation" an assertion rather than a claim.
+    - **unrelated** disarms and *falls through* to the planner, so the turn is
+      recorded on the brain route and costs the reader on top of an ordinary
+      brain turn. That the reader's round trip is counted at all is the point:
+      the audit found this route's cost under-reported.
+
+    The resignation is armed through the app's own road rather than by writing
+    `ctx.pending` — `_RESIGN_LITERAL` is settled by `parse_resign`, dispatched
+    through the registry, refused by the gate and armed, at zero model calls
+    (`resign_literal_fast_path` is the lock on that). So the question the reader
+    is given is the real one, and the meters are reset afterwards so the sample
+    measures only the answer.
+    """
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        for san in ("e4", "e5", "Nf3", "Nc6"):
+            assert app.ctx.session.submit_move(san).legal
+        app.ctx.settings.verbosity = "low"
+        armed = app.client.post("/api/command", json={"text": _RESIGN_LITERAL})
+        assert armed.status_code == 200, armed.text
+        pending = app.ctx.live_pending()
+        assert pending is not None and pending.name == "resign", (
+            f"the setup did not arm a resignation: {pending!r}"
+        )
+        assert app.provider.calls == [], (
+            "arming must be free, or this scenario's call counts are measuring "
+            f"the setup: {len(app.provider.calls)} model calls"
+        )
+        app.provider.reset()
+        app.tracer.reset()
+        # The premise: neither the literal reader nor either fast path settles
+        # this answer, so the reader's round trip is the only thing that can.
+        assert parse_confirmation(answer) is None, (
+            f"`parse_confirmation` settles {answer!r}, so no model reads it"
+        )
+        _stays_a_model_eval(answer, app.ctx.session.fen())
+        before["history"] = app.ctx.session.move_history()
+        before["version"] = app.ctx.board_version
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        calls = len(app.provider.calls)
+        assert app.ctx.live_pending() is None, (
+            f"an answered question must not stay armed: {app.ctx.live_pending()!r}"
+        )
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "answering a confirmation must not change a setting the player owns"
+        )
+        if label == "cancel":
+            assert _tool_calls(assistant) == [], (
+                "a cancelled question runs nothing: " + _trajectory(assistant)
+            )
+            assert _history(app.client) == before["history"]
+            assert app.ctx.board_version == before["version"]
+            assert not app.ctx.session.is_game_over(), "cancelled, and still live"
+            assert calls == 1, f"expected the reader and nothing else, got {calls}"
+        elif label == "confirm":
+            resigned = _succeeded(assistant, "resign")
+            assert len(resigned) == 1, "expected exactly one resignation: " + (
+                _trajectory(assistant) or "no tool calls"
+            )
+            assert app.ctx.session.is_game_over(), "confirmed, and still running"
+            outcome = app.ctx.session.outcome()
+            assert outcome is not None, "the game ended with no outcome recorded"
+            assert outcome.winner != app.ctx.session.player_color, (
+                f"the player's own resignation, and the outcome is {outcome!r}"
+            )
+            assert calls == 1, (
+                "at verbosity=low a confirmed op is answered by the app's own "
+                f"line, so the reader is the whole cost: {calls}"
+            )
+        else:
+            assert _succeeded(assistant, "describe_position"), (
+                "the new intent must be answered, not dropped with the op: "
+                + (_trajectory(assistant) or "no tool calls")
+            )
+            ran = [tool for tool in DESTRUCTIVE_TOOLS if _succeeded(assistant, tool)]
+            assert ran == [], f"a new intent is not a confirmation: {ran}"
+            assert _history(app.client) == before["history"]
+            assert app.ctx.board_version == before["version"]
+            assert not app.ctx.session.is_game_over()
+            assert 4 <= calls <= 5, (
+                "expected the reader on top of the planner's turn, its note and "
+                f"the narrator, got {calls} model calls"
+            )
+
+    floor = _FLOORS["freeform_confirmation_answers"]
+    result = _pass_rate(
+        engine,
+        f"freeform_confirmation_answers[{label}]",
+        answer,
+        check,
+        floor=floor,
+        setup=setup,
+        runner=_run_panel,
+        route=route,
+    )
+
+    _assert_floor(result, floor)
+
+
+# The audit's late-game stress fixture: 84 legal plies, White to move at move
+# 43, generated deterministically (seed 260) and excluding terminal
+# continuations. Synthetic legal play, and the file says so — it is a
+# reproducible condition, not a claim about how humans play.
+_LATE_GAME_PGN = Path(__file__).parent / "late_game_84_plies.pgn"
+
+
+def _replay_late_game(app: EvalApp) -> list[str]:
+    """Put the fixture on the board through the session's own legality gate.
+
+    Replayed rather than rooted at a FEN, and that is the whole reason the
+    fixture exists: the long-transcript family's `_LIVE_FEN` sessions have an
+    *empty* move stack, so nothing in this suite could undo, review, claim a
+    repetition or trip the destructive gate's investment test on a real game
+    (`tools._player_has_moved`). An arbitrary move number is not a substitute
+    for a move history.
+    """
+    with _LATE_GAME_PGN.open() as source:
+        game = chess.pgn.read_game(source)
+    assert game is not None and not game.errors, "the fixture did not parse"
+    for move in game.mainline_moves():
+        assert app.ctx.session.submit_move(move.uci()).legal
+    assert app.ctx.session.plies == 84
+    assert app.ctx.session.fullmove_number == 43
+    assert not app.ctx.session.is_game_over()
+    return app.ctx.session.move_history()
+
+
+@pytest.mark.parametrize("history", ["seeded", "control"])
+def test_eval_late_game_tool_composition(
+    engine: EnginePlayer, tmp_path: Any, history: str
+) -> None:
+    """A save and a description on a real 40-move game.
+
+    Everything else in this file happens inside the first ten plies or on a
+    FEN with no history behind it. This is the first scenario on a board with
+    84 recorded plies — a longer prompt, a longer move list in the state block,
+    and a `describe_position` result with a full board to render.
+
+    Paired conditions, for the same reason the long-transcript family is
+    paired: `seeded` records twenty exchanges drawn from the replay itself, and
+    `control` is the identical position with an empty transcript. If only one
+    of them moves, the finding is about history; if both do, it is about the
+    position. One variable at a time, or the number says nothing.
+
+    **Prompt tokens are recorded, not capped.** They are already on the
+    per-sample report line and in the JSONL record (`call_in`,
+    `prompt_tokens` — `evalstats.split_tokens`), and a ceiling set before
+    anyone has read a baseline is a guess with a number on it. The measurement
+    comes first; the ceiling, if it is worth having, comes after.
+
+    A lock: there is no evidence yet of a late-game miss. What it buys is a
+    condition nothing else in the suite can reach.
+    """
+    utterance = "save this as late_game and tell me the position"
+    before: dict[str, Any] = {}
+    taken: list[Path] = []
+
+    def setup(app: EvalApp) -> None:
+        _fresh_save_dir(app, tmp_path, taken)
+        moves = _replay_late_game(app)
+        if history == "seeded":
+            # The last twenty exchanges of the game actually on the board,
+            # recorded as the panel records them. Real continuity rather than
+            # filler: the model's own memory of this game, at the length
+            # `Transcript` keeps.
+            for index in range(len(moves) - 40, len(moves), 2):
+                app.ctx.transcript.record(
+                    f"play {moves[index]}", f"The player played {moves[index]}."
+                )
+            assert len(app.ctx.transcript.window()) == 40  # twenty exchanges
+        else:
+            assert app.ctx.transcript.window() == []
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["fen"] = app.ctx.session.fen()
+        before["history"] = moves
+        before["settings"] = app.ctx.settings.snapshot()
+        before["version"] = app.ctx.board_version
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _succeeded(assistant, "save_game"), "expected the save: " + (
+            _trajectory(assistant) or "no tool calls"
+        )
+        assert _succeeded(assistant, "describe_position"), (
+            "a description ask is answered by the tool that describes: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        path = _save_path(app.ctx, "late_game")
+        assert path.exists(), f"nothing was written to {path}"
+        restored = _reloaded(path)
+        assert restored.fen() == before["fen"], "the save is of another position"
+        assert restored.move_history() == before["history"], (
+            "the save lost the game's history"
+        )
+        assert _history(app.client) == before["history"]
+        assert app.ctx.board_version == before["version"], (
+            "a save and a read must not move the board"
+        )
+        assert app.ctx.settings.snapshot() == before["settings"]
+        assert app.ctx.live_pending() is None
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the save+describe turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+        assert all(call.thinking is False for call in app.provider.calls), (
+            "a save and a description are not analysis — thinking stays OFF"
+        )
+
+    floor = _FLOORS["late_game_tool_composition"]
+    result = _pass_rate(
+        engine,
+        f"late_game_tool_composition[{history}]",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        runner=_run_panel,
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+# Two ways a speech transcript mangles the same move. The homophone is the one
+# STT gets wrong most reliably ("night"), the disfluency is what a spoken
+# sentence actually looks like off Whisper — a filler in front, a politeness
+# behind, and no punctuation anywhere. Neither is a phrasing `parse_move`
+# settles, which is the premise `_stays_a_model_eval` re-checks per sample:
+# repairing them is the model's job, and the fix for a miss is the model's
+# understanding, never a rule added to the parser (CLAUDE.md).
+_STT_UTTERANCES = [
+    pytest.param("please put my night on f three", "homophone", id="homophone"),
+    pytest.param("uh knight f three please", "disfluency", id="disfluency"),
+]
+
+
+@pytest.mark.parametrize(("utterance", "label"), _STT_UTTERANCES)
+def test_eval_stt_knight_repair(
+    engine: EnginePlayer, utterance: str, label: str
+) -> None:
+    """A mangled voice transcript still lands the move it names.
+
+    Voice is the app's primary input and there was no deliberate STT-error
+    family in this suite at all (audit, "Coverage and assertion gaps"): the
+    canonical spoken phrasings that do exist are ones `parse_move` swallows, so
+    they measure the parser. These two do not, so the repair is measured where
+    it happens — in the model.
+
+    `_expect_san` is the check because "which move landed" is the whole
+    question, and it reads the *board*: one accepted move on the wire, nothing
+    else moving a piece, Nf3 first on the board, exactly one engine reply on top
+    of it, and the exchange settled with the player to move.
+    """
+    before: dict[str, Any] = {}
+    landed = _expect_san("Nf3")
+
+    def setup(app: EvalApp) -> None:
+        assert "Nf3" in app.ctx.session.legal_moves()
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        landed(app, assistant)
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a move turn must not change a setting the player owns"
+        )
+        assert app.ctx.live_pending() is None
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the move turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+        assert all(call.thinking is False for call in app.provider.calls), (
+            "a move is not analysis — thinking stays OFF"
+        )
+
+    floor = _FLOORS["stt_knight_repair"]
+    result = _pass_rate(
+        engine,
+        f"stt_knight_repair[{label}]",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
     )
 
     _assert_floor(result, floor)

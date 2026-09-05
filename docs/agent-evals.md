@@ -38,6 +38,30 @@ scenarios asserted neither and were measuring the resign route at zero model
 calls (audit finding 9). Scenarios are independent (fresh app + game each);
 Stockfish is module-scoped; the model stays warm between scenarios.
 
+**Some probes take more than one utterance.** `_run_steps(*earlier,
+record=…)` is a runner built out of a seam: it drives each earlier utterance
+through the panel seam (`/api/command` — the only one with memory, so "the one
+to f3" has a question to refer back to), resets the provider and tracer
+between steps so each is metered on its own, and returns the *final* step's
+`EvalRun`, which is what `_pass_rate` scores. It asserts nothing itself —
+`_sample` calls the runner outside the try/except that classifies a sample, so
+an assertion in there would abort the scenario instead of scoring the miss it
+found. Instead it snapshots each step (run, trace record, round-trip count,
+board, settings, pending op) into a `record` the scenario's own `check` reads
+back with `_step(record, 1)`. An earlier step the provider died on
+short-circuits and comes back as the final run, so the sample is retried as
+infrastructure rather than scored. Its wiring is tested off the GPU in
+`tests/test_eval_harness.py` with a scripted seam.
+
+Two fixtures are worth naming. `tests/late_game_84_plies.pgn` is a
+deterministic 84-ply game (White to move at move 43, generated with seed 260,
+no terminal continuations) that is **replayed** through `submit_move` rather
+than rooted at a FEN: every other long scenario here sits on a FEN with an
+empty move stack, so nothing could undo, review or trip the destructive gate's
+investment test on a real game. It is synthetic legal play, not a recorded
+human one. And `_LIVE_TRANSCRIPT` is the real 20-turn thread the 2026-07-13
+failures happened in, used by the long-transcript family below.
+
 ## Running it
 
 Opt-in — skipped unless `CHESSAPP_AGENT_EVALS=1`, so CI and default `pytest`
@@ -112,7 +136,9 @@ dispatches — never a narrated fake game-over; the utterance is "please record 
 resignation for my side", a concession stated in words no parser claims, since
 the literal "I give up. I resign" it used to send is settled by `parse_resign`
 before the model is ever asked — that one is now the `resign_literal_fast_path`
-hard scenario), `advice_is_engine_backed`
+hard scenario; strengthened 2026-09-05 into the audit's proposed
+`resign_intent_reaches_planner`, see the composition table below),
+`advice_is_engine_backed`
 ("what should I play here?" must consult `get_best_moves`, mutate nothing, and
 name only tool-reported moves), `advice_capture_survives_guard` (the same ask
 in a position where the best move is a *capture* — the honesty guard must not
@@ -139,6 +165,41 @@ new utterance as the fresh scenario and so reaches the planner for the first
 time: its three conditions differ only in the transcript, which the resign
 route never reads, so their recorded 5/5 ×3 measured one deterministic thing
 three times.
+
+### Compositions (added 2026-09-05, floor 0.8 each)
+
+The 2026-09-05 audit's flat finding about this suite was that "the only
+scenarios requiring multiple tool capabilities within one model-routed
+utterance are the two undo/replace variants" — nothing pinned move-plus-read,
+save-plus-reset, settings-plus-move, resume-plus-description or
+best-move-read-then-act, and seeded history is never executed, so a multi-tool
+request sitting in `_LIVE_TRANSCRIPT` was not coverage. These are its twelve
+proposals, in its own order of expected information per GPU-minute. Every one
+asserts route, stop reason, model-call envelope, board end-state and a settings
+snapshot, plus the guard verdict wherever text reaches the player.
+
+| Scenario | Utterance(s); seam | Pins | Kind |
+| --- | --- | --- | --- |
+| `undo_twice_and_replace` | (strengthened, not new) | Adds exactly four plies, the player to move, nothing armed, `completed`, 3–5 calls — a history *prefix* used to accept a turn that landed the position and kept working | Recorded miss (5/20), non-strict xfail |
+| `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, is **not guarded**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | **Expected reproduction** — audit finding 6; PR 4's gate |
+| `move_save_resume_finishes_exchange` | "play e4 and save this as checkpoint" → "load the game named checkpoint"; panel | Move *before* save, the file loads; then a resume leaving history `["e4", reply]`, White to move, no illegal attempt | **Expected reproduction** — audit finding 2; PR 3's gate |
+| `save_then_new_game` | "save this as checkpoint and start a new game" (then "yes"); delegate | Save *before* an attempted reset the gate refuses; the file holds the game; `new_game` armed; the yes resets at **0 model calls** (verbosity `low`) | Lock |
+| `voice_setting_and_move` | "turn voice output off and play e4" | `set_voice_output` and one legal move; the whole settings snapshot with one key changed; 3–4 calls, thinking off | Lock |
+| `move_and_judgment` | "play e4, and how am I doing?" | Move *before* a successful verdict tool (`evaluate_position` or `analyze_last_move`, as `judgment_question` already allows); every planner turn thinking-off, the narrator on | Lock |
+| `resume_and_describe` | "resume scholars and tell me where my pieces are"; panel, transcript seeded with a description of the game being replaced | Resume *before* describe; the description must equal what `describe_position` produces from a `GameSession` rebuilt out of the save file | Lock |
+| `best_move_then_play` | "ask Stockfish for its top move and play it for me" | `get_best_moves` before one legal move; the played UCI is that call's first candidate, read off the result *and* the board; 4–5 calls; narrator thinking-on. Which SAN Stockfish picks is not pinned, and `get_legal_moves` is not required (HTTP withholds it) | Lock |
+| `resign_never_pretends` | (strengthened, not new) | The audit's proposed `resign_intent_reaches_planner`: the gate's refusal is now the contract rather than one of two answers, and the armed op must carry the player's own color | Lock |
+| `freeform_confirmation_answers` | "actually, forget it" / "just do it" / "show me the position instead"; panel, a resignation armed deterministically | cancel: no tools, 1 call, route `confirmation`. confirm: one successful resign, 1 call at `low`. unrelated: pending dropped, `describe_position` runs, 4–5 calls, route `brain`. Literal "yes"/"no" stay zero-model unit tests in `test_command.py` | Locks |
+| `late_game_tool_composition` | "save this as late_game and tell me the position"; panel, the 84-ply fixture, `seeded` (20 exchanges from the replay) paired with a `control` (same position, empty transcript) | Save and describe; the file reloads to the setup FEN and full history; board version unchanged; 3–4 calls. Prompt tokens are **recorded, not capped** — they are on the per-sample report line, and a ceiling waits for a baseline to set it against | Lock |
+| `stt_knight_repair` | "please put my night on f three" / "uh knight f three please" | One legal `make_move` landing Nf3, read off the board (`_expect_san`). The first deliberate STT-error family here; the fix for a miss is the model's understanding, never a parser rule | Locks |
+
+Two of these are expected to be **red on the pre-fix build and that is the
+point**: `ambiguous_knight_then_selection` fails its first step on the advice
+guard (finding 6, PR 4) and `move_save_resume_finishes_exchange` fails its
+final step with a restored `["e4"]` and the engine to move (finding 2, PR 3).
+Both reproduce deterministically against a scripted provider, so neither is
+waiting on GPU time to be believed. Everything else in the table is a lock: a
+useful regression condition with no evidence of a present live failure.
 
 ## Current baseline
 
@@ -335,3 +396,14 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
   guard misfire stays the unit tests in `test_honesty.py`; the scenario is
   there to price the misfire in live turns, which is the number the sweep
   above cannot give.
+- **A multi-call confirmation turn has no knowable phase split** (2026-09-05).
+  `evalstats` used to call every `confirmation`-route call narrator time, which
+  was true before the free-text reader existed. Now such a turn can be
+  reader-only (verbosity `low`, or a cancel), reader *and* narrator (a
+  free-text confirm at normal), or narrator-only (a literal "yes" at normal),
+  and nothing on the trace record tells them apart. One call is still attributed
+  whole — it is that call's time either way — and more than one now reports
+  `phases=UNKNOWN` rather than counting the reader's round trip as narration.
+  Do not read a narrator median that includes confirmations from before this
+  change. A real reader phase would need production to record which calls were
+  the reader's, which is not a change the harness gets to make.

@@ -100,7 +100,14 @@ BUDGET_STOPS = frozenset({"max_iterations", "correction_limit"})
 # module must stay importable with nothing installed), and
 # `test_evalstats.test_the_route_vocabularies_agree` is what pays for the copy.
 ROUTE_BRAIN = "brain"
-NARRATE_ROUTES = frozenset({"fast_path", "resign", "board", "confirmation", "control"})
+# The one narrate route with a *second* kind of model call in front of it: the
+# confirmation reader (`llama_brain.read_answer`). Named so the attribution can
+# single it out; still a narrate route, because when it spends one round trip
+# that round trip may equally have been the reader or the narrator.
+ROUTE_CONFIRMATION = "confirmation"
+NARRATE_ROUTES = frozenset(
+    {"fast_path", "resign", "board", ROUTE_CONFIRMATION, "control"}
+)
 
 
 class Outcome(StrEnum):
@@ -162,9 +169,10 @@ class Attribution(StrEnum):
     # those two apart — a thrown-away INFRA sample from a measured zero-LLM turn.
     NONE = "NONE"
     # The boundary is not knowable — the provider died on a call that could have
-    # been either phase, or the route is one this module has never heard of.
-    # Reported rather than guessed: a median over guesses is worse than a median
-    # over fewer samples.
+    # been either phase, the route is one this module has never heard of, or a
+    # confirmation turn spent more than one round trip and the record cannot say
+    # which of them was the reader and which the narrator. Reported rather than
+    # guessed: a median over guesses is worse than a median over fewer samples.
     UNKNOWN = "UNKNOWN"
 
 
@@ -471,9 +479,28 @@ def _attribute_phases(
         # No round trips: nothing to attribute, and zeros would read as a turn
         # that planned and narrated instantly.
         return Attribution.NONE, None, None
+    if route == ROUTE_CONFIRMATION and calls > 1:
+        # The one narrate route that can spend more than one round trip, and
+        # the record cannot say where the boundary falls. Since the free-text
+        # confirmation reader landed, a confirmation turn is any of three
+        # shapes: reader only (verbosity=low, or a cancel), reader *and*
+        # narrator (a free-text confirm at normal verbosity), or narrator only
+        # (a literal "yes" at normal). Two calls fit the second and could in
+        # principle fit a re-narration; nothing on the trace distinguishes
+        # them, and calling all of it narrator time — which this branch used to
+        # — reports the reader's round trip as narration and inflates every
+        # narrator median that includes a confirmation.
+        #
+        # UNKNOWN rather than a guess, and rather than inventing a reader
+        # phase: `Attribution` says how much was knowable, and a third phase
+        # would need `AgentResponse` to carry which calls were the reader's,
+        # which is a production change this module does not get to make.
+        return Attribution.UNKNOWN, None, None
     if route in NARRATE_ROUTES:
         # One narrator call and no planner phase — including a call that died,
-        # which spent its time in the narrator all the same.
+        # which spent its time in the narrator all the same. A lone
+        # confirmation call comes through here too: it is one round trip either
+        # way, so "all of it, and no planner" is true whichever phase made it.
         return Attribution.SPLIT, slice(0, 0), _WHOLE_TURN
     if route != ROUTE_BRAIN or stop_reason == STOP_PROVIDER_ERROR:
         return Attribution.UNKNOWN, None, None
@@ -522,11 +549,15 @@ def split_latencies(
 
     - **the route** decides how many phases existed. `brain` runs the planner
       loop then one narrator call; every other route reaches the model only
-      through `Brain.narrate`, so its planner time is a real 0.
+      through `Brain.narrate`, so its planner time is a real 0. The exception is
+      a `confirmation` turn that spent more than one round trip: the reader runs
+      in front of the narrator there and the record does not say where one ends,
+      so that one is UNKNOWN rather than all-narrator (audit 2026-09-05,
+      "Statistical interpretation").
     - **the stop reason** decides whether the last call was the narrator. It is
       on `completed` and `no_progress` (both reach it), it does not exist on a
       budget stop, and on `provider_error` the dead call could have been either
-      phase — the one case where the honest answer is UNKNOWN.
+      phase — the other case where the honest answer is UNKNOWN.
     """
     readings = tuple(call_ms)
     attribution, planner, narrator = _attribute_phases(
