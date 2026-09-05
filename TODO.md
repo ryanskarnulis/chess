@@ -19,14 +19,17 @@ with the probe scripts in its appendices). Decisions taken 2026-09-05: a
 restored engine-to-move position is settled by the coordinator; a question
 that names two or more legal moves is a clarification, not advice; eval
 coverage completeness outranks GPU budget, so every proposed scenario lands.
-Work in this order — one PR each, tool-boundary tests with every change, a
-gate run after every loop or prompt change, and the baseline re-recorded
-whenever the harness itself changes.
+All ten findings' follow-ups landed 2026-09-05 (#262–#271, DONE.md): one PR
+each, tool-boundary tests with every change, a gate run after every loop or
+prompt change, and the baseline re-recorded whenever the harness changed.
+What remains is the one item the last PR deliberately left as a design:
 
-- [ ] **Later — MCP confirmation surface** (finding 3): standalone MCP
-      exposes the gate but nothing can confirm it, so `new_game`/`resign`/
-      `claim_draw` are unreachable there. Needs a trusted human confirmation
-      path, never a model-callable bypass; define it before adding anything.
+- [ ] **MCP confirmation surface — implement** (finding 3), once
+      `docs/mcp-confirmation-surface.md` is agreed: MCP form-mode elicitation
+      in the `mcp_server` call wrapper, the server calling `confirm_pending`
+      on the human's yes, built against the note's acceptance criteria at the
+      tool boundary (no GPU, `list_tools` byte-identical). No code before the
+      note is agreed.
 
 ## Next
 
