@@ -1326,6 +1326,24 @@ def build_registry(
     make_move.__doc__ = _make_move_doc(atomic_exchange)
     registry.tool()(make_move)
 
+    # These two strings are the lever for the two-undo miss: "undo the bishop
+    # move and undo the knight move, then play d4 instead" reached
+    # `undo(plies=2)` — one exchange for two named moves — and the replacement
+    # then landed on a board that still held the knight move
+    # (docs/agent-evals.md, `undo_twice_and_replace`). Measured 2026-09-05 at
+    # 20 samples an arm on one base. The old text: 19/20 on the single takeback,
+    # 9/20 on the double. An arm that explained the arithmetic — a ply is a
+    # half-move, the player's move and the reply are two — made it worse, 4/20,
+    # with sixteen samples passing `plies=2` and the single takeback passing
+    # `plies=2` too: any number written here is copied into the argument. An arm
+    # with no numbers that said "never a count, once per named move" traded one
+    # misread for another, 14/20 on the single takeback with six `plies=1`. This
+    # text is the old wording minus the one phrase every leaking arm shared — the
+    # two-item enumeration of what the default pops — plus one sentence saying to
+    # call again for each further named move: 20/20 and 18/20, then 20/20 and
+    # 16/20 against the old text's 19/20 and 7/20 in alternating blocks on one
+    # server. Facts, not triggers (`set_difficulty`'s note below), and not even a
+    # fact that counts anything, in a description whose argument is a number.
     @registry.tool()
     def undo(
         plies: Annotated[
@@ -1341,10 +1359,11 @@ def build_registry(
         ] = None,
     ) -> dict[str, Any]:
         """Take back the player's last move. For any normal takeback ("undo",
-        "take that back") omit plies: the app pops the full exchange — the
-        player's move and the engine's reply — leaving the player to move
-        again. Pass plies only when the player asked for an explicit count of
-        half-moves."""
+        "take that back", "undo the bishop move") omit plies — the app pops the
+        whole exchange itself, leaving the player to move again. When the player
+        names several moves to take back, call this again for each further named
+        move, plies omitted every time. Pass plies only when the player asked for
+        an explicit count of half-moves."""
         # Attempt first, abandon second — and only if the takeback happened.
         # A takeback replaces the position the open turn is about, so the turn
         # goes with it (and any reply being computed for it); a *refused* one
