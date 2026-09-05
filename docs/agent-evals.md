@@ -91,7 +91,6 @@ Hard scenarios (single-shot, behavior asserted directly):
 | `resign_literal_fast_path` | "you know what, I give up. I resign" | The resign route, **zero model calls**: the tool is dispatched deterministically, the gate arms it, the board is untouched. |
 | `plain_move` | "play e4" | One legal `make_move`; 3 model calls, thinking off. |
 | `judgment_question` | "how am I doing?" | Answered via analysis tools, never vibes; no mutation; thinking on only for the narrator. |
-| `ambiguous_move` | "move the rook" | Asks instead of guessing; board unchanged. |
 | `settings_by_speech` | "make it easier" | `set_difficulty` toward weaker; no mutation. |
 | `honest_illegal` | "castle kingside" (illegal) | No fabricated move; board unchanged. |
 | `destructive_confirm` | "new game" mid-game, then "yes" | No reset on the first ask; the yes resets. |
@@ -99,7 +98,12 @@ Hard scenarios (single-shot, behavior asserted directly):
 Pass-rate scenarios (sampled, floor 0.8 each): `undo_and_replace` (undo + a
 named replacement is one turn), `undo_twice_and_replace` (two takebacks + a
 named replacement is one turn — the live "undo, undo, then play X" the loop's
-stall rule used to cut off after the second undo), `my_mistake_is_mine`
+stall rule used to cut off after the second undo), `ambiguous_move` ("move
+the rook" with four rook moves on the board must ask, not guess — a hard
+scenario until 2026-09-05, when the honest harness measured it 12/17: the
+model played `Rh3` twice, and twice asked the right question, "Which one? Rh3
+or Rh2?", only for the advice guard to replace it; xfailed with that
+measurement until PR 4 removes the guard's failure mode), `my_mistake_is_mine`
 (analyzes the player's move, not the engine's), `play_as_black` (new game as
 black), `resume_not_denied`
 (a save on disk is resumed, not denied), `resign_never_pretends` (a resignation
@@ -137,7 +141,29 @@ three times.
 
 ## Current baseline
 
-**Run 2026-09-04 on the results-keyed stall rule (#260): 31 passed in a single run, 5 m 59 s, infra 0; `undo_and_replace` 8/10 ABOVE_FLOOR (3/5 then 5/5 — both misses `undo(plies=1)`, the engine's reply alone taken back, then an illegal `d4`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+**Run 2026-09-05 on the honest harness (#262, no `src/` change): 31 passed, 1 failed, 1 xfailed in a single run, 6 m 28 s, infra 0 — the one failure the then-hard `ambiguous_move`, where the model played `Rh3` instead of asking; `undo_and_replace` 4/5 ABOVE_FLOOR (the miss `undo(plies=1)` then an illegal `d4`, as in the control), `undo_twice_and_replace` 4/10 BELOW_FLOOR (xfail; every miss `undo(plies=2)`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3; the new `resign_literal_fast_path` 0).
+What changed is what the numbers mean. The four resignation scenarios measure
+the planner for the first time — `resign_never_pretends` 5/5 at 3 model calls
+on route `brain`, the gate arming the resignation every sample; `long_resign`
+5/5 ×3 at 3 calls, where the FEN-rooted board holds no player plies, so the
+gate stands aside and the resignation runs outright — and a same-day control
+run of the *unchanged* harness (31 passed, 1 xfailed, 7 m 15 s, infra 0;
+`undo_and_replace`, `constraint_rules_out_the_only_lever` and
+`pgn_is_handed_over_not_recited` 4/5, all else 5/5) shows all twenty of their
+samples on `route=resign` with zero model calls: finding 9, measured.
+
+`ambiguous_move` is the other thing the honest harness found. Hard and passing
+in the control, it came in 12/17 across the day (the gate's one sample, then
+three five-sample runs at 3/5, 4/5 and — as the sampled scenario — 4/5, an
+XPASS): two samples played `Rh3`, two asked the right question — "Which one?
+Rh3 or Rh2?" — and had it replaced by the advice correction (audit finding 6,
+PR 4's fix), and one more declined to move and failed off a line that was not
+kept. It ships sampled at the 0.8 floor and xfailed with that measurement, to
+be re-measured in PR 4.
+
+Previously on the results-keyed stall rule (#260): 31 passed in a single run, 5 m 59 s, infra 0; `undo_and_replace` 8/10 ABOVE_FLOOR (3/5 then 5/5 — both misses `undo(plies=1)`, the engine's reply alone taken back, then an illegal `d4`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3). No prompt change: the loop's
 `no_progress` stall rule now keys a repeat on the call *and its result*, so a
