@@ -244,6 +244,8 @@ _FLOORS: dict[str, float] = {
     "position_is_described": 0.8,
     "impossible_move_is_refused_not_asked": 0.8,
     "impossible_capture_is_refused_not_asked": 0.8,
+    "constraint_rules_out_the_only_lever": 0.8,
+    "constraint_survives_a_live_thread": 0.8,
     "long_resume": 0.8,
     "long_resign": 0.8,
     "long_capture": 0.8,
@@ -2037,6 +2039,161 @@ def test_eval_impossible_capture_is_refused_not_asked(engine: EnginePlayer) -> N
         engine, "impossible_capture_is_refused_not_asked", "take the pawn"
     )
     _assert_floor(result, _FLOORS["impossible_capture_is_refused_not_asked"])
+
+
+def _constraint_respected(
+    before: dict[str, Any],
+) -> Callable[[EvalApp, dict[str, Any]], None]:
+    """The check both constraint scenarios share: no difficulty call landed,
+    every setting the player owns is where it was, nothing moved, nothing
+    guarded — never the wording of the reply, which is free to ask however
+    Glitch likes."""
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _successful(assistant, "set_difficulty") == [], (
+            "the player ruled this call out: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert app.ctx.settings.tier == DEFAULT_TIER, (
+            f"difficulty moved: tier={app.ctx.settings.tier!r} "
+            f"skill_level={app.ctx.settings.skill_level!r} "
+            f"elo={app.ctx.settings.elo!r}"
+        )
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a turn that rules out the only lever must leave every setting the "
+            "player owns where it was"
+        )
+        assert _board_mutations(assistant) == [], "an ask about strength is not a move"
+        traced = app.tracer.last
+        assert traced.get("guarded") is not True, (
+            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
+            f"{traced.get('suppressed')!r}"
+        )
+
+    return check
+
+
+_CONSTRAINT_UTTERANCE = "go easy on me without changing the difficulty"
+
+
+def test_eval_constraint_rules_out_the_only_lever(engine: EnginePlayer) -> None:
+    """ "go easy on me without changing the difficulty" changes nothing —
+    on a fresh conversation, which is the condition this one does *not*
+    reproduce under (see the live-thread scenario below for the one that does).
+
+    Walkthrough leftover: live, it called `set_difficulty(tier="beginner")`
+    and said it would dial things back. The player named the one thing not to
+    touch and it was touched anyway.
+
+    The fix is `set_difficulty`'s description and not a guard. Knowing the
+    change was excluded means reading the constraint out of the utterance,
+    which is understanding and so the model's job (CLAUDE.md); and the honesty
+    guard checks *claims* in the commentary against facts the turn produced,
+    not actions the player ruled out. What the model lacked was a fact —
+    engine strength is that setting and nothing else, because personality
+    never shapes move choice — so an ask to go easy that excludes the
+    difficulty leaves nothing to change and nothing to do but say so.
+
+    Fresh, the pre-fix build already respected the constraint 29/30 across
+    two builds (4/5 on main@4d165ec, 5/5 then 20/20 on main@f2e8cdc), so this
+    scenario is a regression lock and no reproduction at all: the miss lives
+    in the thread it happened in, not in the words.
+    """
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        assert parse_move(_CONSTRAINT_UTTERANCE, app.ctx.session.fen()) is None
+        assert app.ctx.settings.tier == DEFAULT_TIER  # baseline strength
+        before["settings"] = app.ctx.settings.snapshot()
+
+    floor = _FLOORS["constraint_rules_out_the_only_lever"]
+    result = _pass_rate(
+        engine,
+        "constraint_rules_out_the_only_lever",
+        _CONSTRAINT_UTTERANCE,
+        _constraint_respected(before),
+        floor=floor,
+        setup=setup,
+        # Every assertion here is negative, so a turn that stopped on its budget
+        # calls no setter and passes for never having run. The reply is the
+        # whole of what this scenario wants.
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+# The thread the constraint miss actually happened in (2026-09-04 walkthrough,
+# `turns.jsonl`), verbatim: a web-panel game at verbosity `low` — "talk less"
+# had been honoured, the two "talk more" asks after it were each answered with
+# a promise and no tool call — eleven turns deep when the player asked to be
+# gone easy on without the difficulty changing. The board drags are recorded
+# the way the panel records them (UCI in, the canned confirmation out).
+_CONSTRAINT_FEN = "r1bqkb1r/pp3ppp/5n2/2Pp4/3n4/2P1P3/PP2BPPP/RN2K1NR w KQkq - 0 9"
+_CONSTRAINT_THREAD: tuple[tuple[str, str], ...] = (
+    ("d2d4", "Standard opening. Let's see where you take it.\n\nNf6."),
+    ("c1f4", "Bf4, word. Keeping it simple.\n\nc5."),
+    ("talk less", "Bet."),
+    ("e2e3", "e3. d5."),
+    ("c2c3", "c3. Nc6."),
+    ("talk more", "Word, I'll give you a bit more of the breakdown from now on."),
+    ("d4c5", "dxc5. e5."),
+    ("f4e5", "Bxe5. Nxe5."),
+    ("d1d4", "Qd4. Nc6."),
+    (
+        "talk more",
+        "Word, I'll start giving you a bit more of the breakdown on what's "
+        "happening out there. You're putting pressure on the center, but I'm "
+        "keeping the pieces tight.",
+    ),
+    ("f1e2", "Be2. Nxd4."),
+)
+
+
+def test_eval_constraint_survives_a_live_thread(engine: EnginePlayer) -> None:
+    """The same ask in the thread it misfired in — and this one reproduces.
+
+    Fresh, the pre-fix build respected the constraint 29/30. Seeded with the
+    walkthrough's own thread (panel seam, verbosity `low`, the exact position)
+    it respected it **12/20** — the condition, not the words, is what the live
+    miss was made of, the same finding the long-transcript family below
+    records for resume, resign and capture. It is also what told the two
+    halves of the fix apart. `set_difficulty`'s description carrying the two
+    facts (strength is this setting and nothing else; a change the player
+    rules out is not made) went **20/20** here. The same description with a
+    list of the asks that mean this call in front of the caveat ("go easy,
+    ease up, play harder, or crank it up is this call") went **9/20** — the
+    trigger list outranked the caveat, which is #249's phrase-list failure
+    written into prose. Measured at 20 samples an arm because five cannot
+    tell 60% from 90%.
+
+    What is asserted is the same as the fresh scenario's: no difficulty call,
+    every player-owned setting where it was, nothing moved, nothing guarded.
+    """
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        app.ctx.session = GameSession(fen=_CONSTRAINT_FEN, player_color="white")
+        app.ctx.settings.verbosity = "low"
+        for said, replied in _CONSTRAINT_THREAD:
+            app.ctx.transcript.record(said, replied)
+        assert parse_move(_CONSTRAINT_UTTERANCE, app.ctx.session.fen()) is None
+        assert app.ctx.settings.tier == DEFAULT_TIER
+        before["settings"] = app.ctx.settings.snapshot()
+
+    floor = _FLOORS["constraint_survives_a_live_thread"]
+    result = _pass_rate(
+        engine,
+        "constraint_survives_a_live_thread",
+        _CONSTRAINT_UTTERANCE,
+        _constraint_respected(before),
+        floor=floor,
+        setup=setup,
+        runner=_run_panel,
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
 
 
 # --- long transcript: the condition every live failure shared -----------------

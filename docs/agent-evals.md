@@ -100,8 +100,12 @@ position?" is answered by `describe_position`, with no verdict tool called and
 no setting moved), `impossible_move_is_refused_not_asked` ("bishop to a1" on
 move 1 is answered as illegal, never with a clarifying question about which
 piece), `impossible_capture_is_refused_not_asked` ("take the pawn" on move 1 —
-nothing can be captured, so no question about which pawn), and the
-long-transcript family
+nothing can be captured, so no question about which pawn),
+`constraint_rules_out_the_only_lever` ("go easy on me without changing the
+difficulty" rules out the one lever there is, so no setting moves),
+`constraint_survives_a_live_thread` (the same ask in the walkthrough's own
+thread — panel seam, verbosity `low`, eleven turns deep — the condition that
+reproduces the live miss), and the long-transcript family
 `long_resume` /
 `long_resign` / `long_capture`, each at three conditions (fresh, live_like,
 poisoned) — the same behaviors under a real 20-turn conversation, because
@@ -109,7 +113,28 @@ fresh-conversation passes hid live failures.
 
 ## Current baseline
 
-**Run 2026-09-04 on the answer-shapes slice (#256): 28 passed in a single run, 5 m 47 s, infra 0, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+**Run 2026-09-04 on the difficulty-constraint slice (#257): 30 passed in a single run, 5 m 56 s, infra 0, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+`long_capture` 5/5 ×3, costs unmoved. The one prompt change is
+`set_difficulty`'s description.
+
+The two constraint scenarios, measured at 20 samples an arm because five
+cannot tell 60% from 90%:
+
+| Build | fresh (`constraint_rules_out_the_only_lever`) | live thread (`constraint_survives_a_live_thread`) |
+| --- | --- | --- |
+| pre-fix `main@f2e8cdc` | 20/20 (and 4/5 on `4d165ec`, 5/5 on `f2e8cdc` at block size) | **12/20** |
+| description with a trigger list ("go easy, ease up, play harder, or crank it up is this call") | 18/20 | **9/20** |
+| description with the two facts and no triggers (shipped) | 20/20 | 20/20 |
+| shipped description + a planner bullet ("what the player rules out stays ruled out") | — | 20/20 |
+| original description + that planner bullet | — | 0/20 |
+
+Read down the live column: the fresh scenario reproduces nothing and is a
+lock; the live thread is the reproduction, and it is what told the two
+descriptions apart. The last row is recorded as a warning, not a finding —
+a general rule about constraints, added without the only-lever fact beside
+it, made the model call the tool every time, and nothing here explains why.
+
+Previously on the answer-shapes slice (#256): 28 passed in a single run, 5 m 47 s, infra 0, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE.
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3). `undo_and_replace` — the schema
 tripwire, and this PR adds a tool to the offer, a field to the state block
@@ -168,8 +193,9 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
   on the fix. Unlike the verbosity scenario below, these are reproductions and
   not only regression locks.
   The difficulty-constraint miss ("go easy on me without changing the
-  difficulty", measured in the same scratch run) reproduces weakly: 4/5
-  respected the constraint pre-fix, 1/5 called `set_difficulty(beginner)`.
+  difficulty") does *not* reproduce fresh — 29/30 respected across two builds —
+  and does reproduce in the thread it happened in (12/20; the table above).
+  Same lesson as the long-transcript family: the condition, not the words.
 - **The harness does not reproduce the verbosity miss** (2026-09-04). Live,
   "talk more" was answered in prose twice and `set_verbosity` was never
   called. `verbosity_up_from_low` scores **5/5 on the pre-fix build as well as

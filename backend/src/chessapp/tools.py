@@ -1469,12 +1469,30 @@ def build_registry(
     # plain signature can't express — the documented `parameters=` escape
     # hatch. The dynamic description (strength bounds from engine constants)
     # is likewise not a constant docstring, so it's set here.
+    #
+    # The text carries the fact the model cannot derive from a schema: strength
+    # is this setting and nothing else, because personality is tone only and
+    # never shapes move choice. Live, "go easy on me without changing the
+    # difficulty" set beginner anyway — with no other lever named, "go easy"
+    # had to be read as a difficulty change, and the constraint the player
+    # stated had nothing to bind to.
+    #
+    # Facts, and no triggers. A first cut also listed the asks that mean this
+    # call ("go easy, ease up, play harder, or crank it up is this call"), and
+    # under the thread the miss happened in that clause measured 9/20 against
+    # 20/20 without it (docs/agent-evals.md): an enumerated trigger outranked
+    # the caveat that followed it, which is the phrase-list failure #249 warns
+    # about, written into a description instead of a regex.
     set_difficulty.__doc__ = (
-        "Set engine strength: pass exactly one of tier (named level: "
-        "beginner ~500, casual ~1000, intermediate ~1500, advanced "
+        "Set how hard the engine plays: pass exactly one of tier (named "
+        "level: beginner ~500, casual ~1000, intermediate ~1500, advanced "
         f"~2000, maximum = full strength), skill_level ({SKILL_MIN}-"
-        f"{SKILL_MAX}), or elo ({ELO_MIN}-{ELO_MAX}). Prefer tier "
-        "unless the user asks for a specific number."
+        f"{SKILL_MAX}), or elo ({ELO_MIN}-{ELO_MAX}). Prefer tier unless "
+        "the player names a number. This is the only thing that changes how "
+        "hard the engine plays — there is no softer or sharper style to "
+        "switch to. The setting persists and the player owns it: if they ask "
+        "for an easier game but rule out changing the difficulty, there is "
+        "nothing left to change — say so and ask, do not call this."
     )
     registry.tool(
         parameters={
