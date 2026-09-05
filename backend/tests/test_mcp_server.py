@@ -117,6 +117,26 @@ async def test_make_move_happy_path_returns_real_game_data():
     assert ctx.session.move_history() == ["e4", "e5"]
 
 
+async def test_an_odd_takeback_comes_back_settled():
+    """An MCP call has no pipeline behind it, which is why `make_move` here runs
+    the whole exchange — and the same reason a takeback that leaves the engine
+    to move must not park the game there. Settling is not an exchange (nobody
+    moved for the player), so it belongs to the coordinator on this surface
+    exactly as it does in the app: one ply off 1.e4 c5 comes back as a board the
+    client can go on playing."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci="e7e5"))
+    for san in ("e4", "c5"):
+        assert ctx.session.submit_move(san).legal
+
+    async with mcp_client(ctx) as client:
+        result = await _call(client, "undo", {"plies": 1})
+
+    assert result["undone"] == ["c5"]
+    assert result["engine_move"]["san"] == "e5"
+    assert result["turn"] == "white"
+    assert ctx.session.move_history() == ["e4", "e5"]
+
+
 async def test_invalid_args_come_back_as_ok_false_not_a_tool_error():
     """A schema violation (set_difficulty's oneOf) surfaces as a normal
     `{"ok": False}` result, not an MCP tool error."""

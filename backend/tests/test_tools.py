@@ -1106,6 +1106,7 @@ def test_a_refused_undo_leaves_the_open_turn_alone(session):
     result = registry.dispatch("undo", {"plies": 100})
 
     assert result["ok"] is False
+    assert "engine_move" not in result, "nothing was restored, so nothing settled"
     assert session.move_history() == ["e4"], "a refusal moves nothing"
     assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
     assert coordinator.collect_engine_reply().san == "e5"
@@ -1157,6 +1158,120 @@ def test_resume_game_abandons_the_open_turn(session, tmp_path):
 
     assert registry.dispatch("resume_game", {"name": "saved"})["ok"] is True
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+# --- ...and the board they leave is settled ----------------------------------
+#
+# Abandoning is only half of it. What a takeback or a restore leaves behind can
+# be the *engine's* move, on a position no turn is open over: an odd-ply count
+# pops the reply alone, and a save written between the player's move and the
+# reply comes back the same way ("play e4 and save this" — the file holds one
+# ply). The obligation to answer died with the turn, so the coordinator settles
+# the board instead, exactly as it plays the opening move of a game taken as
+# black. Both registry flavours: settling answers nobody's move, so there is no
+# beat for the split mode to preserve (audit 2026-09-05, finding 2).
+
+_FLAVOURS = pytest.mark.parametrize(
+    "atomic_exchange", [True, False], ids=["atomic", "split"]
+)
+
+
+def _restoring_registry(ctx: ToolContext, atomic_exchange: bool):
+    coordinator = TurnCoordinator(ctx)
+    return build_registry(ctx, coordinator, atomic_exchange), coordinator
+
+
+def _settled_exchange(save_dir: Path | None = None) -> ToolContext:
+    """A finished exchange the player is to move on: 1.e4 c5, played onto the
+    session directly so no turn is open over it. The engine's own reply is
+    e7e5 — something else again — so a settle shows up as a move of its own and
+    not as an echo of whatever was taken back."""
+    ctx = ToolContext(
+        session=GameSession(), engine=FakeEngine("e7e5"), save_dir=save_dir
+    )
+    for san in ("e4", "c5"):
+        assert ctx.session.submit_move(san).legal
+    return ctx
+
+
+@_FLAVOURS
+def test_an_odd_takeback_hands_back_a_board_the_engine_has_answered(atomic_exchange):
+    """One half-move off a settled exchange leaves the player's move standing
+    with the engine to move and nothing scheduled to move it — the state the
+    audit found a game could park in. The takeback is real (c5 is gone); what
+    comes back is a position it is the player's turn to play."""
+    ctx = _settled_exchange()
+    registry, coordinator = _restoring_registry(ctx, atomic_exchange)
+
+    result = registry.dispatch("undo", {"plies": 1})
+
+    assert result["ok"] is True
+    assert result["undone"] == ["c5"]
+    assert result["engine_move"]["san"] == "e5"
+    assert result["engine_move"]["uci"] == "e7e5"
+    assert ctx.session.move_history() == ["e4", "e5"]
+    assert ctx.session.turn == ctx.session.player_color
+    assert result["turn"] == "white", "the reported board is the settled one"
+    assert result["fen"] == ctx.session.fen()
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+@_FLAVOURS
+def test_the_paired_takeback_settles_nothing(atomic_exchange):
+    """The default is still the whole exchange, and it leaves the player to
+    move — so there is nothing to settle and the result says so rather than
+    omitting the key."""
+    ctx = _settled_exchange()
+    registry, _ = _restoring_registry(ctx, atomic_exchange)
+
+    result = registry.dispatch("undo", {})
+
+    assert result["undone"] == ["c5", "e4"]
+    assert result["engine_move"] is None
+    assert ctx.session.move_history() == []
+    assert ctx.session.turn == ctx.session.player_color
+
+
+@_FLAVOURS
+def test_a_resumed_mid_exchange_save_finishes_the_exchange(tmp_path, atomic_exchange):
+    """Asked to "play e4 and save this as half", the save lands between the
+    player's move and the reply, so the file holds one ply; loading it used to
+    hand back a game with Black to move and nobody to move it (appendix A). The
+    reply is recomputed rather than restored — the save never held one — so what
+    is pinned is that the player gets a board they can play on."""
+    ctx = ToolContext(
+        session=GameSession(), engine=FakeEngine("e7e5"), save_dir=tmp_path
+    )
+    assert ctx.session.submit_move("e4").legal  # the save is taken mid-exchange
+    registry, coordinator = _restoring_registry(ctx, atomic_exchange)
+    assert registry.dispatch("save_game", {"name": "half"})["ok"] is True
+    for san in ("c5", "Nf3"):  # the live game moves on without it
+        assert ctx.session.submit_move(san).legal
+
+    result = registry.dispatch("resume_game", {"name": "half"})
+
+    assert result["ok"] is True
+    assert result["engine_move"]["san"] == "e5"
+    assert ctx.session.move_history() == ["e4", "e5"], "the save, plus one reply"
+    assert ctx.session.turn == ctx.session.player_color
+    assert result["turn"] == "white", "the reported board is the settled one"
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+@_FLAVOURS
+def test_a_resumed_save_of_the_players_turn_settles_nothing(tmp_path, atomic_exchange):
+    """The ordinary save. Restoring it owes no move, and the engine is not asked
+    for one just because a session was replaced."""
+    ctx = _settled_exchange(tmp_path)
+    registry, _ = _restoring_registry(ctx, atomic_exchange)
+    assert registry.dispatch("save_game", {"name": "whole"})["ok"] is True
+    assert ctx.session.submit_move("Nf3").legal  # the live game moves on
+
+    result = registry.dispatch("resume_game", {"name": "whole"})
+
+    assert result["engine_move"] is None
+    assert ctx.session.move_history() == ["e4", "c5"], "the save, and nothing added"
+    assert ctx.session.turn == ctx.session.player_color
 
 
 def test_make_move_reports_checkmate(registry):
@@ -1219,6 +1334,9 @@ def test_undo_default_never_takes_back_the_engines_lone_opening(session):
 
 
 def test_undo_honors_an_explicit_ply_count(session):
+    """The count the player asked for is the count that is popped. What the
+    board does *after* that is the coordinator's business — one ply off an
+    exchange leaves the engine to move, so it moves (pinned below)."""
     ctx = ToolContext(session=session, engine=FakeEngine(reply_uci="e7e5"))
     registry = build_registry(ctx)
     registry.dispatch("make_move", {"move": "e4"})

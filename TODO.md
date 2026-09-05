@@ -23,17 +23,6 @@ Work in this order — one PR each, tool-boundary tests with every change, a
 gate run after every loop or prompt change, and the baseline re-recorded
 whenever the harness itself changes.
 
-- [ ] **PR 3 — A restored position settles the engine's turn** (finding 2,
-      decided yes). "play e4 and save this" saves mid-exchange; resume leaves
-      Black to move with nobody to move. Same for an explicit odd-ply undo.
-      After `resume_game`, `undo` or any restore that leaves the engine to
-      move, the pipeline hands the board to the coordinator to settle, the
-      way `engine_opening_move` already does for a new game as black — the
-      reply stays coordinator-owned, never a tool. While there: an engine
-      exception leaves the coordinator in `engine_calculating` and an
-      ordinary next move cannot heal it (undo/reset/resume can) — heal it,
-      and correct `docs/turn-coordinator.md`, which says the next command
-      does. Coordinator + pipeline tests; gate run.
 - [ ] **PR 4 — Guard loosening** (findings 6, 7; the rule decided above).
       "Do you mean Nf3 or Nh3?" on an unchanged board is replaced by the
       advice correction: a question sentence naming two or more legal moves

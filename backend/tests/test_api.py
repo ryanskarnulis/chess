@@ -604,12 +604,49 @@ def test_undo_default_takes_back_the_full_exchange_vs_engine():
     assert body["state"]["fen"] == START_FEN
 
 
-def test_undo_explicit_plies_still_honored_vs_engine():
+def test_undo_explicit_plies_is_honored_and_the_board_comes_back_settled():
+    """A client may ask for its own count, and an odd one pops the engine's
+    reply alone — leaving the engine to move on a board no turn is open over. A
+    position waiting on a side the player does not own is not a state to
+    publish, so the coordinator settles it before the response goes back: the
+    same rule the `undo` tool follows, on the same board (audit 2026-09-05,
+    finding 2)."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    client = TestClient(create_app(ctx))
+    client.post("/api/game/move", json={"move": "e4"})  # engine replies e5
+    body = client.post("/api/game/undo", json={"plies": 1}).json()
+    assert body["undone"] == ["e5"], "exactly the count that was asked for"
+    assert body["state"]["history"] == ["e4", "e5"], "and the engine answered again"
+    assert body["state"]["turn"] == "white", "the player is to move"
+
+
+def test_undo_default_pair_settles_nothing():
+    """The takeback the button sends leaves the player to move, so nothing is
+    owed and the engine is not asked."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine())
     client = TestClient(create_app(ctx))
     client.post("/api/game/move", json={"move": "e4"})
-    body = client.post("/api/game/undo", json={"plies": 1}).json()
-    assert body["undone"] == ["e5"]
+    body = client.post("/api/game/undo", json={}).json()
+    assert body["state"]["history"] == []
+    assert body["state"]["turn"] == "white"
+
+
+def test_a_refused_undo_leaves_an_open_turn_alone():
+    """The route used to abandon the turn before finding out whether it could
+    take anything back — the `undo` tool's own bug, on the other road. A
+    takeback that cannot happen replaces no position, so the turn that is still
+    owed an engine reply is not this request's to throw away."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    coordinator = TurnCoordinator(ctx)
+    client = TestClient(create_app(ctx, coordinator=coordinator))
+    coordinator.apply_player_move("e4")  # a turn left open mid-sequence
+
+    response = client.post("/api/game/undo", json={"plies": 100})
+
+    assert response.status_code == 409
+    assert ctx.session.move_history() == ["e4"], "a refusal moves nothing"
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
+    assert coordinator.collect_engine_reply().san == "e5", "the reply is still there"
 
 
 def test_undo_default_as_black_with_only_the_engine_opening_is_409():
