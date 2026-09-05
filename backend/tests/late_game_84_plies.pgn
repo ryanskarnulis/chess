@@ -1,0 +1,9 @@
+[Event "Deterministic late-game audit fixture"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "Player"]
+[Black "Glitch"]
+[Result "*"]
+
+1. b4 e6 2. d3 g5 3. f3 g4 4. Bg5 b5 5. d4 e5 6. Nd2 Bd6 7. f4 f6 8. a3 fxg5 9. h4 exd4 10. c3 Kf8 11. fxg5 dxc3 12. Qb3 c6 13. Ndf3 c5 14. Qc2 Kg7 15. Qb1 Qe7 16. Qf5 gxf3 17. Kd1 Bh2 18. Ke1 Qd8 19. Qe5+ Kf8 20. Nh3 Ne7 21. h5 cxb4 22. Qxe7+ Kxe7 23. Rd1 Bf4 24. e4 Rf8 25. g3 a6 26. Rg1 bxa3 27. Rd5 Be3 28. Rxd7+ Ke6 29. Nf4+ Bxf4 30. Rd3 Qe8 31. Rd8 Rg8 32. Rd7 Rg7 33. Bh3+ Ke5 34. g6 Nxd7 35. Rf1 a5 36. g4 Qd8 37. h6 Re7 38. Rg1 Qb6 39. Kd1 Kd4 40. Kc2 Bb7 41. Kd1 Bxh6 42. Rf1 Qc6 *
