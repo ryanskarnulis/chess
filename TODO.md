@@ -27,13 +27,6 @@ whenever the harness itself changes.
       exposes the gate but nothing can confirm it, so `new_game`/`resign`/
       `claim_draw` are unreachable there. Needs a trusted human confirmation
       path, never a model-callable bypass; define it before adding anything.
-- [ ] **Later — pending-op policy**: two refusals in one batch arm two ops
-      and the last replaces the first, while the narrated question may be
-      about the first. Decide (first stays / last wins / second refused) and
-      bind the question to the op the next yes runs. Also `_BASE` still tells
-      the tool-free narrator it changes the game through tools — stale role
-      text, measure before cutting.
-
 
 ## Next
 

@@ -1411,6 +1411,22 @@ def build_registry(
         opens the gate — and only while the board it armed against is still the
         board on screen (`ToolContext.live_pending`).
 
+        One question per command (decided 2026-09-05; audit 2026-09-05,
+        "Confirmation details"). The first gated call in a command arms the op
+        and its question; every later gated call in the *same* command — the
+        same op again, or a different one — is refused without touching what is
+        armed, and its result names the question already pending. Two refusals
+        used to arm two ops with the last replacing the first, while the
+        narrator could well be asking about the first — so the player's next
+        yes ran an op they had not been asked about. Now the narrated question,
+        the question the reader is handed (`api._confirm_question`) and the op
+        `confirm_pending` runs are one op by construction. Scoped to the command
+        window because that is the only place two gated calls can meet in one
+        interaction (`TurnCoordinator.begin_command`): a button press or an MCP
+        call is its own interaction, and across interactions the newest question
+        is the one a yes answers — the previous one was disarmed as the new
+        command went past.
+
         The gate stands aside when there is no game to lose — it guards the
         *player's* investment, not the idea of a game. That is true once it is
         over, and equally true before the player has moved: an untouched
@@ -1426,6 +1442,22 @@ def build_registry(
             return None
         if ctx.session.is_game_over() or not _player_has_moved(ctx):
             return None
+        armed = ctx.pending
+        if coordinator.command_open and armed is not None:
+            # Read directly, not through `live_pending`: inside a window the
+            # armed op is this command's by construction (the pipeline disarms
+            # on the way in), and a mutation between the two calls does not
+            # make it stale — `restamp_pending` points it at the board the
+            # player will actually be asked about when the command closes.
+            return registry.refusal(
+                f"a confirmation is already pending: {armed.name} would end the "
+                "current game and runs when the player says yes. This call was "
+                f"not armed and will not run on that yes — {name} is not what "
+                "the player is being asked about. Relay the pending question "
+                "and stop.",
+                RETRY_NEVER,
+                pending=armed.name,
+            )
         ctx.pending = PendingOp(
             name=name, args=dict(args), board_version=ctx.board_version
         )

@@ -217,6 +217,16 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-05 on the one-question-per-command gate rule (#270): 47 passed in a single run, 11 m 50 s, infra 0 — the first clean 47 of the day; `undo_twice_and_replace` 4/5 ABOVE_FLOOR (the miss two `undo(plies=1)` calls, then `d4` on a board still holding `Nf3` — the plies misread #267 left as the residual), `pgn_is_handed_over_not_recited` 4/5 ABOVE_FLOOR (the miss the narrator reciting the headers after `export_pgn`, the old dump reappearing once), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE including `ambiguous_knight_then_selection` 5/5 on its second unmarked run; `judgment_question` 10.4 s.**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). No
+prompt change: the destructive gate now keeps the first question a command
+asks — a second gated call in the same command window is refused with a
+result naming the pending op and arms nothing (`tools._gate`,
+`docs/turn-coordinator.md`) — which no scenario in this suite exercises
+(`save_then_new_game` and `destructive_confirm` arm one op each), so the
+run is here to say that nothing else moved.
+
 **Run 2026-09-05 on the planner's matching procedure (#269): 46 passed, 1 failed in a single run, 12 m 32 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE — `ambiguous_knight_then_selection` 5/5, scored unmarked for the first time, `ambiguous_move` 5/5, `undo_and_replace` 5/5, `undo_twice_and_replace` 5/5 — and the one failure the hard `judgment_question` on its 30 s latency ceiling with a correct trajectory (`evaluate_position`, thinking off/off/on, three calls, "You're slightly ahead, bro."): the narrator's thinking-on call wrote 1,684 tokens in 32.9 s while the planner took 1.6 s, and the planner prompt is not in that call. Re-run five times a tree, old and new alternating on one server: 5/5 and 5/5, the same trajectory every time, narrator 7–17 s on the old tree and 9–23 s on the new — the narrator tail the wordiness note under "Standing results" describes, not this change.**
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The one

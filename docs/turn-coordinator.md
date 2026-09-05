@@ -108,6 +108,16 @@ moved under it or the computation failed.
   exactly what puts boards between the command's two ends, and the honesty
   guard checks its commentary against every one of them (`api._verified_facts`,
   audit finding 7).
+- **One question per command** (decided 2026-09-05): the first gated call in
+  a command arms its op and its question; every later gated call in the same
+  window — the same op again or a different one — is refused with a result
+  naming the pending question (`pending: <op>`, `retry: never`) and arms
+  nothing. So the question the narrator relays, the question the reader is
+  handed (`api._confirm_question`) and the op `confirm_pending` runs are one op
+  by construction; two refusals used to arm two ops with the last replacing
+  the first. Across interactions the newest question is the one a yes answers
+  (a new command disarms on its way in; a button press is its own
+  interaction), which is the same rule seen from outside the window.
 - **Board versions**: `GameSession.revision` bumps inside every mutating
   session method → `ToolContext.board_version` → `state.version`. Mutating
   requests may carry `version`; stale → 409 `{"stale": true, ...}`. The check
