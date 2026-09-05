@@ -68,9 +68,17 @@ USER app
 
 EXPOSE 8000
 
-# Self-contained probe (no curl in the slim image): the API is up once /api/state
-# answers 200. The compose slice can lean on this for depends_on healthchecks.
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/state').status==200 else 1)"
+# Self-contained probe (no curl in the slim image): the API is up once
+# /api/state answers 200. `chessapp.healthcheck` rather than a `python -c`
+# one-liner — it carries its own connect timeout, prints one line instead of a
+# traceback, and can be tested (`tests/test_healthcheck.py`).
+#
+# Ten seconds and two retries, not thirty and three: the old numbers left up to
+# two minutes of "healthy" over a dead API, which is what the 2026-09-04
+# walkthrough saw. A restart is cheap here (a cold start is ~5s) and the app is
+# the only thing in the container, so detecting death fast costs nothing and
+# waiting costs the whole deploy window.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=2 \
+    CMD ["python", "-m", "chessapp.healthcheck"]
 
 CMD ["chessapp"]

@@ -13,9 +13,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Next
 
-- [ ] **Container ignores SIGTERM** (walkthrough #4): `compose stop` runs the
-      full 10 s grace then SIGKILL; process outlives uvicorn shutdown (engine
-      child?); health stays green while the API is down.
 - [ ] **Mistake narration names the wrong captured piece** (walkthrough #5):
       "taken that queen with Qxe2" for a pawn capture. Put the captured piece
       in `analyze_last_move`'s result; guard piece names in capture claims.

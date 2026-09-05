@@ -48,6 +48,11 @@ class FakeEngine:
         self.skill_levels: list[int] = []
         self.elos: list[int] = []
         self.tiers: list[str] = []
+        # A real engine holds a Stockfish process and the non-daemon thread
+        # that drives it, so who closes it decides whether the process can
+        # exit at all (`app.serve`). Recorded, not counted: closing twice is
+        # harmless and closing never is the bug.
+        self.closed = False
 
     def play_move(self, session):
         return session.submit_move(self.reply_uci)
@@ -64,6 +69,9 @@ class FakeEngine:
         call it as a step (`analyze_last_move`) — the numbers themselves are
         Stockfish's business and are pinned in test_mistake_analysis.py."""
         return self.evaluation
+
+    def close(self) -> None:
+        self.closed = True
 
     def set_skill_level(self, level: int) -> None:
         self.skill_levels.append(level)

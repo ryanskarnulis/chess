@@ -19,6 +19,7 @@ Stockfish off (no engine); both are optional here.
 """
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -222,15 +223,21 @@ def _planner_temperature_from_env() -> float | None:
     return float(value) if value else None
 
 
-def build_app_from_env() -> FastAPI:
-    """`build_app` configured from environment variables (for `main`/ASGI)."""
+def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
+    """`build_app` configured from environment variables (for `main`/ASGI).
+
+    `engine` is for a caller that wants to *own* the engine's lifetime — which
+    is `serve`, because the process cannot exit while one is open. Omitted, the
+    engine is built from the environment as before and nothing closes it, which
+    is right for an ASGI server that outlives no process of ours.
+    """
     save_dir_env = os.environ.get("CHESSAPP_SAVE_DIR")
     static_dir_env = os.environ.get("CHESSAPP_STATIC_DIR")
     return build_app(
         llama_base_url=os.environ.get("LLAMACPP_BASE_URL", DEFAULT_LLAMA_BASE_URL),
         model=os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL),
         agent_enabled=_agent_enabled_from_env(),
-        engine=_engine_from_env(),
+        engine=engine if engine is not None else _engine_from_env(),
         save_dir=Path(save_dir_env) if save_dir_env else None,
         speech=_speech_from_env(),
         static_dir=Path(static_dir_env) if static_dir_env else None,
@@ -239,14 +246,42 @@ def build_app_from_env() -> FastAPI:
     )
 
 
+def serve(runner: Callable[[FastAPI, str, int], None]) -> None:
+    """Build the app from the environment, serve it, and close the engine.
+
+    The close is the whole reason this is a function. Stockfish is driven over
+    UCI from a *non-daemon* thread python-chess starts per engine
+    (`chess.engine.run_in_background`), so an open engine keeps the interpreter
+    alive after the server has stopped: `docker compose stop` logged
+    "Application shutdown complete", then sat out the full ten-second grace
+    period and died on SIGKILL (exit 137), every deploy (walkthrough #4). The
+    app was gone for those ten seconds and the container was still there.
+
+    Whoever builds the engine closes it, and that is this function — the
+    lifespan in `create_app` deliberately does not, because an injected engine
+    belongs to its caller (the eval harness shares one across every scenario
+    and every app it builds).
+
+    `runner` is the server, injected: uvicorn in `main`, a stub in the test
+    that pins the close still happens when serving raises.
+    """
+    engine = _engine_from_env()
+    app = build_app_from_env(engine=engine)
+    try:
+        runner(
+            app,
+            os.environ.get("CHESSAPP_HOST", "0.0.0.0"),
+            int(os.environ.get("CHESSAPP_PORT", "8000")),
+        )
+    finally:
+        if engine is not None:
+            engine.close()
+
+
 def main() -> None:  # pragma: no cover - thin runtime shim over uvicorn
     import uvicorn
 
-    uvicorn.run(
-        build_app_from_env(),
-        host=os.environ.get("CHESSAPP_HOST", "0.0.0.0"),
-        port=int(os.environ.get("CHESSAPP_PORT", "8000")),
-    )
+    serve(lambda app, host, port: uvicorn.run(app, host=host, port=port))
 
 
 if __name__ == "__main__":  # pragma: no cover
