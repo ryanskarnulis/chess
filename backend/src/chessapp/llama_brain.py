@@ -92,11 +92,17 @@ Model-specific quirks, split across the two layers:
   parses "knight f3" is not). One thinking turn per analysis question.
 - Every call carries a per-phase `max_tokens` ceiling (`_PLANNER_MAX_TOKENS` /
   `_NARRATOR_MAX_TOKENS`), because a degenerate thought loop with no cap
-  generates until the read timeout (300 s) instead of for seconds. A call the
-  ceiling cut off (`finish_reason == "length"`) is a *failed* turn, never a
-  truncated one that travels: the planner's fragment is dropped and the phase
-  ends under `no_progress` with the loop's own note, and a cut-off narration
-  becomes the empty reply the pipeline already knows how to stand in for.
+  generates until the read timeout (300 s) instead of for seconds. A cut-off
+  call's *words* never travel: the planner's fragment is dropped and the phase
+  ends under `no_progress` with the loop's own note, a cut-off narration
+  becomes the empty reply the pipeline already knows how to stand in for, and a
+  cut-off confirmation reading is `unrelated` — the answer that changes
+  nothing. Its *tool calls* are a different matter and do run: the provider
+  parses each call's arguments whole before the result exists, so a call that
+  arrived is a complete call, and dropping work the model finished asking for
+  would strand a batch half-done. The loop dispatches them, goes on to the
+  next iteration, and treats the `content` fragment beside them as no handoff
+  note at all (audit 2026-09-05, decided).
 """
 
 import json
@@ -111,6 +117,8 @@ import jsonschema
 from chessapp.brain import (
     CANCEL,
     CONFIRM,
+    RETRY_DIFFERENT_ARGS,
+    RETRY_NEVER,
     UNRELATED,
     AgentResponse,
     Answer,
@@ -339,6 +347,15 @@ class LlamaBrain:
                 # what the player actually reads.
                 return self._close(run, command, result.content or "", transcript)
 
+            # Tool calls, so `finish_reason` is deliberately not consulted:
+            # the provider parsed every call's arguments before this result
+            # existed, so each call here is a whole call, and the cap having
+            # cut the generation short says nothing about them. They run and
+            # the loop goes on — a batch abandoned half-way because the model
+            # was still talking would drop work it had finished asking for.
+            # What the truncation does cost is the turn's prose: a fragment
+            # riding along in `content` is never a handoff note, and only a
+            # tool-free turn's text is (see the branch above).
             messages.append(result.to_message())
             schema_error = False
             progressed = False
@@ -426,6 +443,21 @@ class LlamaBrain:
             logger.warning("answer_reading_failed", exc_info=True)
             return Answer(latency_ms=self._elapsed_ms(started))
         prompt_tokens, completion_tokens = _usage_ints(result.usage)
+        if result.finish_reason == "length":
+            # The cap cut this call off, so whatever came back is the start of
+            # something rather than a verdict — and the one place in the app
+            # where a word read too generously ends a game. The same rule the
+            # planner and the narrator keep for a truncated call, applied where
+            # it matters most: the round trip happened and the turn pays for
+            # it (unlike a call that never returned at all), and the word does
+            # not travel. `unrelated` by omission, which changes nothing.
+            logger.warning("answer_reading_truncated")
+            return Answer(
+                model_calls=1,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                latency_ms=self._elapsed_ms(started),
+            )
         word = (result.content or "").strip().strip(".!,'\"").lower()
         return Answer(
             verdict=_VERDICTS.get(word, UNRELATED),
@@ -524,10 +556,18 @@ class LlamaBrain:
         turn it into the same error, and the model needs the error either way.
         `schemas` are the run's offered tools' — so a tool withheld from the
         offer (no claimable draw) is an unknown here too, never a dispatch.
+
+        The refusal is built *through the dispatcher* so that a "no" the loop
+        wrote reads exactly like a "no" a handler raised: `retry` saying
+        whether another call can help, and `board_version` saying which board
+        it was about. These two used to be the turn's only failures carrying
+        neither, which made the planner's "every failure tells you how to
+        recover" contract untrue for the two failures most in need of it.
         """
-        error = _validate_call(call, schemas)
-        if error is not None:
-            return {"ok": False, "error": error}, True
+        complaint = _validate_call(call, schemas)
+        if complaint is not None:
+            error, retry = complaint
+            return self.dispatcher.refusal(error, retry), True
         return self.dispatcher.dispatch(call.name, call.arguments), False
 
     def _report(self, phase: str) -> None:
@@ -703,8 +743,16 @@ def _tool_message(call_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_call(
     call: ProviderToolCall, schemas: dict[str, dict[str, Any]]
-) -> str | None:
-    """The schema-level complaint about a call, or None if it is well-formed.
+) -> tuple[str, str] | None:
+    """The schema-level complaint about a call and its `retry`, or None if the
+    call is well-formed.
+
+    The two words are the dispatcher's (`brain.RETRY_*`), and they are decided
+    here rather than left to the caller because this is where the difference is
+    known: a name outside the offer is not reachable by rewriting arguments —
+    the offer is the offer, and a tool withheld for this command is not there
+    to be argued with — while arguments the schema rejected are precisely what
+    a corrected call would change.
 
     The provider has already guaranteed the arguments are a JSON object —
     malformed JSON never reaches here, it raised `ToolCallArgumentsError`
@@ -712,11 +760,11 @@ def _validate_call(
     """
     schema = schemas.get(call.name)
     if schema is None:
-        return f"unknown tool: {call.name}"
+        return f"unknown tool: {call.name}", RETRY_NEVER
     try:
         jsonschema.validate(call.arguments, schema)
     except jsonschema.ValidationError as exc:
-        return f"invalid args for {call.name}: {exc.message}"
+        return f"invalid args for {call.name}: {exc.message}", RETRY_DIFFERENT_ARGS
     return None
 
 

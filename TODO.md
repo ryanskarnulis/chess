@@ -23,22 +23,6 @@ Work in this order — one PR each, tool-boundary tests with every change, a
 gate run after every loop or prompt change, and the baseline re-recorded
 whenever the harness itself changes.
 
-- [ ] **PR 2 — Loop and tool hardening** (findings 1, 4, 5, 8). `undo` calls
-      `abandon_turn` before it knows the undo can succeed, so a refused undo
-      in a batch with a move discards the owed engine reply — check
-      feasibility first. `read_answer` accepts a `finish_reason="length"`
-      verdict — fail to UNRELATED. `jsonschema` accepts `plies: 1.0` as an
-      integer and the slice raises TypeError out of `dispatch`, past the
-      trace, as a 500 — coerce integral floats and turn TypeError into a
-      refusal. A same-name `save_game` returns the same `{ok, name}` for a
-      different board so the results-keyed progress rule reads it as a
-      stall — carry the board version in the result. Also: brain-side schema
-      refusals omit `retry`/`board_version`; decide whether a tool-bearing
-      `length` response may execute (pin it either way). Scripted tests for
-      each, plus the mixed-batch precedence matrix (valid setter → failing
-      middle call → valid setter, parameterized over unknown tool, bad
-      schema, ToolError, TurnStateError, gate; all call ids answered once, in
-      order; domain cases spend no correction). Gate run.
 - [ ] **PR 3 — A restored position settles the engine's turn** (finding 2,
       decided yes). "play e4 and save this" saves mid-exchange; resume leaves
       Black to move with nobody to move. Same for an explicit odd-ply undo.

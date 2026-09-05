@@ -341,6 +341,93 @@ def test_dispatch_rejects_out_of_range_args(registry):
     assert registry.dispatch("get_best_moves", {"n": 11})["ok"] is False
 
 
+# A JSON number is a JSON number: `1.0` satisfies an `integer` schema, and the
+# validator is right about that. What it cannot do is hand the value to Python
+# as the int the signature asked for — so `undo(plies=1.0)` used to pass
+# validation and then raise `TypeError` out of `dispatch` entirely, past the
+# rest of the batch and past the trace, as an HTTP 500 on a board that had
+# already moved (audit 2026-09-05, finding 5).
+
+
+def test_an_integral_float_is_the_integer_the_schema_called_it(registry, session):
+    session.submit_move("e4")
+
+    result = registry.dispatch("undo", {"plies": 1.0})
+
+    assert result["ok"] is True
+    assert result["undone"] == ["e4"]
+    assert session.move_history() == []
+
+
+def test_a_fractional_count_is_still_a_schema_refusal(registry, session):
+    """Narrowing is not rounding: 1.5 half-moves is not a number of plies, and
+    the schema saying so is the right answer."""
+    session.submit_move("e4")
+
+    result = registry.dispatch("undo", {"plies": 1.5})
+
+    assert result["ok"] is False
+    assert "invalid args" in result["error"]
+    assert session.move_history() == ["e4"]
+
+
+def test_a_float_the_schema_asked_for_stays_a_float(registry):
+    """Only where the property's schema names `integer`. A tool that wants a
+    number gets the number it was sent — `2.0` is a float on purpose there, and
+    a boundary that quietly re-types every round value is a boundary nobody can
+    predict."""
+    seen: list[object] = []
+
+    def measure(amount: float) -> dict:
+        seen.append(amount)
+        return {"ok": True}
+
+    registry.register(
+        Tool(
+            name="measure",
+            description="takes a number",
+            parameters={
+                "type": "object",
+                "properties": {"amount": {"type": "number"}},
+                "required": ["amount"],
+            },
+            handler=measure,
+        )
+    )
+
+    assert registry.dispatch("measure", {"amount": 2.0})["ok"] is True
+    assert seen == [2.0]
+    assert isinstance(seen[0], float)
+
+
+def test_a_handler_that_cannot_take_its_arguments_refuses(registry):
+    """The escape hatch closed for good. Whatever the next mismatch between a
+    schema that says yes and a handler that cannot is, it comes back as error
+    data like every other "no" — an exception here would take the rest of the
+    batch and the trace with it."""
+
+    def picky(count: int) -> dict:
+        return {"ok": True, "sliced": [1, 2, 3][:count]}
+
+    registry.register(
+        Tool(
+            name="picky",
+            description="slices with what it is given",
+            parameters={
+                "type": "object",
+                "properties": {"count": {}},
+                "required": ["count"],
+            },
+            handler=picky,
+        )
+    )
+
+    result = registry.dispatch("picky", {"count": "two"})
+
+    assert result["ok"] is False
+    assert "invalid args for picky" in result["error"]
+
+
 def test_dispatch_reports_the_tool_that_is_about_to_run(registry):
     """Live progress reads the dispatch chokepoint (audit item 19): a tool call
     the UI hears about is one that really ran, because this is the same road
@@ -1004,6 +1091,27 @@ def test_undo_abandons_the_open_turn(session):
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
 
 
+def test_a_refused_undo_leaves_the_open_turn_alone(session):
+    """The other half of that rule, and the one it used to get wrong: a
+    takeback that cannot happen replaces no position, so there is no turn to
+    throw away. `undo` abandoned first and asked afterwards, which meant a
+    refused undo beside a move discarded the engine reply that move had just
+    earned — the player's move on the board with nobody to answer it (audit
+    2026-09-05, finding 1). The turn is untouched, so the reply is still
+    there to be collected."""
+    ctx = ToolContext(session=session, engine=FakeEngine("e7e5"))
+    registry, coordinator = _split_registry(ctx)
+    registry.dispatch("make_move", {"move": "e4"})
+
+    result = registry.dispatch("undo", {"plies": 100})
+
+    assert result["ok"] is False
+    assert session.move_history() == ["e4"], "a refusal moves nothing"
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
+    assert coordinator.collect_engine_reply().san == "e5"
+    assert session.move_history() == ["e4", "e5"]
+
+
 def test_new_game_abandons_the_open_turn(session):
     ctx = ToolContext(session=session, engine=FakeEngine())
     ctx._confirming = True  # past the gate; this is about the turn, not the ask
@@ -1388,6 +1496,30 @@ def test_save_game_default_name_is_autosave(tmp_path, session):
     result = registry.dispatch("save_game", {})
     assert result["ok"] is True
     assert (tmp_path / GAME_SAVE_DIRNAME / "autosave.json").exists()
+
+
+def test_save_game_says_which_board_went_into_the_file(tmp_path, session):
+    """A save's answer names the board as well as the name.
+
+    Without it, two saves under one name answer identically for two different
+    games, and the agent loop — which reads progress off results and holds no
+    board of its own — cannot tell the second from a repeat of the first:
+    "save as checkpoint, undo, save it again, then play d4" ended the planning
+    phase on the second save (audit 2026-09-05, finding 8). Deliberately the
+    version and not the position: a `fen`/`turn` in a result names a side to
+    move to whoever narrates from it (#193).
+    """
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    registry = build_registry(ctx)
+
+    first = registry.dispatch("save_game", {"name": "checkpoint"})
+    assert first["board_version"] == ctx.board_version
+
+    session.submit_move("e4")
+    second = registry.dispatch("save_game", {"name": "checkpoint"})
+
+    assert second["board_version"] == ctx.board_version
+    assert first != second, "one name, two boards, two answers"
 
 
 def test_resume_missing_save_is_error(tmp_path, session):

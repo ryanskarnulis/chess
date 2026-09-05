@@ -46,6 +46,11 @@ from pydantic import Field
 
 from chessapp.analysis import analyze_last_move as _analyze_last_move
 from chessapp.analysis import review_game as _review_game
+
+# The `retry` vocabulary is the dispatcher protocol's, not this layer's — it is
+# defined beside `ToolDispatcher` and re-exported here, so `tools.RETRY_NEVER`
+# still names the one definition both sides of the seam read.
+from chessapp.brain import RETRY_DIFFERENT_ARGS, RETRY_NEVER
 from chessapp.conversation import Transcript
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import (
@@ -65,14 +70,6 @@ GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
 # Save names become filenames: one path segment, no traversal.
 SAVE_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
-
-# The two answers to "is calling again worth a round trip?" — the `retry` key on
-# every refusal. Two rather than a scale because the agent only ever does one of
-# two things with the answer: fix the arguments and call again, or stop and tell
-# the player. `never` is the default for an unclassified failure: a loop that
-# does not know why it failed must not spend its budget finding out.
-RETRY_DIFFERENT_ARGS = "different_args"
-RETRY_NEVER = "never"
 
 
 class ToolError(ValueError):
@@ -276,6 +273,58 @@ def _derive_schema(fn: Callable[..., Any]) -> dict[str, Any]:
     schema = func_metadata(fn).arg_model.model_json_schema(by_alias=True)
     schema["additionalProperties"] = False
     return schema
+
+
+def _admits_integer(schema: Any) -> bool:
+    """Whether a property's schema accepts an `integer` for that property.
+
+    Looks through the combinators as well as a plain `type`, because a nullable
+    integer is the shape the tool signatures actually produce: `int | None`
+    comes out of pydantic as `anyOf: [{type: integer, …}, {type: null}]`, and
+    `undo`'s `plies` is exactly that.
+    """
+    if not isinstance(schema, dict):
+        return False
+    declared = schema.get("type")
+    if declared == "integer" or (isinstance(declared, list) and "integer" in declared):
+        return True
+    return any(
+        _admits_integer(branch)
+        for key in ("anyOf", "oneOf", "allOf")
+        for branch in schema.get(key) or ()
+    )
+
+
+def _narrow_integral_floats(args: Any, schema: dict[str, Any]) -> Any:
+    """`args` with each top-level integral float narrowed to the `int` its
+    schema already called it.
+
+    JSON has one number type, and JSON Schema honors that: `1.0` *is* an
+    integer to the validator, so `undo(plies=1.0)` passes the schema and then
+    reaches a Python slice, which does not agree (audit 2026-09-05, finding 5).
+    The validator's reading is the right one — the value the model sent is one
+    half-move — so the number is narrowed to what the handler's signature
+    already promised rather than refused for how it was spelled.
+
+    Only where the property's schema actually names `integer`: a `number`
+    parameter that arrives as `2.0` is a float on purpose and stays one, and a
+    property nobody declared is left exactly as it came.
+    """
+    if not isinstance(args, dict):
+        return args
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return args
+    return {
+        name: int(value)
+        if (
+            isinstance(value, float)
+            and value.is_integer()
+            and _admits_integer(properties.get(name))
+        )
+        else value
+        for name, value in args.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -606,7 +655,9 @@ class ToolRegistry:
         call could succeed. A name that does not exist cannot be fixed by
         retrying (the offer is the offer); malformed args can, and that is the
         whole point of saying so. A handler's `ValueError` is a domain "no" —
-        `never` unless it was raised as a `ToolError` that knows better.
+        `never` unless it was raised as a `ToolError` that knows better. A
+        handler's `TypeError` is the fourth, and the odd one: arguments the
+        schema said yes to that Python cannot take.
         """
         tool = self._tools.get(name)
         if tool is None:
@@ -617,6 +668,7 @@ class ToolRegistry:
             return self.refusal(
                 f"invalid args for {name}: {exc.message}", RETRY_DIFFERENT_ARGS
             )
+        args = _narrow_integral_floats(args, tool.parameters)
         # Reported here rather than at the top: a name that does not exist and
         # args the schema rejects never reach a handler, and a progress line for
         # work nobody did is worse than none.
@@ -628,6 +680,21 @@ class ToolRegistry:
             return self.refusal(str(exc), exc.retry, **exc.details)
         except ValueError as exc:
             return self.refusal(str(exc), RETRY_NEVER)
+        except TypeError as exc:
+            # The schema said yes and Python said no: arguments whose JSON
+            # shape the validator admits but whose Python type the handler
+            # cannot work with. `undo(plies=1.0)` was the live one — narrowed
+            # above now — and it did not merely fail: the `TypeError` escaped
+            # `dispatch` entirely, past the rest of the batch and past the
+            # trace, and reached the player as an HTTP 500 after the board had
+            # already moved (audit 2026-09-05, finding 5). Nothing may leave
+            # this boundary as an exception, so the next one of these lands
+            # here as ordinary error data, and `different_args` is the honest
+            # advice for a call the handler could not take. Logged with the
+            # traceback, because a real bug wearing this shape is still a bug
+            # and the logs are where it has to stay visible.
+            logger.warning("tool_call_type_error name=%s", name, exc_info=True)
+            return self.refusal(f"invalid args for {name}: {exc}", RETRY_DIFFERENT_ARGS)
         finally:
             # In a `finally` because the board does not care how the call
             # ended: a handler that mutated and then raised has left a new
@@ -1276,16 +1343,23 @@ def build_registry(
         player's move and the engine's reply — leaving the player to move
         again. Pass plies only when the player asked for an explicit count of
         half-moves."""
+        # Attempt first, abandon second — and only if the takeback happened.
         # A takeback replaces the position the open turn is about, so the turn
-        # goes with it (and any reply being computed for it). Same rule for every
-        # non-move mutation below.
-        coordinator.abandon_turn()
+        # goes with it (and any reply being computed for it); a *refused* one
+        # replaces nothing, and the turn it would have thrown away is still
+        # owed an engine reply. Abandoning up front cost exactly that: in one
+        # batch, `make_move(e4), undo(plies=100)` left e4 on the board with
+        # Black to move, the coordinator back awaiting the player and nobody
+        # left to answer (audit 2026-09-05, finding 1). The same rule the other
+        # non-move mutations below already follow, because each of them
+        # abandons only on the path where its mutation really runs.
         result = ctx.session.undo(_takeback_plies(ctx) if plies is None else plies)
         if not result.ok:
             # Nothing to take back, or a game ended by resignation: asking again
             # with a different count does not conjure plies that were never
             # played, so this one is for the player to hear, not to retry.
             return registry.refusal(result.reason or "cannot undo", RETRY_NEVER)
+        coordinator.abandon_turn()
         return {
             "ok": True,
             "undone": list(result.undone),
@@ -1480,7 +1554,16 @@ def build_registry(
                 "no save was created or replaced",
                 retry=RETRY_NEVER,
             ) from exc
-        return {"ok": True, "name": name}
+        # Which board went into the file. Without it two saves under one name
+        # answer identically for two different games, and the loop's
+        # results-keyed progress rule reads the second as a stall: live,
+        # "save as checkpoint, undo, save it again, then play d4" ended the
+        # planning phase on the second save and the replacement move was never
+        # asked for (audit 2026-09-05, finding 8). The stamp every refusal
+        # already carries, on the success too — and deliberately a bare int:
+        # `fen`/`turn` would name a side to move to whoever narrates from this
+        # result, which is the one thing a result may not do (#193).
+        return {"ok": True, "name": name, "board_version": ctx.board_version}
 
     @registry.tool()
     def resume_game(

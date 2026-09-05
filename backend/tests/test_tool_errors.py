@@ -24,6 +24,7 @@ from chessapp.tools import (
     RETRY_DIFFERENT_ARGS,
     RETRY_NEVER,
     Settings,
+    Tool,
     ToolContext,
     ToolRegistry,
     build_registry,
@@ -141,6 +142,37 @@ class TestDispatchErrors:
             registry.dispatch("make_move", {"mv": "e4"}),
         ):
             assert result["board_version"] == ctx.board_version
+
+    def test_arguments_the_handler_cannot_take_invite_a_corrected_call(
+        self, ctx, registry
+    ):
+        """The third: args the *schema* accepted that the handler could not
+        work with. `1.0` is a valid JSON integer and `1.5` is not — but the
+        pair a schema admits and a signature refuses is open-ended, so the
+        mismatch is classified rather than left to escape. `different_args`,
+        because that is what would fix it."""
+
+        def picky(count: int) -> dict:
+            return {"ok": True, "sliced": [1, 2, 3][:count]}
+
+        registry.register(
+            Tool(
+                name="picky",
+                description="slices with what it is given",
+                parameters={
+                    "type": "object",
+                    "properties": {"count": {}},
+                    "required": ["count"],
+                },
+                handler=picky,
+            )
+        )
+
+        result = registry.dispatch("picky", {"count": "two"})
+
+        assert result["ok"] is False
+        assert result["retry"] == RETRY_DIFFERENT_ARGS
+        assert result["board_version"] == ctx.board_version
 
     def test_a_contextless_registry_still_answers(self):
         # `ToolRegistry()` with nothing bound to it — the shape unit tests and

@@ -141,7 +141,17 @@ three times.
 
 ## Current baseline
 
-**Run 2026-09-05 on the honest harness (#262, no `src/` change): 31 passed, 1 failed, 1 xfailed in a single run, 6 m 28 s, infra 0 — the one failure the then-hard `ambiguous_move`, where the model played `Rh3` instead of asking; `undo_and_replace` 4/5 ABOVE_FLOOR (the miss `undo(plies=1)` then an illegal `d4`, as in the control), `undo_twice_and_replace` 4/10 BELOW_FLOOR (xfail; every miss `undo(plies=2)`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+**Run 2026-09-05 on the loop and tool hardening (#264): 31 passed, 2 xfailed in a single run, 5 m 48 s, infra 0; `undo_and_replace` 4/5 ABOVE_FLOOR (the miss `undo(plies=1)` then an illegal `d4`, the same shape as the control's), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE; the xfails `undo_twice_and_replace` 0/5 (every miss `undo(plies=2)`, the two-move misread) and `ambiguous_move` 2/5 (all three misses a correct "Rh3 or Rh2?" question replaced by the advice correction — finding 6, PR 4 — and no guessed move this run).**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). No
+prompt change: a refused `undo` leaves the open turn alone, a confirmation
+reading cut off by the cap is `unrelated`, integral JSON floats reach handlers
+as the integers their schema names and a handler `TypeError` is a refusal,
+`save_game`'s result carries `board_version`, and the loop's own schema
+refusals carry `retry`/`board_version` like every other no — none of which
+moved a rate, which is what the run is here to say.
+
+Previously on the honest harness (#262, no `src/` change): 31 passed, 1 failed, 1 xfailed in a single run, 6 m 28 s, infra 0 — the one failure the then-hard `ambiguous_move`, where the model played `Rh3` instead of asking; `undo_and_replace` 4/5 ABOVE_FLOOR (the miss `undo(plies=1)` then an illegal `d4`, as in the control), `undo_twice_and_replace` 4/10 BELOW_FLOOR (xfail; every miss `undo(plies=2)`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3; the new `resign_literal_fast_path` 0).
 What changed is what the numbers mean. The four resignation scenarios measure
