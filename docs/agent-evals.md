@@ -183,7 +183,7 @@ snapshot, plus the guard verdict wherever text reaches the player.
 | Scenario | Utterance(s); seam | Pins | Kind |
 | --- | --- | --- | --- |
 | `undo_twice_and_replace` | (strengthened, not new) | Adds exactly four plies, the player to move, nothing armed, `completed`, 3–5 calls — a history *prefix* used to accept a turn that landed the position and kept working | Was a recorded miss (5/20, then 7–9/20 on the old `undo` text); the description rewrite measured 34/40 against 16/40 and the xfail is off |
-| `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, is **not guarded**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | **Measured miss** — the planner plays one of the two knights instead of asking, 26 of 50 samples on both sides of the guard fix; non-strict xfail until the planner's ambiguity procedure is re-measured |
+| `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, is **not guarded**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | Was a **measured miss** — the planner played one of the two knights instead of asking, 26 of 50 samples on both sides of the guard fix — until the planner procedure's duplicated `captures` sentence was deleted (2026-09-05): 17/20 against the old text's 8/20 in alternating blocks on one server, xfail off |
 | `move_save_resume_finishes_exchange` | "play e4 and save this as checkpoint" → "load the game named checkpoint"; panel | Move *before* save, the file loads; then a resume leaving history `["e4", reply]`, White to move, no illegal attempt | **Reproduced** audit finding 2 — 0/5 on the pre-fix main, 5/5 on the settled restore (#266) |
 | `save_then_new_game` | "save this as checkpoint and start a new game" (then "yes"); delegate | Save *before* an attempted reset the gate refuses; the file holds the game; `new_game` armed; the yes resets at **0 model calls** (verbosity `low`) | Lock |
 | `voice_setting_and_move` | "turn voice output off and play e4" | `set_voice_output` and one legal move; the whole settings snapshot with one key changed; 3–4 calls, thinking off | Lock |
@@ -206,12 +206,72 @@ both sides of the guard fix came in 24 asked / 26 played: the planner picks one
 of the two knights instead of asking about half the time, the five-sample
 blocks cluster (4/5, 0/5, 5/5, 1/5, 4/10, 2/5, 1/5, 7/15), and the guard eating
 the question (finding 6) was the smaller of its two failure modes all along. It
-ships as a measured-miss xfail (`raises=AssertionError`, non-strict) with the
-planner's one/several/none procedure filed as the lever in `TODO.md`.
+shipped as a measured-miss xfail (`raises=AssertionError`, non-strict) with the
+planner's one/several/none procedure filed as the lever in `TODO.md`, and the
+lever was pulled the same day: the procedure's bullet had repeated the
+`captures` fact between its premise and its "one fits: submit" outcome, and
+deleting the repeat measured 17/20 against 8/20 (the planner-procedure
+paragraph under "Current baseline"), so the xfail is off.
 Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Run 2026-09-05 on the planner's matching procedure (#269): 46 passed, 1 failed in a single run, 12 m 32 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE — `ambiguous_knight_then_selection` 5/5, scored unmarked for the first time, `ambiguous_move` 5/5, `undo_and_replace` 5/5, `undo_twice_and_replace` 5/5 — and the one failure the hard `judgment_question` on its 30 s latency ceiling with a correct trajectory (`evaluate_position`, thinking off/off/on, three calls, "You're slightly ahead, bro."): the narrator's thinking-on call wrote 1,684 tokens in 32.9 s while the planner took 1.6 s, and the planner prompt is not in that call. Re-run five times a tree, old and new alternating on one server: 5/5 and 5/5, the same trajectory every time, narrator 7–17 s on the old tree and 9–23 s on the new — the narrator tail the wordiness note under "Standing results" describes, not this change.**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The one
+prompt change is a deletion in `PLANNER_PROMPT`'s matching procedure: the
+bullet that says match the words against `legal_moves`, one fits submit, several
+fit ask, none fit refuse, had opened with a second copy of the `captures` fact
+("`captures` says what each capturing move takes, and when it is empty nothing
+on the board can be taken"), which the bullet above already states. With the
+copy in place "move my kings knight" on a fresh board was *played* — Nf3, every
+time — rather than asked about half the time (`ambiguous_knight_then_selection`,
+26/50 across eight runs), while "move the rook" with four rook moves was asked.
+
+Screened first against the model server directly — the app's own state view,
+tool offer and sampling, one planner call a sample, arms **round-robin per
+sample** on one server (a batch of one arm alone is not a measurement here: the
+unchanged old text read 5/20, 19/40 and 31/40 played in three separate batches,
+swings a binomial cannot produce, so consecutive samples of one prompt on this
+server are correlated and only an interleaved comparison cancels it):
+
+| arm (knight ask, 40 samples each, interleaved) | played a knight |
+| --- | --- |
+| old | **26/40** |
+| define "fits" as piece and square (adds a sentence) | worse than old in its own batch: 8/20 vs 5/20 |
+| "which of them to play is the player's decision, never yours" (adds a clause) | worse: 13/20 vs 5/20 |
+| both additions | worse: 18/20 vs 5/20 |
+| reorder the outcomes ask-first, text otherwise unchanged | 12/40 |
+| delete the duplicated `captures` sentence, plus a one-line fact ("a piece named without its square is several entries, not one") | 5/40 |
+| delete the duplicated `captures` sentence, nothing added — **shipped** | **3/40** |
+
+Read down the column: every arm that put words about playing *into* the rule
+primed playing, the way `set_difficulty`'s trigger list once outranked its
+caveat and numbers in `undo`'s text were copied into `plies`; the deletion
+alone did the work. The shipped text was then screened on the asks the same
+bullet governs, 20–30 samples an arm interleaved with the old text: "take the
+pawn" and "bishop to a1" on move 1 refused and never asked on both (30/30
+each), "move the rook" asked 20/20 (old 19/20), the STT knight ("please put my
+night on f three") played 20/20, "castle" played 20/20, and the first call on
+"take that bishop move back and play d4 instead" was `undo` with `plies` omitted
+19/20 (old 18/20).
+
+Then the harness, old tree against new on one server in alternating blocks of
+five, 20 samples an arm, the trees and the prompt hash logged per block:
+
+| scenario | old (`main@d327180`) | shipped |
+| --- | --- | --- |
+| `ambiguous_knight_then_selection` | **8/20** (1/5, 2/5, 3/5, 2/5; all twelve misses a played knight) | **17/20** (5/5, 3/5, 4/5, 5/5; two played knights, one correct "Which one? You've got Nf3, Nh3, Nc3, and Na3." — a statement naming four legal moves after the question, which the guard's decided rule reads as advice) |
+| `ambiguous_move` | 19/20 (one guessed `Rh3`) | 20/20 |
+| `undo_and_replace` | 18/20 (two replacements on the wrong board) | 20/20 |
+
+The knight scenario clears the floor at 20, so its non-strict xfail comes off
+and it is scored like the rest. The same-day control run of the unchanged
+`main@21ed7ea`, taken before any of this: 46 passed, 1 xpassed, 11 m 51 s,
+infra 0 — the xpass `ambiguous_knight_then_selection` 4/5, `ambiguous_move`
+4/5 (one guessed `Rh3`), `undo_twice_and_replace` 12/15 ABOVE_FLOOR, every other
+pass-rate scenario 5/5, `long_capture` 5/5 ×3, costs unmoved.
 
 **Run 2026-09-05 on the `undo` description (#267): 46 passed, 1 xfailed in a single run, 11 m 06 s, infra 0; `undo_twice_and_replace` 4/5 ABOVE_FLOOR — scored unmarked for the first time since #260, the miss two `undo(plies=1)` calls — `undo_and_replace` 5/5, every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE; the one xfail `ambiguous_knight_then_selection` 9/15 (six guessed knights, the measured planner miss).**
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
