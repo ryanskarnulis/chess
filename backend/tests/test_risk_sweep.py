@@ -195,8 +195,10 @@ def test_an_op_armed_in_a_turn_that_also_moved_is_still_answerable():
 def test_the_newest_question_is_the_one_a_yes_answers():
     """Two asks, two turns: the second replaces the first rather than queueing
     behind it, so a yes answers the question the player just heard. (Inside one
-    command the destructive budget refuses the second outright — `test_closing_
-    pass.py` — so this is the only way two can be asked.)"""
+    command it is the other way round — the first question stands and a second
+    gated call is refused naming it, `test_closing_pass.py` — because within an
+    interaction the player hears one question, and across interactions the
+    newest one is the one they are answering.)"""
     client, ctx = agent_client(
         destructive("new_game"), destructive("resign"), narrations=("Fine.",)
     )

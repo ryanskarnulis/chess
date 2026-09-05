@@ -2126,6 +2126,118 @@ def test_confirm_pending_with_nothing_armed_is_a_no_op(session, registry):
     assert confirm_pending(build_registry(ctx), ctx) is None
 
 
+# One question per command (decided 2026-09-05). Two refusals in one command
+# used to arm two ops with the last replacing the first, while the narrator
+# might be asking about the first — so the next yes could run an op the player
+# had never been asked about. The gate now keeps the first: every later gated
+# call in the same command window is refused naming the pending question, and
+# the question, the reader's question and the op the yes runs are one op.
+
+
+def _in_a_command(ctx: ToolContext):
+    """The registry and an open command window over it — the pipeline's
+    shape, where several dispatches can chain inside one interaction."""
+    coordinator = TurnCoordinator(ctx)
+    registry = build_registry(ctx, coordinator)
+    coordinator.begin_command()
+    return registry, coordinator
+
+
+def test_a_second_gated_call_in_one_command_is_refused_naming_the_pending_question():
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry, _ = _in_a_command(ctx)
+
+    first = registry.dispatch("new_game", {})
+    second = registry.dispatch("resign", {})
+
+    assert first["ok"] is False and "confirm" in first["error"].lower()
+    assert second["ok"] is False
+    assert second["pending"] == "new_game"
+    assert second["retry"] == "never"
+    assert "new_game" in second["error"] and "resign" in second["error"], second
+    assert ctx.pending is not None and ctx.pending.name == "new_game", (
+        "the first question stands; the second call armed nothing"
+    )
+    assert not ctx.session.is_game_over()
+
+
+def test_the_yes_runs_the_op_the_player_was_asked_about():
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry, _ = _in_a_command(ctx)
+    registry.dispatch("new_game", {})
+    registry.dispatch("resign", {})
+
+    name, result = confirm_pending(registry, ctx)
+
+    assert name == "new_game" and result["ok"] is True
+    assert ctx.session.move_history() == [], "the reset ran"
+    assert not ctx.session.is_game_over(), "the refused resignation never did"
+    assert ctx.pending is None
+
+
+def test_the_same_op_asked_twice_in_one_command_keeps_the_first_question():
+    """Re-arming was never confirming; now it does not re-arm either — the
+    args the player will be asked about are the first call's."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry, _ = _in_a_command(ctx)
+
+    registry.dispatch("new_game", {"player_color": "white"})
+    second = registry.dispatch("new_game", {"player_color": "black"})
+
+    assert second["ok"] is False and second["pending"] == "new_game"
+    assert ctx.pending is not None
+    assert ctx.pending.args == {"player_color": "white"}
+
+
+def test_a_mutation_between_the_two_calls_does_not_unseat_the_question():
+    """ "play e4 and start over — no, resign": the op armed mid-command is about
+    the board the player sees when the command closes (`restamp_pending`), so
+    a move landing between the two gated calls leaves the first question
+    standing rather than letting the second arm over a "stale" one."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry, _ = _in_a_command(ctx)
+    registry.dispatch("new_game", {})
+    assert ctx.session.submit_move("Nf3").legal  # the board moves mid-command
+
+    second = registry.dispatch("resign", {})
+
+    assert second["ok"] is False and second["pending"] == "new_game"
+    assert ctx.pending is not None and ctx.pending.name == "new_game"
+    ctx.restamp_pending()
+    assert ctx.live_pending() is not None, "answerable about the closing board"
+
+
+def test_outside_a_command_window_the_newest_question_stands():
+    """A button press or an MCP call is one dispatch per interaction, so two
+    gated calls there are two interactions — and across interactions the
+    newest question is the one a yes answers, exactly as two spoken commands
+    behave (`test_risk_sweep.py`). The rule above is the command window's."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)  # windowless, like `mcp_server` and the buttons
+
+    registry.dispatch("new_game", {})
+    second = registry.dispatch("resign", {})
+
+    assert second["ok"] is False and "pending" not in second
+    assert ctx.pending is not None and ctx.pending.name == "resign"
+
+
+def test_the_window_closing_frees_the_next_command_to_ask_afresh():
+    """The pipeline disarms on the way into a new command; the gate's rule
+    must not outlive the window it belongs to."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry, coordinator = _in_a_command(ctx)
+    registry.dispatch("new_game", {})
+    coordinator.end_command()
+    ctx.pending = None  # what `_command_turn` does as the next command opens
+    coordinator.begin_command()
+
+    result = registry.dispatch("resign", {})
+
+    assert result["ok"] is False and "pending" not in result
+    assert ctx.pending is not None and ctx.pending.name == "resign"
+
+
 def test_confirmation_is_not_a_tool_argument(session, registry):
     """The gate would be worthless if the model could open it: `confirm` is not
     in either schema, and the schemas are closed, so a model that invents the

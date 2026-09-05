@@ -348,6 +348,76 @@ def test_a_truncated_reading_leaves_the_armed_resignation_un_run():
     assert body["commentary"] == "Still your move, then."
 
 
+# --- two refusals in one batch ask one question, and the yes runs that op
+#
+# Decided 2026-09-05 (audit "Confirmation details"): a second unconfirmed
+# destructive call in a command whose gate already armed one is refused with a
+# result naming the question already pending. Pinned here rather than only at
+# the registry because the failure was a *pipeline* one — the question the
+# narrator relays, the question the reader is handed and the op the yes runs
+# have to be the same op, and only a real planner batch puts two gated calls
+# inside one command.
+
+
+def test_two_refusals_in_one_batch_leave_the_first_question_armed():
+    ctx = developed(ToolContext(session=GameSession(), engine=FakeEngine()))
+    client, _, ctx = make_client(
+        tool_calls_turn(("new_game", {}), ("resign", {})),
+        text_turn("asked about the reset"),
+        text_turn("That ends the game in progress. Start a new one?"),
+        text_turn("Fresh board."),  # the narration after the confirmed reset
+        ctx=ctx,
+    )
+
+    body = client.post(
+        "/api/command", json={"text": "start over, actually just resign"}
+    ).json()
+
+    results = [r["result"] for r in body["tool_results"]]
+    assert [r["name"] for r in body["tool_results"]] == ["new_game", "resign"]
+    assert results[0]["ok"] is False and "confirm" in results[0]["error"].lower()
+    assert results[1]["ok"] is False and results[1]["pending"] == "new_game"
+    assert ctx.pending is not None and ctx.pending.name == "new_game"
+    assert ctx.session.move_history() == ["e4", "e5", "Nf3", "Nc6"]
+    assert not ctx.session.is_game_over()
+
+    confirmed = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert [r["name"] for r in confirmed["tool_results"]] == ["new_game"]
+    assert confirmed["tool_results"][0]["result"]["ok"] is True
+    assert ctx.session.move_history() == [], "the reset — the question asked — ran"
+    assert not ctx.session.is_game_over(), "the refused resignation never did"
+    assert ctx.pending is None
+
+
+def test_the_reader_is_handed_the_question_of_the_op_that_is_armed():
+    """A free-text answer is read against the pipeline's own question for the
+    armed op (`api._confirm_question`), so with the resignation armed first
+    the reader hears the resign question and never the reset's — and its
+    confirm resigns."""
+    ctx = developed(ToolContext(session=GameSession(), engine=FakeEngine()))
+    client, provider, ctx = make_client(
+        tool_calls_turn(("resign", {}), ("new_game", {})),
+        text_turn("asked about resigning"),
+        text_turn("That's the game if you mean it. Resign?"),
+        text_turn("confirm"),  # the reader's verdict
+        text_turn("Game over, then."),  # the narration after the confirmed op
+        ctx=ctx,
+    )
+    client.post("/api/command", json={"text": "I give up — or start over"})
+    assert ctx.pending is not None and ctx.pending.name == "resign"
+
+    client.post("/api/command", json={"text": "go on then"})
+
+    reader = provider.calls[3]
+    assert reader["tools"] is None
+    question = reader["messages"][1]["content"]
+    assert api._CONFIRM_QUESTIONS["resign"] in question
+    assert api._CONFIRM_QUESTIONS["new_game"] not in question
+    assert ctx.session.is_game_over(), "the confirmed resignation ran"
+    assert ctx.session.move_history() == ["e4", "e5", "Nf3", "Nc6"], "not a reset"
+
+
 # --- a restored position is settled, and the app says what it played
 #
 # A takeback or a restore can hand back a board with the engine to move and no

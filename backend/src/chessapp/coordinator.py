@@ -367,6 +367,14 @@ class TurnCoordinator:
         """
         self._command_open = False
 
+    @property
+    def command_open(self) -> bool:
+        """Whether a command window is open — one user interaction the pipeline
+        is running, inside which several dispatches can chain. The confirmation
+        gate reads it to tell "this command already asked its question" from
+        "a fresh interaction is asking a new one" (`tools._gate`)."""
+        return self._command_open
+
     def require_destructive_budget(self) -> None:
         """Refuse a destructive op when this command has already had one.
 
