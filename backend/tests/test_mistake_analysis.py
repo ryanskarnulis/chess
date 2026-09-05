@@ -9,9 +9,15 @@ end-to-end analyses need a live Stockfish and skip without one.
 
 import shutil
 
+import chess
 import pytest
 
-from chessapp.analysis import MoveAnalysis, analyze_last_move, classify_cp_loss
+from chessapp.analysis import (
+    MoveAnalysis,
+    analyze_last_move,
+    captured_piece,
+    classify_cp_loss,
+)
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext, build_registry
@@ -232,3 +238,62 @@ def test_tool_when_the_player_has_not_moved_is_an_error(engine):
 
     assert result["ok"] is False
     assert "black" in result["error"]
+
+
+# --- what a move takes (walkthrough #5) --------------------------------------
+#
+# SAN says *that* a move captures and never what, so a narration describing
+# `Qxe2` had a capture with no victim and invented one — "you should have taken
+# that queen with Qxe2", for a move that takes a pawn. Only the board before
+# the move knows, so the analysis reads it there and hands it over.
+
+
+def test_captured_piece_names_the_piece_on_the_square():
+    session = play(GameSession(), "e4", "d5")
+    board = chess.Board(session.fen())
+    assert captured_piece(board, board.parse_san("exd5")) == "pawn"
+
+
+def test_captured_piece_is_none_for_a_quiet_move():
+    board = chess.Board(GameSession().fen())
+    assert captured_piece(board, board.parse_san("e4")) is None
+
+
+def test_captured_piece_sees_an_en_passant_victim():
+    """The pawn taken en passant is not on the square being moved to, so
+    reading the destination alone would call the capture a quiet move."""
+    session = play(GameSession(), "e4", "a6", "e5", "d5")
+    board = chess.Board(session.fen())
+    move = board.parse_san("exd6")
+    assert board.is_en_passant(move)
+    assert captured_piece(board, move) == "pawn"
+
+
+@requires_stockfish
+def test_the_analysis_names_the_victim_of_both_moves(engine):
+    """The played move takes nothing here and the better one takes a pawn —
+    the exact asymmetry the narration got wrong."""
+    session = play(GameSession(), "e4", "d5", "Nc3")
+    analysis = analyze_last_move(engine, session, color="black")
+
+    assert analysis.played_san == "d5"
+    assert analysis.played_captures is None
+    # Whatever Stockfish prefers, the victim reported is the one standing on
+    # the board black actually moved from — after 1.e4.
+    before = chess.Board(play(GameSession(), "e4").fen())
+    assert analysis.best_captures == captured_piece(
+        before, before.parse_san(analysis.best_san)
+    )
+
+
+@requires_stockfish
+def test_the_tool_hands_both_victims_to_the_narrator(engine):
+    session = play(GameSession(), "e4", "d5", "Nc3", "dxe4")
+    registry = build_registry(ToolContext(session=session, engine=engine))
+
+    result = registry.dispatch("analyze_last_move", {"color": "black"})
+
+    assert result["ok"] is True
+    assert result["played"] == "dxe4"
+    assert result["played_captures"] == "pawn"
+    assert "best_captures" in result

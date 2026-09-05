@@ -254,6 +254,92 @@ def test_the_subject_outranks_the_possessive():
     assert unverified_claims("I took my knight.", TOOK_A_KNIGHT) == ()
 
 
+# Which piece — the half the capture record cannot settle. It spans the whole
+# game, so a queen taken twenty moves ago backs "that queen" attached to any
+# move at all. `captures_by_move` is per move and read off the board, so a
+# sentence that names its move is held to what *that* move takes: live, the
+# analysis said Qxe2 was the better move, Qxe2 takes a pawn, and the narration
+# called it a queen (walkthrough #5). `""` is a move that takes nothing.
+
+QXE2_TAKES_A_PAWN = VerifiedFacts(
+    moves=frozenset({"Qxe2", "Re1", "Nf3"}),
+    captured_by_player=frozenset({"queen"}),  # a real queen, from earlier
+    captures_by_move={"Qxe2": "pawn", "Re1": "", "Nf3": ""},
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You've taken that queen with Qxe2.",
+        "Qxe2 takes the queen.",
+        "Qxe2 and that knight is gone.",
+        # A move that captures nothing cannot have taken anything.
+        "Nf3 grabs the bishop.",
+    ],
+)
+def test_a_named_move_is_held_to_what_it_actually_takes(text):
+    assert "capture" in unverified_claims(text, QXE2_TAKES_A_PAWN)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You've taken that pawn with Qxe2.",
+        "Qxe2 takes the pawn.",
+        "Qxe2 and that pawn is gone.",
+    ],
+)
+def test_the_right_piece_on_a_named_move_is_reportable(text):
+    assert unverified_claims(text, QXE2_TAKES_A_PAWN) == ()
+
+
+def test_the_named_move_outranks_the_game_wide_record():
+    """The record really does hold a queen the player took, and it really does
+    not back *this* sentence — that mismatch is the whole defect."""
+    assert "queen" in QXE2_TAKES_A_PAWN.captured_by_player
+    assert unverified_claims("You took my queen.", QXE2_TAKES_A_PAWN) == ()
+    assert "capture" in unverified_claims(
+        "You took my queen with Qxe2.", QXE2_TAKES_A_PAWN
+    )
+
+
+def test_a_move_the_board_cannot_place_falls_back_to_the_record():
+    """No knowledge is not evidence of a lie: a SAN from a position the turn no
+    longer holds leaves the coarser checks in charge."""
+    facts = VerifiedFacts(
+        moves=frozenset({"Bxc6"}), captured_by_player=frozenset({"knight"})
+    )
+    assert unverified_claims("You took my knight with Bxc6.", facts) == ()
+
+
+# "Taken" is a claim only in the perfect. Bare, it is passive and predictive,
+# which is the register a threat is actually spoken in.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I've taken your knight.",
+        "You have taken my bishop.",
+        "He's taken the rook.",
+    ],
+)
+def test_the_perfect_reports_a_capture(text):
+    assert "capture" in unverified_claims(text, NOTHING)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "That knight is going to get taken.",
+        "Your bishop gets taken either way.",
+    ],
+)
+def test_a_bare_taken_is_still_not_a_claim(text):
+    assert unverified_claims(text, NOTHING) == ()
+
+
 @pytest.mark.parametrize(
     "text",
     [

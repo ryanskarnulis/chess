@@ -1297,6 +1297,33 @@ def test_a_guarded_turn_with_no_reply_owed_says_only_the_correction():
     assert body["commentary"] == UNVERIFIED_CLAIM_REPLY
 
 
+def test_a_capture_claim_is_held_to_what_the_named_move_takes():
+    """Walkthrough #5. The capture record spans the whole game, so a queen the
+    player really did take twenty moves ago verifies "that queen" attached to
+    any move at all — which is how a narration came to call a pawn capture a
+    queen. The board's answer for the one move the sentence names does not.
+
+    Here the player took a queen on move 3 and takes a *pawn* on move 4; the
+    coarse record backs the sentence and the move does not."""
+    session = GameSession()
+    for san in ("d4", "e5", "dxe5", "Qg5", "Bxg5", "h6"):
+        assert session.submit_move(san).legal
+    assert "q" in session.captured_pieces()["white"], "a real queen, earlier"
+    ctx = ToolContext(session=session, engine=FakeEngine(reply_uci="g7h6"))
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="You've taken that queen with Bxh6.",
+            tool_calls=(ToolCall(name="make_move", args={"move": "Bxh6"}),),
+        ),
+    )
+
+    body = TestClient(app).post("/api/command", json={"text": "grab that h6 pawn"})
+
+    assert body.json()["commentary"].startswith(UNVERIFIED_CLAIM_REPLY)
+    assert session.move_history()[-2] == "Bxh6", "and the move itself still stands"
+
+
 def test_a_narrated_verbosity_change_without_the_call_is_guarded():
     """Walkthrough #3: "talk more" answered by talking more. The setting stayed
     `low` on disk, the next turn was terse again, and the player was told

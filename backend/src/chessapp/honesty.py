@@ -188,6 +188,14 @@ class VerifiedFacts:
     "alright, more detail from now on" names no level at all and is true only
     if the turn really changed one. Announcing a change that never happened is
     the whole of walkthrough #3.
+
+    `captures_by_move` is what each move the turn knows about takes, read off
+    the board it is legal on — the piece's name, or `""` for a quiet move. It
+    is the one fact that can settle *which* piece a capture claim names, which
+    the game-wide capture record cannot: a queen taken twenty moves ago backs
+    "taken that queen" perfectly. Live it backed exactly nothing — the engine
+    said Qxe2 was the better move, Qxe2 takes a pawn, and the narration called
+    it a queen (walkthrough #5).
     """
 
     ended: bool = False
@@ -201,6 +209,7 @@ class VerifiedFacts:
     saved: bool = False
     settings: Mapping[str, str] = field(default_factory=dict)
     settings_changed: frozenset[str] = frozenset()
+    captures_by_move: Mapping[str, str] = field(default_factory=dict)
     numbers: frozenset[str] = frozenset()
     material: tuple[int, ...] = ()
 
@@ -218,10 +227,18 @@ _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
 # two that were not cost the app every hint whose best move was a capture. All
 # three "what should I play?" turns of the 2026-09-04 walkthrough answered
 # "Take the rook. Rxd1 is the move." and all three were suppressed.
+#
+# "Taken" is here only with a perfect auxiliary. Bare, it is passive and
+# predictive — "that knight is going to get taken" — but "you've taken that
+# queen" reports a completed capture as flatly as "you took" does, and that is
+# the tense the mistake narration invents its victims in. Not `'d`: the
+# contraction is "would" as often as "had", and the capture class already
+# reads it as a future.
 _TAKE_VERBS = (
     r"(?: took | takes | taking | grabbed | grabs | grabbing "
     r"| captured | captures | capturing | snagged | snags | snatched | nabbed "
-    r"| ate | eats | eating )"
+    r"| ate | eats | eating "
+    r"| (?: have | has | had | ' (?: ve | s ) ) \s+ taken )"
 )
 
 # The possessive is direction evidence, and it is the direction Glitch's own
@@ -485,6 +502,29 @@ def _setting_is(key: str) -> Callable[[re.Match[str], VerifiedFacts], bool]:
     return lambda match, facts: facts.settings.get(key) == _matched_value(match)
 
 
+def _victims_of_named_moves(sentence: str, facts: VerifiedFacts) -> set[str] | None:
+    """What the moves this sentence names take, when the board knows.
+
+    The most precise evidence a capture claim can be held to, and the only one
+    that can catch the wrong *piece*: the capture record spans the whole game,
+    so a queen taken twenty moves ago backs "that queen" no matter which move
+    the sentence hangs it on. `captures_by_move` is per move and read off the
+    board — `""` when the move takes nothing at all.
+
+    Fail-permissive on ambiguity, as everywhere else here: with two known
+    moves named, any one of them backing the piece is enough. `None` when the
+    sentence names no move the board could resolve, which hands the claim back
+    to the coarser evidence.
+    """
+    victims = {
+        facts.captures_by_move[san]
+        for match in _SAN_CLAIM.finditer(sentence)
+        for san in (match.group(0).rstrip("+#"),)
+        if san in facts.captures_by_move
+    }
+    return victims or None
+
+
 def _is_advice(sentence: str, facts: VerifiedFacts) -> bool:
     """Whether the sentence hangs what it says on a move nobody has played.
 
@@ -509,17 +549,26 @@ def _is_advice(sentence: str, facts: VerifiedFacts) -> bool:
 def _capture_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
     """Whether the board's capture record backs the capture this sentence says.
 
-    Direction first, and by the strongest evidence the sentence carries: an
-    explicit subject decides alone, then advice about an unplayed move, and
-    only after those does the possessive get a say — "took *your* bishop" is
-    Glitch taking the player's piece, "*my* bishop is gone" is the player
-    taking his. With none of them, the text pins nothing ("a knight came off")
-    and either side's record is enough, because the guard fails permissive on
-    real ambiguity.
+    By the strongest evidence the sentence carries. A named move whose victim
+    the board knows decides outright — it is the only evidence about *this*
+    capture rather than about some capture. Failing that, an explicit subject
+    decides the direction, then advice about an unplayed move, and only after
+    those does the possessive get a say — "took *your* bishop" is Glitch
+    taking the player's piece, "*my* bishop is gone" is the player taking his.
+    With none of them, the text pins nothing ("a knight came off") and either
+    side's record is enough, because the guard fails permissive on real
+    ambiguity.
     """
     piece = match.group("piece") or match.group("gone_piece")
     # "horse" is a knight; the board only knows the one word for it.
     name = "knight" if piece.lower() == "horse" else piece.lower()
+    victims = _victims_of_named_moves(match.string, facts)
+    if victims is not None:
+        # The sentence hangs its capture on a move, and the board knows what
+        # that move takes. Outranks the subject and the record alike: it is
+        # the only evidence about *this* capture rather than about some
+        # capture, and it is the evidence the invented victim needs.
+        return name in victims
     subject = (match.group("subject") or "").lower()
     if subject == "i":  # Glitch is the player's opponent
         return name in facts.captured_by_opponent
