@@ -19,6 +19,7 @@ from chessapp.app import (
     DEFAULT_MODEL,
     build_app,
     build_app_from_env,
+    serve,
 )
 from chessapp.brain import AgentResponse
 from chessapp.engine import DEFAULT_TIER
@@ -388,3 +389,74 @@ def test_uvicorn_has_a_websocket_protocol_available():
     from uvicorn.protocols.websockets.auto import AutoWebSocketsProtocol
 
     assert AutoWebSocketsProtocol is not None
+
+
+# --- shutdown (walkthrough #4) -------------------------------------------------
+#
+# python-chess drives Stockfish from a *non-daemon* thread it starts per engine,
+# so an engine nobody closed keeps the interpreter alive after the server has
+# stopped. In the container that was "Application shutdown complete", then the
+# full ten-second grace period, then SIGKILL — exit 137, on every deploy, with
+# the API already gone for those ten seconds.
+
+
+def _served(monkeypatch, engine, runner):
+    """Run `serve` over a fake engine and a stub server."""
+    monkeypatch.setattr(chessapp.app, "_engine_from_env", lambda: engine)
+    monkeypatch.setenv("CHESSAPP_AGENT", "off")
+    serve(runner)
+
+
+def test_serve_closes_the_engine_when_the_server_stops(monkeypatch):
+    engine = FakeEngine()
+    served: list[tuple[str, int]] = []
+
+    _served(
+        monkeypatch,
+        engine,
+        lambda app, host, port: served.append((host, port)) or None,
+    )
+
+    assert served, "the runner must actually be handed the assembled app"
+    assert engine.closed
+
+
+def test_serve_closes_the_engine_even_when_serving_raises(monkeypatch):
+    """A crash must not be the one path that leaves the process unkillable."""
+    engine = FakeEngine()
+
+    def boom(_app, _host, _port):
+        raise RuntimeError("bind failed")
+
+    with pytest.raises(RuntimeError, match="bind failed"):
+        _served(monkeypatch, engine, boom)
+
+    assert engine.closed
+
+
+def test_serve_hands_the_runner_the_configured_host_and_port(monkeypatch):
+    engine = FakeEngine()
+    served: list[tuple[str, int]] = []
+    monkeypatch.setenv("CHESSAPP_HOST", "127.0.0.1")
+    monkeypatch.setenv("CHESSAPP_PORT", "8123")
+
+    _served(
+        monkeypatch,
+        engine,
+        lambda app, host, port: served.append((host, port)) or None,
+    )
+
+    assert served == [("127.0.0.1", 8123)]
+
+
+def test_serve_runs_the_engine_it_closes(monkeypatch):
+    """The app must be built around the same engine `serve` owns — closing a
+    different one would end the process and leave the game's engine open."""
+    engine = FakeEngine(reply_uci="e7e5")
+    apps: list[object] = []
+
+    _served(monkeypatch, engine, lambda app, _host, _port: apps.append(app))
+
+    body = TestClient(apps[0]).post("/api/game/move", json={"move": "e4"}).json()
+    assert body["legal"]
+    assert body["state"]["history"] == ["e4", "e5"], "the owned engine replied"
