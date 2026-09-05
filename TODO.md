@@ -13,10 +13,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Next
 
-- [ ] **Free-text answers to a pending confirmation** (walkthrough #6): "just
-      do it" after a resign question does nothing. Unparsed answers go to the
-      model to decide confirm/cancel through the same confirm path.
-      Supersedes the "pending-proposal state" someday item.
 - [ ] **Glitch difficulty** (PCC #332): a tier where the LLM picks its own
       moves instead of Stockfish. Design note first — it amends BRIEF's
       "Stockfish is the move source" stance; the coordinator still owns the
@@ -24,8 +20,9 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
       fallback for an invalid pick, and the reply becomes a model call
       (latency + GPU serialization to think through).
 - [ ] **Claim-draw button** (#220 follow-up): `/api/game/claim-draw` through
-      the registry (same gate as resign), a `_CONFIRM_QUESTIONS` entry, and
-      the frontend button. Until then claims are unreachable in direct mode.
+      the registry (same gate as resign) and the frontend button. The
+      `_CONFIRM_QUESTIONS` entry landed with #255. Until then claims are
+      unreachable in direct mode.
 - [ ] **Re-vendor the voice module downstream** (#232 follow-up): PCC's and
       conductor's `MicButton.tsx` copies predate the #232 wedge fix and the
       #242 inline icons. Their host api clients also need the

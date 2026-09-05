@@ -103,8 +103,12 @@ fresh-conversation passes hid live failures.
 
 ## Current baseline
 
-**Run 2026-09-04 on the captured-piece fix (#254): 25 passed in a single run,
-4 m 06 s, infra 0, every pass-rate scenario ABOVE_FLOOR STABLE.**
+**Run 2026-09-04 on the free-text confirmation slice (#255): 25 passed in a
+single run, 4 m 40 s, infra 0, every pass-rate scenario 5/5 ABOVE_FLOOR
+STABLE.** `long_capture` 5/5 ×3, costs unmoved.
+
+Previously on the captured-piece fix (#254): 25 passed in a single run,
+4 m 06 s, infra 0, every pass-rate scenario ABOVE_FLOOR STABLE.
 `long_capture` 5/5 ×3 (release blocker), costs unmoved (`fast_path_low` 0
 model calls, `fast_path_normal` 1, `plain_move` 3).
 
@@ -115,9 +119,8 @@ named replacement `d4`, with the undo itself clean, so it is the scenario's
 ordinary move-choice variance and not the schema collapse the tripwire exists
 for (that one takes `undo_and_replace` well below the floor, not to it).
 
-Previous: 2026-09-04 on the verbosity fix (#252), 25 passed, 4 m 25 s, all
-5/5 — first baseline for `verbosity_up_from_low`. Before that #250 (24
-passed, first `advice_capture_survives_guard`) and #245 (23 passed).
+Before those: #252 (25 passed, first baseline for `verbosity_up_from_low`),
+#250 (24 passed, first `advice_capture_survives_guard`) and #245 (23 passed).
 
 ## Standing results
 

@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from chessapp.api import create_app
-from chessapp.brain import AgentResponse, Narration
+from chessapp.brain import UNRELATED, AgentResponse, Answer, Narration
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import Evaluation
 from chessapp.provider import ChatResult, Usage
@@ -105,6 +105,11 @@ class ScriptedBrain:
     `Exception` is raised instead of returned, which is how a provider failure
     during the observation beat is exercised (the beat is skippable; the engine's
     reply and the turn are not).
+
+    `read_answer` — the reply-reading turn, for a free-text answer to a pending
+    destructive question — pops the next scripted verdict. Unscripted it says
+    `UNRELATED`, the answer that changes nothing, so a test that never thought
+    about confirmations behaves exactly as it did before the seam existed.
     """
 
     def __init__(
@@ -112,9 +117,12 @@ class ScriptedBrain:
         *responses: AgentResponse,
         dispatcher=None,
         narrations: tuple[str | Narration | Exception, ...] = (),
+        answers: tuple[str | Answer, ...] = (),
     ) -> None:
         self._responses = list(responses)
         self._narrations = list(narrations)
+        self._answers = list(answers)
+        self.answer_calls: list[tuple[str, str]] = []
         self.dispatcher = dispatcher
         self.calls: list[tuple[dict, str]] = []
         self.narrate_calls: list[tuple[dict, list]] = []
@@ -137,6 +145,13 @@ class ScriptedBrain:
             for call in scripted.tool_calls
         )
         return replace(scripted, tool_results=results)
+
+    def read_answer(self, question: str, text: str) -> Answer:
+        self.answer_calls.append((question, text))
+        scripted = self._answers.pop(0) if self._answers else UNRELATED
+        # A bare verdict is the common case; a full `Answer` lets a test script
+        # the cost fields the trace reads.
+        return scripted if isinstance(scripted, Answer) else Answer(verdict=scripted)
 
     def narrate(self, board_state: dict, changes: list, transcript=()) -> Narration:
         self.narrate_calls.append((board_state, changes))

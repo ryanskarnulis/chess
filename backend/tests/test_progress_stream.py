@@ -278,6 +278,9 @@ class BlockingBrain:
     def narrate(self, board_state, changes, transcript=()):  # pragma: no cover
         raise AssertionError("this route never narrates")
 
+    def read_answer(self, question, text):  # pragma: no cover
+        raise AssertionError("this route answers no questions")
+
 
 @pytest.fixture
 def blocking():
