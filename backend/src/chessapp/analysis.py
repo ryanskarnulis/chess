@@ -35,6 +35,26 @@ class MoveAnalysis:
     cp_loss: int
     classification: str
     color: str  # who played the analyzed move
+    # What each of the two moves takes off the board, or None for a quiet
+    # move. Without them the narration had a capture and no victim, and it
+    # filled the gap in: the engine said Re1 was played and Qxe2 was better,
+    # and Glitch said "you should have taken that queen with Qxe2" — Qxe2
+    # takes a pawn (walkthrough #5). SAN says *that* a move captures and
+    # never what; only the board before the move knows, and it is right here.
+    played_captures: str | None = None
+    best_captures: str | None = None
+
+
+def captured_piece(board: chess.Board, move: chess.Move) -> str | None:
+    """The name of the piece `move` takes on `board`, or None for a quiet move.
+
+    En passant first: the pawn it takes is not on the square being moved to,
+    so `piece_at` there is empty and the capture would read as a quiet move.
+    """
+    if board.is_en_passant(move):
+        return chess.piece_name(chess.PAWN)
+    piece = board.piece_at(move.to_square)
+    return chess.piece_name(piece.piece_type) if piece else None
 
 
 def classify_cp_loss(cp_loss: int) -> str:
@@ -89,6 +109,11 @@ def analyze_last_move(
     before = GameSession(fen=board.fen())
     best = engine.get_best_moves(before, n=1)[0]
     best_cp = pov_cp(best.score_cp, best.mate_in, mover)
+    # Both victims read off the same board, the one before the move: that is
+    # the only position in which either move is legal, and the only one that
+    # can say what stood on the square.
+    played_captures = captured_piece(board, played)
+    best_captures = captured_piece(board, chess.Move.from_uci(best.uci))
 
     board.push(played)
     if board.is_game_over():
@@ -108,6 +133,8 @@ def analyze_last_move(
         cp_loss=cp_loss,
         classification=classify_cp_loss(cp_loss),
         color=mover,
+        played_captures=played_captures,
+        best_captures=best_captures,
     )
 
 

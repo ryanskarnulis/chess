@@ -13,9 +13,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Next
 
-- [ ] **Mistake narration names the wrong captured piece** (walkthrough #5):
-      "taken that queen with Qxe2" for a pawn capture. Put the captured piece
-      in `analyze_last_move`'s result; guard piece names in capture claims.
 - [ ] **Free-text answers to a pending confirmation** (walkthrough #6): "just
       do it" after a resign question does nothing. Unparsed answers go to the
       model to decide confirm/cancel through the same confirm path.

@@ -80,7 +80,7 @@
   },
   {
     "function": {
-      "description": "Analyze a move: how it compares to Stockfish's best from the same position \u2014 centipawn loss, verdict (good/inaccuracy/mistake/blunder), and what was best. This is how you answer \"how good was that move?\" or \"what was my mistake?\" \u2014 from the result, never from a guess. Defaults to the player's own last move (what 'my mistake' means); pass a color to analyze that side's last move instead.",
+      "description": "Analyze a move: how it compares to Stockfish's best from the same\nposition \u2014 centipawn loss, verdict (good/inaccuracy/mistake/blunder),\nand what was best. `played_captures`/`best_captures` name the piece\neach of those moves takes, or are null for a quiet move \u2014 never name a\ncaptured piece the result did not. This is how you answer \"how good was\nthat move?\" or \"what was my mistake?\" \u2014 from the result, never from a\nguess. Defaults to the player's own last move (what 'my mistake'\nmeans); pass a color to analyze that side's last move instead.",
       "name": "analyze_last_move",
       "parameters": {
         "additionalProperties": false,

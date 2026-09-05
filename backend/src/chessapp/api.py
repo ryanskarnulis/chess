@@ -52,7 +52,7 @@ import logging
 import math
 import mimetypes
 import random
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio.to_thread
+import chess
 from fastapi import (
     FastAPI,
     HTTPException,
@@ -73,7 +74,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from chessapp.agent_api import ConversationStore, build_agent_router
-from chessapp.analysis import review_game
+from chessapp.analysis import captured_piece, review_game
 from chessapp.brain import Brain, Narration
 from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
@@ -733,7 +734,13 @@ def _verified_facts(
     moves = set(ctx.session.move_history())
     for board in boards:
         moves |= set(board.legal_moves())
-    moves |= _reported_moves(tool_results)
+    reported = _reported_moves(tool_results)
+    moves |= reported
+    # The moves this turn actually talked about — what an analysis named, plus
+    # what was played in it. `captures_by_move` is built from these and not
+    # from every legal move, because these are the ones a narration hangs a
+    # capture on, and resolving a SAN costs a legal-move generation per board.
+    discussed = set(reported)
     # Whose move each one was, which `moves` deliberately cannot say. The board
     # already knows: the history splits by whose turn it was, and the session's
     # color says which of those two sides the player is. Everything else in
@@ -745,6 +752,7 @@ def _verified_facts(
     if engine_reply is not None and engine_reply.san:
         moves.add(engine_reply.san)
         by_opponent.add(engine_reply.san)
+        discussed.add(engine_reply.san)
     checked = ctx.session.is_check()
     for r in tool_results:
         result = r["result"]
@@ -752,6 +760,7 @@ def _verified_facts(
             continue
         if san := result.get("san"):
             moves.add(san)
+            discussed.add(san)
             if r["name"] == "make_move":
                 # The one tool that plays the player's move; every other `san`
                 # a result carries is a move somebody merely talked about.
@@ -789,12 +798,43 @@ def _verified_facts(
         ),
         settings=settings,
         settings_changed=frozenset(_settings_changed(tool_results)),
+        captures_by_move=_captures_by_move(boards, discussed),
         numbers=frozenset(_analysis_numbers(tool_results)),
         # Board truth, and the one fact here no tool has to have run for: who
         # is ahead is a piece count, so it is always available on every board
         # the turn held — including the one the reaction was written from.
         material=tuple(dict.fromkeys(board.material_balance() for board in boards)),
     )
+
+
+def _captures_by_move(
+    boards: Sequence[GameSession], sans: Iterable[str]
+) -> dict[str, str]:
+    """What each named move takes, off a board this turn really held.
+
+    The piece's name, or `""` for a move that takes nothing — both are facts,
+    and the empty one is the fact that catches "Nf3 grabs the knight". A move
+    no board can parse is simply absent: it belonged to an earlier position
+    and nothing here can say what stood on that square.
+
+    Board truth, not a tool's report, and that is the point (walkthrough #5).
+    SAN says *that* a move captures and never what, so a narration describing
+    `Qxe2` had a capture with no victim and supplied one — a queen, for a move
+    that takes a pawn. Only the position before the move knows, and the turn is
+    holding every position it had.
+    """
+    victims: dict[str, str] = {}
+    for board in boards:
+        position = chess.Board(board.fen())
+        for san in sans:
+            if san in victims:
+                continue
+            try:
+                move = position.parse_san(san)
+            except ValueError:  # not legal here — a different board's move
+                continue
+            victims[san] = captured_piece(position, move) or ""
+    return victims
 
 
 # Which setting each setter owns, for the fact that the live value cannot

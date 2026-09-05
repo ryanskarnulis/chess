@@ -920,10 +920,12 @@ def build_registry(
     ) -> dict[str, Any]:
         """Analyze a move: how it compares to Stockfish's best from the same
         position — centipawn loss, verdict (good/inaccuracy/mistake/blunder),
-        and what was best. This is how you answer "how good was that move?" or
-        "what was my mistake?" — from the result, never from a guess. Defaults
-        to the player's own last move (what 'my mistake' means); pass a color to
-        analyze that side's last move instead."""
+        and what was best. `played_captures`/`best_captures` name the piece
+        each of those moves takes, or are null for a quiet move — never name a
+        captured piece the result did not. This is how you answer "how good was
+        that move?" or "what was my mistake?" — from the result, never from a
+        guess. Defaults to the player's own last move (what 'my mistake'
+        means); pass a color to analyze that side's last move instead."""
         # Which move "my mistake" refers to is not a question for the model.
         # On the player's turn the last *ply* is always the engine's reply, so
         # the old no-args default analyzed the opponent's move every time
@@ -939,6 +941,10 @@ def build_registry(
             "cp_loss": analysis.cp_loss,
             "classification": analysis.classification,
             "color": analysis.color,
+            # What each move takes, so a narration never has to guess the
+            # victim of a capture it is describing. None means a quiet move.
+            "played_captures": analysis.played_captures,
+            "best_captures": analysis.best_captures,
         }
 
     @registry.tool()
