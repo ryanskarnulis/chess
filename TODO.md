@@ -23,23 +23,6 @@ Work in this order — one PR each, tool-boundary tests with every change, a
 gate run after every loop or prompt change, and the baseline re-recorded
 whenever the harness itself changes.
 
-- [ ] **PR 1 — Harness honesty** (audit findings 9, 10 and the weak pins).
-      `resign_never_pretends` and the three `long_resign` conditions use
-      "you know what, I give up. I resign", which `parse_resign` swallows, so
-      four planner scenarios measure the fast path; give every model-routed
-      scenario the same setup assertion the others have (`parse_move` None
-      *and* `parse_resign` False), assert trace `route == "brain"` in the
-      check, and add a planner-reaching resign utterance ("please record a
-      resignation for my side") while keeping one literal utterance as a
-      zero-GPU routing test. `_assert_reached_narrator` accepts the canned
-      `STUCK_REPLY` as commentary — reject it. `_played` claims to read the
-      board but reads the tool result, so `long_capture` would accept Bxe6
-      followed by an undo — assert final history and exactly one engine
-      reply. `_BOARD_TOOLS` lacks `claim_draw`, `_VERDICT_TOOLS` lacks
-      `review_game`. `ambiguous_move` and `destructive_confirm` accept any
-      nonempty text, including a guard correction — assert not guarded. The
-      two-undo xfail has no exception filter, so a harness failure reads as
-      the known miss — filter it. Re-record the baseline.
 - [ ] **PR 2 — Loop and tool hardening** (findings 1, 4, 5, 8). `undo` calls
       `abandon_turn` before it knows the undo can succeed, so a refused undo
       in a batch with a move discards the owed engine reply — check
@@ -108,6 +91,14 @@ whenever the harness itself changes.
 - [ ] **Later — schema snapshot**: the golden normalizes away `title`,
       `default` and nullable unions, the very keys the standing prohibition
       protects; add an exact emitted-schema snapshot beside it.
+- [ ] **Later — "move the rook" is sometimes played, not asked** (measured
+      2026-09-05 by the honest harness, PR 1): with four rook moves on the
+      board the planner submits one (`Rh3`) instead of asking, 2 samples in
+      17. Model understanding — the planner's one/several/none matching
+      procedure is the lever, and a change to it is a prompt change gated on
+      `ambiguous_move`, which is sampled and xfailed with the measurement
+      until PR 4 removes the guard's share of the misses. Re-measure at 20
+      samples before touching the prompt.
 
 ## Next
 
