@@ -49,6 +49,7 @@ const TOOL_LABELS: Record<string, string> = {
   analyze_last_move: 'Analyzing your last move',
   review_game: 'Reviewing the game',
   get_board_state: 'Reading the board',
+  describe_position: 'Describing the position',
   get_legal_moves: 'Reading your legal moves',
   get_move_history: 'Reading the move history',
   get_captured_pieces: 'Counting the captures',

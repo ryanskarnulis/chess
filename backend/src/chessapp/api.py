@@ -318,6 +318,15 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     on a 12B): only the one difficulty field `Settings` actually has set, so
     the block can never imply two difficulties are in force at once.
 
+    `captures` is what each legal capturing move takes, and it is here for the
+    reason `legal_moves` is: a fact the app holds and the model would otherwise
+    have to infer. SAN says that `exd5` captures and never what, and a 12B
+    cannot read the victim off the FEN — so "take the pawn" on a board with
+    nothing to take was answered "which pawn?" (2026-09-04 walkthrough), the
+    planner having no way to see that no capture existed. With the list in
+    view, a capture asked for by its victim resolves the way a move asked for
+    by its square does: one match plays, several ask, none is refused.
+
     Verbosity was the last one out, and its absence cost a real behavior
     (walkthrough #3): the narrator's prompt carries a *layer* for the current
     verbosity, so the model was told how to talk but never what the setting
@@ -337,6 +346,7 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
         "history": session.move_history(),
         "captured": session.captured_pieces(),
         "legal_moves": session.legal_moves(),
+        "captures": session.legal_captures(),
         "saved_games": saved_game_names(ctx),
         "settings": _agent_settings_dict(ctx),
     }
@@ -380,7 +390,10 @@ def _narrator_state_dict(ctx: ToolContext) -> dict[str, Any]:
     apart on the facts they share; the deletion list is the invariant.
     """
     state = _agent_state_dict(ctx)
-    for key in ("fen", "turn", "legal_moves"):
+    # `captures` goes with `legal_moves`: it is the same menu, narrowed to the
+    # moves that take something, and a menu is exactly what the narrator must
+    # not be handed.
+    for key in ("fen", "turn", "legal_moves", "captures"):
         del state[key]
     return state
 
@@ -632,6 +645,14 @@ def _reported_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
     `evaluate_position` + `analyze_last_move` and the old boolean test read
     that as permission, letting the narrator hand over a list of moves no tool
     had mentioned (docs/agent-evals.md, 2026-07-25).
+
+    `describe_position` is licensed for exactly the one move it names, the last
+    one played. A description that ends "Last move: O-O." is a report, and the
+    narrator repeating it is a fact — but castling is the one SAN both sides
+    spell the same way, so when the other side can still castle the same
+    string is a currently legal move too, and the guard read the echo as advice
+    and ate the whole description. A quiet move cannot collide (its destination
+    is occupied once it has been played), so the licence costs nothing else.
     """
     reported: set[str] = set()
     for r in tool_results:
@@ -644,6 +665,8 @@ def _reported_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
             reported.update(
                 san for san in (result.get("played"), result.get("best")) if san
             )
+        elif r["name"] == "describe_position" and result.get("last_move"):
+            reported.add(result["last_move"])
     return reported
 
 

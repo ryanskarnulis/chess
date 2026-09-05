@@ -80,7 +80,7 @@ async def test_list_tools_matches_registry_definitions():
     input schema (modulo the golden test's harmless normalizations)."""
     ctx = ToolContext(session=GameSession())
     registry_definitions = build_registry(ctx).definitions()
-    assert len(registry_definitions) == 19
+    assert len(registry_definitions) == 20
 
     async with mcp_client(ctx) as client:
         listed = await client.list_tools()

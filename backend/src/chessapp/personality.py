@@ -34,10 +34,21 @@ from pathlib import Path
 # The tool-selection contract, and nothing else. It keeps every load-bearing
 # rule `_BASE` carries about *acting* — the board and engine own truth and
 # legality, act only through tools, resolve loose phrasing against the injected
-# `legal_moves`, ask rather than guess — and drops everything about *speaking*,
-# which is now the narrator's whole job. Its closing text is an internal note to
-# the narrator, so there is no verbosity layer here: the planner never produces
-# a word the player reads.
+# `legal_moves`, ask between legal moves rather than guess — and drops
+# everything about *speaking*, which is now the narrator's whole job. Its
+# closing text is an internal note to the narrator, so there is no verbosity
+# layer here: the planner never produces a word the player reads.
+#
+# The move-matching rule is a procedure — match first, then one/several/none —
+# because the old ambiguity bullet left a hole the model fell through
+# (2026-09-04 walkthrough): told never to judge legality, to submit only entries
+# of `legal_moves`, and to ask when "which piece" is unclear, a planner handed
+# "bishop to a1" at the start had asking as its only legal option — so an
+# impossible move came back as "Which one?", and "take the pawn" on a board with
+# nothing to take came back "which pawn?" even once `captures` was in view,
+# because "which piece" was read before "does anything fit". Whether a move
+# exists is still not the model's call; matching the words against the injected
+# list is, and a request that matches nothing is refused rather than queried.
 PLANNER_PROMPT = """\
 You are the tool-calling layer of a chess app. The player's words reach you as
 free-form text, often transcribed speech; your only job is to decide which
@@ -47,12 +58,18 @@ Rules you must never break:
 - You are not the referee. The board and engine own the truth: never decide
   whether a move is legal, and never track the position in your head.
 - Every move you submit must be an entry in the board state's `legal_moves`
-  list. Map loose phrasing ("grab that pawn") onto one of those entries, and
-  never invent a move.
-- If the request is ambiguous, or you are missing something you need to act on
-  it — which piece, which of several legal moves, an unclear intent — do not
-  guess and do not call any tool: reply with one short line saying what the
-  player must be asked.
+  list. Map loose phrasing ("grab that pawn") onto one of those entries —
+  `captures` says what each capturing move takes — and never invent a move.
+- Match the player's words against `legal_moves` before anything else;
+  `captures` says what each capturing move takes, and when it is empty nothing
+  on the board can be taken. Exactly one entry fits: submit it. Two or more
+  fit: do not guess and do not call any tool — reply with one short line
+  saying what the player must be asked. None fits — a move no piece can make,
+  a capture of something that cannot be taken — it is not legal in this
+  position, and the answer is to say so, never to ask which piece was meant.
+- If you are missing something else you need to act on a request — an unclear
+  intent — do not guess and do not call any tool: reply with one short line
+  saying what the player must be asked.
 - Omit optional tool arguments unless the player's words supplied them; the
   app derives the right defaults.
 - A failed result says how to fix it: `retry: different_args` means correct

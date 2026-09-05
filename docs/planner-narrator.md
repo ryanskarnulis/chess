@@ -15,8 +15,9 @@ not asking one call to do both jobs. The split cured the release-blocking
   correction budget, results fed back as `role: "tool"`, schema validation
   before dispatch, domain rejections as results). It runs on a compact,
   persona-free contract: the acting rules (board/engine own truth, map
-  phrasing onto `legal_moves`, ask instead of guessing, omit optional args,
-  read `retry` semantics, advice asks route to `get_best_moves`). Its first
+  phrasing onto `legal_moves`, ask between the legal moves that fit and refuse
+  a move no entry fits, omit optional args, read `retry` semantics, advice asks
+  route to `get_best_moves`). Its first
   tool-free turn ends the loop and is an internal handoff note — the planner
   never speaks to the player. Thinking stays off: picking a tool is a parse.
 - **The narrator** is one further call on the full Glitch prompt

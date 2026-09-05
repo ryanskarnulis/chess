@@ -582,3 +582,163 @@ def test_new_game_rejects_invalid_player_color():
     session = GameSession()
     with pytest.raises(ValueError):
         session.new_game(player_color="green")
+
+
+# --- piece placement and castling: the derivations a description reads ----
+#
+# Both feed `tools.describe_position`, which is the only route a description of
+# the board takes to the phase that speaks (`api._narrator_state_dict` hands the
+# narrator no FEN). So they are board truth like everything else here: read off
+# the position, or replayed off the move stack — never tracked alongside it.
+
+
+def test_piece_placement_start_position():
+    placement = GameSession().piece_placement()
+    assert placement["white"] == {
+        "king": ["e1"],
+        "queen": ["d1"],
+        "rook": ["a1", "h1"],
+        "bishop": ["c1", "f1"],
+        "knight": ["b1", "g1"],
+        "pawn": ["a2", "b2", "c2", "d2", "e2", "f2", "g2", "h2"],
+    }
+    assert placement["black"]["king"] == ["e8"]
+    assert placement["black"]["pawn"] == [
+        "a7",
+        "b7",
+        "c7",
+        "d7",
+        "e7",
+        "f7",
+        "g7",
+        "h7",
+    ]
+
+
+def test_piece_placement_names_types_in_reading_order():
+    """King first, pawns last — the order a player says a position out loud,
+    and the order the composed sentence comes out in."""
+    assert list(GameSession().piece_placement()["white"]) == [
+        "king",
+        "queen",
+        "rook",
+        "bishop",
+        "knight",
+        "pawn",
+    ]
+
+
+def test_piece_placement_follows_the_pieces():
+    session = GameSession()
+    for san in ("e4", "e5", "Nf3", "Nc6"):
+        assert session.submit_move(san).legal
+    placement = session.piece_placement()
+    assert placement["white"]["knight"] == ["b1", "f3"]
+    assert placement["black"]["knight"] == ["c6", "g8"]
+    assert "e2" not in placement["white"]["pawn"]
+    assert "e4" in placement["white"]["pawn"]
+
+
+def test_a_captured_piece_is_gone_from_the_placement():
+    session = GameSession()
+    for san in ("e4", "d5", "exd5", "Qxd5", "Nc3", "Qxa2", "Rxa2"):
+        assert session.submit_move(san).legal
+    assert "queen" not in session.piece_placement()["black"]
+    assert session.piece_placement()["white"]["rook"] == ["a2", "h1"]
+
+
+def test_a_promoted_pawn_stands_there_as_a_queen():
+    """Material nobody captured — the reason this is read off the board rather
+    than replayed as "the pawn that was on c7"."""
+    session = GameSession(fen="4k3/2P5/8/8/8/8/8/4K3 w - - 0 1")
+    assert session.submit_move("c8=Q").legal
+    placement = session.piece_placement()
+    assert placement["white"]["queen"] == ["c8"]
+    assert "pawn" not in placement["white"]
+
+
+def test_castling_status_at_the_start():
+    status = GameSession().castling_status()
+    assert status == {
+        "white": {"castled": None, "rights": ["kingside", "queenside"]},
+        "black": {"castled": None, "rights": ["kingside", "queenside"]},
+    }
+
+
+def test_a_rook_move_takes_that_side_of_the_castling_rights():
+    session = GameSession()
+    for san in ("Nf3", "Nf6", "Rg1", "Ng8"):
+        assert session.submit_move(san).legal
+    assert session.castling_status()["white"]["rights"] == ["queenside"]
+    assert session.castling_status()["black"]["rights"] == ["kingside", "queenside"]
+
+
+def test_a_king_move_takes_both():
+    session = GameSession()
+    for san in ("e4", "e5", "Ke2", "Ke7"):
+        assert session.submit_move(san).legal
+    status = session.castling_status()
+    assert status["white"]["rights"] == []
+    assert status["black"]["rights"] == []
+    assert status["white"]["castled"] is None  # a walking king has not castled
+
+
+def test_castling_is_recorded_for_the_side_that_castled():
+    session = GameSession()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "O-O"):
+        assert session.submit_move(san).legal
+    status = session.castling_status()
+    assert status["white"] == {"castled": "kingside", "rights": []}
+    assert status["black"]["castled"] is None
+    assert status["black"]["rights"] == ["kingside", "queenside"]
+
+
+def test_queenside_castling_is_told_from_kingside():
+    session = GameSession()
+    for san in ("d4", "d5", "Nc3", "Nc6", "Bf4", "Bf5", "Qd2", "Qd7", "O-O-O", "O-O-O"):
+        assert session.submit_move(san).legal
+    status = session.castling_status()
+    assert status["white"]["castled"] == "queenside"
+    assert status["black"]["castled"] == "queenside"
+
+
+def test_a_takeback_unmakes_the_castling_too():
+    """Replayed off the move stack, not recorded when it happened — so popping
+    the ply is all it takes to un-say it."""
+    session = GameSession()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "O-O"):
+        assert session.submit_move(san).legal
+    assert session.undo(1).ok
+    status = session.castling_status()
+    assert status["white"]["castled"] is None
+    assert status["white"]["rights"] == ["kingside", "queenside"]
+
+
+# --- legal captures: the victim SAN cannot name -----------------------------
+
+
+def test_no_captures_on_a_fresh_board():
+    assert GameSession().legal_captures() == {}
+
+
+def test_legal_captures_name_what_each_move_takes():
+    session = GameSession()
+    for san in ("e4", "d5", "Nf3", "Bg4"):
+        assert session.submit_move(san).legal
+    assert session.legal_captures() == {"exd5": "pawn"}
+    assert session.submit_move("exd5").legal
+    assert session.legal_captures() == {"Bxf3": "knight", "Qxd5": "pawn"}
+
+
+def test_en_passant_counts_as_taking_a_pawn():
+    session = GameSession(fen="4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2")
+    assert session.legal_captures() == {"exd6": "pawn"}
+
+
+def test_legal_captures_are_empty_once_the_game_is_over():
+    session = GameSession(
+        fen="r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"
+    )
+    assert session.legal_captures()  # the mating move is a capture
+    assert session.submit_move("Qxf7#").legal
+    assert session.legal_captures() == {}

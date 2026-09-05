@@ -44,8 +44,10 @@ utterance that is exactly one unambiguous legal move skips the LLM entirely
 ## Agent tools
 
 - **Reads:** get_board_state, get_legal_moves, get_move_history,
-  get_captured_pieces, evaluate_position, get_best_moves (Stockfish MultiPV;
-  also answers hint asks — hints are on-request, there is no hints mode)
+  get_captured_pieces, describe_position (the board in words, for the phase
+  that speaks and is handed no FEN), evaluate_position, get_best_moves
+  (Stockfish MultiPV; also answers hint asks — hints are on-request, there is
+  no hints mode)
 - **Writes:** make_move, undo, new_game, resign, claim_draw (offered only
   while a claim is available), save_game, resume_game, export_pgn
 - **Settings:** set_difficulty, set_verbosity, set_voice_output

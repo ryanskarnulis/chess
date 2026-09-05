@@ -49,7 +49,19 @@
   },
   {
     "function": {
-      "description": "Stockfish evaluation of the current position from White's point of view: centipawns, or mate-in-N. This is how you answer \"who's winning?\" \u2014 from the result, never from a guess.",
+      "description": "What is on the board right now, in words: where each side's pieces stand, who is ahead in material and by how much, castling, check, and the last move. This is how you answer a description ask \u2014 \"what's the position?\", \"what's on the board?\", \"where are my pieces?\" \u2014 call it rather than describing the board yourself. It is a description, not a verdict: who is *winning* is `evaluate_position`.",
+      "name": "describe_position",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Stockfish's verdict on who is better, from White's point of view: centipawns, or mate-in-N. This is how you answer a judgment question \u2014 \"who's winning?\", \"how am I doing?\", \"is this good for me?\" \u2014 from the result, never from a guess. It says nothing about what is on the board: \"what's the position?\" is a description ask, which is `describe_position`.",
       "name": "evaluate_position",
       "parameters": {
         "additionalProperties": false,

@@ -37,6 +37,9 @@ describe('progressLabel', () => {
     expect(progressLabel(event('tool', 'evaluate_position'))).toBe(
       'Evaluating the position',
     )
+    expect(progressLabel(event('tool', 'describe_position'))).toBe(
+      'Describing the position',
+    )
   })
 
   it('still says something readable for a tool it has never heard of', () => {
