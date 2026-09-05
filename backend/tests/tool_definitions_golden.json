@@ -261,7 +261,7 @@
   },
   {
     "function": {
-      "description": "Set engine strength: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength), skill_level (0-20), or elo (1320-3190). Prefer tier unless the user asks for a specific number.",
+      "description": "Set how hard the engine plays: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength), skill_level (0-20), or elo (1320-3190). Prefer tier unless the player names a number. This is the only thing that changes how hard the engine plays \u2014 there is no softer or sharper style to switch to. The setting persists and the player owns it: if they ask for an easier game but rule out changing the difficulty, there is nothing left to change \u2014 say so and ask, do not call this.",
       "name": "set_difficulty",
       "parameters": {
         "additionalProperties": false,

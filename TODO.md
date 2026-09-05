@@ -54,7 +54,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 Record: `docs/qa-walkthrough-2026-09-04.md`. Small items, unprioritized:
 
 - [ ] PGN by chat: fill the `?` headers, add a copy affordance
-- [ ] "without changing the difficulty" was overridden by a difficulty change
 - [ ] Illegal drags snap back silently — decide if that wants a message
 - [ ] Desktop stacked column: too much dead space
 - [ ] The board jumps ~112px down the page when a multi-line reply lands —

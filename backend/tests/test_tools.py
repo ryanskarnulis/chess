@@ -272,6 +272,24 @@ def test_analyze_last_move_routes_how_good_was_that_move(registry):
     assert "how good was that move" in desc or "what was my mistake" in desc
 
 
+def test_set_difficulty_is_named_as_the_only_lever(registry):
+    """Live, "go easy on me without changing the difficulty" set beginner
+    anyway. Nothing in the registry said that strength *is* this setting —
+    there is no gentler way for Glitch to play, because personality is tone
+    only and never move choice — so "go easy" and "change the difficulty"
+    could read as two separate asks, and the one the player ruled out was the
+    one that ran. Both halves are on the description now: it is the only
+    lever, and a lever the player rules out is not pulled."""
+    desc = _flat(_description(registry, "set_difficulty")).lower()
+    assert "only thing that changes how hard the engine plays" in desc
+    assert "rule out changing the difficulty" in desc
+    assert "do not call this" in desc
+    # And no list of the asks that mean this call: measured under the thread
+    # the miss happened in, that list outranked the caveat after it (9/20
+    # respected the constraint against 20/20 without it).
+    assert "go easy" not in desc
+
+
 def test_destructive_tools_carry_the_call_then_relay_dance(registry):
     # The gate owns the confirmation (tools.py `_gate`); the tool's job is only
     # to tell the model not to pre-ask, and to relay the refusal when it comes.
