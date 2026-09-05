@@ -49,6 +49,27 @@ from pathlib import Path
 # because "which piece" was read before "does anything fit". Whether a move
 # exists is still not the model's call; matching the words against the injected
 # list is, and a request that matches nothing is refused rather than queried.
+#
+# The procedure's bullet used to open with a second copy of the `captures` fact
+# ("`captures` says what each capturing move takes, and when it is empty nothing
+# on the board can be taken") between "match the words against `legal_moves`"
+# and "exactly one entry fits: submit it" — and with it there, "move my kings
+# knight" on a fresh board was *played* (Nf3, every time) rather than asked
+# about half the time, while "move the rook" with four rook moves was asked
+# (2026-09-05, `ambiguous_knight_then_selection` / `ambiguous_move`). The
+# bullet above already states the fact once, so the copy is gone and nothing
+# was added. Nothing added is the finding: every arm that put a fact *in* —
+# that an entry fits only when the words settle piece and square, that which
+# of several fitting moves to play is the player's decision, both — made the
+# knight ask worse in the same interleaved screen (old 26/40 played; the
+# defining arm 8/20 vs 5/20 old in its batch, the ownership arm 13/20, both
+# 18/20), the way `set_difficulty`'s trigger list once outranked its caveat:
+# words about playing prime playing. Reordering the outcomes ask-first helped
+# less (12/40), the same trim with a one-line fact appended 5/40, and the bare
+# trim 3/40 — measured per sample, arms interleaved on one server, because
+# consecutive samples of one prompt on this server are correlated (the old text
+# alone read 5/20, 19/40 and 31/40 in three separate batches). The harness
+# numbers are in docs/agent-evals.md.
 PLANNER_PROMPT = """\
 You are the tool-calling layer of a chess app. The player's words reach you as
 free-form text, often transcribed speech; your only job is to decide which
@@ -60,13 +81,12 @@ Rules you must never break:
 - Every move you submit must be an entry in the board state's `legal_moves`
   list. Map loose phrasing ("grab that pawn") onto one of those entries —
   `captures` says what each capturing move takes — and never invent a move.
-- Match the player's words against `legal_moves` before anything else;
-  `captures` says what each capturing move takes, and when it is empty nothing
-  on the board can be taken. Exactly one entry fits: submit it. Two or more
-  fit: do not guess and do not call any tool — reply with one short line
-  saying what the player must be asked. None fits — a move no piece can make,
-  a capture of something that cannot be taken — it is not legal in this
-  position, and the answer is to say so, never to ask which piece was meant.
+- Match the player's words against `legal_moves` before anything else.
+  Exactly one entry fits: submit it. Two or more fit: do not guess and do not
+  call any tool — reply with one short line saying what the player must be
+  asked. None fits — a move no piece can make, a capture of something that
+  cannot be taken — it is not legal in this position, and the answer is to
+  say so, never to ask which piece was meant.
 - If you are missing something else you need to act on a request — an unclear
   intent — do not guess and do not call any tool: reply with one short line
   saying what the player must be asked.

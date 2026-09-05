@@ -33,18 +33,7 @@ whenever the harness itself changes.
       bind the question to the op the next yes runs. Also `_BASE` still tells
       the tool-free narrator it changes the game through tools — stale role
       text, measure before cutting.
-- [ ] **Later — an ambiguous piece ask is sometimes played, not asked**
-      (measured 2026-09-05 by the honest harness): with four rook moves on the
-      board, "move the rook" is played (`Rh3`) 3 samples in 37 across the day
-      (2/17 on the pre-fix builds, 1/20 on the guard fix, where the guard's
-      own share of the misses is gone and `ambiguous_move` runs unmarked at
-      19/20); with two knight moves, "move my kings knight" is played rather
-      than asked in 26 of 50 samples across eight runs on both sides of the
-      guard fix (`ambiguous_knight_then_selection`, a measured-miss xfail —
-      the fewer the candidates, the more the model picks one). Model
-      understanding — the planner's one/several/none matching procedure is
-      the lever ("several fit → ask"), and a change to it is a prompt change
-      gated on both scenarios at 20 samples an arm.
+
 
 ## Next
 

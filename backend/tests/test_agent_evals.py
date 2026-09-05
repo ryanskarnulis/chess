@@ -3046,22 +3046,6 @@ _KNIGHT_ASK = "move my kings knight"
 _KNIGHT_PICK = "the one to f3"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "measured miss (2026-09-05): asked to 'move my kings knight' with Nf3 "
-        "and Nh3 both legal, the planner plays one of them instead of asking — "
-        "26 of 50 samples across eight runs, on both sides of the guard fix "
-        "(per run 4/5, 0/5, 5/5, 1/5, 4/10, 2/5, 1/5, 7/15 asked). The guard "
-        "eating the question (audit finding 6) was the smaller failure mode; "
-        "the lever for this one is the planner's one/several/none matching "
-        "procedure, a prompt change gated on this scenario and `ambiguous_move` "
-        "at 20 samples an arm (TODO.md). Non-strict: it XPASSes on a block "
-        "where the model asks. Filtered to AssertionError so a harness or "
-        "infra failure still reads as one."
-    ),
-    raises=AssertionError,
-    strict=False,
-)
 def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
     """Ask ambiguously, then answer the question — two turns, one thread.
 
@@ -3080,10 +3064,17 @@ def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
     sides of that fix found the guard to be the smaller of two failure modes:
     the planner *plays* one of the two knights instead of asking about half the
     time — 26 of 50 samples across eight runs — which no guard can fix, because
-    nothing false was said. So the scenario ships as a measured miss (see the
-    marker), with the planner's one/several/none matching procedure as the
-    lever; the guard half is pinned at the scripted boundary in
-    `test_closing_pass.py` and measured live by `ambiguous_move`.
+    nothing false was said. It shipped as a measured-miss xfail with the
+    planner's one/several/none matching procedure as the lever, and the lever
+    turned out to be a deletion (2026-09-05, `personality.py`): the procedure's
+    bullet repeated the `captures` fact between "match the words" and "one fits:
+    submit", and every arm that *added* a fact made the knight ask worse. With
+    the repeat gone this measured 17/20 against the old text's 8/20 in
+    alternating blocks of five on one server, with `ambiguous_move` 20/20
+    against 19/20 and `undo_and_replace` 20/20 against 18/20 beside it, so the
+    xfail is off and the scenario is scored at the floor like the rest. The
+    guard half is pinned at the scripted boundary in `test_closing_pass.py` and
+    measured live by `ambiguous_move`.
 
     The panel seam, because the second utterance is a *reference*: `_run` opens
     a fresh delegate conversation per call, so "the one to f3" would arrive with
