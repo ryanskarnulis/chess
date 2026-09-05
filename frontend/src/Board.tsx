@@ -92,12 +92,21 @@ export function Board({
     // Chessground measures the board's screen box once and caches it. It
     // drops that cache on a window resize, on a scroll, and when the mount
     // element's own *size* changes (its ResizeObserver) — and on nothing at
-    // all when the board merely *moves*. It moves constantly: Glitch's bubble
-    // sits above it in the column, so a three-line reply slides the whole
-    // board down the page and leaves the remembered box behind. Measured
-    // here, that slide is 112px — a square and a half — after which clicking
-    // a piece picks up the one below it and clicking its middle picks up
-    // nothing (walkthrough #2).
+    // all when the board merely *moves*. It used to move constantly: Glitch's
+    // bubble sits above it in the column and grew with the reply, so a
+    // multi-line one slid the whole board down the page and left the
+    // remembered box behind. Measured here, that slide was 112px for a
+    // six-line reply — a square and a half — after which clicking a piece
+    // picks up the one below it and clicking its middle picks up nothing
+    // (walkthrough #2).
+    //
+    // The bubble is clamped to a fixed-height row now and scrolls inside
+    // itself, so that particular slide is gone and this listener is
+    // belt-and-braces rather than the fix. It stays: the board can still move
+    // under a resting cursor — the Copy PGN chip appearing under a reply, the
+    // direct-mode notice arriving, a layout change nobody has made yet — and
+    // the failure is silent and looks like a broken board, not like a moved
+    // one.
     //
     // The rendered geometry was never the problem: Chromium and Firefox both
     // draw exactly-square 67px squares inside a square frame, agreeing with

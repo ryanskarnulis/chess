@@ -18,6 +18,13 @@ const MAX_INTENT_LENGTH = 500
 // What the status row shows before the first state document arrives.
 const NO_CAPTURES = { white: [], black: [] }
 
+// The side switch names a colour, and the name has to be one string: what is
+// painted and what a screen reader announces. `text-transform: capitalize` in
+// the stylesheet gave two — "Switch To White" on screen against an accessible
+// name of "Switch to white" — and title-cased the "To" while it was there. So
+// the colour is capitalized in the text itself.
+const capitalize = (word: string) => word.charAt(0).toUpperCase() + word.slice(1)
+
 function App() {
   const {
     state,
@@ -196,9 +203,9 @@ function App() {
       )}
       {state && !state.game_over && !playerMoved && (
         <div className="side-picker">
-          <span>Playing as {state.player_color}</span>
+          <span>Playing as {capitalize(state.player_color)}</span>
           <button type="button" onClick={() => newGame(otherColor)}>
-            Switch to {otherColor}
+            Switch to {capitalize(otherColor)}
           </button>
         </div>
       )}

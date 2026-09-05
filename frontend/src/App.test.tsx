@@ -231,6 +231,18 @@ describe('player color', () => {
     )
   })
 
+  it('says the colour the same way on screen and to a screen reader', async () => {
+    // `text-transform: capitalize` painted "Switch To Black" over an
+    // accessible name of "Switch to black" — two strings for one control.
+    // Exact names here, not the case-insensitive patterns the tests above
+    // use, because the case is the thing under test.
+    render(<App />)
+    expect(
+      await screen.findByRole('button', { name: 'Switch to Black' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Playing as White')).toBeInTheDocument()
+  })
+
   it('keeps the switch while only the engine has moved', async () => {
     served = state({ player_color: 'black', turn: 'black', history: ['e4'] })
     render(<App />)
