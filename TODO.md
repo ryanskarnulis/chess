@@ -24,7 +24,7 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
       `_CONFIRM_QUESTIONS` entry landed with #255. Until then claims are
       unreachable in direct mode.
 - [ ] **A named move is a whole takeback, not a plies count** (found
-      measuring #NNN): "undo the bishop move and undo the knight move, then
+      measuring #260): "undo the bishop move and undo the knight move, then
       play d4" gets `undo(plies=2)` — one exchange, not two — or
       `undo(plies=1)` — the engine's reply alone — three times in four, and
       the replacement then lands on a board that still holds the second move;

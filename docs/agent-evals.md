@@ -119,7 +119,7 @@ fresh-conversation passes hid live failures.
 
 ## Current baseline
 
-**Run 2026-09-04 on the results-keyed stall rule (#NNN): 31 passed in a single run, 5 m 59 s, infra 0; `undo_and_replace` 8/10 ABOVE_FLOOR (3/5 then 5/5 — both misses `undo(plies=1)`, the engine's reply alone taken back, then an illegal `d4`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+**Run 2026-09-04 on the results-keyed stall rule (#260): 31 passed in a single run, 5 m 59 s, infra 0; `undo_and_replace` 8/10 ABOVE_FLOOR (3/5 then 5/5 — both misses `undo(plies=1)`, the engine's reply alone taken back, then an illegal `d4`), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3). No prompt change: the loop's
 `no_progress` stall rule now keys a repeat on the call *and its result*, so a
