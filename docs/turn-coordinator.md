@@ -103,7 +103,11 @@ moved under it or the computation failed.
   an interaction; the budget is command-scoped because destructive ops
   `abandon_turn` themselves. Only `/api/command` opens a window (the brain
   loop is the only surface that can chain dispatches); buttons/MCP dispatch
-  once by construction.
+  once by construction. The window also owns the command's **board trail** —
+  the position each mutating dispatch left behind — because chaining is
+  exactly what puts boards between the command's two ends, and the honesty
+  guard checks its commentary against every one of them (`api._verified_facts`,
+  audit finding 7).
 - **Board versions**: `GameSession.revision` bumps inside every mutating
   session method → `ToolContext.board_version` → `state.version`. Mutating
   requests may carry `version`; stale → 409 `{"stale": true, ...}`. The check

@@ -102,8 +102,9 @@ stall rule used to cut off after the second undo), `ambiguous_move` ("move
 the rook" with four rook moves on the board must ask, not guess — a hard
 scenario until 2026-09-05, when the honest harness measured it 12/17: the
 model played `Rh3` twice, and twice asked the right question, "Which one? Rh3
-or Rh2?", only for the advice guard to replace it; xfailed with that
-measurement until PR 4 removes the guard's failure mode), `my_mistake_is_mine`
+or Rh2?", only for the advice guard to replace it; the guard was loosened the
+same day and twenty samples on that build came in 19/20, the one miss a guessed
+move, so it runs unmarked at the floor), `my_mistake_is_mine`
 (analyzes the player's move, not the engine's), `play_as_black` (new game as
 black), `resume_not_denied`
 (a save on disk is resumed, not denied), `resign_never_pretends` (a resignation
@@ -141,7 +142,25 @@ three times.
 
 ## Current baseline
 
-**Run 2026-09-05 on the settled restore (#266): 31 passed, 1 xfailed, 1 xpassed in a single run, 6 m 37 s, infra 0; `undo_and_replace` 16/20 ABOVE_FLOOR (3/5, then 13/15 — every miss `undo(plies=1)`, which now pops the engine's reply, has the coordinator settle the board, and lands `d4` two plies later on a board that still holds `Bc4`: the same misread as before with a different symptom, since the settle turns an illegal replacement into a legal one on the wrong board), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE; `undo_twice_and_replace` 5/10 (xfail, every miss `undo(plies=2)`) and `ambiguous_move` 4/5 (XPASS; the miss a guessed move).**
+**Run 2026-09-05 on the guard loosening (#263): 31 passed, 1 xfailed, 1 xpassed in a single run, 6 m 08 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except `ambiguous_move` 4/5 (XPASS; the miss a guessed `Rh3`) and the xfail `undo_twice_and_replace` 2/5 (every miss `undo(plies=2)`).**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The run
+was taken on `main@dbce5c3` plus this PR's source while its rebase still had a
+test-file conflict open; the source tree hash is identical to the rebased
+commit's, which is what the number describes. The guard change is what the run
+is about, and the gate's five samples cannot see it, so `ambiguous_move` was
+re-measured at 20 samples on this build: **19/20**, the one miss a guessed
+move. The guard's share of the day's misses — four of seventeen samples on the
+pre-fix builds were a correct "Rh3 or Rh2?" replaced by the advice correction
+— is gone, and the scenario's xfail marker comes off in this PR. PR 5's
+`ambiguous_knight_then_selection`, written for the same finding, measured 4/5
+on the pre-fix main with a `no_progress` miss rather than a guard one (the
+model's question there rarely named both squares), and is gated on this fix
+when PR 5 lands. No prompt change: the material class now sees every board a
+batch held, so the audit's `exd5` / `Qxd5` probe survives — pinned at the
+scripted boundary, not measured live.
+
+Previously on the settled restore (#266): 31 passed, 1 xfailed, 1 xpassed in a single run, 6 m 37 s, infra 0; `undo_and_replace` 16/20 ABOVE_FLOOR (3/5, then 13/15 — every miss `undo(plies=1)`, which now pops the engine's reply, has the coordinator settle the board, and lands `d4` two plies later on a board that still holds `Bc4`: the same misread as before with a different symptom, since the settle turns an illegal replacement into a legal one on the wrong board), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE; `undo_twice_and_replace` 5/10 (xfail, every miss `undo(plies=2)`) and `ambiguous_move` 4/5 (XPASS; the miss a guessed move).**
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
 `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0;
 `play_as_black` 3, its reply now carrying the app's announcement of the

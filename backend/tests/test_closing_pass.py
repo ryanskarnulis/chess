@@ -17,19 +17,25 @@ change can quietly hand tools back to the phase that talks:
   later yes to find. The same wiring is what shows it: only a real brain over a
   scripted provider puts a refused call inside a real planner batch, and a real
   `read_answer` in front of a real destructive gate.
+- What the narrator says about a batch is checked against every board that
+  batch actually held, not just the two ends of the command.
 
 `test_llama_brain.py` covers the same properties at the brain seam with a fake
 dispatcher; this file is the route-level assertion the audit asked for.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.api import create_app
+from chessapp import api
+from chessapp.api import MOVE_ADVICE_REPLY, UNVERIFIED_CLAIM_REPLY, create_app
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain
 from chessapp.tools import BOARD_STATE_TOOLS, ToolContext, build_registry
+from chessapp.trace import JsonlTracer
 from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
 
 PLANNER = "Pick the tools."
@@ -70,7 +76,11 @@ def make_client(
 
     `coordinator` is the same escape hatch `ctx` is: pass one to keep a handle
     on the turn machine when what the test is about is the phase the command
-    left it in, rather than the board or the words."""
+    left it in, rather than the board or the words. `tracer` is the third, for
+    the refusal and guard tests below: whether the guard fired, and how many
+    times the board moved, are fields of the turn record, and reading them
+    there rather than inferring them from the text is what tells "the model
+    said this" from "the model said this and the app let it through"."""
     if ctx is None:
         ctx = ToolContext(session=GameSession(), engine=FakeEngine())
     if coordinator is None:
@@ -92,6 +102,17 @@ def make_client(
         tracer=tracer,
     )
     return TestClient(app), provider, ctx
+
+
+@pytest.fixture
+def trace_path(tmp_path):
+    return tmp_path / "turns.jsonl"
+
+
+def last_turn(trace_path) -> dict:
+    """The turn record the command just wrote."""
+    lines = [line for line in trace_path.read_text().splitlines() if line.strip()]
+    return json.loads(lines[-1])
 
 
 def offered_tools(provider: ScriptedProvider) -> list[bool]:
@@ -465,3 +486,184 @@ def test_board_route_never_reaches_the_model_with_tools():
     assert len(provider.calls) >= 1, "the observe beat narrated"
     assert offered_tools(provider) == [False] * len(provider.calls)
     assert ctx.session.move_history()[:1] == ["e4"]
+
+
+# --- the honesty guard's evidence: every board the batch really held.
+#
+# Audit findings 6 and 7 (2026-09-05), both reproduced here from the audit's own
+# probes. Both are the guard firing on a *correct* answer, so both are answered
+# by loosening the guard rather than by scripting what the narrator says.
+#
+# Finding 7 is the batch's boards. The narrator reads the batch's tool results,
+# and those were produced on the boards the tools ran on — but the guard used to
+# stand on `fen_before` and the final position only, so `make_move(exd5)` +
+# `describe_position()` reporting a pawn was called a lie the moment the engine
+# recaptured. The command now keeps the position each mutating dispatch left
+# behind, which is the same fact the fast path has always handed over as its
+# observation board.
+#
+# Finding 6 is the clarifying question. "Do you mean Nf3 or Nh3?" names two
+# playable moves and hands over neither; it is the answer an ambiguous request
+# deserves and the advice guard ate it whole.
+#
+# The converses are the point of the section: an invented fact is invented from
+# every board the turn held, and one named move is still a hint.
+
+
+def exchange_client(narration: str, tracer=None):
+    """A brain batch that captures, describes, and is recaptured: after `e4 d5`
+    the planner plays exd5 and reads the position — the player is a pawn up
+    there — and the engine answers Qxd5 before the guard ever looks."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci="d8d5"))
+    for san in ("e4", "d5"):
+        assert ctx.session.submit_move(san).legal
+    return make_client(
+        tool_calls_turn(("make_move", {"move": "exd5"}), ("describe_position", {})),
+        text_turn("note: took on d5, player a pawn up"),
+        text_turn(narration),
+        ctx=ctx,
+        tracer=tracer,
+    )
+
+
+def test_a_count_from_a_board_the_batch_held_survives_the_guard(trace_path):
+    client, _, ctx = exchange_client(
+        "You are up a pawn.", tracer=JsonlTracer(trace_path)
+    )
+
+    response = client.post(
+        "/api/command", json={"text": "grab the pawn on d5 and tell me the material"}
+    ).json()
+
+    assert ctx.session.move_history() == ["e4", "d5", "exd5", "Qxd5"]
+    assert ctx.session.material_balance() == 0, "the recapture levelled it again"
+    assert response["commentary"] == "You are up a pawn.\n\nQxd5."
+    assert last_turn(trace_path)["guarded"] is False
+
+
+def test_a_count_no_board_the_batch_held_backs_is_still_guarded(trace_path):
+    """Widening to the batch's own boards is not the same as waving counts
+    through: nobody was ever a rook up in that exchange."""
+    client, _, _ = exchange_client("You are up a rook.", tracer=JsonlTracer(trace_path))
+
+    response = client.post(
+        "/api/command", json={"text": "grab the pawn on d5 and tell me the material"}
+    ).json()
+
+    assert response["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\nQxd5."
+    assert last_turn(trace_path)["guarded"] is True
+
+
+def test_a_move_only_a_board_the_batch_never_held_makes_legal_is_guarded(trace_path):
+    """The same line for the move class. Nxd5 is a move some position would
+    make legal — a white knight on c3 or f4 — and none of the three this
+    command actually passed through is that position."""
+    client, _, ctx = exchange_client(
+        "Nxd5 was cleaner.", tracer=JsonlTracer(trace_path)
+    )
+
+    response = client.post(
+        "/api/command", json={"text": "grab the pawn on d5 and tell me the material"}
+    ).json()
+
+    assert "Nxd5" not in ctx.session.legal_moves()
+    assert response["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\nQxd5."
+    assert last_turn(trace_path)["guarded"] is True
+
+
+def test_the_command_trail_holds_the_board_after_each_mutating_call(monkeypatch):
+    """The trail itself, read at the seam that consumes it: one FEN per call
+    that moved the board, in the order the batch ran them.
+
+    Filled from the registry's mutation hook, which is the one road every
+    model-initiated mutation takes — so the boards the guard is handed are
+    boards the game really reached, and a call that changed nothing adds
+    nothing."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    for san in ("e4", "e5"):
+        assert ctx.session.submit_move(san).legal
+    observed: list[list[str]] = []
+    real = api._verified_facts
+
+    def spy(ctx, tool_results, engine_reply, fen_before, fens_observed=()):
+        observed.append(list(fens_observed))
+        return real(ctx, tool_results, engine_reply, fen_before, fens_observed)
+
+    monkeypatch.setattr(api, "_verified_facts", spy)
+    client, _, ctx = make_client(
+        tool_calls_turn(("undo", {}), ("make_move", {"move": "d4"})),
+        text_turn("note: took it back and played d4"),
+        text_turn("Queen's pawn instead."),
+        ctx=ctx,
+    )
+    # What the two mutating calls leave behind: the board the takeback restores,
+    # then the board d4 stands on. The engine's reply lands after, through the
+    # coordinator rather than the registry, so it is the *final* board and not a
+    # step on the trail.
+    replay = GameSession()
+    after_undo = replay.fen()
+    assert replay.submit_move("d4").legal
+    after_d4 = replay.fen()
+
+    client.post("/api/command", json={"text": "take that back and play d4"})
+
+    assert ctx.session.move_history() == ["d4", "e5"]
+    assert observed == [[after_undo, after_d4]]
+
+
+def test_a_read_only_command_leaves_the_trail_empty(monkeypatch):
+    """Nothing moved, so there is no board between the two ends to remember."""
+    observed: list[list[str]] = []
+    real = api._verified_facts
+
+    def spy(ctx, tool_results, engine_reply, fen_before, fens_observed=()):
+        observed.append(list(fens_observed))
+        return real(ctx, tool_results, engine_reply, fen_before, fens_observed)
+
+    monkeypatch.setattr(api, "_verified_facts", spy)
+    client, _, ctx = make_client(
+        tool_calls_turn(("describe_position", {})),
+        text_turn("note: described it"),
+        text_turn("Even material, nothing developed."),
+    )
+
+    client.post("/api/command", json={"text": "what's the position?"})
+
+    assert ctx.session.move_history() == []
+    assert observed == [[]]
+
+
+def test_a_clarifying_question_naming_two_moves_survives_the_advice_guard(trace_path):
+    """Audit finding 6, from its own probe. "move my kings knight" is genuinely
+    ambiguous on a fresh board, the narrator asks the right question, and the
+    advice guard replaced the whole thing with the unbacked-move correction."""
+    client, _, ctx = make_client(
+        text_turn("note: ambiguous, ask which knight"),
+        text_turn("Do you mean Nf3 or Nh3?"),
+        tracer=JsonlTracer(trace_path),
+    )
+
+    response = client.post("/api/command", json={"text": "move my kings knight"}).json()
+
+    assert {"Nf3", "Nh3"} <= set(ctx.session.legal_moves()), "both really playable"
+    assert ctx.session.move_history() == [], "asking is not moving"
+    assert response["commentary"] == "Do you mean Nf3 or Nh3?"
+    assert last_turn(trace_path)["guarded"] is False
+
+
+def test_handing_over_one_unbacked_move_is_still_advice(trace_path):
+    """The converse, and the reason the loosening is a sentence rule rather
+    than an exemption for knights: naming one playable move nothing checked is
+    the leak the guard was built for, question mark or not."""
+    client, _, _ = make_client(
+        text_turn("note: tell them to play Nf3"),
+        text_turn("Nf3 is the move."),
+        tracer=JsonlTracer(trace_path),
+    )
+
+    response = client.post("/api/command", json={"text": "move my kings knight"}).json()
+
+    assert response["commentary"] == MOVE_ADVICE_REPLY
+    traced = last_turn(trace_path)
+    assert traced["guarded"] is True
+    assert traced["guarded_claims"] == ["move_advice"]

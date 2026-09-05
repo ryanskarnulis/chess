@@ -1051,22 +1051,6 @@ def test_eval_judgment_question_routes_through_analysis(eval_app: EvalApp) -> No
     assert run.duration < _ANALYSIS_CEILING_S
 
 
-@pytest.mark.xfail(
-    reason=(
-        "measured miss, two modes (2026-09-05, 12/17 across the day's runs): "
-        "asked to 'move the rook' with four rook moves on the board, the model "
-        "plays one instead of asking (`Rh3`, twice in seventeen), and when it "
-        'does ask, the correct question — "Which one? Rh3 or Rh2?" — is '
-        "replaced by the advice correction twice more (audit finding 6, fixed "
-        "by PR 4). Sampled at the "
-        "floor from here, non-strict so it XPASSes when the model asks and the "
-        "question gets through; PR 4 re-measures and drops this marker if the "
-        "rate clears the floor. Filtered to AssertionError so a harness or "
-        "infra failure still reads as one."
-    ),
-    raises=AssertionError,
-    strict=False,
-)
 def test_eval_ambiguous_move_asks_instead_of_guessing(engine: EnginePlayer) -> None:
     """ "move the rook" in a position with several mobile rooks is genuinely
     ambiguous — the agent must ask, not guess a move. (1. a4 a5 2. h4 h5 opens
@@ -1086,12 +1070,17 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(engine: EnginePlayer) -> N
     Sampled rather than single-shot since 2026-09-05. It was a hard scenario
     for as long as it passed, and the same-day control run passed it; the first
     gate on the honest harness watched the model play `Rh3` instead of asking,
-    and seventeen samples across the day came in 12/17 with both failure modes
-    on show (see the marker). A planner sampled at temperature 1.0 is stochastic,
-    and a single-shot assert on a ~70% behavior flaps rather than measures
-    (`docs/agent-audit-2026-09-05.md`, "Statistical interpretation"), so the
-    verdict is a rate against the floor, like every other model-dependent shape
-    in this file. The route pin comes from `_pass_rate`'s default."""
+    and seventeen samples across the day came in 12/17 with two failure modes:
+    two guessed moves, and twice the correct "Which one? Rh3 or Rh2?" replaced
+    by the advice correction (audit finding 6). The guard was loosened the same
+    day — a question naming two or more legal moves is a clarification — and
+    twenty samples on that build came in 19/20, the one miss a guessed move, so
+    the xfail marker this carried in between came off. A planner sampled at
+    temperature 1.0 is stochastic, and a single-shot assert on a ~90% behavior
+    flaps rather than measures (`docs/agent-audit-2026-09-05.md`, "Statistical
+    interpretation"), so the verdict is a rate against the floor, like every
+    other model-dependent shape in this file. The route pin comes from
+    `_pass_rate`'s default."""
     utterance = "move the rook"
     before: dict[str, Any] = {}
 

@@ -80,7 +80,7 @@ from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
-from chessapp.honesty import VerifiedFacts, names_a_legal_move, unverified_claims
+from chessapp.honesty import VerifiedFacts, unlicensed_advice, unverified_claims
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
 from chessapp.tools import (
@@ -750,7 +750,7 @@ def _verified_facts(
     tool_results: Sequence[dict[str, Any]],
     engine_reply: MoveResult | None,
     fen_before: str,
-    fen_observed: str | None = None,
+    fens_observed: Sequence[str] = (),
 ) -> VerifiedFacts:
     """What this turn may honestly say, assembled from the record of it.
 
@@ -771,18 +771,25 @@ def _verified_facts(
     — the history split by side, plus this turn's own (`make_move` is the
     player's, the engine's reply is Glitch's).
 
-    `fen_observed` is the board the *narrator* was looking at: the observation
-    beat hands it the position after the player's move, while Stockfish is
-    still computing the answer this function is standing behind. Without it the
-    turn is checked from a board its own commentary never saw — a recapture
-    flips the material count between the two, and a move playable only
-    mid-turn appears in neither `fen_before` nor now. Both are boards this
-    turn really held, so both count; an invented fact is invented from all of
-    them, and staleness is not invention. (The narrator is no longer *handed*
-    that board's move list — its view carries no side to play for, #193 — but
-    the width stays: the guard exists to catch invention, not tense.) `None`
-    for a route that produced no observation, and unnecessary on the brain
-    route, whose narrator saw `fen_before`.
+    `fens_observed` is every *other* board the turn held — the positions
+    between `fen_before` and now. Without them the turn is checked from boards
+    its own commentary never saw: a recapture flips the material count between
+    one and the next, and a move playable only mid-turn appears in neither end.
+    All of them are boards this turn really held, so all of them count; an
+    invented fact is invented from all of them, and staleness is not
+    invention. (The narrator is no longer *handed* a mid-turn move list — its
+    view carries no side to play for, #193 — but the width stays: the guard
+    exists to catch invention, not tense.)
+
+    There are two of these, one per route, and the brain route needed one too
+    (audit finding 7, 2026-09-05). The fast path's is its observation beat: the
+    position after the player's move, while Stockfish computes the answer this
+    function is standing behind. The brain route's is the whole trail of boards
+    its mutating tool calls left behind, because its narrator reads the tool
+    results and those are the boards the tools ran on — `make_move(exd5)` then
+    `describe_position()` counts a pawn the engine's Qxd5 has taken back by the
+    time the guard looks, and the count was true when it was made. Empty for a
+    route that held only the two ends.
     """
     outcome = ctx.session.outcome()
     captured = ctx.session.captured_pieces()
@@ -793,8 +800,10 @@ def _verified_facts(
     # the material fact for a player playing black.
     boards = [ctx.session] + [
         GameSession(fen=fen, player_color=ctx.session.player_color)
-        for fen in (fen_before, fen_observed)
-        if fen is not None
+        # Deduped: a route can name the same position twice (the fast path's
+        # observed board is also the one its `make_move` left on the trail),
+        # and a board counted twice is evidence exactly once.
+        for fen in dict.fromkeys((fen_before, *fens_observed))
     ]
     moves = set(ctx.session.move_history())
     for board in boards:
@@ -1288,13 +1297,35 @@ def create_app(
         last_broadcast_version = state["version"]
         broadcaster.broadcast(state)
 
+    # The boards the open command's mutating tool calls have left behind, in
+    # order — or `None` between commands, which is every other road onto the
+    # board (a drag, a button, the confirm endpoint) recording nothing.
+    # `_command_window` owns it at both ends; the honesty guard reads it (see
+    # `_verified_facts`).
+    command_boards: list[str] | None = None
+
+    def _record_mutation() -> None:
+        """Remember the board the call left, then publish it.
+
+        The mutation chokepoint's one callback. The trail is here rather than
+        at the call sites for the reason the broadcast is: `dispatch` is the
+        one road every model-initiated mutation takes, so a position recorded
+        here is a position the game really reached — and the honesty guard's
+        whole problem is that a turn holds more boards than its two ends
+        (audit finding 7). Appended before the send, so a broadcast that fails
+        cannot cost the guard its evidence.
+        """
+        if command_boards is not None:
+            command_boards.append(ctx.session.fen())
+        _publish_state()
+
     progress.bind(_publish_progress)
     coordinator.on_phase = progress.phase
     registry.on_tool = progress.tool
     # The mutation chokepoint, pointed at the same emitter: the player's move
     # reaches the board when it is validated rather than when the turn ends —
     # while Glitch reacts and Stockfish thinks (`docs/turn-coordinator.md`).
-    registry.on_mutation = _publish_state
+    registry.on_mutation = _record_mutation
     store = ConversationStore()
 
     @asynccontextmanager
@@ -1526,7 +1557,10 @@ def create_app(
                         beats.changes,
                         beats.engine_reply,
                         before["fen"],
-                        beats.observed_fen,
+                        # A drag opens no command window, so there is no trail
+                        # to read: one dispatch, and the beats already know
+                        # which board they narrated from.
+                        [beats.observed_fen] if beats.observed_fen is not None else [],
                     ),
                     {"move": move},
                 )
@@ -1900,20 +1934,30 @@ def create_app(
     def _command_window(correlation_id: str, turn_id: int) -> Iterator[None]:
         """One user interaction, opened and closed at both ends at once.
 
-        The coordinator's destructive budget and the progress stream's brackets
-        are the same interaction seen from two sides — what may happen inside
-        it, and what the player is told is happening inside it — so they are
-        opened together and, more to the point, closed together in the same
-        `finally`. A command that raises half-way must neither leak an open
-        window into the next one nor leave a progress line spinning.
+        The coordinator's destructive budget, the progress stream's brackets
+        and the trail of boards the command passes through are the same
+        interaction seen from three sides — what may happen inside it, what the
+        player is told is happening inside it, and where the board went while
+        it did — so they are opened together and, more to the point, closed
+        together in the same `finally`. A command that raises half-way must
+        neither leak an open window into the next one, nor leave a progress
+        line spinning, nor hand the next command's honesty guard a board this
+        one visited.
+
+        A plain list is enough for the trail: commands are serialized under
+        `ctx.mutation_lock`, so there is only ever one window open, and the
+        dispatches that fill it are awaited before anything reads it.
         """
+        nonlocal command_boards
         assert progress is not None  # bound above; narrows for the type checker
         with progress.interaction(correlation_id, turn_id):
             coordinator.begin_command()
+            command_boards = []
             try:
                 yield
             finally:
                 coordinator.end_command()
+                command_boards = None
 
     async def _run_command(
         text: str,
@@ -2230,18 +2274,21 @@ def create_app(
             # the engine's move along with the lie, which is the one fact a
             # guarded turn cannot afford to drop (the board moved under the
             # player and the correction says nothing about how).
+
+            # Every board this turn actually held, and not just its two ends.
+            # The trail is what the command's own mutating calls left behind, in
+            # order; the fast path names its observation board on top, because
+            # that route knows *which* position its words were written from.
+            # (The two overlap — a fast-path `make_move` is a dispatch like any
+            # other — and `_verified_facts` dedupes them.)
+            observed = list(command_boards or ())
+            if move_beats is not None and move_beats.observed_fen is not None:
+                observed.append(move_beats.observed_fen)
             said = commentary
             commentary, claims = _guarded_commentary(
                 commentary,
                 _verified_facts(
-                    ctx,
-                    tool_results,
-                    engine_reply,
-                    before["fen"],
-                    # Only the fast path observes a mid-turn board. The brain
-                    # route's narrator ran inside the loop, off `before`, which
-                    # is already one of the positions checked.
-                    move_beats.observed_fen if move_beats is not None else None,
+                    ctx, tool_results, engine_reply, before["fen"], observed
                 ),
                 {"text": text},
             )
@@ -2296,11 +2343,19 @@ def create_app(
             # every setter whose value the view carried — `set_verbosity` was
             # only ever the exception because verbosity was missing from that
             # view, which is the very gap walkthrough #3 came out of.
-            unlicensed = set(ctx.session.legal_moves()) - _reported_moves(tool_results)
+            #
+            # A question naming two or more of those legal moves is the
+            # exception, and it is the model doing its job: "Do you mean Nf3 or
+            # Nh3?" is what an ambiguous request deserves, and the guard used to
+            # eat it whole (audit finding 6). `unlicensed_advice` owns that
+            # reading — the code still decides what is licensed, and the model
+            # still owns the words.
+            legal = set(ctx.session.legal_moves())
+            unlicensed = legal - _reported_moves(tool_results)
             if (
                 not guarded
                 and ctx.board_version == version_before
-                and names_a_legal_move(commentary, unlicensed)
+                and unlicensed_advice(commentary, unlicensed, legal)
             ):
                 logger.warning(
                     "commentary_leaked_move_advice suppressed=%r",

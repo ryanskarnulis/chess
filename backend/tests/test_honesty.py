@@ -20,7 +20,7 @@ import pytest
 from chessapp.honesty import (
     VerifiedFacts,
     claims_destructive_outcome,
-    names_a_legal_move,
+    unlicensed_advice,
     unverified_claims,
 )
 
@@ -83,8 +83,20 @@ def test_ordinary_commentary_is_not_a_claim(text):
 # pipeline pairs it with the turn's evidence: a move is licensed exactly when
 # an analysis tool reported it this turn (hints mode is gone, 2026-09-01 — the
 # license is evidence now, never a setting).
+#
+# The one shape that is not advice at all is the clarifying question (audit
+# finding 6, 2026-09-05): "Do you mean Nf3 or Nh3?" is the right answer to
+# "move my kings knight", and the whole-text predicate replaced it with the
+# advice correction. A question naming two or more legal moves is asking, not
+# telling. `Nh3` is in the list for exactly that pair.
 
-LEGAL = ["Nf3", "Nc3", "e4", "d4", "Bc4", "O-O"]
+LEGAL = ["Nf3", "Nh3", "Nc3", "e4", "d4", "Bc4", "O-O"]
+
+
+def advice(text, licensed=()):
+    """The pipeline's call: everything legal is unlicensed but what an analysis
+    tool reported this turn."""
+    return unlicensed_advice(text, set(LEGAL) - set(licensed), LEGAL)
 
 
 @pytest.mark.parametrize(
@@ -95,10 +107,18 @@ LEGAL = ["Nf3", "Nc3", "e4", "d4", "Bc4", "O-O"]
         "Bc4 or Nc3 — both fine.",
         "Castle already: O-O!",
         "`d4` is the move.",
+        # A statement naming two is handing over two, not asking about them.
+        "Nf3 or Nh3 both work.",
+        # One move is a recommendation however it is punctuated.
+        "Nf3? Sure.",
+        "Try Nf3?",
+        # A clarification with a recommendation stapled to it: the question
+        # sentence is licensed and the next one is still advice.
+        "Which one — Nf3 or Nh3? I'd go Nf3.",
     ],
 )
 def test_naming_a_playable_move_is_advice(text):
-    assert names_a_legal_move(text, LEGAL) is True
+    assert advice(text) is True
 
 
 @pytest.mark.parametrize(
@@ -113,10 +133,33 @@ def test_naming_a_playable_move_is_advice(text):
         # A move that is not currently playable is not a hint.
         "That e5 push last game was rough.",
         "",
+        # The clarifying question, which is the model doing its job.
+        "Do you mean Nf3 or Nh3?",
+        "Which knight — Nf3 or Nh3?",
+        "Nf3 or Nh3?",
+        # Still a clarification with ordinary talk around it: each sentence is
+        # judged on its own, and only the question names moves.
+        "Two knights can go there. Do you mean Nf3 or Nh3?",
     ],
 )
 def test_commentary_without_a_playable_move_is_not_advice(text):
-    assert names_a_legal_move(text, LEGAL) is False
+    assert advice(text) is False
+
+
+def test_a_move_the_turn_reported_may_be_handed_over():
+    """The licence is the pipeline's half: a move a successful analysis named
+    this turn is a fact the commentary may repeat, and only the rest of the
+    legal list is advice."""
+    assert advice("Nf3 is the move.", licensed=["Nf3"]) is False
+    assert advice("Nf3 is the move. Or e4.", licensed=["Nf3"]) is True
+
+
+def test_a_clarification_counts_every_legal_move_it_names():
+    """The question is weighed against the *legal* moves, not the unlicensed
+    ones: which of the two carries a licence says nothing about whether the
+    sentence is asking or telling, and a question that named one licensed move
+    and one unlicensed one would otherwise read as advice."""
+    assert advice("Do you mean Nf3 or Nh3?", licensed=["Nf3"]) is False
 
 
 # --- verified facts: every operational claim, not just the ending -------------
