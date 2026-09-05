@@ -690,6 +690,68 @@
   font-style: italic;
 }
 
+/* The bubble and anything the reply brought with it, stacked beside the
+   spider. `min-width: 0` because a flex item will not shrink below its
+   content: without it the PGN's <pre> widens the column and scrolls the
+   whole page sideways instead of scrolling itself. */
+.bubble-column {
+  flex: 1;
+  min-width: 0;
+}
+
+/* What an exported PGN gets: a copy button and the notation itself, folded
+   away. Chip register, `.status-results` being the model. */
+.bubble-pgn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.bubble-pgn button,
+.bubble-pgn summary {
+  padding: 0.2rem 0.6rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--silk-border);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  /* Pinned. The root's 145% is 145% of the *root* size, so a 0.8rem chip
+     inheriting it gets 26px of leading and stands half again too tall. */
+  line-height: 1.4;
+  cursor: pointer;
+  /* The disclosure triangle would break the chip shape; the label says it. */
+  list-style: none;
+}
+
+.bubble-pgn summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Open, the notation takes the whole row — a PGN is far wider than the chip
+   it sits beside. */
+.bubble-pgn details[open] {
+  flex-basis: 100%;
+}
+
+.bubble-pgn pre {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem;
+  max-height: 12rem;
+  background: var(--surface);
+  border: 1px solid var(--silk-border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  /* Notation is lines, not prose: it scrolls in its own box rather than
+     wrapping mid-move or widening the column. */
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
 /* One-line move history with review arrows */
 
 .move-strip {

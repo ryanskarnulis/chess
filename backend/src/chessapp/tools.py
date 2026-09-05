@@ -901,6 +901,74 @@ def saved_game_names(ctx: ToolContext) -> list[str]:
     return sorted(path.stem for path in game_dir.glob("*.json"))
 
 
+# The two facts about *this* app that every game it exports shares. Not
+# settings: nobody is entering a tournament from the sofa, and a `Site` a
+# player can read is worth more than one they have to fill in.
+_PGN_EVENT = "Casual game"
+_PGN_SITE = "Chess vs Glitch (home network)"
+_PGN_UNKNOWN_DATE = "????.??.??"
+
+
+def _engine_strength(settings: Settings) -> str | None:
+    """How hard the engine is playing, spelled for a human reading the header.
+
+    Exactly one of the three is ever set (`set_difficulty` clears the others),
+    but all three are checked rather than assumed: a hand-edited settings file
+    can leave none of them, and a `Black` tag is not the place to raise.
+    """
+    if settings.tier is not None:
+        return settings.tier
+    if settings.elo is not None:
+        return f"{settings.elo} Elo"
+    if settings.skill_level is not None:
+        return f"skill {settings.skill_level}"
+    return None
+
+
+def pgn_headers(ctx: ToolContext, session: GameSession | None = None) -> dict[str, str]:
+    """The Seven Tag Roster, with a real answer wherever the app has one.
+
+    One composer for both exports — the `export_pgn` tool and
+    `GET /api/game/pgn` — because the two are the same PGN by two routes, and
+    a player who copies from the chat and from the post-game screen must not
+    get two different games. Live, neither filled anything in: "export the pgn"
+    came back `[Event "?"] [Site "?"] [Date "????.??.??"] … [White "?"]
+    [Black "?"]`, every tag a question mark for facts the app was holding all
+    along (2026-09-04 walkthrough).
+
+    `Result` is deliberately absent: it is board truth and `export_pgn` writes
+    it from `outcome()`, so it is the one tag a caller may not compose.
+
+    `session` is the game being exported, defaulting to the live one. The
+    endpoint exports a *copy* taken at the mutation boundary (`_session_snapshot`),
+    and passing that copy is what keeps the date and the sides on the same game
+    as the moves when a `new_game` lands mid-export.
+    """
+    session = ctx.session if session is None else session
+    # What the opponent was, as precisely as this deployment can say it. No
+    # engine attached is not a weak Stockfish, it is no Stockfish — that game
+    # was played against something else, and the header may not imply otherwise.
+    if ctx.engine is None:
+        glitch = "Glitch"
+    elif (strength := _engine_strength(ctx.settings)) is None:
+        glitch = "Glitch (Stockfish)"
+    else:
+        glitch = f"Glitch (Stockfish, {strength})"
+    started = session.started
+    player_is_white = session.player_color == "white"
+    return {
+        "Event": _PGN_EVENT,
+        "Site": _PGN_SITE,
+        # PGN dates are dot-separated; a save from before games recorded one
+        # keeps the standard's own "unknown" spelling rather than claiming today.
+        "Date": started.replace("-", ".") if started is not None else _PGN_UNKNOWN_DATE,
+        # No tournament, so no round to number — the standard's "not applicable".
+        "Round": "-",
+        "White": "Player" if player_is_white else glitch,
+        "Black": glitch if player_is_white else "Player",
+    }
+
+
 # `make_move`'s description, in two variants — see `build_registry`'s
 # `atomic_exchange`. Only the account of the engine's reply differs, because that
 # is the only caller-visible difference: in one mode the reply has already been
@@ -1375,8 +1443,15 @@ def build_registry(
 
     @registry.tool()
     def export_pgn() -> dict[str, Any]:
-        "Export the game so far as PGN."
-        return {"ok": True, "pgn": ctx.session.export_pgn()}
+        """Export the game so far as PGN. The app shows the player the notation
+        itself, with a button to copy it, so the reply should say it is ready —
+        never recite the moves or the headers."""
+        # The description above is a prompt change: live, the narrator read the
+        # whole `[Event "?"] …` dump into the bubble and, with voice on, out
+        # loud (2026-09-04 walkthrough). The notation is app-owned text now —
+        # rendered under the reply with a copy button — so reciting it is the
+        # old behaviour rather than a wording preference.
+        return {"ok": True, "pgn": ctx.session.export_pgn(pgn_headers(ctx))}
 
     @registry.tool()
     def save_game(

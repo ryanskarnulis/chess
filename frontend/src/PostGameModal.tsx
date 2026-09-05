@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { fetchPgn, type Outcome } from './api'
+import { COPY_IDLE, copyText } from './clipboard'
 import { ReviewPanel } from './ReviewPanel'
 
 export interface PostGameModalProps {
@@ -33,22 +34,20 @@ export function PostGameModal({
   onNewGame,
   onClose,
 }: PostGameModalProps) {
-  const [copyLabel, setCopyLabel] = useState('Copy PGN')
+  const [copyLabel, setCopyLabel] = useState(COPY_IDLE)
   // Inline (not a class) so jsdom's computed styles see it too.
   const hidden = open ? undefined : { display: 'none' as const }
 
   const copyPgn = async () => {
+    // This screen has no PGN in hand — it fetches one, and the fetch is the
+    // half the chat's chip does not have (that one was handed the notation
+    // with the reply). The write and the label it reports are shared.
     const pgn = await fetchPgn()
     if (pgn === null) {
       setCopyLabel('PGN unavailable')
       return
     }
-    try {
-      await navigator.clipboard.writeText(pgn)
-      setCopyLabel('Copied ✓')
-    } catch {
-      setCopyLabel('Copy failed')
-    }
+    setCopyLabel(await copyText(pgn))
   }
 
   return (

@@ -6,7 +6,9 @@ The agent layer never touches `chess.Board` directly — it goes through
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +118,22 @@ def _validate_player_color(color: str) -> str:
     return color
 
 
+def _validate_started(value: Any) -> str | None:
+    """The start date off a save file, or None for one written before games
+    recorded it. Checked like every other loaded field: a `Date` header is
+    written straight into the PGN a player hands to a viewer, so a string that
+    is not a date has no business reaching one."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"invalid started date: {value!r}")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid started date: {value!r}") from exc
+    return value
+
+
 class GameSession:
     """One chess game. Moves come in as SAN or UCI strings; the board decides."""
 
@@ -126,7 +144,22 @@ class GameSession:
         # a board knows a claim is *available*, never that anybody made it.
         self._draw_claimed = False
         self._player_color = _validate_player_color(player_color)
+        self._started: str | None = date.today().isoformat()
         self._revision = 0
+
+    @property
+    def started(self) -> str | None:
+        """The local date this game began, ISO (`"2026-09-04"`), or None for a
+        save written before games recorded one.
+
+        Session state like `_resigned`: a board holds a position, never the day
+        somebody sat down at it, and PGN's `Date` tag wants exactly that day.
+        Set at construction — a session rooted on a mid-game FEN is still a game
+        starting now — and again by `new_game`, because that is a different
+        game and dating it by the last one would be wrong on any board left up
+        overnight.
+        """
+        return self._started
 
     @property
     def revision(self) -> int:
@@ -183,6 +216,7 @@ class GameSession:
         self._board.reset()
         self._resigned = None
         self._draw_claimed = False
+        self._started = date.today().isoformat()
         if player_color is not None:
             self._player_color = player_color
         self._revision += 1
@@ -278,20 +312,30 @@ class GameSession:
         piece = self._board.piece_at(move.to_square)
         return chess.piece_symbol(piece.piece_type) if piece is not None else None
 
-    def export_pgn(self) -> str:
+    def export_pgn(self, headers: Mapping[str, str] | None = None) -> str:
         """The game so far as PGN. Result reflects the session-level endings
-        (resignation, a claimed draw) too, since it comes off `outcome()`."""
+        (resignation, a claimed draw) too, since it comes off `outcome()`.
+
+        `headers` are who played, where and when — facts the core cannot know,
+        so the caller composes them (`tools.pgn_headers`) and this only writes
+        them down. Applied before `Result` so nothing a caller passes can
+        overwrite the one header that is board truth. Omitted, the export is
+        exactly what it always was: python-chess's `?` placeholders, which is
+        what an offline export and the older tests get.
+        """
         game = chess.pgn.Game.from_board(self._board)
+        for tag, value in (headers or {}).items():
+            game.headers[tag] = value
         outcome = self.outcome()
         game.headers["Result"] = outcome.result if outcome is not None else "*"
         return str(game)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialized form: root FEN + UCI moves + the two session-level endings
-        (resignation, a claimed draw), plus the player's color. `player_color`
-        and `draw_claimed` are additive — older readers ignore them, and older
-        saves that lack them load at the defaults those games were played
-        under."""
+        (resignation, a claimed draw), plus the player's color and the date the
+        game began. `player_color`, `draw_claimed` and `started` are additive —
+        older readers ignore them, and older saves that lack them load at the
+        defaults those games were played under."""
         resigned = self._resigned
         return {
             "version": 1,
@@ -300,6 +344,7 @@ class GameSession:
             "resigned": _COLOR_NAMES[resigned] if resigned is not None else None,
             "player_color": self._player_color,
             "draw_claimed": self._draw_claimed,
+            "started": self._started,
         }
 
     @classmethod
@@ -333,10 +378,15 @@ class GameSession:
         if resigned is not None and resigned not in _COLOR_NAMES.values():
             raise ValueError(f"invalid resigned color: {resigned!r}")
         _validate_player_color(player_color)
+        started = _validate_started(data.get("started"))
 
         # Saves that predate the player-color field default to white — the
         # implicit assignment those games were played under.
         session = cls(fen=root_fen, player_color=player_color)
+        # A resumed game keeps the day it was played, not the day it was
+        # reopened; one saved before games recorded a date has none, and the
+        # PGN says so rather than claiming today.
+        session._started = started
         for uci in moves:
             result = session.submit_move(uci)
             if not result.legal:

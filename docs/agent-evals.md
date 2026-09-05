@@ -105,7 +105,10 @@ nothing can be captured, so no question about which pawn),
 difficulty" rules out the one lever there is, so no setting moves),
 `constraint_survives_a_live_thread` (the same ask in the walkthrough's own
 thread — panel seam, verbosity `low`, eleven turns deep — the condition that
-reproduces the live miss), and the long-transcript family
+reproduces the live miss), `pgn_is_handed_over_not_recited` ("export the pgn"
+calls `export_pgn` and says it is ready — the notation is app-owned text now,
+rendered with a copy button, so a reply carrying the headers or the movetext
+is the old dump reappearing), and the long-transcript family
 `long_resume` /
 `long_resign` / `long_capture`, each at three conditions (fresh, live_like,
 poisoned) — the same behaviors under a real 20-turn conversation, because
@@ -113,7 +116,15 @@ fresh-conversation passes hid live failures.
 
 ## Current baseline
 
-**Run 2026-09-04 on the difficulty-constraint slice (#257): 30 passed in a single run, 5 m 56 s, infra 0, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+**Run 2026-09-04 on the PGN-by-chat slice (#258): 31 passed in a single run, 5 m 13 s, infra 0; `undo_and_replace` 4/5 at the floor (the same wrong replacement move, `Bc4` for `d4`, with the undo clean — re-run alone at 10 samples: 9/10, the miss again a wrong replacement move), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+`long_capture` 5/5 ×3, costs unmoved. The one prompt change is
+`export_pgn`'s description (the reply says the export is ready and recites
+nothing, because the app now renders the notation with a copy button); the
+new scenario `pgn_is_handed_over_not_recited` came in 5/5 (3 calls, `export_pgn` every sample, nothing recited). The live
+turn was a single dump of the whole PGN into the bubble, so the scenario
+starts life as a lock on the app-owned text rather than a measured miss.
+
+Previously on the difficulty-constraint slice (#257): 30 passed in a single run, 5 m 56 s, infra 0, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
 `long_capture` 5/5 ×3, costs unmoved. The one prompt change is
 `set_difficulty`'s description.
 

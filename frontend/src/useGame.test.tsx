@@ -37,6 +37,9 @@ function progressFrame(kind: string, name = '', correlation_id = 'abc123') {
 
 const AFTER_E4_E5_FEN = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2'
 
+/** A PGN as `export_pgn` now hands it over: real headers, then the movetext. */
+const PGN = '[Event "Casual game"]\n[White "Player"]\n\n1. e4 e5 *'
+
 /** State two plies in, with the per-ply fens the review arrows walk. */
 function reviewableState(): GameState {
   return state({
@@ -998,6 +1001,123 @@ describe('useGame', () => {
     expect(result.current.commentary).toBe('A classic king-pawn opening.')
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
     expect(result.current.agentThinking).toBe(false)
+  })
+
+  // --- the PGN a reply exported ------------------------------------------
+  //
+  // The notation is no longer in the words: `export_pgn`'s description tells
+  // Glitch to say it is ready and recite nothing, so the UI takes it off the
+  // tool result and renders it with a copy button.
+
+  it('keeps the PGN a command exported', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({
+          commentary: "Exported. It's yours to copy.",
+          tool_results: [{ name: 'export_pgn', result: { ok: true, pgn: PGN } }],
+          state: state(),
+        })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('export the pgn')
+    })
+    expect(result.current.pgn).toBe(PGN)
+  })
+
+  it('ignores an export that failed', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    // `tool_results` is unvalidated wire JSON, and a refusal is in it too. A
+    // copy button over a refusal would copy nothing and say it worked.
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({
+          commentary: 'That did not work.',
+          tool_results: [{ name: 'export_pgn', result: { ok: false, error: 'nope' } }],
+          state: state(),
+        })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('export the pgn')
+    })
+    expect(result.current.pgn).toBeNull()
+  })
+
+  it('drops the PGN as soon as the next command is sent', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({
+          commentary: 'Exported.',
+          tool_results: [{ name: 'export_pgn', result: { ok: true, pgn: PGN } }],
+          state: state(),
+        })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('export the pgn')
+    })
+    expect(result.current.pgn).toBe(PGN)
+
+    // Held open deliberately: the chip belongs to the reply it came with, so
+    // what has to be observed is the state *during* the next turn, which an
+    // instantly-resolving mock would flush past inside `act`.
+    let release!: () => void
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return new Promise((resolve) => {
+          release = () =>
+            resolve({
+              ok: true,
+              json: () =>
+                Promise.resolve({
+                  commentary: 'Holding steady.',
+                  tool_results: [],
+                  state: state(),
+                }),
+            })
+        })
+      return jsonResponse(state())
+    })
+    let sent!: Promise<void>
+    await act(async () => {
+      sent = result.current.sendCommand('how am I doing?')
+    })
+    expect(result.current.agentThinking).toBe(true)
+    expect(result.current.pgn).toBeNull()
+    await act(async () => {
+      release()
+      await sent
+    })
+    expect(result.current.pgn).toBeNull()
+  })
+
+  it('drops the PGN when a new game starts', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return jsonResponse({
+          commentary: 'Exported.',
+          tool_results: [{ name: 'export_pgn', result: { ok: true, pgn: PGN } }],
+          state: state(),
+        })
+      if (String(url).includes('/api/game/')) return jsonResponse({ state: state() })
+      return jsonResponse(state())
+    })
+    await act(async () => {
+      await result.current.sendCommand('export the pgn')
+    })
+    await act(async () => {
+      await result.current.newGame()
+    })
+    // Whatever was exported was the old game.
+    expect(result.current.pgn).toBeNull()
   })
 
   it('loads the voice-output setting on mount', async () => {
