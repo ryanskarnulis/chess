@@ -400,7 +400,12 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
 - **Never re-attempt tool-schema minimization on gemma-4-12b** (2026-07-21):
   every stripped pydantic key (`title`, `anyOf`-null, `default`) independently
   collapsed `undo_and_replace` below the floor. That scenario is the tripwire;
-  re-test if the brain model ever changes.
+  re-test if the brain model ever changes. Since 2026-09-05 the emitted schema
+  is also held byte for byte off the GPU
+  (`tests/test_tool_registry_schema.py`, fixture
+  `tool_definitions_emitted.json`, both `make_move` flavours), so a stripped
+  key fails in CI before anyone has to measure it; regenerating that fixture
+  is a schema change and runs this gate.
 - **Sampling is gemma-tuned** (temp 1.0, top-p 0.95, top-k 64, per
   `../agent-standard/model-profile.md`): override before judging a different
   model with this harness.
