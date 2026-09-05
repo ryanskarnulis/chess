@@ -25,12 +25,22 @@ The scenarios drive the same seam the conductor's delegate calls use —
 `stop_reason`) is exactly what the goldens assert on. Board end-state is read
 back through `GET /api/state`, the same document the web board renders.
 
-Fast-path guard: chess short-circuits an utterance that parses as exactly one
-legal move (`fastparse.parse_move`) with zero LLM calls. Every *model* scenario
-asserts `parse_move(utterance, fen) is None` first, pinning that the eval stays
-a model eval even if the parser grows later. The two `fast_path_*` scenarios do
-the opposite — they assert the utterance *does* parse, and measure what the
-short-circuit costs.
+Fast-path guard: chess short-circuits **two** kinds of utterance with zero
+planner calls — one that parses as exactly one legal move
+(`fastparse.parse_move`), and one that is entirely a resignation
+(`fastparse.parse_resign`). So every *model* scenario runs
+`_stays_a_model_eval` in its setup, which asserts both parsers stand aside on
+the board the utterance is judged against, and `_pass_rate` then pins the route
+the turn actually took (`trace.ROUTE_BRAIN`) before running the check.
+
+Both halves are load-bearing rather than belt and braces. Until the 2026-09-05
+audit (`docs/agent-audit-2026-09-05.md`, finding 9) the four resignation
+scenarios asserted neither, and their utterance — "you know what, I give up. I
+resign" — is one `parse_resign` settles: a control gate run shows
+`route=resign model_calls=0` on every sample, so four scenarios billed as
+planner coverage were measuring the deterministic route. The `fast_path_*`
+scenarios and `resign_literal_fast_path` do the opposite — they assert the
+utterance *does* parse, and measure what the short-circuit costs.
 
 Cost is measured, not just printed: the live `LlamaCppProvider` is wrapped in a
 `CountingProvider` (`fakes.py`), the only seam every model round trip passes
@@ -127,21 +137,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.agent_api import reset_rate_limit
-from chessapp.api import create_app
+from chessapp.api import STUCK_REPLY, create_app
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
-from chessapp.fastparse import parse_move
+from chessapp.fastparse import parse_move, parse_resign
 from chessapp.game import GameSession
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import (
+    DESTRUCTIVE_TOOLS,
     Settings,
     ToolContext,
     _save_path,
     brain_tool_exclusions,
     build_registry,
 )
+from chessapp.trace import ROUTE_BRAIN, ROUTE_FAST_PATH, ROUTE_RESIGN
 from evalstats import (
     BUDGET_STOPS,
     STOP_PROVIDER_ERROR,
@@ -187,13 +199,28 @@ _REQUEST_TIMEOUT = 310.0
 # Board-changing tools — a successful call to one of these (a *legal* make_move,
 # an undo, etc.) is what "the board changed this turn" means. Settings tools and
 # reads/analysis are deliberately excluded: they never move a piece.
-_BOARD_TOOLS = frozenset({"make_move", "undo", "new_game", "resign", "resume_game"})
+#
+# The three ways a game *ends* come from the app's own `DESTRUCTIVE_TOOLS` rather
+# than being retyped here, because a hand-kept copy is exactly how this set went
+# wrong: `claim_draw` joined that tuple with the draw work and never reached this
+# one, so every "no board mutation" assertion in the file was blind to a claimed
+# draw until the 2026-09-05 audit found it. Derive it from the chokepoint;
+# `test_eval_harness` pins that each name is a real registry tool.
+_BOARD_TOOLS = frozenset({"make_move", "undo", "resume_game"}) | frozenset(
+    DESTRUCTIVE_TOOLS
+)
 
 # The engine-backed reads that answer "how good is this?" — a *verdict*, which
 # is a different ask from "what's on the board?". `position_is_described`
 # asserts none of them ran: answering a description with an eval is the
-# 2026-09-04 walkthrough defect, whichever of the three produced it.
-_VERDICT_TOOLS = frozenset({"evaluate_position", "get_best_moves", "analyze_last_move"})
+# 2026-09-04 walkthrough defect, whichever of them produced it. `review_game` is
+# the fourth (the same verdict over the whole game, move by move, with accuracy
+# scores) and was missing until the 2026-09-05 audit — which made the helper
+# incomplete rather than wrong: a description ask answered by a full game review
+# is the same defect wearing a bigger tool.
+_VERDICT_TOOLS = frozenset(
+    {"evaluate_position", "get_best_moves", "analyze_last_move", "review_game"}
+)
 
 # Latency tripwires, not a band: the precise numbers live in the baseline table
 # in docs/agent-evals.md, which a human reads. These only catch a *regression*
@@ -622,6 +649,14 @@ class EvalRun(NamedTuple):
 
     `tokens` is the same turn priced in tokens, split the same way — because the
     latency half answered *where* the extra time goes and cannot answer *why*.
+
+    `route` is which of the pipeline's routes actually handled the utterance
+    (`trace.ROUTE_*`), off the same record. It is the difference between a
+    scenario measuring the planner and a scenario measuring a deterministic
+    short-circuit that happens to answer the same way — and the harness could
+    not previously tell those apart, which is how four resignation scenarios
+    came to measure the resign fast path (audit 2026-09-05, finding 9). `None`
+    when nothing was traced at all.
     """
 
     assistant: dict[str, Any]
@@ -632,6 +667,7 @@ class EvalRun(NamedTuple):
     provider_failure: str | None
     latencies: TurnLatencies
     tokens: TurnTokens
+    route: str | None = None
 
     @property
     def narrator_tok_s(self) -> float | None:
@@ -753,6 +789,9 @@ def _measured(
         provider_failure=provider_failure,
         latencies=latencies,
         tokens=tokens,
+        # Off the same record as the stop reason and the readings, so a route
+        # pin and a latency attribution can never describe different turns.
+        route=traced.get("route"),
     )
 
 
@@ -804,6 +843,61 @@ def _assert_thinking_starts_off(run: EvalRun) -> None:
     )
 
 
+# --- staying a model eval -----------------------------------------------------
+
+
+def _stays_a_model_eval(utterance: str, fen: str) -> None:
+    """Neither deterministic parser swallows this utterance on this board.
+
+    The setup line every model-routed scenario owes, and the *whole* of it: two
+    fast paths short-circuit the planner, not one, and a scenario that guards
+    only against `parse_move` can silently become a measurement of the other.
+    That is not hypothetical — it is audit finding 9. The four resignation
+    scenarios guarded neither parser, `parse_resign` settled their utterance,
+    and a control gate run answered every sample on the deterministic route
+    with zero model calls while the file described them as planner coverage.
+
+    Board-sensitive on purpose: `parse_move` needs a position to know whether a
+    phrase names exactly one legal move, so the FEN passed here must be the one
+    the utterance is judged against — *after* the scenario's setup moves, not
+    the fresh board the app was built with. `parse_resign` needs none, which is
+    why a resignation phrase is dangerous everywhere.
+    """
+    assert parse_move(utterance, fen) is None, (
+        f"`fastparse.parse_move` settles {utterance!r} on this board, so the "
+        "move fast path answers it with no planner call — this would measure "
+        "the parser, not the model"
+    )
+    assert not parse_resign(utterance), (
+        f"`fastparse.parse_resign` settles {utterance!r}, so the resign route "
+        "answers it with no planner call — this would measure the parser, not "
+        "the model"
+    )
+
+
+def _assert_route(run: EvalRun, expected: str | None) -> None:
+    """The turn went through the route the scenario claims to measure.
+
+    The other half of `_stays_a_model_eval`, and the half that cannot go stale:
+    the setup assertion is a statement about today's parsers, while this reads
+    what the pipeline *did* off the trace record. A parser that grows to cover
+    a scenario's utterance fails the setup line; a route that changes for any
+    other reason (a new short-circuit, a confirmation left armed by a previous
+    turn) fails here.
+
+    `None` asserts nothing, for a scenario whose route is legitimately not
+    fixed — the choice is the caller's and is spelled at the call site rather
+    than defaulted into silence.
+    """
+    if expected is None:
+        return
+    assert run.route == expected, (
+        f"routed through {run.route!r}, not {expected!r} — a deterministic "
+        "short-circuit swallowed the utterance, so nothing about the model was "
+        "measured"
+    )
+
+
 # --- difficulty ordering (scenario 4) -----------------------------------------
 
 # Comparable strength for ordering only. Tiers map to their documented target
@@ -846,6 +940,10 @@ def test_eval_fast_path_plain_move_is_zero_llm(eval_app: EvalApp) -> None:
     run = _run_once(app, "fast_path_low", utterance)
 
     assert run.model_calls == [], "a fast-path move at verbosity=low must be zero-LLM"
+    assert run.route == ROUTE_FAST_PATH, (
+        f"the point of this scenario is the short-circuit, and it routed "
+        f"through {run.route!r}"
+    )
     assert run.assistant["stop_reason"] == "completed"
     history = _history(app.client)
     assert history[0] == "e4"
@@ -868,6 +966,10 @@ def test_eval_fast_path_move_costs_one_call_when_chatty(eval_app: EvalApp) -> No
     run = _run_once(app, "fast_path_normal", utterance)
 
     assert len(run.model_calls) == 1, "expected narrate only — no tool-decision turn"
+    assert run.route == ROUTE_FAST_PATH, (
+        f"the move must still be dispatched deterministically, not planned: "
+        f"routed through {run.route!r}"
+    )
     _assert_thinking_starts_off(run)
     assert run.duration < _THINKING_OFF_CEILING_S
     assert _history(app.client)[0] == "e4"
@@ -884,11 +986,12 @@ def test_eval_plain_move_via_the_agent_path(eval_app: EvalApp) -> None:
     all thinking-off."""
     app = eval_app
     utterance = "play e4"
-    assert parse_move(utterance, app.ctx.session.fen()) is None  # stays a model eval
+    _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     run = _run_once(app, "plain_move", utterance)
     assistant = run.assistant
 
+    assert run.route == ROUTE_BRAIN, f"routed through {run.route!r}, not the planner"
     assert assistant["stop_reason"] == "completed"
     assert len(_legal_moves(assistant)) == 1, "expected exactly one legal make_move"
     history = _history(app.client)
@@ -921,11 +1024,12 @@ def test_eval_judgment_question_routes_through_analysis(eval_app: EvalApp) -> No
         assert app.ctx.session.submit_move(san).legal
     before = _history(app.client)
     utterance = "how am I doing?"
-    assert parse_move(utterance, app.ctx.session.fen()) is None
+    _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     run = _run_once(app, "judgment_question", utterance)
     assistant = run.assistant
 
+    assert run.route == ROUTE_BRAIN, f"routed through {run.route!r}, not the planner"
     assert assistant["stop_reason"] == "completed"
     analysed = _successful(assistant, "evaluate_position") + _successful(
         assistant, "analyze_last_move"
@@ -953,21 +1057,35 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(eval_app: EvalApp) -> None
 
     The cheapest brain-routed turn there is: the planner declines to call
     anything and says what to ask, then the narrator asks it — two calls, no
-    tools dispatched."""
+    tools dispatched.
+
+    The question has to *reach the player* to be worth anything, which is why
+    the guard verdict is asserted beside the board (audit 2026-09-05: this
+    scenario accepted any nonempty text, including the advice correction). A
+    clarifying question that names its candidates — "Nf3 or Nh3?" — is exactly
+    the shape the advice guard mistakes for unlicensed advice, so a green here
+    over a suppressed answer would be measuring the correction, not the ask."""
     app = eval_app
     for san in ("a4", "a5", "h4", "h5"):
         assert app.ctx.session.submit_move(san).legal
     before = _history(app.client)
     utterance = "move the rook"
-    assert parse_move(utterance, app.ctx.session.fen()) is None
+    _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     run = _run_once(app, "ambiguous_move", utterance)
     assistant = run.assistant
 
+    assert run.route == ROUTE_BRAIN, f"routed through {run.route!r}, not the planner"
     assert _legal_moves(assistant) == [], "must not guess a move when ambiguous"
     assert _board_mutations(assistant) == []
     assert _history(app.client) == before
     assert assistant["content"], "expected a clarifying question"
+    traced = app.tracer.last
+    assert traced.get("guarded") is not True, (
+        "the player got a correction, not a question "
+        f"({','.join(traced.get('guarded_claims') or ())}): "
+        f"{traced.get('suppressed')!r}"
+    )
     assert len(run.model_calls) == 2, (
         "expected the planner's decline plus the narrator's question, "
         f"got {len(run.model_calls)} calls"
@@ -983,11 +1101,12 @@ def test_eval_settings_by_speech_makes_it_easier(eval_app: EvalApp) -> None:
     assert app.ctx.settings.tier == DEFAULT_TIER  # baseline strength
     before = _history(app.client)
     utterance = "make it easier"
-    assert parse_move(utterance, app.ctx.session.fen()) is None
+    _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     run = _run_once(app, "settings_by_speech", utterance)
     assistant = run.assistant
 
+    assert run.route == ROUTE_BRAIN, f"routed through {run.route!r}, not the planner"
     assert assistant["stop_reason"] == "completed"
     assert _successful(assistant, "set_difficulty"), "expected a set_difficulty call"
     assert _difficulty_strength(app.ctx.settings) < _TIER_STRENGTH[DEFAULT_TIER], (
@@ -1020,11 +1139,12 @@ def test_eval_honest_about_an_illegal_move(eval_app: EvalApp) -> None:
     before = _history(app.client)
     assert before == []
     utterance = "castle kingside"
-    assert parse_move(utterance, app.ctx.session.fen()) is None
+    _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     run = _run_once(app, "honest_illegal", utterance)
     assistant = run.assistant
 
+    assert run.route == ROUTE_BRAIN, f"routed through {run.route!r}, not the planner"
     assert _legal_moves(assistant) == [], "must not fabricate a legal move"
     assert _board_mutations(assistant) == []
     assert _history(app.client) == before
@@ -1054,25 +1174,41 @@ def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:
     fails here.
 
     The game is a substantial one (10-ply Ruy Lopez, castled, developed) so this
-    isn't dismissible as a two-move stub the model reasonably resets."""
+    isn't dismissible as a two-move stub the model reasonably resets.
+
+    What the first ask has to *deliver* is asserted too (audit 2026-09-05: any
+    nonempty text and any armed op used to pass). The armed op must be the reset
+    the question is about — `live_pending`, so a stale arm from another board
+    cannot stand in for it — and the reply must not be a guard correction, since
+    a suppressed question is not a question the player can answer."""
     app = eval_app
     for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7"):
         assert app.ctx.session.submit_move(san).legal
     before = _history(app.client)
     assert not app.ctx.session.is_game_over()  # a real game stands to be lost
     utterance = "new game"
-    assert parse_move(utterance, app.ctx.session.fen()) is None
+    _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     run = _run_once(app, "destructive_confirm", utterance)
     assistant = run.assistant
 
+    assert run.route == ROUTE_BRAIN, f"routed through {run.route!r}, not the planner"
     assert _successful(assistant, "new_game") == [], (
         "new_game must wait for a confirmation, not fire on the first ask"
     )
     assert _board_mutations(assistant) == []
     assert _history(app.client) == before
     assert assistant["content"], "expected a confirmation question"
-    assert app.ctx.pending is not None, "the refused op must be armed for the yes"
+    pending = app.ctx.live_pending()
+    assert pending is not None and pending.name == "new_game", (
+        f"the reset must be armed for the yes, and what is armed is {pending!r}"
+    )
+    traced = app.tracer.last
+    assert traced.get("guarded") is not True, (
+        "the question was replaced by a correction, so there is nothing for the "
+        f"player to answer ({','.join(traced.get('guarded_claims') or ())}): "
+        f"{traced.get('suppressed')!r}"
+    )
 
     # The other half of the gate: the answer. Deterministic — no model call
     # stands between the player's yes and the reset.
@@ -1080,6 +1216,67 @@ def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:
 
     assert app.ctx.session.move_history() == [], "confirmed: the game really resets"
     assert app.ctx.pending is None
+
+
+# The two resignation utterances, and the difference between them is the whole
+# of audit finding 9. `parse_resign` settles the literal one — every clause is a
+# resignation or a filler — so it never reaches the planner; the other says the
+# same thing in words no parser claims, which is the only way a *model* can be
+# measured resigning. Both are pinned off the GPU in `test_eval_harness.py`, so
+# a parser that grows to cover the second one fails in CI rather than quietly
+# turning four planner scenarios back into fast-path scenarios.
+_RESIGN_UTTERANCE = "please record a resignation for my side"
+_RESIGN_LITERAL = "you know what, I give up. I resign"
+
+
+def test_eval_resign_literal_is_settled_without_the_model(eval_app: EvalApp) -> None:
+    """ "you know what, I give up. I resign" never reaches the model at all.
+
+    This is the architecture lock the four old resign scenarios were accidentally
+    measuring (audit finding 9). They used this utterance and asserted nothing
+    about the route, so what they actually recorded — five samples each, four
+    scenarios, every gate run — was `route=resign model_calls=0`: the
+    deterministic path, priced as planner coverage. The planner coverage moved
+    to `_RESIGN_UTTERANCE`; this keeps the literal, states its cost honestly,
+    and pins the short-circuit itself.
+
+    Which is worth its own scenario, because the short-circuit exists for a
+    reason (`api._command_turn`): a resignation is deterministic text, so the
+    model gets no vote on whether it happened — live, it took one and answered
+    "Word. Game over." with zero tool calls on a live board. The call still goes
+    through the registry, so the gate refuses it and arms it, and the *player's*
+    yes ends the game. Nothing here needs the GPU beyond the suite's own
+    fixtures, so it is also the cheapest scenario in the file."""
+    app = eval_app
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
+        assert app.ctx.session.submit_move(san).legal
+    before = _history(app.client)
+    assert not app.ctx.session.is_game_over()  # a real game stands to be lost
+    assert parse_resign(_RESIGN_LITERAL)  # takes the resign route
+
+    run = _run_once(app, "resign_literal_fast_path", _RESIGN_LITERAL)
+    assistant = run.assistant
+
+    assert run.route == ROUTE_RESIGN, (
+        f"a literal resignation is the pipeline's to settle: routed through "
+        f"{run.route!r}"
+    )
+    assert len(run.model_calls) == 0, (
+        "the resign route dispatches and answers with the gate's own question, "
+        f"so it costs no model call: {len(run.model_calls)}"
+    )
+    assert [c for c in _tool_calls(assistant) if c["tool"] == "resign"], (
+        f"the resignation must go through the tool: {_trajectory(assistant)}"
+    )
+    # Refused by the gate and armed, exactly as the agent's own call would be —
+    # the deterministic route is not a way around the confirmation.
+    pending = app.ctx.live_pending()
+    assert pending is not None and pending.name == "resign", (
+        f"the resignation must be armed for the yes, and what is armed is {pending!r}"
+    )
+    assert _history(app.client) == before, "a question must not touch the board"
+    assert not app.ctx.session.is_game_over(), "the game ends on the yes, not the ask"
+    assert run.stop_reason == "completed"
 
 
 # --- move correctness: the pass-rate scenarios --------------------------------
@@ -1182,6 +1379,17 @@ def _assert_reached_narrator(run: EvalRun) -> None:
     Raises `VacuousRun` — an `AssertionError` subclass `classify` reads as
     INCONCLUSIVE, so the sample counts against the rate and is reported as what
     it was, rather than either passing silently or being blamed on the model.
+
+    **A budget stop and empty text were not the only ways a turn can arrive
+    answerless** (audit 2026-09-05, finding 10). A truncated narrator keeps the
+    planner's `completed` — the loop drops the fragment and no truncation field
+    survives — and the pipeline fills the empty reply with `api.STUCK_REPLY`. So
+    a commentary check saw a `completed` turn carrying nonempty text and read it
+    as an answer, when what the player got was the canned "say it again?" line:
+    `advice_capture_survives_guard`'s "no guard fired and nothing says scratch
+    that" passes over it perfectly. The stuck line is app-owned text, which is
+    the only reason reading it here is allowed at all — same precedent as that
+    scenario's "scratch that" check.
     """
     if run.stop_reason in BUDGET_STOPS:
         raise VacuousRun(
@@ -1189,6 +1397,11 @@ def _assert_reached_narrator(run: EvalRun) -> None:
         )
     if not run.assistant["content"]:
         raise VacuousRun("no commentary was produced, so nothing was tested")
+    if STUCK_REPLY in run.assistant["content"]:
+        raise VacuousRun(
+            "the pipeline answered with the canned stuck line; no narrator "
+            "answer was tested"
+        )
 
 
 def _sample(
@@ -1199,6 +1412,7 @@ def _sample(
     setup: Callable[[EvalApp], None] | None,
     runner: Callable[[EvalApp, str, str], EvalRun],
     requires_narrator: bool,
+    route: str | None,
 ) -> tuple[Outcome, EvalRun, BaseException | None]:
     """One sample on a fresh app, and what kind of sample it turned out to be.
 
@@ -1206,6 +1420,12 @@ def _sample(
     would raise off the `_NO_TURN` stub and read as a HARNESS bug — which
     `classify` deliberately never retries — so the guard here is what keeps a
     crash classified as the crash it is.
+
+    The route is asserted *first*, ahead of the vacuity check and the scenario's
+    own check, because a wrong route makes both of those meaningless rather than
+    failed: the resign fast path answers "I resign" with a real tool call, a real
+    armed op and a real question, so a resignation check passes it on every
+    sample while the model sits idle (audit finding 9).
     """
     app = _build_eval_app(engine)
     try:
@@ -1216,6 +1436,7 @@ def _sample(
         error: BaseException | None = None
         if run.status_code == 200 and run.stop_reason != STOP_PROVIDER_ERROR:
             try:
+                _assert_route(run, route)
                 if requires_narrator:
                     _assert_reached_narrator(run)
                 check(app, run.assistant)
@@ -1247,6 +1468,7 @@ def _pass_rate(
     setup: Callable[[EvalApp], None] | None = None,
     runner: Callable[[EvalApp, str, str], EvalRun] = _run,
     requires_narrator: bool = False,
+    route: str | None = ROUTE_BRAIN,
 ) -> RateResult:
     """Sample one scenario in blocks until its count decides against `floor`.
 
@@ -1279,6 +1501,13 @@ def _pass_rate(
     time) or `_run_panel` (the web panel, reading whatever `setup` left on
     `ctx.transcript`). `requires_narrator` adds the vacuity check for a scenario
     whose verdict is only about commentary.
+
+    `route` is what the scenario claims to be measuring, and it defaults to the
+    planner because every pass-rate scenario in this file is a model eval. It is
+    asserted on each sample that actually ran a turn — a scenario silently
+    answered by a deterministic short-circuit is not a scenario with a rate, it
+    is a scenario with a bug (audit finding 9). Pass `None` to measure a
+    scenario whose route genuinely varies.
     """
     blocks: list[tuple[int, int]] = []
     failures: list[str] = []
@@ -1313,6 +1542,7 @@ def _pass_rate(
                 setup,
                 runner,
                 requires_narrator,
+                route,
             )
             _SUITE.samples += 1
             samples.append(
@@ -1463,20 +1693,49 @@ def _assert_floor(result: RateResult, floor: float, *, blocking: bool = False) -
         )
 
 
-def _played(app: EvalApp, assistant: dict[str, Any]) -> str | None:
-    """The single SAN this turn actually put on the board, or None. Reads the
-    board back rather than trusting the trajectory: what the player cares about
-    is the move that landed, not the call that claimed it."""
-    moves = _legal_moves(assistant)
-    if len(moves) != 1:
-        return None
-    return json.loads(moves[0]["result"])["san"]
-
-
 def _expect_san(expected: str) -> Callable[[EvalApp, dict[str, Any]], None]:
+    """The check for a scenario whose whole question is *which move landed* —
+    read off the board, which is what the player sees.
+
+    It used to be read off the `make_move` result through a helper whose
+    docstring claimed the board and delivered the tool's own report of itself
+    ("reads the board back rather than trusting the trajectory", and it never
+    touched `app`). The gap is not cosmetic: a turn that played Bxe6 and then
+    undid it, or played it and then played again on top, reported Bxe6 and
+    passed (audit 2026-09-05, "several pins are weaker than their stated
+    intent").
+
+    So "the right move landed" is asserted as the five separate facts it
+    actually is — one accepted move on the wire, nothing else moving a piece,
+    that move first on the board, exactly one engine reply on top of it, and the
+    exchange settled with the player to move. The last two are what make it an
+    *exchange* rather than a mutation: the scenarios using this run on a
+    FEN-rooted session, whose move stack starts empty, so the history is exactly
+    what this turn did.
+    """
+
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
-        played = _played(app, assistant)
-        assert played == expected, f"expected {expected}, board got {played!r}"
+        moves = _legal_moves(assistant)
+        assert len(moves) == 1, (
+            f"expected exactly one accepted move, got {len(moves)}: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        mutated = [call["tool"] for call in _board_mutations(assistant)]
+        assert mutated == ["make_move"], (
+            "the move must be the only thing that moved a piece this turn: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        history = app.ctx.session.move_history()
+        assert history[:1] == [expected], (
+            f"expected {expected} on the board, and the history is {history}"
+        )
+        assert len(history) == 2, (
+            f"expected the move and exactly one engine reply, got {history}"
+        )
+        assert app.ctx.session.turn == app.ctx.session.player_color, (
+            "the exchange must settle with the player to move, and it is "
+            f"{app.ctx.session.turn}'s turn"
+        )
 
     return check
 
@@ -1502,10 +1761,12 @@ def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
     That made TODO #4 a measurement gap rather than a code gap — so this pins
     it before a prompt change quietly takes it away. Asserts both tools ran, in
     order, and the end position is the one the player asked for."""
+    utterance = "take that bishop move back and play d4 instead"
 
     def setup(app: EvalApp) -> None:
         for san in ("e4", "b6", "Nf3", "h6", "Bc4", "a5"):
             assert app.ctx.session.submit_move(san).legal
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         trajectory = [c["tool"] for c in _tool_calls(assistant)]
@@ -1524,7 +1785,7 @@ def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
     result = _pass_rate(
         engine,
         "undo_and_replace",
-        "take that bishop move back and play d4 instead",
+        utterance,
         check,
         floor=floor,
         setup=setup,
@@ -1543,8 +1804,13 @@ def test_eval_undo_and_replace_is_one_turn(engine: EnginePlayer) -> None:
         "with the loop stall this scenario was written for gone from every "
         "sample. Model understanding, so the lever is `undo`'s description "
         "(a prompt change, gated on this scenario — TODO.md). Non-strict: the "
-        "invariant is right and it XPASSes when the model reads the count."
+        "invariant is right and it XPASSes when the model reads the count. "
+        "Filtered to AssertionError: an unfiltered xfail also absorbs a "
+        "harness bug or an infra abort (`pytest.fail` raises `Failed`, a bad "
+        "check raises `KeyError`), and an xfail line is then no longer "
+        "evidence of the known understanding miss (audit 2026-09-05)."
     ),
+    raises=AssertionError,
     strict=False,
 )
 def test_eval_undo_twice_and_replace_is_one_turn(engine: EnginePlayer) -> None:
@@ -1566,10 +1832,12 @@ def test_eval_undo_twice_and_replace_is_one_turn(engine: EnginePlayer) -> None:
     Behavioral, like `undo_and_replace`: however the model spells the takeback
     (two calls, or one asking for four plies), both exchanges must be gone and
     the replacement must stand where the first of them stood."""
+    utterance = "undo the bishop move and undo the knight move, then play d4 instead"
 
     def setup(app: EvalApp) -> None:
         for san in ("e4", "b6", "Nf3", "h6", "Bc4", "a5"):
             assert app.ctx.session.submit_move(san).legal
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         trajectory = [c["tool"] for c in _tool_calls(assistant)]
@@ -1590,7 +1858,7 @@ def test_eval_undo_twice_and_replace_is_one_turn(engine: EnginePlayer) -> None:
     result = _pass_rate(
         engine,
         "undo_twice_and_replace",
-        "undo the bishop move and undo the knight move, then play d4 instead",
+        utterance,
         check,
         floor=floor,
         setup=setup,
@@ -1617,6 +1885,7 @@ def test_eval_what_was_my_mistake_analyzes_the_players_move(
     reported the engine's move as if it were c3. The tool now defaults to
     `session.player_color`, so the model no longer has to express something the
     signature couldn't say."""
+    utterance = "what was my mistake?"
 
     def setup(app: EvalApp) -> None:
         # The exact game from the trace review: White hangs the e4 pawn with c3
@@ -1628,6 +1897,7 @@ def test_eval_what_was_my_mistake_analyzes_the_players_move(
         ):  # fmt: skip
             assert app.ctx.session.submit_move(san).legal
         assert app.ctx.session.turn == "white"  # the player, asking on their turn
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         calls = _successful(assistant, "analyze_last_move")
@@ -1646,7 +1916,7 @@ def test_eval_what_was_my_mistake_analyzes_the_players_move(
     result = _pass_rate(
         engine,
         "my_mistake_is_mine",
-        "what was my mistake?",
+        utterance,
         check,
         floor=floor,
         setup=setup,
@@ -1664,6 +1934,13 @@ def test_eval_play_as_black_actually_assigns_black(engine: EnginePlayer) -> None
     the agent had no way to assign a side and the advertised handoff
     (/?intent=let's+play+chess+as+black) was broken end to end. The tool now
     takes `player_color`."""
+    utterance = "let's play chess as black"
+
+    def setup(app: EvalApp) -> None:
+        # The only setup this scenario needs, and it needs it: the deep link's
+        # own intent string is not a move phrase or a resignation today, and
+        # nothing but this line would notice if a parser grew to cover it.
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         assert app.ctx.session.player_color == "black", (
@@ -1679,9 +1956,10 @@ def test_eval_play_as_black_actually_assigns_black(engine: EnginePlayer) -> None
     result = _pass_rate(
         engine,
         "play_as_black",
-        "let's play chess as black",
+        utterance,
         check,
         floor=floor,
+        setup=setup,
     )
 
     _assert_floor(result, floor)
@@ -1699,6 +1977,7 @@ def test_eval_resume_game_is_not_denied(engine: EnginePlayer, tmp_path: Any) -> 
     live failure, and it is a hard assert anyway: the behavior it pins is
     correct, and the *remaining* suspicion (that a long transcript degrades tool
     recall) is a separate scenario nobody has written yet."""
+    utterance = "load up the game I saved as scholars"
 
     def setup(app: EvalApp) -> None:
         app.ctx.save_dir = tmp_path
@@ -1713,6 +1992,9 @@ def test_eval_resume_game_is_not_denied(engine: EnginePlayer, tmp_path: Any) -> 
         path.parent.mkdir(parents=True, exist_ok=True)
         app.ctx.session.save(path)
         app.ctx.session = GameSession()  # a different game is in progress now
+        # After the swap, because that is the board the utterance is judged
+        # against — the one the request will actually arrive on.
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         assert _successful(assistant, "resume_game"), (
@@ -1726,7 +2008,7 @@ def test_eval_resume_game_is_not_denied(engine: EnginePlayer, tmp_path: Any) -> 
     result = _pass_rate(
         engine,
         "resume_not_denied",
-        "load up the game I saved as scholars",
+        utterance,
         check,
         floor=floor,
         setup=setup,
@@ -1746,29 +2028,49 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
     over.", and a board that was still live. The player was told the game had
     ended and it had not.
 
-    5/5 here, so — as with resume_game — the harness does not reproduce that
-    failure and the assert is hard. What the eval cannot yet reach is the state
-    live play had and this doesn't: a long transcript, and verbosity=low."""
+    **Until this PR the scenario did not measure that at all.** Its utterance
+    was "you know what, I give up. I resign", which `fastparse.parse_resign`
+    settles whole-clause, so the pipeline dispatched `resign` itself and the
+    model was never asked: a same-day control gate run reads `route=resign
+    model_calls=0 trajectory=[resign(color="white")!]` on every sample, and the
+    recorded 5/5 was the parser's, not the agent's (audit 2026-09-05, finding
+    9). The literal utterance keeps its own scenario as a zero-model routing
+    lock (`resign_literal_fast_path`); this one moves to a resignation stated in
+    words no parser claims, so reaching the tool takes understanding the ask.
+    The route pin comes from `_pass_rate`'s default and is what stops the same
+    thing happening again quietly.
+
+    What the eval still cannot reach is the state live play had and this
+    doesn't: a long transcript, and verbosity=low (see the long-transcript
+    family)."""
 
     def setup(app: EvalApp) -> None:
         for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
             assert app.ctx.session.submit_move(san).legal
+        _stays_a_model_eval(_RESIGN_UTTERANCE, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         assert _tool_calls(assistant), (
             "claimed an outcome with no tool call: " + assistant["content"]
         )
+        # Called, whatever the gate then did with it — a refused resign rides
+        # on the wire as an `error`, so this counts attempts, not successes.
         assert any(c["tool"] == "resign" for c in _tool_calls(assistant)), (
             f"expected a resign call: {_trajectory(assistant)}"
         )
-        # Either it was gated (armed, board live) or it ran — never a lie.
-        assert app.ctx.session.is_game_over() or app.ctx.pending is not None
+        # Either it was gated (armed, board live) or it ran — never a lie. The
+        # armed op has to *be* the resignation: `live_pending`, and by name, so
+        # some other pending question cannot pass for this one.
+        pending = app.ctx.live_pending()
+        assert app.ctx.session.is_game_over() or (
+            pending is not None and pending.name == "resign"
+        ), f"neither resigned nor armed a resignation: pending={pending!r}"
 
     floor = _FLOORS["resign_never_pretends"]
     result = _pass_rate(
         engine,
         "resign_never_pretends",
-        "you know what, I give up. I resign",
+        _RESIGN_UTTERANCE,
         check,
         floor=floor,
         setup=setup,
@@ -1789,10 +2091,12 @@ def test_eval_advice_is_engine_backed(engine: EnginePlayer) -> None:
     and its record stays in docs/agent-evals.md). The licensing half mirrors
     the pipeline's advice guard, so what this measures is the model's own
     discipline: how often the guard would have had to step in."""
+    utterance = "what should I play here?"
 
     def setup(app: EvalApp) -> None:
         for san in ("e4", "e5", "Nf3", "Nc6"):
             assert app.ctx.session.submit_move(san).legal
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         consulted = _successful(assistant, "get_best_moves")
@@ -1826,7 +2130,7 @@ def test_eval_advice_is_engine_backed(engine: EnginePlayer) -> None:
     result = _pass_rate(
         engine,
         "advice_is_engine_backed",
-        "what should I play here?",
+        utterance,
         check,
         floor=floor,
         setup=setup,
@@ -1860,6 +2164,7 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
     Scored on the pipeline's verdict rather than on wording — the trace record
     says whether the guard fired, and which class — because *how* he offers a
     capture is exactly the thing the suite must not pin."""
+    utterance = "what should I play here?"
 
     def setup(app: EvalApp) -> None:
         for san in ("e4", "d5", "Nc3", "dxe4"):
@@ -1868,6 +2173,7 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
         # quietly stopped being a capture would pass while measuring nothing.
         best = app.ctx.engine.get_best_moves(app.ctx.session, n=1)[0]
         assert "x" in best.san, f"the premise needs a capture, got {best.san}"
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         traced = app.tracer.last
@@ -1884,7 +2190,7 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
     result = _pass_rate(
         engine,
         "advice_capture_survives_guard",
-        "what should I play here?",
+        utterance,
         check,
         floor=floor,
         setup=setup,
@@ -1909,9 +2215,11 @@ def test_eval_verbosity_up_from_low(engine: EnginePlayer) -> None:
     player is in when they ask — and because from `normal` a turn could stumble
     into the right end of the enum. What is asserted is the direction and the
     persistence, never the wording of the reply."""
+    utterance = "talk more"
 
     def setup(app: EvalApp) -> None:
         app.ctx.settings.verbosity = "low"
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
 
     order = {"low": 0, "normal": 1, "high": 2}
 
@@ -1936,7 +2244,7 @@ def test_eval_verbosity_up_from_low(engine: EnginePlayer) -> None:
     result = _pass_rate(
         engine,
         "verbosity_up_from_low",
-        "talk more",
+        utterance,
         check,
         floor=floor,
         setup=setup,
@@ -1974,7 +2282,7 @@ def test_eval_position_is_described_not_evaluated(engine: EnginePlayer) -> None:
     def setup(app: EvalApp) -> None:
         for san in ("e4", "e5", "Nf3", "Nc6"):
             assert app.ctx.session.submit_move(san).legal
-        assert parse_move(utterance, app.ctx.session.fen()) is None
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
         before["settings"] = app.ctx.settings.snapshot()
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
@@ -2059,7 +2367,7 @@ def _impossible_request(
     before: dict[str, Any] = {}
 
     def setup(app: EvalApp) -> None:
-        assert parse_move(utterance, app.ctx.session.fen()) is None
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
         before["settings"] = app.ctx.settings.snapshot()
 
     return _pass_rate(
@@ -2170,7 +2478,7 @@ def test_eval_constraint_rules_out_the_only_lever(engine: EnginePlayer) -> None:
     before: dict[str, Any] = {}
 
     def setup(app: EvalApp) -> None:
-        assert parse_move(_CONSTRAINT_UTTERANCE, app.ctx.session.fen()) is None
+        _stays_a_model_eval(_CONSTRAINT_UTTERANCE, app.ctx.session.fen())
         assert app.ctx.settings.tier == DEFAULT_TIER  # baseline strength
         before["settings"] = app.ctx.settings.snapshot()
 
@@ -2245,7 +2553,7 @@ def test_eval_constraint_survives_a_live_thread(engine: EnginePlayer) -> None:
         app.ctx.settings.verbosity = "low"
         for said, replied in _CONSTRAINT_THREAD:
             app.ctx.transcript.record(said, replied)
-        assert parse_move(_CONSTRAINT_UTTERANCE, app.ctx.session.fen()) is None
+        _stays_a_model_eval(_CONSTRAINT_UTTERANCE, app.ctx.session.fen())
         assert app.ctx.settings.tier == DEFAULT_TIER
         before["settings"] = app.ctx.settings.snapshot()
 
@@ -2295,7 +2603,7 @@ def test_eval_pgn_is_handed_over_not_recited(engine: EnginePlayer) -> None:
     def setup(app: EvalApp) -> None:
         for san in ("e4", "e5", "Nf3", "Nc6"):
             assert app.ctx.session.submit_move(san).legal
-        assert parse_move(utterance, app.ctx.session.fen()) is None
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
         before["settings"] = app.ctx.settings.snapshot()
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
@@ -2519,6 +2827,11 @@ def test_eval_long_transcript_resume_is_not_denied(
     context that claimed to know about saves. Now `saved_games` is in the state
     block every turn (`api._agent_state_dict`), so a stale sentence is arguing
     with a fresh fact — and the fact wins. Hard assert in all three conditions."""
+    utterance = "load up the game I saved as scholars"
+    # Once at body level rather than per-sample: every condition puts the same
+    # `_LIVE_FEN` on the board, so the premise is a property of the scenario and
+    # not of a sample.
+    _stays_a_model_eval(utterance, _LIVE_FEN)
 
     def setup(app: EvalApp) -> None:
         condition(app)
@@ -2542,7 +2855,7 @@ def test_eval_long_transcript_resume_is_not_denied(
     result = _pass_rate(
         engine,
         f"long_resume[{label}]",
-        "load up the game I saved as scholars",
+        utterance,
         check,
         floor=floor,
         setup=setup,
@@ -2564,29 +2877,50 @@ def test_eval_long_transcript_resign_never_pretends(
     floor is that the tool was *called*: the agent may never say a destructive op
     happened without going through it.
 
-    All three conditions are 5/5, including poisoned (seeded with the declined
-    new_game that really did precede the live miss). So **the live resign failure
-    is still unexplained** — it is not length, and it is not self-poisoning by a
-    declined op. It stays a hard assert in all three conditions: if it ever
-    reappears, it fails here, and the next hypothesis will need a new
-    condition."""
+    **All three conditions measured the fast path, not the model** (audit
+    2026-09-05, finding 9). The utterance was "you know what, I give up. I
+    resign", which `fastparse.parse_resign` settles whole-clause, so the
+    pipeline dispatched `resign` itself before the planner was ever built: a
+    control gate run reads `route=resign model_calls=0
+    trajectory=[resign(color="white")!]` on every sample of every condition, and
+    the recorded 5/5 ×3 said nothing about whether a transcript can talk the
+    model out of the tool. Worse, the three conditions differ only in what is in
+    the *transcript*, which the resign route never reads — so the parametrize
+    was measuring one thing three times.
+
+    So the ask moves to a resignation stated in words no parser claims, and
+    these three conditions now reach the planner with their transcripts intact.
+    `_pass_rate`'s route pin is what keeps them there; the literal utterance
+    keeps its own zero-model scenario (`resign_literal_fast_path`). The recorded
+    "the live resign failure is still unexplained" stands as a statement about
+    the *live* miss and no longer as a result from this scenario: whatever these
+    conditions measure, they have not measured it yet."""
+    _stays_a_model_eval(_RESIGN_UTTERANCE, _LIVE_FEN)
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         assert _tool_calls(assistant), (
             "claimed an outcome with no tool call: " + assistant["content"]
         )
+        # Any outcome, because the gate refusing it is a pass: what may never
+        # happen is the outcome being claimed without the call.
         assert any(c["tool"] == "resign" for c in _tool_calls(assistant)), (
             f"expected a resign call: {_trajectory(assistant)}"
         )
-        assert app.ctx.session.is_game_over() or app.ctx.pending is not None, (
-            "neither resigned nor armed for confirmation"
-        )
+        # Both branches are real, and on *this* board it is usually the first:
+        # the session is FEN-rooted with no recorded plies, so the gate's
+        # investment test (`tools._player_has_moved`) stands aside and the
+        # resignation runs rather than arming. The fresh scenario, which replays
+        # its six plies, exercises the other branch.
+        pending = app.ctx.live_pending()
+        assert app.ctx.session.is_game_over() or (
+            pending is not None and pending.name == "resign"
+        ), f"neither resigned nor armed a resignation: pending={pending!r}"
 
     floor = _FLOORS["long_resign"]
     result = _pass_rate(
         engine,
         f"long_resign[{label}]",
-        "you know what, I give up. I resign",
+        _RESIGN_UTTERANCE,
         check,
         floor=floor,
         setup=condition,
@@ -2617,13 +2951,14 @@ def test_eval_long_transcript_capture_still_lands(
     fresh state does not beat stale prose — and the state-injection fix for the
     resume self-poisoning could not work either. It is a hard assert in all three
     conditions."""
-    assert parse_move("grab the pawn on e6", _LIVE_FEN) is None
+    utterance = "grab the pawn on e6"
+    _stays_a_model_eval(utterance, _LIVE_FEN)
 
     floor = _FLOORS["long_capture"]
     result = _pass_rate(
         engine,
         f"long_capture[{label}]",
-        "grab the pawn on e6",
+        utterance,
         _expect_san("Bxe6"),
         floor=floor,
         setup=condition,

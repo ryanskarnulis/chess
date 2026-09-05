@@ -14,6 +14,18 @@ per-call token counts reach the printed line, the `EvalRun`, and the sample
 record — with each half's readings and its attribution coming off the *same*
 seam, so they can never describe different turns. Nothing here calls the model,
 so it runs in ordinary `pytest` alongside `test_evalstats.py`.
+
+It also pins the harness's **gates**, which is the same argument one step
+further in. The 2026-09-05 audit (`docs/agent-audit-2026-09-05.md`, findings 9
+and 10) found three ways a sample could pass without testing anything: a
+resignation utterance the fast path settled before the model was built, a
+`completed` turn whose text was the pipeline's own canned stuck line, and a
+move read off the tool call that claimed it rather than off the board that
+kept it. None of those needs a GPU to reproduce — they are conditions on a
+finished turn — so each one is a test here, and the scenarios' premises
+(which utterance each parser does and does not swallow, which tool names the
+generic helpers stand for) are pinned in CI rather than only inside an opt-in
+suite nobody runs on a laptop.
 """
 
 from __future__ import annotations
@@ -22,9 +34,31 @@ from typing import Any
 
 import pytest
 
-from evalstats import Attribution
-from fakes import CountingProvider, ModelCall
-from test_agent_evals import EvalApp, _CollectingTracer, _measured, _trajectory
+from chessapp.api import STUCK_REPLY
+from chessapp.fastparse import parse_resign
+from chessapp.game import GameSession
+from chessapp.tools import DESTRUCTIVE_TOOLS, ToolContext, build_registry
+from chessapp.trace import ROUTE_BRAIN, ROUTE_FAST_PATH, ROUTE_RESIGN
+from evalstats import Attribution, Decision, VacuousRun, split_latencies, split_tokens
+from fakes import CountingProvider, FakeEngine, ModelCall
+from test_agent_evals import (
+    _BLOCK_RUNS,
+    _BOARD_TOOLS,
+    _LIVE_FEN,
+    _RESIGN_LITERAL,
+    _RESIGN_UTTERANCE,
+    _VERDICT_TOOLS,
+    EvalApp,
+    EvalRun,
+    _assert_reached_narrator,
+    _assert_route,
+    _CollectingTracer,
+    _expect_san,
+    _measured,
+    _pass_rate,
+    _stays_a_model_eval,
+    _trajectory,
+)
 
 
 class _Response:
@@ -391,3 +425,288 @@ def test_a_rejected_move_reads_as_rejected_beside_its_arguments() -> None:
     )
 
     assert rejected == 'make_move(move="Qh8")!illegal → save_game(name="x")!'
+
+
+# --- the gates: what a sample may not pass on ---------------------------------
+#
+# Everything above is about *reporting* a sample. The rest of this file is about
+# refusing one. Three conditions the audit found a sample passing under, none of
+# which needs a model to reproduce: the wrong route answered the utterance, the
+# reply was the pipeline's canned fallback rather than an answer, and the move
+# the wire claimed was not the move the board kept.
+
+
+def _finished_run(
+    *,
+    content: str = "Bishop takes. Rude.",
+    stop_reason: str = "completed",
+    route: str | None = ROUTE_BRAIN,
+) -> EvalRun:
+    """An `EvalRun` for a turn that finished, carrying what the gates read: the
+    reply's text, the stop reason, and the route.
+
+    The cost fields are built by the same splitters `_measured` calls, over
+    empty readings — a run assembled here is a turn nobody metered, and
+    hand-writing a `TurnLatencies` would let this file's idea of one drift from
+    the only place that builds them for real.
+    """
+    return EvalRun(
+        assistant={"content": content, "tool_calls": []},
+        duration=1.0,
+        model_calls=[],
+        status_code=200,
+        stop_reason=stop_reason,
+        provider_failure=None,
+        latencies=split_latencies((), route=route, stop_reason=stop_reason),
+        tokens=split_tokens((), route=route, stop_reason=stop_reason),
+        route=route,
+    )
+
+
+def test_the_canned_stuck_line_is_not_a_narrator_answer() -> None:
+    """Audit finding 10. A truncated narrator keeps the planner's `completed` —
+    the loop drops the fragment and no truncation field survives it — and the
+    pipeline fills the empty reply with `api.STUCK_REPLY`. So `completed` plus
+    nonempty text was not enough to prove an answer was tested: every negative
+    commentary check in the suite passes over "I lost the thread on that one",
+    and `advice_capture_survives_guard` passes it happily (no guard fired, and
+    the line does not say "scratch that")."""
+    with pytest.raises(VacuousRun, match="canned stuck line"):
+        _assert_reached_narrator(_finished_run(content=STUCK_REPLY))
+
+
+def test_a_reply_carrying_the_stuck_line_is_rejected_whatever_else_it_says() -> None:
+    # Substring rather than equality: the fallback reaches the wire as the
+    # commentary of a turn that may also have appended the engine's canned reply
+    # line, and a stuck answer with a move announcement after it is still stuck.
+    with pytest.raises(VacuousRun):
+        _assert_reached_narrator(_finished_run(content=f"{STUCK_REPLY}\n\nNf6."))
+
+
+def test_ordinary_prose_reaches_the_narrator() -> None:
+    # The other half, and the reason the check is a substring of one app-owned
+    # constant rather than anything about wording: a real answer passes.
+    _assert_reached_narrator(_finished_run(content="You're up a pawn. Keep pushing."))
+
+
+def test_a_budget_stop_never_reached_a_narrator_at_all() -> None:
+    """The gate's original rule, pinned now that it has company: a turn that
+    ended on its budget produced no commentary, so the text it carries is not
+    the narrator's either."""
+    with pytest.raises(VacuousRun, match="no narrator ran"):
+        _assert_reached_narrator(_finished_run(stop_reason="max_iterations"))
+
+
+def test_a_short_circuited_utterance_fails_a_model_scenario() -> None:
+    """Audit finding 9, as the assertion that would have caught it: the message
+    has to name both routes, because "this scenario measured nothing" is only
+    actionable if it says what answered instead."""
+    with pytest.raises(AssertionError) as excinfo:
+        _assert_route(_finished_run(route=ROUTE_RESIGN), ROUTE_BRAIN)
+
+    message = str(excinfo.value)
+    assert ROUTE_RESIGN in message and ROUTE_BRAIN in message
+
+
+def test_the_expected_route_passes() -> None:
+    _assert_route(_finished_run(route=ROUTE_BRAIN), ROUTE_BRAIN)
+
+
+def test_no_expected_route_asserts_nothing() -> None:
+    # For a scenario whose route legitimately varies. Opting out is spelled at
+    # the call site (`_pass_rate(route=None)`) rather than being what happens
+    # when nobody thought about it.
+    _assert_route(_finished_run(route=ROUTE_RESIGN), None)
+
+
+def test_a_scenario_the_fast_path_answers_comes_back_below_the_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate end to end, with a scripted runner where the model would be.
+
+    This is finding 9 as a regression test: five samples, every one of them
+    answered on another route, and the scenario has to come back BELOW_FLOOR
+    naming the route rather than ABOVE_FLOOR having tested nothing. The check
+    never runs — a wrong route makes a scenario's own assertions meaningless
+    rather than failed, and the resign short-circuit satisfies every one of the
+    resignation checks by itself.
+    """
+    # A deterministic test must never append to a measurement report, even when
+    # one is being collected in the same shell.
+    monkeypatch.setattr("test_agent_evals._REPORT_PATH", None)
+    checked: list[str] = []
+
+    def runner(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
+        # What a short-circuit leaves behind: a finished turn on another route.
+        app.tracer.record({"route": ROUTE_FAST_PATH, "stop_reason": "completed"})
+        return _finished_run(route=ROUTE_FAST_PATH)
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        checked.append(assistant["content"])
+
+    result = _pass_rate(
+        FakeEngine(),  # type: ignore[arg-type]
+        "fast_path_answered_it",
+        "I resign",
+        check,
+        floor=0.8,
+        runner=runner,
+    )
+
+    assert result.decision is Decision.BELOW_FLOOR
+    assert result.runs == _BLOCK_RUNS and result.passed == 0
+    assert all(
+        ROUTE_FAST_PATH in failure and ROUTE_BRAIN in failure
+        for failure in result.failures
+    ), result.failures
+    assert checked == [], "the route pin must fail before the scenario's check runs"
+
+
+# --- which move landed --------------------------------------------------------
+
+
+def _board_app(*sans: str) -> EvalApp:
+    """An `EvalApp` whose `ctx` is a real game at `_LIVE_FEN` with `sans` played
+    on it, and nothing else wired.
+
+    `client` is None on purpose: `_expect_san` reads the session now, and a
+    check that reached for the HTTP seam instead should fail here rather than be
+    accommodated. The session is FEN-rooted, like the scenarios', so its move
+    history is exactly what the turn under test did.
+    """
+    ctx = ToolContext(session=GameSession(fen=_LIVE_FEN))
+    for san in sans:
+        assert ctx.session.submit_move(san).legal
+    return EvalApp(
+        client=None,  # type: ignore[arg-type]
+        ctx=ctx,
+        provider=CountingProvider(inner=None),
+        tracer=_CollectingTracer(),
+    )
+
+
+# The accepted capture, as the delegate wire carries it: `legal:true` plus the
+# SAN the tool reported. This entry alone used to be the whole of the check.
+_ACCEPTED_BXE6 = _call(
+    "make_move", {"move": "c4e6"}, result='{"legal":true,"san":"Bxe6"}'
+)
+
+
+def test_a_move_undone_in_the_same_turn_is_not_the_move_that_landed() -> None:
+    """The audit's example, verbatim: the wire says Bxe6 was accepted and the
+    board says nothing was played. `long_capture` — the release-blocking
+    scenario — passed this, because the SAN was read out of the tool result by a
+    helper whose docstring claimed it read the board back."""
+    with pytest.raises(AssertionError, match="only thing that moved a piece"):
+        _expect_san("Bxe6")(
+            _board_app(),
+            _assistant(
+                _ACCEPTED_BXE6, _call("undo", {"plies": 2}, result='{"ok":true}')
+            ),
+        )
+
+
+def test_a_move_the_engine_never_answered_has_not_settled() -> None:
+    """One ply on the board and the engine to move is a turn that stopped
+    half-way through the exchange — the pipeline owes a reply it never
+    collected (`docs/turn-coordinator.md`), and the board the player is looking
+    at is not one they can move on."""
+    app = _board_app("Bxe6")
+    assert app.ctx.session.turn != app.ctx.session.player_color  # engine's move
+
+    with pytest.raises(AssertionError, match="exactly one engine reply"):
+        _expect_san("Bxe6")(app, _assistant(_ACCEPTED_BXE6))
+
+
+def test_the_move_plus_one_reply_with_the_player_to_move_passes() -> None:
+    app = _board_app("Bxe6", "fxe6")
+
+    _expect_san("Bxe6")(app, _assistant(_ACCEPTED_BXE6))
+
+    assert app.ctx.session.move_history() == ["Bxe6", "fxe6"]
+    assert app.ctx.session.turn == app.ctx.session.player_color
+
+
+def test_a_different_move_on_the_board_fails_whatever_the_wire_says() -> None:
+    # The plain case the old check did cover, kept: the tool result is not
+    # evidence about the board, in either direction. Bd5 is the same bishop
+    # going somewhere else — a settled exchange, and the wrong one.
+    app = _board_app("Bd5", "Nf6")
+
+    with pytest.raises(AssertionError, match="expected Bxe6 on the board"):
+        _expect_san("Bxe6")(app, _assistant(_ACCEPTED_BXE6))
+
+
+# --- the scenarios' premises, pinned in CI ------------------------------------
+#
+# A premise that only holds inside an opt-in suite is a premise nobody checks:
+# `parse_resign` grew the clause-and-filler rule and four scenarios silently
+# stopped being model evals. These are the statements the resignation scenarios
+# and the generic tool helpers are built on, asserted where every commit runs.
+
+
+def test_the_literal_resignation_belongs_to_the_parser() -> None:
+    """What makes `resign_literal_fast_path` a meaningful scenario: this
+    utterance really is settled deterministically, so its zero-model assertion
+    is a lock on the short-circuit and not a coincidence."""
+    assert parse_resign(_RESIGN_LITERAL) is True
+
+
+def test_the_planner_resignation_reaches_the_planner() -> None:
+    """And what makes `resign_never_pretends` and the three `long_resign`
+    conditions model evals again. Both boards they run on, because `parse_move`
+    answers per position: the six-ply game the fresh scenario replays, and the
+    long-transcript family's `_LIVE_FEN`."""
+    assert parse_resign(_RESIGN_UTTERANCE) is False
+    session = GameSession()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
+        assert session.submit_move(san).legal
+
+    _stays_a_model_eval(_RESIGN_UTTERANCE, session.fen())
+    _stays_a_model_eval(_RESIGN_UTTERANCE, _LIVE_FEN)
+
+
+def test_the_setup_guard_names_the_parser_that_would_swallow_the_utterance() -> None:
+    """A guard nobody has watched fire is a guard nobody should trust — and this
+    one has to say *which* parser, because the two failures need different
+    fixes (a new utterance, or a different board)."""
+    fresh = GameSession().fen()
+
+    with pytest.raises(AssertionError, match="parse_move"):
+        _stays_a_model_eval("e4", fresh)
+    with pytest.raises(AssertionError, match="parse_resign"):
+        _stays_a_model_eval(_RESIGN_LITERAL, fresh)
+
+
+def test_the_generic_tool_sets_name_real_tools() -> None:
+    """Both helpers are membership tests against tool names, so a rename in
+    `tools.py` degrades them silently: `_board_mutations` would stop seeing a
+    mutation, and "no verdict tool ran" would pass for a verdict tool nobody
+    can spell any more."""
+    registry = build_registry(ToolContext(session=GameSession(), engine=FakeEngine()))
+    registered = {
+        definition["function"]["name"] for definition in registry.definitions()
+    }
+
+    assert _BOARD_TOOLS <= registered, sorted(_BOARD_TOOLS - registered)
+    assert _VERDICT_TOOLS <= registered, sorted(_VERDICT_TOOLS - registered)
+
+
+def test_every_way_to_end_a_game_counts_as_a_board_mutation() -> None:
+    """`claim_draw` ends a game and was in `tools.DESTRUCTIVE_TOOLS` for a
+    release before the harness's board set heard of it, which left every "this
+    turn moved nothing" assertion blind to a claimed draw. The relationship is
+    pinned rather than the literal, so the next tool that ends a game cannot
+    repeat it."""
+    assert set(DESTRUCTIVE_TOOLS) <= _BOARD_TOOLS, sorted(
+        set(DESTRUCTIVE_TOOLS) - _BOARD_TOOLS
+    )
+    assert "claim_draw" in _BOARD_TOOLS
+
+
+def test_a_whole_game_review_is_a_verdict() -> None:
+    # `review_game` classifies every move and scores accuracy off the engine —
+    # the same "how good is this?" answer `evaluate_position` gives, over the
+    # whole game. A description ask answered with one is the walkthrough defect
+    # wearing a bigger tool.
+    assert "review_game" in _VERDICT_TOOLS

@@ -17,6 +17,7 @@ asserts on the returned wire:
 - **trajectory shape** — the right tool family ran; read-only asks mutate
   nothing (a rejected move is a `legal: false` *result*, never an `error`)
 - **board end-state** — read back through `GET /api/state`
+- **route** — which path handled the utterance, off the trace record
 - **`stop_reason`** — `completed` vs a budget stop
 - **cost** — model round-trips and per-call thinking, counted by a
   `CountingProvider` wrapper
@@ -24,10 +25,18 @@ asserts on the returned wire:
 Assertions are behavioral, never exact call sequences: the model samples at
 temp 1.0, so goldens pin tool *families* and end-state, never wording.
 
-Every scenario asserts the fast path doesn't swallow its utterance
-(`parse_move`/`parse_resign` return None in setup), so this stays a *model*
-eval even if the parser grows. Scenarios are independent (fresh app + game
-each); Stockfish is module-scoped; the model stays warm between scenarios.
+**Staying a model eval takes both halves, and both are now asserted.** Two
+fast paths short-circuit the planner: `parse_move` settles an utterance that
+names exactly one legal move, and `parse_resign` settles one that is entirely
+a concession. So every model-routed scenario calls `_stays_a_model_eval` in
+its setup — `parse_move` None *and* `parse_resign` False, on the board the
+utterance is judged against — and `_pass_rate` asserts the traced route is
+`brain` on every sample before running the check. The setup line catches a
+parser that grows; the route pin catches everything else, and it is what makes
+a green a statement about the model. Until 2026-09-05 four resignation
+scenarios asserted neither and were measuring the resign route at zero model
+calls (audit finding 9). Scenarios are independent (fresh app + game each);
+Stockfish is module-scoped; the model stays warm between scenarios.
 
 ## Running it
 
@@ -79,6 +88,7 @@ Hard scenarios (single-shot, behavior asserted directly):
 | --- | --- | --- |
 | `fast_path_low` | "e4" (verbosity=low) | Fast path, **zero model calls**. |
 | `fast_path_normal` | "e4" | Fast path + one narration call only. |
+| `resign_literal_fast_path` | "you know what, I give up. I resign" | The resign route, **zero model calls**: the tool is dispatched deterministically, the gate arms it, the board is untouched. |
 | `plain_move` | "play e4" | One legal `make_move`; 3 model calls, thinking off. |
 | `judgment_question` | "how am I doing?" | Answered via analysis tools, never vibes; no mutation; thinking on only for the narrator. |
 | `ambiguous_move` | "move the rook" | Asks instead of guessing; board unchanged. |
@@ -93,7 +103,11 @@ stall rule used to cut off after the second undo), `my_mistake_is_mine`
 (analyzes the player's move, not the engine's), `play_as_black` (new game as
 black), `resume_not_denied`
 (a save on disk is resumed, not denied), `resign_never_pretends` (a resignation
-dispatches — never a narrated fake game-over), `advice_is_engine_backed`
+dispatches — never a narrated fake game-over; the utterance is "please record a
+resignation for my side", a concession stated in words no parser claims, since
+the literal "I give up. I resign" it used to send is settled by `parse_resign`
+before the model is ever asked — that one is now the `resign_literal_fast_path`
+hard scenario), `advice_is_engine_backed`
 ("what should I play here?" must consult `get_best_moves`, mutate nothing, and
 name only tool-reported moves), `advice_capture_survives_guard` (the same ask
 in a position where the best move is a *capture* — the honesty guard must not
@@ -115,7 +129,11 @@ is the old dump reappearing), and the long-transcript family
 `long_resume` /
 `long_resign` / `long_capture`, each at three conditions (fresh, live_like,
 poisoned) — the same behaviors under a real 20-turn conversation, because
-fresh-conversation passes hid live failures.
+fresh-conversation passes hid live failures. `long_resign` carries the same
+new utterance as the fresh scenario and so reaches the planner for the first
+time: its three conditions differ only in the transcript, which the resign
+route never reads, so their recorded 5/5 ×3 measured one deterministic thing
+three times.
 
 ## Current baseline
 
