@@ -1,0 +1,840 @@
+{
+  "atomic_exchange": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_board_state",
+        "description": "Current position: FEN, side to move, whether the game is over,\nand the outcome if it is.",
+        "parameters": {
+          "properties": {},
+          "title": "get_board_stateArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_legal_moves",
+        "description": "All legal moves in the current position, in SAN.",
+        "parameters": {
+          "properties": {},
+          "title": "get_legal_movesArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_move_history",
+        "description": "Moves played so far, in SAN, in order.",
+        "parameters": {
+          "properties": {},
+          "title": "get_move_historyArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_captured_pieces",
+        "description": "Piece symbols each color has captured so far, in capture order.",
+        "parameters": {
+          "properties": {},
+          "title": "get_captured_piecesArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "describe_position",
+        "description": "What is on the board right now, in words: where each side's pieces\nstand, who is ahead in material and by how much, castling, check, and\nthe last move. This is how you answer a description ask — \"what's the\nposition?\", \"what's on the board?\", \"where are my pieces?\" — call it\nrather than describing the board yourself. It is a description, not a\nverdict: who is *winning* is `evaluate_position`.",
+        "parameters": {
+          "properties": {},
+          "title": "describe_positionArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "evaluate_position",
+        "description": "Stockfish's verdict on who is better, from White's point of view:\ncentipawns, or mate-in-N. This is how you answer a judgment question —\n\"who's winning?\", \"how am I doing?\", \"is this good for me?\" — from the\nresult, never from a guess. It says nothing about what is on the board:\n\"what's the position?\" is a description ask, which is\n`describe_position`.",
+        "parameters": {
+          "properties": {},
+          "title": "evaluate_positionArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_best_moves",
+        "description": "Top n candidate moves from Stockfish (MultiPV), best first, with\nSAN, UCI, and White-POV scores.",
+        "parameters": {
+          "properties": {
+            "n": {
+              "default": 3,
+              "description": "How many candidate moves to return.",
+              "maximum": 10,
+              "minimum": 1,
+              "title": "N",
+              "type": "integer"
+            }
+          },
+          "title": "get_best_movesArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_last_move",
+        "description": "Analyze a move: how it compares to Stockfish's best from the same\nposition — centipawn loss, verdict (good/inaccuracy/mistake/blunder),\nand what was best. `played_captures`/`best_captures` name the piece\neach of those moves takes, or are null for a quiet move — never name a\ncaptured piece the result did not. This is how you answer \"how good was\nthat move?\" or \"what was my mistake?\" — from the result, never from a\nguess. Defaults to the player's own last move (what 'my mistake'\nmeans); pass a color to analyze that side's last move instead.",
+        "parameters": {
+          "properties": {
+            "color": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "white",
+                    "black"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Color"
+            }
+          },
+          "title": "analyze_last_moveArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "review_game",
+        "description": "Review the whole game so far: every move classified\n(good/inaccuracy/mistake/blunder) with centipawn loss and the best\nalternative, plus per-color accuracy scores.",
+        "parameters": {
+          "properties": {},
+          "title": "review_gameArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "make_move",
+        "description": "Submit the player's move: a string copied from the board state's\n`legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to\nthe matching entry (\"push the queen's bishop pawn one square\" → 'c3')\nand fix voice slips (\"e 4\" → 'e4'); never invent a string that isn't in\n`legal_moves`.\n\nThe engine plays its reply inside the same call. If you proposed a\nmove and the player accepts (\"yes\"), call it now; announcing a move\nin words is not making it.",
+        "parameters": {
+          "properties": {
+            "move": {
+              "description": "SAN or UCI move.",
+              "title": "Move",
+              "type": "string"
+            }
+          },
+          "required": [
+            "move"
+          ],
+          "title": "make_moveArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "undo",
+        "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit plies — the app pops the\nwhole exchange itself, leaving the player to move again. When the player\nnames several moves to take back, call this again for each further named\nmove, plies omitted every time. Pass plies only when the player asked for\nan explicit count of half-moves.",
+        "parameters": {
+          "properties": {
+            "plies": {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "How many half-moves to take back. Omit for a normal takeback — the app works out the right number itself.",
+              "title": "Plies"
+            }
+          },
+          "title": "undoArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "new_game",
+        "description": "Reset to the starting position and begin a new game. Pass\n`player_color` to put the player on that side (\"let's play as black\");\nomitted, they keep the side they have. Call this as soon as the player\nasks — do not ask them to confirm first. If a game is in progress the\nresult comes back refusing and asking you to confirm; relay that to the\nplayer in your own words and stop, do not call again. When it returns\nok, the game really did reset.",
+        "parameters": {
+          "properties": {
+            "player_color": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "white",
+                    "black"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Player Color"
+            }
+          },
+          "title": "new_gameArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "resign",
+        "description": "Resign the game. Defaults to the player's own side; pass a color to\nresign for that side. Call this as soon as the player concedes — do not\nask them to confirm first. If a game is in progress the result comes\nback refusing and asking you to confirm; relay that to the player and\nstop, do not call again. When it returns ok, the game really did end.",
+        "parameters": {
+          "properties": {
+            "color": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "white",
+                    "black"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Color"
+            }
+          },
+          "title": "resignArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "claim_draw",
+        "description": "Claim a draw by threefold repetition or the fifty-move rule. Call this\nas soon as the player asks to claim a draw — do not ask them to confirm\nfirst. If a game is in progress the result comes back refusing and asking\nyou to confirm; relay that to the player and stop, do not call again.\nWhen it returns ok, the game really did end in a draw.",
+        "parameters": {
+          "properties": {},
+          "title": "claim_drawArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "export_pgn",
+        "description": "Export the game so far as PGN. The app shows the player the notation\nitself, with a button to copy it, so the reply should say it is ready —\nnever recite the moves or the headers.",
+        "parameters": {
+          "properties": {},
+          "title": "export_pgnArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "save_game",
+        "description": "Save the current game under a name (default 'autosave').",
+        "parameters": {
+          "properties": {
+            "name": {
+              "default": "autosave",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          "title": "save_gameArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "resume_game",
+        "description": "Resume a previously saved game by name (default 'autosave').",
+        "parameters": {
+          "properties": {
+            "name": {
+              "default": "autosave",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          "title": "resume_gameArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_difficulty",
+        "description": "Set how hard the engine plays: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength), skill_level (0-20), or elo (1320-3190). Prefer tier unless the player names a number. This is the only thing that changes how hard the engine plays — there is no softer or sharper style to switch to. The setting persists and the player owns it: if they ask for an easier game but rule out changing the difficulty, there is nothing left to change — say so and ask, do not call this.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tier": {
+              "type": "string",
+              "enum": [
+                "beginner",
+                "casual",
+                "intermediate",
+                "advanced",
+                "maximum"
+              ]
+            },
+            "skill_level": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20
+            },
+            "elo": {
+              "type": "integer",
+              "minimum": 1320,
+              "maximum": 3190
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "tier"
+              ]
+            },
+            {
+              "required": [
+                "skill_level"
+              ]
+            },
+            {
+              "required": [
+                "elo"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_verbosity",
+        "description": "Set how much the app says back: low is one short line, normal is\nthe default, high adds a remark on the position. This is the only way\nto change it — the setting persists across turns and the player owns\nit, so any ask to talk more or less, be briefer, chattier, or quieter\nis this call and not a change of style in one reply.",
+        "parameters": {
+          "properties": {
+            "verbosity": {
+              "enum": [
+                "low",
+                "normal",
+                "high"
+              ],
+              "title": "Verbosity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "verbosity"
+          ],
+          "title": "set_verbosityArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_voice_output",
+        "description": "Turn spoken (TTS) output on or off.",
+        "parameters": {
+          "properties": {
+            "enabled": {
+              "title": "Enabled",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "title": "set_voice_outputArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "split_exchange": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_board_state",
+        "description": "Current position: FEN, side to move, whether the game is over,\nand the outcome if it is.",
+        "parameters": {
+          "properties": {},
+          "title": "get_board_stateArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_legal_moves",
+        "description": "All legal moves in the current position, in SAN.",
+        "parameters": {
+          "properties": {},
+          "title": "get_legal_movesArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_move_history",
+        "description": "Moves played so far, in SAN, in order.",
+        "parameters": {
+          "properties": {},
+          "title": "get_move_historyArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_captured_pieces",
+        "description": "Piece symbols each color has captured so far, in capture order.",
+        "parameters": {
+          "properties": {},
+          "title": "get_captured_piecesArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "describe_position",
+        "description": "What is on the board right now, in words: where each side's pieces\nstand, who is ahead in material and by how much, castling, check, and\nthe last move. This is how you answer a description ask — \"what's the\nposition?\", \"what's on the board?\", \"where are my pieces?\" — call it\nrather than describing the board yourself. It is a description, not a\nverdict: who is *winning* is `evaluate_position`.",
+        "parameters": {
+          "properties": {},
+          "title": "describe_positionArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "evaluate_position",
+        "description": "Stockfish's verdict on who is better, from White's point of view:\ncentipawns, or mate-in-N. This is how you answer a judgment question —\n\"who's winning?\", \"how am I doing?\", \"is this good for me?\" — from the\nresult, never from a guess. It says nothing about what is on the board:\n\"what's the position?\" is a description ask, which is\n`describe_position`.",
+        "parameters": {
+          "properties": {},
+          "title": "evaluate_positionArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_best_moves",
+        "description": "Top n candidate moves from Stockfish (MultiPV), best first, with\nSAN, UCI, and White-POV scores.",
+        "parameters": {
+          "properties": {
+            "n": {
+              "default": 3,
+              "description": "How many candidate moves to return.",
+              "maximum": 10,
+              "minimum": 1,
+              "title": "N",
+              "type": "integer"
+            }
+          },
+          "title": "get_best_movesArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_last_move",
+        "description": "Analyze a move: how it compares to Stockfish's best from the same\nposition — centipawn loss, verdict (good/inaccuracy/mistake/blunder),\nand what was best. `played_captures`/`best_captures` name the piece\neach of those moves takes, or are null for a quiet move — never name a\ncaptured piece the result did not. This is how you answer \"how good was\nthat move?\" or \"what was my mistake?\" — from the result, never from a\nguess. Defaults to the player's own last move (what 'my mistake'\nmeans); pass a color to analyze that side's last move instead.",
+        "parameters": {
+          "properties": {
+            "color": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "white",
+                    "black"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Color"
+            }
+          },
+          "title": "analyze_last_moveArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "review_game",
+        "description": "Review the whole game so far: every move classified\n(good/inaccuracy/mistake/blunder) with centipawn loss and the best\nalternative, plus per-color accuracy scores.",
+        "parameters": {
+          "properties": {},
+          "title": "review_gameArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "make_move",
+        "description": "Submit the player's move: a string copied from the board state's\n`legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to\nthe matching entry (\"push the queen's bishop pawn one square\" → 'c3')\nand fix voice slips (\"e 4\" → 'e4'); never invent a string that isn't in\n`legal_moves`.\n\nThe engine answers as soon as your move lands, without being asked.\nIf you proposed a move and the player accepts (\"yes\"), call it now;\nannouncing a move in words is not making it.",
+        "parameters": {
+          "properties": {
+            "move": {
+              "description": "SAN or UCI move.",
+              "title": "Move",
+              "type": "string"
+            }
+          },
+          "required": [
+            "move"
+          ],
+          "title": "make_moveArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "undo",
+        "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit plies — the app pops the\nwhole exchange itself, leaving the player to move again. When the player\nnames several moves to take back, call this again for each further named\nmove, plies omitted every time. Pass plies only when the player asked for\nan explicit count of half-moves.",
+        "parameters": {
+          "properties": {
+            "plies": {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "How many half-moves to take back. Omit for a normal takeback — the app works out the right number itself.",
+              "title": "Plies"
+            }
+          },
+          "title": "undoArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "new_game",
+        "description": "Reset to the starting position and begin a new game. Pass\n`player_color` to put the player on that side (\"let's play as black\");\nomitted, they keep the side they have. Call this as soon as the player\nasks — do not ask them to confirm first. If a game is in progress the\nresult comes back refusing and asking you to confirm; relay that to the\nplayer in your own words and stop, do not call again. When it returns\nok, the game really did reset.",
+        "parameters": {
+          "properties": {
+            "player_color": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "white",
+                    "black"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Player Color"
+            }
+          },
+          "title": "new_gameArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "resign",
+        "description": "Resign the game. Defaults to the player's own side; pass a color to\nresign for that side. Call this as soon as the player concedes — do not\nask them to confirm first. If a game is in progress the result comes\nback refusing and asking you to confirm; relay that to the player and\nstop, do not call again. When it returns ok, the game really did end.",
+        "parameters": {
+          "properties": {
+            "color": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "white",
+                    "black"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Color"
+            }
+          },
+          "title": "resignArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "claim_draw",
+        "description": "Claim a draw by threefold repetition or the fifty-move rule. Call this\nas soon as the player asks to claim a draw — do not ask them to confirm\nfirst. If a game is in progress the result comes back refusing and asking\nyou to confirm; relay that to the player and stop, do not call again.\nWhen it returns ok, the game really did end in a draw.",
+        "parameters": {
+          "properties": {},
+          "title": "claim_drawArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "export_pgn",
+        "description": "Export the game so far as PGN. The app shows the player the notation\nitself, with a button to copy it, so the reply should say it is ready —\nnever recite the moves or the headers.",
+        "parameters": {
+          "properties": {},
+          "title": "export_pgnArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "save_game",
+        "description": "Save the current game under a name (default 'autosave').",
+        "parameters": {
+          "properties": {
+            "name": {
+              "default": "autosave",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          "title": "save_gameArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "resume_game",
+        "description": "Resume a previously saved game by name (default 'autosave').",
+        "parameters": {
+          "properties": {
+            "name": {
+              "default": "autosave",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          "title": "resume_gameArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_difficulty",
+        "description": "Set how hard the engine plays: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength), skill_level (0-20), or elo (1320-3190). Prefer tier unless the player names a number. This is the only thing that changes how hard the engine plays — there is no softer or sharper style to switch to. The setting persists and the player owns it: if they ask for an easier game but rule out changing the difficulty, there is nothing left to change — say so and ask, do not call this.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tier": {
+              "type": "string",
+              "enum": [
+                "beginner",
+                "casual",
+                "intermediate",
+                "advanced",
+                "maximum"
+              ]
+            },
+            "skill_level": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20
+            },
+            "elo": {
+              "type": "integer",
+              "minimum": 1320,
+              "maximum": 3190
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "tier"
+              ]
+            },
+            {
+              "required": [
+                "skill_level"
+              ]
+            },
+            {
+              "required": [
+                "elo"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_verbosity",
+        "description": "Set how much the app says back: low is one short line, normal is\nthe default, high adds a remark on the position. This is the only way\nto change it — the setting persists across turns and the player owns\nit, so any ask to talk more or less, be briefer, chattier, or quieter\nis this call and not a change of style in one reply.",
+        "parameters": {
+          "properties": {
+            "verbosity": {
+              "enum": [
+                "low",
+                "normal",
+                "high"
+              ],
+              "title": "Verbosity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "verbosity"
+          ],
+          "title": "set_verbosityArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_voice_output",
+        "description": "Turn spoken (TTS) output on or off.",
+        "parameters": {
+          "properties": {
+            "enabled": {
+              "title": "Enabled",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "title": "set_voice_outputArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

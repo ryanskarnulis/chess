@@ -33,9 +33,6 @@ whenever the harness itself changes.
       bind the question to the op the next yes runs. Also `_BASE` still tells
       the tool-free narrator it changes the game through tools — stale role
       text, measure before cutting.
-- [ ] **Later — schema snapshot**: the golden normalizes away `title`,
-      `default` and nullable unions, the very keys the standing prohibition
-      protects; add an exact emitted-schema snapshot beside it.
 - [ ] **Later — an ambiguous piece ask is sometimes played, not asked**
       (measured 2026-09-05 by the honest harness): with four rook moves on the
       board, "move the rook" is played (`Rh3`) 3 samples in 37 across the day
