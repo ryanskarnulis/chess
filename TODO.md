@@ -23,18 +23,6 @@ Work in this order — one PR each, tool-boundary tests with every change, a
 gate run after every loop or prompt change, and the baseline re-recorded
 whenever the harness itself changes.
 
-- [ ] **PR 4 — Guard loosening** (findings 6, 7; the rule decided above).
-      "Do you mean Nf3 or Nh3?" on an unchanged board is replaced by the
-      advice correction: a question sentence naming two or more legal moves
-      is a clarification and is licensed. The brain route checks facts
-      against `fen_before` and the final board only, so "you are up a pawn"
-      after exd5 is suppressed once Qxd5 recaptures — record the board after
-      each mutating tool result and check every position the turn held, as
-      `fen_observed` already does on the fast path. Loosening tests, not
-      scripted answers; plus the converse false-claim cases. Note the guard
-      does not distinguish winner from termination ("you win by checkmate"
-      passes on a game lost by resignation) — decide whether that class
-      grows. Gate run.
 - [ ] **PR 5 — Eval coverage: compositions and loop paths** (all twelve
       proposed scenarios, audit §"Proposed live scenarios"). Strengthen
       `undo_twice_and_replace` (length 4, player to move, completed, 3–5
@@ -66,12 +54,12 @@ whenever the harness itself changes.
       protects; add an exact emitted-schema snapshot beside it.
 - [ ] **Later — "move the rook" is sometimes played, not asked** (measured
       2026-09-05 by the honest harness, PR 1): with four rook moves on the
-      board the planner submits one (`Rh3`) instead of asking, 2 samples in
-      17. Model understanding — the planner's one/several/none matching
-      procedure is the lever, and a change to it is a prompt change gated on
-      `ambiguous_move`, which is sampled and xfailed with the measurement
-      until PR 4 removes the guard's share of the misses. Re-measure at 20
-      samples before touching the prompt.
+      board the planner submits one (`Rh3`) instead of asking — 3 samples in
+      37 across the day (2/17 on the pre-fix builds, 1/20 on the guard fix,
+      where the guard's own share of the misses is gone and the scenario runs
+      unmarked at 19/20). Model understanding — the planner's one/several/none
+      matching procedure is the lever, and a change to it is a prompt change
+      gated on `ambiguous_move` at 20 samples an arm.
 
 ## Next
 
