@@ -430,6 +430,14 @@ BOARD_STATE_TOOLS = (
     "get_captured_pieces",
 )
 
+# `describe_position` is a read too, and is deliberately *not* in that tuple.
+# The four above are withheld because their answers already sit in the planner's
+# prompt; this one's consumer is the **narrator**, which is handed no board at
+# all (`api._narrator_state_dict`, #193). Its result is the only route by which
+# a description of the position reaches the phase that speaks — withhold it and
+# a "what's the position?" turn has nothing to describe from, which is how the
+# ask came back as an eval ("You're cooked") in the 2026-09-04 walkthrough.
+
 
 def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     """Which registered tools the brain is *not* offered, right now.
@@ -718,6 +726,113 @@ def _move_summary(result: MoveResult, mover: str) -> str:
     return f"{opening} {result.san}, {' and '.join(clauses)}."
 
 
+# How a *position* summary addresses each side: the subject, and the two verbs
+# that follow it. Second person for the same reason `_SUMMARY_VOICE` uses it —
+# the paragraph is written to the narrator, who is the player's opponent — so
+# "you" is Glitch and "the player" is the human, and a narrator that reads
+# "you are up two pawns" has been told about its own material, not the
+# player's.
+_PLAYER_VOICE = ("The player", "has", "is")
+_NARRATOR_VOICE = ("You", "have", "are")
+
+
+def _piece_clause(placement: dict[str, list[str]]) -> str:
+    """One side's pieces as "king e1; rooks a1, h1" — the clause a description
+    sentence hangs on. Plural by count, so a lone rook is not "rooks a1"."""
+    return "; ".join(
+        f"{name if len(squares) == 1 else name + 's'} {', '.join(squares)}"
+        for name, squares in placement.items()
+    )
+
+
+def _castling_clause(voice: tuple[str, str, str], status: dict[str, Any]) -> str:
+    """One side's castling, as a sentence. Having castled outranks the rights,
+    which castling itself spends: reporting the rights alone would describe a
+    king that castled ten moves ago and one that merely walked out of its
+    rights in exactly the same words."""
+    subject, has, _ = voice
+    if status["castled"] is not None:
+        return f"{subject} {has} castled {status['castled']}."
+    rights = status["rights"]
+    if not rights:
+        return f"{subject} can no longer castle."
+    if len(rights) == 2:
+        return f"{subject} can still castle either side."
+    return f"{subject} can still castle {rights[0]} only."
+
+
+def _position_summary(
+    session: GameSession,
+    placement: dict[str, dict[str, list[str]]],
+    castling: dict[str, dict[str, Any]],
+) -> str:
+    """The whole position as one deterministic English paragraph.
+
+    The same argument as `_move_summary`, one step further. That one exists
+    because a 12B misreads structured data about a single move; this one exists
+    because the narrator — the phase that actually speaks — is handed no board
+    at all (`api._narrator_state_dict`, #193), so until this tool there was no
+    result whose content was a *description*. The structured keys stay on the
+    payload for every other reader; this is the same facts in the one form the
+    narrator cannot misread.
+
+    Two things it never says. It never names a side to move: the observe beat
+    runs while the engine's reply is still being computed, and every leak of
+    "it is your move" produced a narrator announcing a move of its own. And it
+    never says who played the last move — SAN alone, because naming the mover
+    names the side to move one ply later.
+    """
+    sentences: list[str] = []
+    outcome = session.outcome()
+    if outcome is not None:
+        ending = f"{outcome.winner} wins" if outcome.winner is not None else "drawn"
+        # The termination name is an identifier everywhere else in the app;
+        # here it is read aloud, so `fifty_moves` becomes "fifty moves".
+        termination = outcome.termination.replace("_", " ")
+        sentences.append(f"The game is over: {termination}, {ending}.")
+    elif session.plies == 0 and session.fen() == chess.STARTING_FEN:
+        sentences.append("Nothing has been played yet — the starting position.")
+    else:
+        # A session can be rooted on a FEN nobody played into (a resumed save,
+        # the guard's per-turn boards), so "nothing played" alone does not mean
+        # "the starting position" and this branch is what an unplayed custom
+        # position gets.
+        sentences.append(
+            f"Move {session.fullmove_number}, {session.plies} plies played."
+        )
+
+    # Material, phrased as "up N pawns" on purpose: that is the shape the
+    # honesty guard's material class reads, so an echo of this sentence is a
+    # claim the board can be made to back rather than one the guard has to eat.
+    balance = session.material_balance()
+    if balance == 0:
+        sentences.append("Material is level.")
+    else:
+        subject, _, is_verb = _PLAYER_VOICE if balance > 0 else _NARRATOR_VOICE
+        pawns = abs(balance)
+        unit = "pawn" if pawns == 1 else "pawns"
+        sentences.append(f"{subject} {is_verb} up {pawns} {unit} of material.")
+
+    opponent = "black" if session.player_color == "white" else "white"
+    sides = ((session.player_color, _PLAYER_VOICE), (opponent, _NARRATOR_VOICE))
+    for color, voice in sides:
+        subject, has, _ = voice
+        pieces = _piece_clause(placement[color])
+        sentences.append(f"{subject} ({color.capitalize()}) {has}: {pieces}.")
+    for color, voice in sides:
+        sentences.append(_castling_clause(voice, castling[color]))
+
+    if session.is_check():
+        # A colour, never "you" or "the player": a king in check is the side to
+        # move's, so saying whose it is in the second person is one more way of
+        # handing the narrator a turn to take.
+        sentences.append(f"The {session.turn} king is in check.")
+    history = session.move_history()
+    if history:
+        sentences.append(f"Last move: {history[-1]}.")
+    return " ".join(sentences)
+
+
 def _engine_move_dict(reply: MoveResult | None) -> dict[str, Any] | None:
     """How the move tools report an engine move: `{"san", "uci", "summary"}`, or
     None when the coordinator says the engine owed none. One shape for
@@ -876,10 +991,49 @@ def build_registry(
         return {"ok": True, "white": captured["white"], "black": captured["black"]}
 
     @registry.tool()
+    def describe_position() -> dict[str, Any]:
+        """What is on the board right now, in words: where each side's pieces
+        stand, who is ahead in material and by how much, castling, check, and
+        the last move. This is how you answer a description ask — "what's the
+        position?", "what's on the board?", "where are my pieces?" — call it
+        rather than describing the board yourself. It is a description, not a
+        verdict: who is *winning* is `evaluate_position`."""
+        session = ctx.session
+        placement = session.piece_placement()
+        castling = session.castling_status()
+        history = session.move_history()
+        return {
+            "ok": True,
+            # The facts as prose, for the narrator; the keys below are the same
+            # facts for everyone else.
+            "summary": _position_summary(session, placement, castling),
+            "pieces": placement,
+            # Positive means the *player* is ahead — the convention the honesty
+            # guard counts in (`VerifiedFacts.material`), so a claim read off
+            # this result and a claim checked against the board agree on sign.
+            "material": {"player_advantage": session.material_balance()},
+            "castling": castling,
+            "in_check": session.is_check(),
+            # SAN and no mover, under a key that is not `san`: `_verified_facts`
+            # reads a top-level `san` off every result as a move the turn
+            # played, and naming who played the last ply would tell the
+            # narrator whose move is next (#193) — which is the one thing this
+            # result must not do.
+            "last_move": history[-1] if history else None,
+            "move_number": session.fullmove_number,
+            "plies": session.plies,
+            "game_over": session.is_game_over(),
+            "outcome": _outcome_dict(session),
+        }
+
+    @registry.tool()
     def evaluate_position() -> dict[str, Any]:
-        """Stockfish evaluation of the current position from White's point of
-        view: centipawns, or mate-in-N. This is how you answer "who's winning?"
-        — from the result, never from a guess."""
+        """Stockfish's verdict on who is better, from White's point of view:
+        centipawns, or mate-in-N. This is how you answer a judgment question —
+        "who's winning?", "how am I doing?", "is this good for me?" — from the
+        result, never from a guess. It says nothing about what is on the board:
+        "what's the position?" is a description ask, which is
+        `describe_position`."""
         evaluation = _require_engine(ctx).evaluate_position(ctx.session)
         return {
             "ok": True,

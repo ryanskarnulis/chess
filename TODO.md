@@ -37,10 +37,6 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
       by `max_tokens`; the token study showed legit and runaway narrations
       overlap almost entirely, so any cap either misses the tail or clips
       real commentary.
-- [ ] A question turn shouldn't mutate settings the player owns — fold that
-      assertion into the next eval-touching slice (residue of the retired
-      flips-hints-unasked item; the flip itself died with hints mode,
-      2026-09-01).
 
 ## Someday / blocked
 
@@ -57,10 +53,8 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 Record: `docs/qa-walkthrough-2026-09-04.md`. Small items, unprioritized:
 
-- [ ] "what's the position?" answers with an eval, not a description
 - [ ] PGN by chat: fill the `?` headers, add a copy affordance
 - [ ] "without changing the difficulty" was overridden by a difficulty change
-- [ ] Illegal-for-every-piece requests answered as ambiguous, not illegal
 - [ ] Illegal drags snap back silently — decide if that wants a message
 - [ ] Desktop stacked column: too much dead space
 - [ ] The board jumps ~112px down the page when a multi-line reply lands —

@@ -34,6 +34,19 @@ _PIECE_VALUES = {
     chess.QUEEN: 9,
 }
 
+# The order `piece_placement` names piece types in — the order a player reads a
+# position out loud, king first. Spelled out rather than taken from
+# python-chess's own enum, which runs pawn-first and would open every spoken
+# description with the pawn structure.
+_PLACEMENT_ORDER = (
+    chess.KING,
+    chess.QUEEN,
+    chess.ROOK,
+    chess.BISHOP,
+    chess.KNIGHT,
+    chess.PAWN,
+)
+
 _TERMINATION_NAMES = {
     chess.Termination.CHECKMATE: "checkmate",
     chess.Termination.STALEMATE: "stalemate",
@@ -141,6 +154,23 @@ class GameSession:
         state (not board truth): it decides orientation and who the opening
         move belongs to, never legality."""
         return self._player_color
+
+    @property
+    def fullmove_number(self) -> int:
+        """The move number a score sheet would write. The board's own count, so
+        a session rooted on a mid-game FEN reports the number that FEN carried
+        instead of restarting at 1."""
+        return self._board.fullmove_number
+
+    @property
+    def plies(self) -> int:
+        """Half-moves played *in this session*, from 0.
+
+        Not the move number doubled: the two answer different questions on a
+        board rebuilt from a FEN, where the number came in with the position
+        and nothing has been played on it since.
+        """
+        return len(self._board.move_stack)
 
     def fen(self) -> str:
         return self._board.fen()
@@ -362,6 +392,28 @@ class GameSession:
             return []
         return [self._board.san(move) for move in self._board.legal_moves]
 
+    def legal_captures(self) -> dict[str, str]:
+        """What each legal capturing move takes, by SAN: `{"exd5": "pawn"}`.
+
+        SAN says *that* a move captures and never what — `exd5` takes whatever
+        stands on d5 — and the board is the only thing that knows. The agent is
+        handed this beside `legal_moves` because a capture asked for by its
+        victim ("take the pawn") is otherwise unanswerable from the list alone:
+        on move 1 it came back "which pawn?" for a board with nothing to take
+        (2026-09-04 walkthrough). En passant names the pawn it takes, like
+        `captured_pieces`. Empty once the game is over, like `legal_moves`.
+        """
+        if self.is_game_over():
+            return {}
+        captures: dict[str, str] = {}
+        for move in self._board.legal_moves:
+            symbol = self._captured_symbol(move)
+            if symbol is not None:
+                captures[self._board.san(move)] = chess.piece_name(
+                    chess.PIECE_SYMBOLS.index(symbol)
+                )
+        return captures
+
     def legal_destinations(self) -> dict[str, list[str]]:
         """Legal moves grouped by origin square, in coordinate form
         (`"e2": ["e3", "e4"]`), for a board UI's move hints. Empty once the
@@ -450,6 +502,62 @@ class GameSession:
                 totals[color] += value * len(self._board.pieces(piece_type, color))
         player = self.player_color == "white"
         return totals[player] - totals[not player]
+
+    def piece_placement(self) -> dict[str, dict[str, list[str]]]:
+        """Where each side's pieces stand: `{"white": {"king": ["e1"], ...}}`.
+
+        Read off the board like `material_balance`, and for the same reason: a
+        promoted pawn is a queen standing on the board, whatever the move list
+        calls it.
+
+        Ordering is part of the answer, because the consumer is prose
+        (`tools.describe_position` composes a sentence out of this): types come
+        in reading order (`_PLACEMENT_ORDER`) and squares in name order, so the
+        same position always reads the same way. A type a side has none of is
+        absent rather than an empty list — there is nothing to say about it.
+        """
+        placement: dict[str, dict[str, list[str]]] = {}
+        for color, color_name in _COLOR_NAMES.items():
+            by_type: dict[str, list[str]] = {}
+            for piece_type in _PLACEMENT_ORDER:
+                squares = sorted(
+                    chess.square_name(square)
+                    for square in self._board.pieces(piece_type, color)
+                )
+                if squares:
+                    by_type[chess.piece_name(piece_type)] = squares
+            placement[color_name] = by_type
+        return placement
+
+    def castling_status(self) -> dict[str, dict[str, Any]]:
+        """Whether each side has castled, and what it may still do:
+        `{"white": {"castled": "kingside"|"queenside"|None, "rights": [...]}}`.
+
+        Two facts, and a board holds only the second. That a king already went
+        is history, so it is replayed off the move stack the way
+        `captured_pieces` is — and asked of the position *before* each push,
+        which is the only board that can still recognize the move as a
+        castling. The rights are the current board's own answer, so nothing
+        here re-derives the rule about a rook that has moved.
+        """
+        castled: dict[str, str | None] = {name: None for name in _COLOR_NAMES.values()}
+        board = self._board.root()
+        for move in self._board.move_stack:
+            mover = _COLOR_NAMES[board.turn]
+            if board.is_kingside_castling(move):
+                castled[mover] = "kingside"
+            elif board.is_queenside_castling(move):
+                castled[mover] = "queenside"
+            board.push(move)
+        status: dict[str, dict[str, Any]] = {}
+        for color, color_name in _COLOR_NAMES.items():
+            rights = []
+            if self._board.has_kingside_castling_rights(color):
+                rights.append("kingside")
+            if self._board.has_queenside_castling_rights(color):
+                rights.append("queenside")
+            status[color_name] = {"castled": castled[color_name], "rights": rights}
+        return status
 
     def _parse(self, move_str: str) -> chess.Move | None:
         try:

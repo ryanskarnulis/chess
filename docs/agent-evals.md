@@ -95,7 +95,13 @@ dispatches — never a narrated fake game-over), `advice_is_engine_backed`
 name only tool-reported moves), `advice_capture_survives_guard` (the same ask
 in a position where the best move is a *capture* — the honesty guard must not
 eat the answer), `verbosity_up_from_low` ("talk more" from `low` must call
-`set_verbosity`, not just sound chattier), and the long-transcript family
+`set_verbosity`, not just sound chattier), `position_is_described` ("what's the
+position?" is answered by `describe_position`, with no verdict tool called and
+no setting moved), `impossible_move_is_refused_not_asked` ("bishop to a1" on
+move 1 is answered as illegal, never with a clarifying question about which
+piece), `impossible_capture_is_refused_not_asked` ("take the pawn" on move 1 —
+nothing can be captured, so no question about which pawn), and the
+long-transcript family
 `long_resume` /
 `long_resign` / `long_capture`, each at three conditions (fresh, live_like,
 poisoned) — the same behaviors under a real 20-turn conversation, because
@@ -103,24 +109,34 @@ fresh-conversation passes hid live failures.
 
 ## Current baseline
 
-**Run 2026-09-04 on the free-text confirmation slice (#255): 25 passed in a
-single run, 4 m 40 s, infra 0, every pass-rate scenario 5/5 ABOVE_FLOOR
-STABLE.** `long_capture` 5/5 ×3, costs unmoved.
+**Run 2026-09-04 on the answer-shapes slice (#256): 28 passed in a single run, 5 m 47 s, infra 0, every pass-rate scenario 5/5 ABOVE_FLOOR STABLE.**
+`long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3). `undo_and_replace` — the schema
+tripwire, and this PR adds a tool to the offer, a field to the state block
+and rewrites two descriptions — 5/5.
 
-Previously on the captured-piece fix (#254): 25 passed in a single run,
-4 m 06 s, infra 0, every pass-rate scenario ABOVE_FLOOR STABLE.
-`long_capture` 5/5 ×3 (release blocker), costs unmoved (`fast_path_low` 0
-model calls, `fast_path_normal` 1, `plain_move` 3).
+The three new scenarios reproduce their live misses on the pre-fix build,
+which the verbosity one never did: `position_is_described` 0/5 pre-fix
+(`evaluate_position` every sample) → 5/5 (`describe_position`, 3 calls,
+thinking off, ~4–5 s); `impossible_move_is_refused_not_asked` 0/5 pre-fix
+("Which bishop, bro?" every sample, two of them *saying* both bishops were
+stuck and asking anyway) → 5/5 (2 calls, no tool, ~1.5 s);
+`impossible_capture_is_refused_not_asked` 0/5 pre-fix → 5/5. The
+capture case took both halves of the fix: the refuse-what-fits-nothing rule
+alone measured 5/10, `captures` in the view alone 0/5, and only the rule
+written as a procedure (match first; one fits, submit; several, ask; none,
+refuse) over the view with `captures` in it went 5/5 — "which piece" was being
+read before "does anything fit".
 
-`undo_and_replace` — the schema tripwire, and this PR widens
-`analyze_last_move`'s description — came in **4/5**, at the floor. Re-run
-alone at 10 samples: **10/10**. The one miss played `Bc4` instead of the
-named replacement `d4`, with the undo itself clean, so it is the scenario's
-ordinary move-choice variance and not the schema collapse the tripwire exists
-for (that one takes `undo_and_replace` well below the floor, not to it).
+A same-day control run of the suite on `main` (25 scenarios, the pre-fix build)
+came in 25 passed, 4 m 46 s, infra 0, all 5/5 — so the numbers above are a
+comparison against a healthy baseline, not against a lucky day.
 
-Before those: #252 (25 passed, first baseline for `verbosity_up_from_low`),
-#250 (24 passed, first `advice_capture_survives_guard`) and #245 (23 passed).
+Previously: #255 (25 passed, 4 m 40 s, infra 0, all 5/5), #254 (25 passed,
+4 m 06 s; `undo_and_replace` 4/5 at the floor, 10/10 re-run alone — ordinary
+move-choice variance, not the schema collapse the tripwire exists for), #252
+(25 passed, first `verbosity_up_from_low`), #250 (24 passed, first
+`advice_capture_survives_guard`), #245 (23 passed).
 
 ## Standing results
 
@@ -145,6 +161,15 @@ Before those: #252 (25 passed, first baseline for `verbosity_up_from_low`),
 - **Honesty-guard false-positive sweep** (2026-07-25): `unverified_claims`
   over the 46 recorded live turns guards exactly the two known lies (2/46).
   Re-run the sweep when a fresh trace corpus exists.
+- **The answer-shape misses do reproduce** (2026-09-04): "what's the
+  position?" reached `evaluate_position` 5/5, "bishop to a1" was asked "which
+  bishop" 5/5 and "take the pawn" "which pawn" 5/5 on the pre-fix build
+  (scratch runs on main, 5 samples each), and all three went 5/5 the other way
+  on the fix. Unlike the verbosity scenario below, these are reproductions and
+  not only regression locks.
+  The difficulty-constraint miss ("go easy on me without changing the
+  difficulty", measured in the same scratch run) reproduces weakly: 4/5
+  respected the constraint pre-fix, 1/5 called `set_difficulty(beginner)`.
 - **The harness does not reproduce the verbosity miss** (2026-09-04). Live,
   "talk more" was answered in prose twice and `set_verbosity` was never
   called. `verbosity_up_from_low` scores **5/5 on the pre-fix build as well as

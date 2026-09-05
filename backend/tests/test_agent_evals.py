@@ -115,6 +115,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable, Generator
@@ -188,6 +189,12 @@ _REQUEST_TIMEOUT = 310.0
 # reads/analysis are deliberately excluded: they never move a piece.
 _BOARD_TOOLS = frozenset({"make_move", "undo", "new_game", "resign", "resume_game"})
 
+# The engine-backed reads that answer "how good is this?" — a *verdict*, which
+# is a different ask from "what's on the board?". `position_is_described`
+# asserts none of them ran: answering a description with an eval is the
+# 2026-09-04 walkthrough defect, whichever of the three produced it.
+_VERDICT_TOOLS = frozenset({"evaluate_position", "get_best_moves", "analyze_last_move"})
+
 # Latency tripwires, not a band: the precise numbers live in the baseline table
 # in docs/agent-evals.md, which a human reads. These only catch a *regression*
 # of the kind the loop rework was meant to prevent (an analysis ask reasoning
@@ -234,6 +241,9 @@ _FLOORS: dict[str, float] = {
     "advice_is_engine_backed": 0.8,
     "advice_capture_survives_guard": 0.8,
     "verbosity_up_from_low": 0.8,
+    "position_is_described": 0.8,
+    "impossible_move_is_refused_not_asked": 0.8,
+    "impossible_capture_is_refused_not_asked": 0.8,
     "long_resume": 0.8,
     "long_resign": 0.8,
     "long_capture": 0.8,
@@ -1863,6 +1873,170 @@ def test_eval_verbosity_up_from_low(engine: EnginePlayer) -> None:
     )
 
     _assert_floor(result, floor)
+
+
+def test_eval_position_is_described_not_evaluated(engine: EnginePlayer) -> None:
+    """ "what's the position?" gets a description, not a verdict.
+
+    Walkthrough smaller note, twice out of twice: the ask routed to
+    `evaluate_position` and was answered with an eval ("You're cooked"). Two
+    causes, both code's — `evaluate_position`'s description was the only tool
+    text in the registry carrying the word "position", and the narrator, the
+    phase that actually speaks, is handed no board at all (#193), so even a
+    planner that declined the eval left it nothing to describe from.
+    `describe_position` is the tool whose *result* is a description, and this
+    scenario is the lock on the routing between the two.
+
+    The position is `judgment_question`'s on purpose: the same board where
+    "how am I doing?" must reach an analysis tool is the board where "what's
+    the position?" must not. What is pinned is the trajectory — which tool
+    answered, and that no verdict tool ran — never a word of the reply: how
+    Glitch reads a position out is exactly the thing this suite must not pin.
+
+    The settings assertion folds in TODO.md's standing item ("a question turn
+    shouldn't mutate settings the player owns"): a read-only ask that comes
+    back having changed difficulty or verbosity has done something the player
+    did not ask for, and this is the cheapest place that can see it.
+    """
+    utterance = "what's the position?"
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        for san in ("e4", "e5", "Nf3", "Nc6"):
+            assert app.ctx.session.submit_move(san).legal
+        assert parse_move(utterance, app.ctx.session.fen()) is None
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _successful(assistant, "describe_position"), (
+            "a description ask is answered by the tool that describes: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        called = {call["tool"] for call in _tool_calls(assistant)}
+        assert not called & _VERDICT_TOOLS, (
+            "a description ask is not a verdict ask: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert _board_mutations(assistant) == [], "a question must not move a piece"
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a question turn must not change a setting the player owns"
+        )
+        traced = app.tracer.last
+        assert traced.get("guarded") is not True, (
+            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
+            f"{traced.get('suppressed')!r}"
+        )
+
+    floor = _FLOORS["position_is_described"]
+    result = _pass_rate(
+        engine,
+        "position_is_described",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        # A turn that never reached the narrator answered with the canned stuck
+        # line, which describes nothing — the tool call alone is not the
+        # feature working.
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+def _refused_not_asked(
+    before: dict[str, Any],
+) -> Callable[[EvalApp, dict[str, Any]], None]:
+    """The check both impossible-request scenarios share: nothing moved, nothing
+    was set, nothing was guarded, and the reply is not a clarifying question.
+
+    This is the suite's first check that reads the model's *wording*, and it is
+    deliberate: the defect here is a reply shape. The board is untouched either
+    way, the trajectory is legitimately variable (attempt-and-concede, or
+    decline outright — `honest_illegal` already pins that half), and what went
+    wrong live is only visible in what the player was asked. So the check is as
+    narrow as it can be — a clarifying question, meaning the word "which" and a
+    question mark — and asserts nothing about how the refusal is phrased. The
+    precedent is `advice_capture_survives_guard`, which reads content for the
+    app's own canned "scratch that" line; this one reads it for a shape the app
+    is no longer supposed to produce.
+    """
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _legal_moves(assistant) == [], "must not fabricate a legal move"
+        assert _board_mutations(assistant) == []
+        assert app.ctx.session.move_history() == []
+        assert app.ctx.settings.snapshot() == before["settings"], (
+            "a refusal turn must not change a setting the player owns"
+        )
+        traced = app.tracer.last
+        assert traced.get("guarded") is not True, (
+            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
+            f"{traced.get('suppressed')!r}"
+        )
+        content = assistant["content"]
+        assert not (re.search(r"\bwhich\b", content, re.I) and "?" in content), (
+            f"a request no piece can carry out is illegal, not ambiguous: {content!r}"
+        )
+
+    return check
+
+
+def _impossible_request(
+    engine: EnginePlayer, scenario: str, utterance: str
+) -> RateResult:
+    """One impossible request on move 1, sampled to a rate."""
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        assert parse_move(utterance, app.ctx.session.fen()) is None
+        before["settings"] = app.ctx.settings.snapshot()
+
+    return _pass_rate(
+        engine,
+        scenario,
+        utterance,
+        _refused_not_asked(before),
+        floor=_FLOORS[scenario],
+        setup=setup,
+        # The reply is the whole verdict here, so a turn that never reached the
+        # narrator has nothing to read and is a non-pass rather than a silent
+        # green.
+        requires_narrator=True,
+    )
+
+
+def test_eval_impossible_move_is_refused_not_asked(engine: EnginePlayer) -> None:
+    """ "bishop to a1" on move 1 is illegal, and must be answered as illegal.
+
+    Walkthrough smaller note: it came back as "Which one?" — a clarifying
+    question about a move neither bishop, nor any other piece, can make. The
+    contract had a hole rather than the model having a bad day: told never to
+    judge legality itself, to submit only entries of `legal_moves`, and to ask
+    when "which piece" is unclear, asking was the one option those three rules
+    left open. The planner prompt now names the third case (words that fit no
+    entry at all are not ambiguous — they are illegal), and this measures it.
+    Pre-fix on main: 0/5, "Which bishop, bro?" every sample.
+    """
+    result = _impossible_request(
+        engine, "impossible_move_is_refused_not_asked", "bishop to a1"
+    )
+    _assert_floor(result, _FLOORS["impossible_move_is_refused_not_asked"])
+
+
+def test_eval_impossible_capture_is_refused_not_asked(engine: EnginePlayer) -> None:
+    """ "take the pawn" on move 1 — the walkthrough's other example, and the
+    same hole from the other side. Nothing on the board can be captured, so
+    there is no pawn to choose between; but the words name no square, so there
+    is nothing to submit either, and "which piece" was the only rule left that
+    applied — the first cut of the fix (a *named* move that fits nothing) still
+    answered this one "Which pawn, bro?" 2/2. The bullet now says a capture
+    when nothing can be captured is not ambiguous either.
+    """
+    result = _impossible_request(
+        engine, "impossible_capture_is_refused_not_asked", "take the pawn"
+    )
+    _assert_floor(result, _FLOORS["impossible_capture_is_refused_not_asked"])
 
 
 # --- long transcript: the condition every live failure shared -----------------

@@ -121,6 +121,17 @@ def test_the_brain_offer_always_carries_get_best_moves(session):
     assert "get_best_moves" not in brain_tool_exclusions(ToolContext(session=session))
 
 
+def test_the_brain_offer_always_carries_describe_position(session):
+    """A read, but not one of `BOARD_STATE_TOOLS`. Those are withheld because
+    their answers are already in the planner's state block; this one's consumer
+    is the *narrator*, which is handed no board at all (#193) — withhold it and
+    a description ask has nothing to describe from, which is exactly how it
+    came back as an eval."""
+    excluded = brain_tool_exclusions(ToolContext(session=session))
+    assert "describe_position" not in excluded
+    assert "describe_position" not in BOARD_STATE_TOOLS
+
+
 def test_the_brain_offer_withholds_claim_draw_until_a_draw_is_claimable(session):
     """The tool exists only when the rules allow the claim, so the model is
     never asked to judge whether one is available — and the schema it plans
@@ -234,6 +245,26 @@ def test_evaluate_position_routes_who_is_winning(registry):
     # call. The judgment question is a read like any other.
     desc = _description(registry, "evaluate_position").lower()
     assert "who's winning" in desc
+
+
+def test_describe_position_routes_whats_the_position(registry):
+    """The other half of the same routing decision. Live, "what's the
+    position?" reached `evaluate_position` — whose description was the only
+    tool text in the registry containing the word — and came back as a verdict
+    ("You're cooked") twice. The description ask now has a tool of its own, and
+    it says so in the words the player uses."""
+    desc = _flat(_description(registry, "describe_position")).lower()
+    assert "what's the position" in desc
+    assert "where each side's pieces stand" in desc
+
+
+def test_evaluate_position_hands_the_description_ask_over(registry):
+    """A verdict is not a description, and the tool that gives verdicts is the
+    one that has to say so: two tools whose text both invited "what's the
+    position?" is the ambiguity that produced the miss."""
+    desc = _flat(_description(registry, "evaluate_position"))
+    assert "`describe_position`" in desc
+    assert "It says nothing about what is on the board" in desc
 
 
 def test_analyze_last_move_routes_how_good_was_that_move(registry):
@@ -442,6 +473,168 @@ def test_get_move_history_and_captures(session):
     assert captures["ok"] is True
     assert captures["white"] == ["p"]
     assert captures["black"] == ["p"]
+
+
+# --- describe_position: the board in words ----------------------------------
+#
+# The read whose result *is* a description. It exists because the phase that
+# speaks is handed no board (`api._narrator_state_dict`, #193), so "what's the
+# position?" had nothing to answer from and came back as an eval ("You're
+# cooked") twice in the 2026-09-04 walkthrough. Engine-free on purpose — the
+# `registry` fixture below has no Stockfish and every test here still runs.
+
+
+def _describe(registry) -> dict:
+    result = registry.dispatch("describe_position", {})
+    assert result["ok"] is True
+    return result
+
+
+def _black_registry() -> ToolRegistry:
+    """A registry over a game the *player* is playing black in — the swap that
+    decides which side the summary calls "you"."""
+    return build_registry(ToolContext(session=GameSession(player_color="black")))
+
+
+def test_describe_position_reports_the_board_as_data_and_as_prose(registry, session):
+    result = _describe(registry)
+    assert result["pieces"] == session.piece_placement()
+    assert result["castling"] == session.castling_status()
+    assert result["material"] == {"player_advantage": 0}
+    assert result["in_check"] is False
+    assert result["last_move"] is None
+    assert result["move_number"] == 1
+    assert result["plies"] == 0
+    assert result["game_over"] is False
+    assert result["outcome"] is None
+    assert result["summary"]
+    json.dumps(result)  # must not raise
+
+
+def test_describe_position_offers_the_narrator_no_side_to_play_for(session):
+    """The invariant the whole tool is shaped around (#193): a narrator that
+    can see whose move it is announces one, so this result carries no `turn`,
+    no `fen` (the string names the side to move) and no `legal_moves` (the menu
+    to pick from) — the three fields `_narrator_state_dict` deletes for the
+    same reason.
+
+    And no top-level `san`: `api._verified_facts` reads that key off every tool
+    result as a move the turn played, so the last ply rides under `last_move`,
+    SAN only and with nobody's name on it.
+    """
+    for move in ("e4", "e5", "Nf3", "Nc6"):
+        assert session.submit_move(move).legal
+    result = _describe(build_registry(ToolContext(session=session)))
+
+    assert {"turn", "fen", "legal_moves", "san"} & result.keys() == set()
+    assert result["last_move"] == "Nc6"
+    summary = result["summary"]
+    assert "Last move: Nc6." in summary
+    assert "your move" not in summary.lower()
+    assert "to move" not in summary.lower()
+
+
+def test_the_summary_addresses_the_player_and_the_narrator(registry):
+    """Same second person as a move summary: the paragraph is written *to* the
+    narrator, so "the player" is the human and "you" is Glitch."""
+    summary = _describe(registry)["summary"]
+    assert "The player (White) has: king e1; queen d1; rooks a1, h1;" in summary
+    assert "You (Black) have: king e8; queen d8; rooks a8, h8;" in summary
+    assert "pawns a2, b2, c2, d2, e2, f2, g2, h2." in summary
+
+
+def test_the_summary_swaps_the_voices_with_the_players_color():
+    """The one fact that decides who "you" is — read from the session, never
+    from the board, which cannot know which side the human is on."""
+    summary = _describe(_black_registry())["summary"]
+    assert "The player (Black) has: king e8;" in summary
+    assert "You (White) have: king e1;" in summary
+
+
+def test_the_summary_says_nothing_has_been_played_on_a_fresh_board(registry):
+    assert _describe(registry)["summary"].startswith(
+        "Nothing has been played yet — the starting position."
+    )
+
+
+def test_the_summary_counts_the_moves_once_a_game_is_under_way(session, registry):
+    for move in ("e4", "e5", "Nf3"):
+        assert session.submit_move(move).legal
+    assert _describe(registry)["summary"].startswith("Move 2, 3 plies played.")
+
+
+def test_a_level_board_is_reported_as_level(registry):
+    assert "Material is level." in _describe(registry)["summary"]
+
+
+def test_the_material_sentence_follows_the_players_side(session, registry):
+    """The direction is the point: the same three moves put the *player* a pawn
+    up playing white and Glitch a pawn up playing black. Phrased as "up N
+    pawns" because that is the shape the honesty guard's material class
+    verifies against the board."""
+    for move in ("e4", "d5", "exd5"):
+        assert session.submit_move(move).legal
+    assert "The player is up 1 pawn of material." in _describe(registry)["summary"]
+
+    black = _black_registry()
+    for move in ("e4", "d5", "exd5"):
+        assert black.context.session.submit_move(move).legal
+    assert "You are up 1 pawn of material." in _describe(black)["summary"]
+
+
+def test_the_castling_sentences_report_each_side(session, registry):
+    for move in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "O-O"):
+        assert session.submit_move(move).legal
+    summary = _describe(registry)["summary"]
+    assert "The player has castled kingside." in summary
+    assert "You can still castle either side." in summary
+
+
+def test_a_side_that_lost_its_rights_without_castling_says_so(session, registry):
+    for move in ("e4", "e5", "Ke2", "Ke7"):
+        assert session.submit_move(move).legal
+    summary = _describe(registry)["summary"]
+    assert "The player can no longer castle." in summary
+    assert "You can no longer castle." in summary
+
+
+def test_one_remaining_right_is_named(session, registry):
+    for move in ("Nf3", "Nf6", "Rg1", "Ng8"):
+        assert session.submit_move(move).legal
+    assert (
+        "The player can still castle queenside only." in _describe(registry)["summary"]
+    )
+
+
+def test_the_check_sentence_names_a_color_not_a_person():
+    """A king in check is the side to move's, so "you are in check" would be
+    one more way of telling the narrator it is holding a turn (#193). The
+    colour says the same fact without handing over a move."""
+    session = GameSession(fen="4k3/8/8/8/8/8/8/4K2R w K - 0 1")
+    assert session.submit_move("Rh8+").legal
+    result = _describe(build_registry(ToolContext(session=session)))
+    assert result["in_check"] is True
+    assert "The black king is in check." in result["summary"]
+    assert "you are in check" not in result["summary"].lower()
+
+
+def test_no_check_sentence_when_nobody_is_in_check(registry):
+    assert "in check" not in _describe(registry)["summary"]
+
+
+def test_the_summary_reports_a_finished_game_first():
+    session = GameSession(fen=WHITE_MATE_IN_1)
+    assert session.submit_move("Qxf7#").legal
+    result = _describe(build_registry(ToolContext(session=session)))
+    assert result["game_over"] is True
+    assert result["summary"].startswith("The game is over: checkmate, white wins.")
+
+
+def test_a_drawn_game_is_reported_as_drawn():
+    session = GameSession(fen=FIFTY_MOVE_FEN)
+    session.claim_draw()
+    result = _describe(build_registry(ToolContext(session=session)))
+    assert result["summary"].startswith("The game is over: fifty moves, drawn.")
 
 
 # --- write tools ------------------------------------------------------------

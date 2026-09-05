@@ -67,6 +67,22 @@ def test_brain_receives_board_state_and_command():
     assert board_state["turn"] == "white"
 
 
+def test_brain_view_says_what_each_capture_takes():
+    """SAN says that a move captures and never what, and the model cannot read
+    the victim off the FEN — so "take the pawn" on a board with nothing to take
+    came back "which pawn?" (2026-09-04 walkthrough). The view now carries the
+    one fact that request needs, beside the list it resolves against."""
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "d5"):
+        assert ctx.session.submit_move(san).legal
+    app, brain = scripted_app(ctx, AgentResponse(text="hello"))
+    # A brain-routed ask: "take the pawn" itself is one unambiguous capture here
+    # and the fast path would play it without consulting the brain at all.
+    TestClient(app).post("/api/command", json={"text": "what can I take?"})
+    board_state, _ = brain.calls[0]
+    assert board_state["captures"] == {"exd5": "pawn"}
+
+
 def test_brain_view_is_agent_facing_not_the_ui_state():
     """The brain reasons from a purpose-made view — board truth plus the
     player's color and check status — never the UI state document, whose
@@ -655,6 +671,7 @@ def test_the_observation_offers_the_narrator_no_side_to_play_for():
     state, _ = brain.narrate_calls[0]
     assert "turn" not in state
     assert "legal_moves" not in state
+    assert "captures" not in state
     assert "fen" not in state
     assert state["player_color"] == "white"
     assert state["captured"] == {"white": [], "black": []}
@@ -686,6 +703,7 @@ def test_a_confirmed_ops_narration_gets_the_same_sideless_view():
     state, _ = brain.narrate_calls[0]
     assert "turn" not in state
     assert "legal_moves" not in state
+    assert "captures" not in state
     assert "fen" not in state
 
 
@@ -1485,6 +1503,34 @@ def test_a_settings_call_does_not_license_advice():
 
     assert ctx.settings.verbosity == "low", "the setting change itself stands"
     assert response["commentary"] == MOVE_ADVICE_REPLY
+
+
+def test_a_description_licenses_the_last_move_it_names():
+    """`describe_position` reports the last move played, and the narrator may
+    repeat it. Castling is the one SAN both sides spell the same way, so with
+    the other side still able to castle the reported "O-O" is also a currently
+    legal move — which the guard read as advice, eating a whole description
+    for the coincidence. A quiet move cannot collide (its destination is
+    occupied once played), so the licence is exactly this one string wide."""
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "Nc3", "Bc5", "d3", "d6"):
+        assert ctx.session.submit_move(san).legal
+    assert ctx.session.submit_move("Bg5").legal
+    assert ctx.session.submit_move("O-O").legal  # Black castles; White still can
+    assert "O-O" in ctx.session.legal_moves()
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Last move: O-O. You tucked the king away; even material.",
+            tool_calls=(ToolCall(name="describe_position", args={}),),
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/command", json={"text": "what's the position?"}).json()
+
+    assert response["commentary"] != MOVE_ADVICE_REPLY
+    assert "O-O" in response["commentary"]
 
 
 def test_a_mistake_analysis_licenses_its_played_and_best_moves():
