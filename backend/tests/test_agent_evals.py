@@ -2476,14 +2476,12 @@ def test_eval_offer_draw_routes_and_the_decline_is_voiced_honestly(
             f"no claim exists to make: {_trajectory(assistant)}"
         )
         offers = _succeeded(assistant, "offer_draw")
-        assert offers and offers[0]["result"]["accepted"] is False, (
-            f"a middlegame offer is declined by the rule: {offers!r}"
+        assert offers, f"the offer did not run: {_trajectory(assistant)}"
+        verdict = json.loads(offers[0]["result"])
+        assert verdict["accepted"] is False, (
+            f"a middlegame offer is declined by the rule: {verdict!r}"
         )
-        assert offers[0]["result"]["reason"] in (
-            "not_an_endgame",
-            "engine_ahead",
-            "player_ahead",
-        )
+        assert verdict["reason"] in ("not_an_endgame", "engine_ahead", "player_ahead")
         assert not app.ctx.session.is_game_over(), "a decline ends nothing"
         assert app.ctx.session.fen() == before["fen"]
         assert app.ctx.live_pending() is None, "an offer is not gated"
@@ -2534,7 +2532,8 @@ def test_eval_offer_draw_accepted_in_a_dead_drawn_endgame(
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         offers = _succeeded(assistant, "offer_draw")
         assert offers, f"expected an accepted offer_draw call: {_trajectory(assistant)}"
-        assert offers[0]["result"]["accepted"] is True, offers[0]["result"]
+        verdict = json.loads(offers[0]["result"])
+        assert verdict["accepted"] is True, verdict
         assert _attempted(assistant, "resign") == [], _trajectory(assistant)
         assert app.ctx.session.is_game_over()
         assert app.ctx.session.outcome().termination == "agreement"
