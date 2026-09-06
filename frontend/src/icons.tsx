@@ -56,6 +56,15 @@ export function FlagIcon(props: IconProps) {
   )
 }
 
+export function DrawIcon(props: IconProps) {
+  // An equals sign: the half-point the two sides split.
+  return (
+    <Icon {...props}>
+      <path d="M5 9.5h14M5 14.5h14" />
+    </Icon>
+  )
+}
+
 export function BulbIcon(props: IconProps) {
   return (
     <Icon {...props}>

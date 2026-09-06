@@ -34,10 +34,11 @@ Conventions:
   and the mutation happen under `ctx.mutation_lock` and cannot be split, so two
   clients on the one shared session cannot advance the same turn twice — see
   `_mutation` and `docs/turn-coordinator.md`.
-- **The destructive-op gate is one system.** `/api/game/new` and
-  `/api/game/resign` dispatch through the registry, so the same deterministic
-  gate that refuses an unconfirmed `new_game`/`resign` for the agent arms
-  `ctx.pending` for a button press too: mid-game those endpoints answer 409
+- **The destructive-op gate is one system.** `/api/game/new`,
+  `/api/game/resign` and `/api/game/claim-draw` dispatch through the registry,
+  so the same deterministic gate that refuses an unconfirmed
+  `new_game`/`resign`/`claim_draw` for the agent arms `ctx.pending` for a
+  button press too: mid-game those endpoints answer 409
   with the gate's question (`confirm: true`), and `/api/game/confirm` answers
   it. It is the *same* armed op the spoken road uses, so a question asked by a
   button can be answered by a typed "yes" and vice versa. Undo is not
@@ -177,6 +178,12 @@ class UndoRequest(VersionedRequest):
 
 class ResignRequest(VersionedRequest):
     color: str | None = Field(default=None, pattern="^(white|black)$")
+
+
+class ClaimDrawRequest(VersionedRequest):
+    """No fields of its own: which rule the claim lands under is board truth
+    (`GameSession.claim_draw`), never the caller's choice — so the body carries
+    only the version precondition every mutating request may."""
 
 
 class ConfirmRequest(VersionedRequest):
@@ -1866,6 +1873,29 @@ def create_app(
             outcome = _run_destructive(
                 "resign", {"color": request.color or ctx.session.player_color}
             )
+            if isinstance(outcome, JSONResponse):
+                return outcome
+            _publish_state()
+            return {
+                "outcome": outcome["outcome"],
+                "state": _state_dict_unlocked(ctx),
+            }
+
+    @app.post("/api/game/claim-draw")
+    async def claim_draw(request: ClaimDrawRequest) -> Any:
+        """Claim a threefold-repetition or fifty-move draw — through the same
+        gate as `resign` (409 + the question mid-game, `/api/game/confirm`
+        answers it).
+
+        The button half of a claim the state document already advertises
+        (`claimable_draws`): until this endpoint existed the tool was reachable
+        only through the brain, so in direct mode a claim was unreachable (#220
+        follow-up). Whether a claim exists is the tool's own check, before the
+        gate — nothing to claim is a plain 409 with nothing armed, so a yes can
+        never be an answer to a question about a draw the rules do not allow.
+        """
+        async with _mutation(request.version):
+            outcome = _run_destructive("claim_draw", {})
             if isinstance(outcome, JSONResponse):
                 return outcome
             _publish_state()

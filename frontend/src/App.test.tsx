@@ -267,6 +267,54 @@ describe('player color', () => {
   })
 })
 
+// The draw button follows the backend's `claimable_draws`: the rules are its
+// truth, never read off the board here. A claim is the gated `claim_draw`
+// dispatch the resign button already makes; without one the button is the
+// offer, which waits on the `offer_draw` tool.
+describe('draw button', () => {
+  it('offers the claim, enabled, once the backend says a draw is claimable', async () => {
+    served = state({ history: ['Nf3', 'Nf6'], claimable_draws: ['threefold_repetition'] })
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /claim draw/i })).toBeEnabled(),
+    )
+    expect(screen.queryByRole('button', { name: /offer draw/i })).not.toBeInTheDocument()
+  })
+
+  it('sends the claim through the gated endpoint', async () => {
+    served = state({ history: ['Nf3', 'Nf6'], claimable_draws: ['fifty_moves'] })
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /claim draw/i })).toBeEnabled(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /claim draw/i }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/game/claim-draw',
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    )
+  })
+
+  it('shows the offer, disabled, while nothing is claimable', async () => {
+    served = state({ history: ['e4', 'e5'], claimable_draws: [] })
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /offer draw/i })).toBeDisabled(),
+    )
+  })
+
+  it('is disabled once the game is over', async () => {
+    served = state({
+      game_over: true,
+      outcome: { termination: 'resignation', winner: 'black', result: '0-1' },
+      claimable_draws: [],
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /draw/i })).toBeDisabled())
+  })
+})
+
 // Direct mode: no brain configured. The game is fully playable against
 // Stockfish, and that is a deliberate mode — so it is shown, and the command
 // box is a designed dead state rather than a 503 the player has to trip over.

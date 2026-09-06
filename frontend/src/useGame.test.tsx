@@ -526,6 +526,7 @@ describe('useGame', () => {
       await result.current.undo()
       await result.current.newGame('black')
       await result.current.resign()
+      await result.current.claimDraw()
     })
 
     const bodyFor = (path: string) => {
@@ -536,6 +537,7 @@ describe('useGame', () => {
     expect(bodyFor('/api/game/undo')).toEqual({ version: 1 })
     expect(bodyFor('/api/game/new')).toEqual({ color: 'black', version: 1 })
     expect(bodyFor('/api/game/resign')).toEqual({ version: 1 })
+    expect(bodyFor('/api/game/claim-draw')).toEqual({ version: 1 })
   })
 
   // --- live turn progress (audit item 19) ------------------------------------
@@ -952,6 +954,25 @@ describe('useGame', () => {
       '/api/game/resign',
       expect.objectContaining({ method: 'POST' }),
     )
+  })
+
+  it('claims a draw and applies the returned state', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    routeAnswers('/api/game/claim-draw', () =>
+      jsonResponse({
+        outcome: { termination: 'fifty_moves', winner: null, result: '1/2-1/2' },
+        state: state({ game_over: true, version: 2 }),
+      }),
+    )
+    await act(async () => {
+      await result.current.claimDraw()
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/claim-draw',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(result.current.state?.game_over).toBe(true)
   })
 
   it('loads the current difficulty from settings', async () => {
@@ -1440,6 +1461,48 @@ describe('useGame', () => {
     expect(result.current.state?.game_over).toBe(true)
   })
 
+  it('asks before a gated draw claim, then confirms it', async () => {
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      const path = String(url)
+      if (path.includes('/api/game/confirm'))
+        return jsonResponse({
+          op: 'claim_draw',
+          confirmed: true,
+          state: state({
+            game_over: true,
+            outcome: { termination: 'threefold_repetition', winner: null, result: '1/2-1/2' },
+          }),
+        })
+      if (path.includes('/api/game/claim-draw'))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () =>
+            Promise.resolve({
+              detail: 'That ends the game in a draw. Claim it?',
+              confirm: true,
+              op: 'claim_draw',
+            }),
+        })
+      return jsonResponse(state())
+    })
+
+    await act(async () => {
+      await result.current.claimDraw()
+    })
+
+    expect(confirmSpy).toHaveBeenCalledWith('That ends the game in a draw. Claim it?')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/confirm',
+      expect.objectContaining({ body: JSON.stringify({ confirm: true, version: 1 }) }),
+    )
+    expect(result.current.state?.outcome?.termination).toBe('threefold_repetition')
+  })
+
   it('does not ask when the gate stood aside', async () => {
     const confirmSpy = vi.fn(() => true)
     vi.stubGlobal('confirm', confirmSpy)
@@ -1514,9 +1577,11 @@ describe('useGame', () => {
     const revisionBefore = result.current.revision
     routeAnswers('/api/game/new', REFUSED_CONNECTION)
     routeAnswers('/api/game/resign', REFUSED_CONNECTION)
+    routeAnswers('/api/game/claim-draw', REFUSED_CONNECTION)
     await act(async () => {
       await expect(result.current.newGame()).resolves.toBeUndefined()
       await expect(result.current.resign()).resolves.toBeUndefined()
+      await expect(result.current.claimDraw()).resolves.toBeUndefined()
     })
     // No state and no question came back: nothing to ask, nothing to move.
     expect(confirmSpy).not.toHaveBeenCalled()

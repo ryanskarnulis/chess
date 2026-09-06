@@ -90,10 +90,17 @@ moved under it or the computation failed.
 - **Dragged moves**: in agent mode `/api/game/move` runs the same beats as the
   fast path (`api._play_move`, trace route `board`), so drag-played games get
   reactions and memory. In direct mode it answers exactly what it always did.
-- **New game / resign buttons** dispatch through the registry, so the same
-  gate (`tools._gate`) that answers a spoken "new game" arms and asks here:
-  409 + `{"detail", "confirm": true, "op"}`, answered at `/api/game/confirm`
-  from either surface. Undo is not destructive and stays direct.
+- **New game / resign / claim-draw buttons** dispatch through the registry, so
+  the same gate (`tools._gate`) that answers a spoken "new game" arms and asks
+  here: 409 + `{"detail", "confirm": true, "op"}`, answered at
+  `/api/game/confirm` from either surface. The draw button reads "Claim draw"
+  while the state document's `claimable_draws` is non-empty — the rules are
+  board truth, and the client is told rather than left to work them out — and
+  `/api/game/claim-draw` runs the same `claim_draw` tool the brain is offered
+  then; nothing to claim is a plain 409 with nothing armed (the tool's own
+  check, ahead of the gate). Without a claim the button is the draw *offer*,
+  which is the `offer_draw` tool's path (`docs/draw-offer.md`). Undo is not
+  destructive and stays direct.
 - **MCP calls** (the standalone `chessapp.mcp_server`, a game of its own)
   dispatch through the same registry and gate, and the gate's question is
   answered on a third surface: the call wrapper puts

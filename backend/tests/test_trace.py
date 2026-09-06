@@ -507,6 +507,24 @@ def test_a_declined_reset_is_traced_as_having_run_nothing(trace_path):
     assert declined["tools"] == [], "nothing was dispatched to report"
 
 
+def test_a_claim_draw_button_is_traced_like_the_other_controls(trace_path):
+    """The claim's ask and its yes are two control records, same as a reset's:
+    the ask ran nothing, the confirmation changed the board."""
+    client, ctx = make_client(trace_path)
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8") * 2:
+        ctx.session.submit_move(san)
+    assert client.post("/api/game/claim-draw", json={}).status_code == 409
+    client.post("/api/game/confirm", json={"confirm": True})
+    asked, confirmed = read_records(trace_path)
+    assert asked["route"] == "control"
+    assert asked["utterance"] == "claim_draw"
+    assert asked["changed"] is False
+    assert asked["tools"][0]["result"]["ok"] is False
+    assert confirmed["utterance"] == "claim_draw"
+    assert confirmed["changed"] is True
+    assert confirmed["tools"][0]["result"]["outcome"]["result"] == "1/2-1/2"
+
+
 def test_a_control_record_carries_the_turn_it_answered_in(trace_path):
     client, _ = _in_progress(trace_path, engine=FakeEngine("e7e5"))
     client.post("/api/command", json={"text": "Nc6"})  # turn 1, then turn 2 opens
