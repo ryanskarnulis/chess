@@ -1,9 +1,18 @@
 # The MCP confirmation surface
 
 Design note, 2026-09-05 — audit finding 3 (`docs/agent-audit-2026-09-05.md`).
-**No code ships with this note.** It defines the trusted human confirmation
-path for the standalone MCP server; the implementation is a later PR against
-the acceptance criteria at the end, once the design here is agreed.
+Filed without code (#271) and agreed the same day; **implemented in #272**
+against the acceptance criteria at the end, in `mcp_server._mcp_tool`'s call
+wrapper and nowhere else. One name moved in the implementation:
+`_CONFIRM_QUESTIONS` left `api.py` for `tools.CONFIRM_QUESTIONS`, so the board
+dialog, the free-text reader and the MCP server read one table — where this
+note says `_CONFIRM_QUESTIONS[op]`, read `CONFIRM_QUESTIONS[op]`. One
+concurrency rule the implementation added beyond the text below: a yes runs
+only if the armed op is still *this* call's (identity, not name), because with
+the lock released across the human's wait a later gated call can arm its own
+question, and the newest question is the one a yes answers. The one check the
+note asks of the implementation that stays open is in `TODO.md`: that Claude
+Code's client declares form elicitation and shows the prompt.
 
 ## The finding
 
