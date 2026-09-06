@@ -38,6 +38,7 @@ function App() {
     undo,
     resign,
     claimDraw,
+    offerDraw,
     setDifficulty,
     tier,
     commentary,
@@ -88,8 +89,8 @@ function App() {
   const otherColor = state?.player_color === 'white' ? 'black' : 'white'
   // A claim exists only when the backend says so — the rules are its truth,
   // never read off the board here. Without one the button is the draw *offer*,
-  // which waits on the `offer_draw` tool (docs/draw-offer.md) and is disabled
-  // until that path lands.
+  // whose answer is the backend's rule too (docs/draw-offer.md): the UI only
+  // relays it.
   const drawClaimable = (state?.claimable_draws?.length ?? 0) > 0
 
   const board = state && (
@@ -240,12 +241,12 @@ function App() {
           <BottomBar
             onOptions={() => setSheetOpen(true)}
             onResign={resign}
-            onDraw={claimDraw}
+            onDraw={drawClaimable ? claimDraw : offerDraw}
             onHint={requestHint}
             onUndo={undo}
             resignDisabled={state.game_over}
             drawClaimable={drawClaimable}
-            drawDisabled={state.game_over || !drawClaimable}
+            drawDisabled={state.game_over}
             hintDisabled={state.game_over || reviewing}
             undoDisabled={!playerMoved || reviewing}
           />

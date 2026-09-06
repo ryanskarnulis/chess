@@ -296,12 +296,40 @@ describe('draw button', () => {
     )
   })
 
-  it('shows the offer, disabled, while nothing is claimable', async () => {
+  it('offers a draw while nothing is claimable, and relays the answer', async () => {
     served = state({ history: ['e4', 'e5'], claimable_draws: [] })
+    const respond = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/game/offer-draw')
+        ? Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                accepted: false,
+                reason: 'not_an_endgame',
+                evaluation: { cp_engine_pov: 12, mate_in: null },
+                state: served,
+              }),
+          })
+        : respond(url),
+    )
     render(<App />)
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /offer draw/i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /offer draw/i })).toBeEnabled(),
     )
+    fireEvent.click(screen.getByRole('button', { name: /offer draw/i }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/game/offer-draw',
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    )
+    // The answer is the rule's, shown as the app's own line — no model on
+    // this path, and never a claim the result does not carry.
+    await waitFor(() =>
+      expect(screen.getByText(/draw declined — too much still on the board/i)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/draw agreed/i)).not.toBeInTheDocument()
   })
 
   it('is disabled once the game is over', async () => {

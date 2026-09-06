@@ -975,6 +975,106 @@ describe('useGame', () => {
     expect(result.current.state?.game_over).toBe(true)
   })
 
+  // --- draw offers (docs/draw-offer.md) -------------------------------------
+  //
+  // Not gated: the backend's rule answers directly, and the hook relays the
+  // answer as one deterministic line. The game ends only on an acceptance.
+
+  function drawOfferAnswers(body: Record<string, unknown>) {
+    routeAnswers('/api/game/offer-draw', () => jsonResponse(body))
+  }
+
+  it('offers a draw citing the rendered version', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.version).toBe(1))
+    drawOfferAnswers({ accepted: false, reason: 'not_an_endgame', state: state() })
+    await act(async () => {
+      await result.current.offerDraw()
+    })
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/game/offer-draw'))
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ version: 1 })
+  })
+
+  it('relays a declined offer as a line and leaves the game running', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    drawOfferAnswers({
+      accepted: false,
+      reason: 'engine_ahead',
+      evaluation: { cp_engine_pov: 240, mate_in: null },
+      state: state(),
+    })
+    await act(async () => {
+      await result.current.offerDraw()
+    })
+    expect(result.current.commentary).toMatch(/declined/i)
+    expect(result.current.commentary).toMatch(/glitch is ahead/i)
+    expect(result.current.state?.game_over).toBe(false)
+  })
+
+  it('applies an accepted offer as the drawn game it ended', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    drawOfferAnswers({
+      accepted: true,
+      reason: null,
+      evaluation: { cp_engine_pov: 0, mate_in: null },
+      outcome: { termination: 'agreement', winner: null, result: '1/2-1/2' },
+      state: state({
+        version: 2,
+        game_over: true,
+        outcome: { termination: 'agreement', winner: null, result: '1/2-1/2' },
+      }),
+    })
+    await act(async () => {
+      await result.current.offerDraw()
+    })
+    expect(result.current.commentary).toMatch(/draw agreed/i)
+    expect(result.current.state?.game_over).toBe(true)
+    expect(result.current.state?.outcome?.termination).toBe('agreement')
+  })
+
+  it('catches up on a stale offer and says nothing', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    routeAnswers('/api/game/offer-draw', () =>
+      Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () =>
+          Promise.resolve({
+            stale: true,
+            version: 3,
+            detail: 'board changed',
+            state: state({ version: 3, history: ['e4', 'e5'] }),
+          }),
+      }),
+    )
+    await act(async () => {
+      await result.current.offerDraw()
+    })
+    expect(result.current.state?.history).toEqual(['e4', 'e5'])
+    expect(result.current.commentary).toBeNull()
+  })
+
+  it('moves nothing and says nothing when the offer is refused', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    routeAnswers('/api/game/offer-draw', () =>
+      Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail: 'cannot offer a draw: the game is already over' }),
+      }),
+    )
+    await act(async () => {
+      await expect(result.current.offerDraw()).resolves.toBeUndefined()
+    })
+    expect(result.current.revision).toBe(revisionBefore)
+    expect(result.current.commentary).toBeNull()
+  })
+
   it('loads the current difficulty from settings', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.tier).toBe('casual'))
