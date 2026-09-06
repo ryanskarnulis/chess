@@ -308,6 +308,51 @@ export function claimDraw(version?: number): Promise<LifecycleOutcome> {
   return postGated('/api/game/claim-draw', {}, version)
 }
 
+/** The engine's answer to a draw offer, as the backend's rule reports it
+ * (`docs/draw-offer.md`): whether it was accepted, why not if not, the
+ * evaluation it was judged on, the outcome when the game ended, and the
+ * authoritative state either way. */
+export interface DrawOfferResponse {
+  accepted: boolean
+  reason: string | null
+  evaluation: { cp_engine_pov: number; mate_in: number | null }
+  outcome?: Outcome
+  state: GameState
+}
+
+/**
+ * Offer the engine a draw. Not gated — a decline changes nothing and an
+ * acceptance ends a position the rule has already judged drawn — so there is
+ * no question to relay: the answer comes back directly. A stale 409 returns
+ * the catch-up state; any other refusal (game over, no engine) returns null
+ * and nothing should move.
+ */
+export async function offerDraw(
+  version?: number,
+): Promise<DrawOfferResponse | StaleStateResponse | null> {
+  let res: Response
+  try {
+    res = await fetch('/api/game/offer-draw', {
+      ...JSON_POST,
+      body: JSON.stringify(versioned({}, version)),
+    })
+  } catch {
+    return null
+  }
+  const data = (await res.json().catch(() => ({}))) as unknown
+  if (!res.ok) return isStaleStateResponse(data) ? data : null
+  if (!carriesState(data)) return null
+  const body = data as Partial<DrawOfferResponse> & { state: GameState }
+  if (typeof body.accepted !== 'boolean') return null
+  return {
+    accepted: body.accepted,
+    reason: typeof body.reason === 'string' ? body.reason : null,
+    evaluation: body.evaluation ?? { cp_engine_pov: 0, mate_in: null },
+    outcome: body.outcome,
+    state: body.state,
+  }
+}
+
 export interface DifficultyResponse {
   tier: string | null
   skill_level: number | null

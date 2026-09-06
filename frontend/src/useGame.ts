@@ -8,6 +8,7 @@ import {
   isMoveFailure,
   isStaleStateResponse,
   newGame as apiNewGame,
+  offerDraw as apiOfferDraw,
   resign as apiResign,
   sendCommand as apiSendCommand,
   setDifficulty as apiSetDifficulty,
@@ -21,6 +22,7 @@ import {
   type LifecycleOutcome,
   type SocketMessage,
 } from './api'
+import { drawAnswer } from './draw'
 import { NO_PROGRESS, applyProgress, type TurnProgress } from './progress'
 import { isPromotion, type PromotionPiece } from './promotion'
 import { playText } from './tts'
@@ -110,6 +112,10 @@ export interface UseGame {
   resign: () => Promise<void>
   /** Claim the draw `state.claimable_draws` advertises. Gated like `resign`. */
   claimDraw: () => Promise<void>
+  /** Offer the engine a draw. Code decides the answer; it is shown as one
+   * deterministic line in the commentary slot, and the game ends only when
+   * the answer is yes. */
+  offerDraw: () => Promise<void>
   /** Set engine strength by named tier (beginner … maximum). */
   setDifficulty: (tier: string) => Promise<void>
   /** Server-confirmed difficulty tier; null until settings load (or when the
@@ -501,6 +507,22 @@ export function useGame(): UseGame {
     await settle(await apiClaimDraw(stateRef.current?.version))
   }, [settle])
 
+  const offerDraw = useCallback(async () => {
+    const answer = await apiOfferDraw(stateRef.current?.version)
+    // Null means the backend refused (game over, no engine): nothing to say
+    // and nothing to move.
+    if (!answer) return
+    if (isStaleStateResponse(answer)) {
+      apply(answer.state)
+      return
+    }
+    setMoveError(null)
+    // The answer belongs to the board it was judged on: if a newer state won
+    // the race, the line is about a position that is gone.
+    if (!apply(answer.state)) return
+    setCommentary(drawAnswer(answer.accepted, answer.reason))
+  }, [apply])
+
   const setDifficulty = useCallback(async (nextTier: string) => {
     // Difficulty is a settings change, not a board mutation — no state to
     // apply. The hook reflects only what the server confirmed, so the
@@ -612,6 +634,7 @@ export function useGame(): UseGame {
     undo,
     resign,
     claimDraw,
+    offerDraw,
     setDifficulty,
     tier,
     commentary,
