@@ -13,8 +13,9 @@ the lock released across the human's wait a later gated call can arm its own
 question, and the newest question is the one a yes answers. On the client:
 Claude Code renders MCP elicitation forms with Accept/Decline (its changelog
 fixes their fullscreen layout in 2.1.239, and the CLI here is 2.1.261), so the
-capability this note leaned on is real; the one end-to-end run with our
-question in that form is the check left in `TODO.md`.
+capability this note leaned on is real, and the end-to-end run with our
+question in that form happened on 2026-09-05 — both buttons, recorded at the
+end of this note ("Verified live").
 
 ## The finding
 
@@ -199,3 +200,61 @@ green as they are):
 - Whether the delegate wire (`/api/agent/...`) wants the same elicitation-style
   round trip for a client that is not the web panel. Today it inherits the
   spoken-turn answer path, which is the right one for a conversation.
+
+## Verified live (2026-09-05)
+
+The check `TODO.md` carried after #272, run once against the real client: a
+fresh Claude Code 2.1.261 session in an empty folder with only this server
+attached (`--mcp-config` + `--strict-mcp-config`, the server's stdio tee'd
+both ways for the record, `CHESSAPP_STOCKFISH` set so the engine replied).
+The wire, verbatim except for whitespace and the client's `_meta` request ids.
+
+The handshake declared the bare `elicitation: {}` shape (protocol
+`2025-11-25`, no `form` or `url` key), which `_declares_form_elicitation`
+reads as form mode:
+
+```json
+{"roots":{"listChanged":true},"elicitation":{}}
+```
+
+`make_move {"move":"e4"}` ran and came back with Stockfish's reply, so the
+gate had a player's investment to guard. `new_game {}` then produced one
+server → client request — `CONFIRM_QUESTIONS["new_game"]` verbatim, one
+boolean:
+
+```json
+{"method":"elicitation/create","params":{"mode":"form",
+ "message":"That ends the game in progress. Start a new one?",
+ "requestedSchema":{"type":"object","properties":{"confirm":{"type":"boolean",
+ "title":"Confirm","description":"Yes, do it","default":false}},
+ "required":["confirm"]}}}
+```
+
+Claude Code rendered it as *MCP server "chess" requests your input*, the
+question, a `Confirm` checkbox captioned *Yes, do it*, and Accept / Decline,
+with the model's turn parked at "Calling chess" until the human answered.
+Ticking the box and choosing Accept sent the yes, and the tool result was the
+op's own: the starting FEN with `confirmed: true`, which the model narrated as
+a new game. The yes travelled human → client UI → server; the model saw only
+the result.
+
+```json
+{"action":"accept","content":{"confirm":true}}
+{"ok":true,"engine_move":null,"fen":"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1","turn":"white","confirmed":true}
+```
+
+After another `e4`, a second `new_game {}` asked again. Choosing Decline sent
+a bare decline; the tool result was the refusal marked `declined: true`,
+`retry: never`, and `get_board_state` then showed the game untouched. The
+model read the refusal and asked the human in chat — the design working: a
+chat "yes" can only make it call `new_game` again and be asked again in the
+form.
+
+```json
+{"action":"decline"}
+{"ok":false,"error":"new_game did not run: the player did not confirm. Nothing ran and nothing is armed.","retry":"never","board_version":5,"declined":true}
+```
+
+Not exercised live, covered at the tool boundary by `tests/test_mcp_server.py`:
+cancel (Esc), an accept with the box unticked, a board that moved while the
+form was open, a superseding question, and a client without the capability.

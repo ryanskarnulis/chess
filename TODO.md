@@ -22,18 +22,11 @@ coverage completeness outranks GPU budget, so every proposed scenario lands.
 All ten findings' follow-ups landed 2026-09-05 (#262–#272, DONE.md): one PR
 each, tool-boundary tests with every change, a gate run after every loop or
 prompt change, and the baseline re-recorded whenever the harness changed.
-Finding 3 closed as a design note (#271, agreed the same day) and its
-implementation (#272). One check the note asked of the implementation is a
-live one rather than code:
-
-- [ ] **Run the MCP confirmation end to end once**: connect
-      `python -m chessapp.mcp_server` from a fresh Claude Code session, play a
-      move, ask for a new game, and see the Accept/Decline form. Claude Code
-      renders MCP elicitation forms (its changelog fixes their layout in
-      2.1.239; the local CLI is 2.1.261), so what is left to see is our
-      question in that form and the yes running the op. The capability is
-      read off the handshake, so a client that does not declare it gets the
-      truthful `confirmation_unavailable` refusal, never a hang.
+Finding 3 closed as a design note (#271, agreed the same day), its
+implementation (#272), and the live run the note asked for (2026-09-05,
+DONE.md): from a fresh Claude Code 2.1.261 session the gated `new_game` put
+the app's own question on screen as an Accept/Decline form, the yes ran the
+op and the no left the game untouched. Nothing is open here.
 
 ## Next
 
