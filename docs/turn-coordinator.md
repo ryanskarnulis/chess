@@ -170,8 +170,9 @@ the control buttons report nothing (no interaction window).
   can be an agent failure.
 - Windowless surfaces (MCP, buttons) are unbudgeted across calls by design;
   what they cannot do is chain destructive ops inside one command.
-- Standalone MCP can arm the confirmation gate but nothing on that surface can
-  answer it yet (audit finding 3): `docs/mcp-confirmation-surface.md` defines
-  the trusted human path — MCP elicitation answered by the client's user, the
-  server calling `confirm_pending` on a yes — and the implementation waits on
-  that note being agreed.
+- Standalone MCP answers the confirmation gate through the client's human
+  (audit finding 3; `docs/mcp-confirmation-surface.md`, #272): the server
+  elicits, the client's user accepts or declines, and only that yes turns
+  `confirm_pending`. A client whose handshake declared no form elicitation is
+  refused truthfully (`confirmation_unavailable`) with nothing armed. Run end
+  to end against Claude Code 2.1.261 on 2026-09-05 (DONE.md).
