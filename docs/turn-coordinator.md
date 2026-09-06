@@ -94,6 +94,18 @@ moved under it or the computation failed.
   gate (`tools._gate`) that answers a spoken "new game" arms and asks here:
   409 + `{"detail", "confirm": true, "op"}`, answered at `/api/game/confirm`
   from either surface. Undo is not destructive and stays direct.
+- **MCP calls** (the standalone `chessapp.mcp_server`, a game of its own)
+  dispatch through the same registry and gate, and the gate's question is
+  answered on a third surface: the call wrapper puts
+  `tools.CONFIRM_QUESTIONS[op]` to the client's *human* by MCP form-mode
+  elicitation and calls `confirm_pending` on an accepted, ticked form. The
+  client's model neither emits the request nor answers it, and the advertised
+  schema does not change. A no, a dismissed form, or a client that declared
+  no elicitation capability leaves nothing armed and says so (`declined`,
+  `confirmation_unavailable`); a board that moved, or a later gated call that
+  asked its own question, while the form was open runs nothing (`stale`).
+  The lock is released across the human's wait. Design and acceptance
+  criteria: `docs/mcp-confirmation-surface.md`.
 
 ## Limits and preconditions (all code-owned)
 
@@ -127,9 +139,9 @@ moved under it or the computation failed.
   sees a version.
 - **An armed destructive op is a question about a position**: `PendingOp`
   carries the `board_version` it was armed against (re-stamped where the
-  command closes, since the gate arms mid-turn), and both answering surfaces
-  read it through `ctx.live_pending()`, which drops a stale one — so a "yes"
-  can never answer a question about a board that has since moved.
+  command closes, since the gate arms mid-turn), and all three answering
+  surfaces read it through `ctx.live_pending()`, which drops a stale one — so
+  a "yes" can never answer a question about a board that has since moved.
 
 ## Live progress
 

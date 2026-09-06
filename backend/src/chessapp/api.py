@@ -84,6 +84,7 @@ from chessapp.honesty import VerifiedFacts, unlicensed_advice, unverified_claims
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
 from chessapp.tools import (
+    CONFIRM_QUESTIONS,
     DESTRUCTIVE_TOOLS,
     UNDO_PLIES_MAX,
     ToolContext,
@@ -590,14 +591,11 @@ MOVE_ADVICE_REPLY = (
 # resignation at any point, including how to ask about one.
 _RESIGN_CONFIRM = "That's the game if you mean it. Say yes and I'll resign for you."
 
-# The same questions for a destructive op the *board UI* armed. Deterministic for
-# the same reason (`_RESIGN_CONFIRM` is this rule on the spoken road), and
-# phrased for a dialog rather than for a spoken yes.
-_CONFIRM_QUESTIONS = {
-    "new_game": "That ends the game in progress. Start a new one?",
-    "resign": "That's the game if you mean it. Resign?",
-    "claim_draw": "That ends the game in a draw. Claim it?",
-}
+# The same questions for a destructive op the *board UI* armed live with the
+# gate (`tools.CONFIRM_QUESTIONS`), where the MCP server reads them too — so
+# every surface that can answer an armed op asks the one question a yes will
+# answer. Deterministic for the same reason (`_RESIGN_CONFIRM` is this rule on
+# the spoken road), and phrased for a dialog rather than for a spoken yes.
 
 
 def _confirm_question(op: str) -> str:
@@ -607,7 +605,7 @@ def _confirm_question(op: str) -> str:
     turn happened to speak, because it is reading a reply *against a question*
     and the question is the pipeline's fact, not the narration's.
     """
-    return _CONFIRM_QUESTIONS.get(op, f"Confirm {op}?")
+    return CONFIRM_QUESTIONS.get(op, f"Confirm {op}?")
 
 
 def _confirm_required(op: str) -> JSONResponse:

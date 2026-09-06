@@ -20,6 +20,21 @@ call can be rejected. That is also why a schema violation or domain failure
 never becomes an MCP tool error (`isError`): `dispatch` already turns both
 into `{"ok": False, "error": ...}`, and this module never raises on top of
 that.
+
+The one thing this surface adds is a way for a *human* to answer the
+destructive gate (`tools._gate`; `docs/mcp-confirmation-surface.md`). The gate
+refuses `new_game`, `resign` and `claim_draw` on a game the player has invested
+in and arms the op for a yes — and on this surface, alone of the three, no yes
+could arrive: the spoken turn and the board dialog both live in the HTTP
+process. So a gated call that comes back armed goes on to ask the client's
+human through MCP elicitation (form mode): a server-initiated question the
+client presents to its user and answers accept, decline or cancel. The
+client's *model* neither emits the request nor answers it, which keeps the
+rule the gate exists for — nothing the model can emit opens it — and the
+advertised tool list does not change: no confirm tool, no argument, no
+description sentence, so the schema the eval floor is measured against is the
+schema a client sees (`test_list_tools_matches_registry_definitions`, and the
+byte snapshot in `tests/tool_definitions_emitted.json`).
 """
 
 from __future__ import annotations
@@ -27,14 +42,24 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.tools.base import Tool as MCPTool
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase, FuncMetadata
+from mcp.shared.exceptions import McpError
+from mcp.types import ClientCapabilities
 from pydantic import ConfigDict
 
+from chessapp.brain import RETRY_NEVER
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
-from chessapp.tools import ToolContext, ToolRegistry, build_registry
+from chessapp.tools import (
+    CONFIRM_QUESTIONS,
+    PendingOp,
+    ToolContext,
+    ToolRegistry,
+    build_registry,
+    confirm_pending,
+)
 
 INSTRUCTIONS = (
     "Chess: a local, agent-first chess app. These tools are the exact same "
@@ -43,6 +68,29 @@ INSTRUCTIONS = (
     "decides legality; illegal moves and domain failures come back as "
     '{"ok": false, "error": ...} rather than a protocol error.'
 )
+
+# The keyword FastMCP injects the request's `Context` under (`Tool.context_kwarg`).
+# Popped before dispatch, so the registry's `jsonschema.validate` sees exactly
+# the client's arguments; named so that no tool argument can collide with it.
+_CONTEXT_KWARG = "_mcp_context"
+
+# The form the client puts to its human: one boolean, and only `true` is a yes.
+# Hand-written JSON rather than a pydantic model, so an accept that carries no
+# field, or the wrong kind, reads as "not a yes" instead of raising a validation
+# error — the answer is a human's, and the only thing that runs the op is that
+# human's explicit true.
+_CONFIRM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "confirm": {
+            "type": "boolean",
+            "title": "Confirm",
+            "description": "Yes, do it",
+            "default": False,
+        }
+    },
+    "required": ["confirm"],
+}
 
 
 class _PassthroughArgs(ArgModelBase):
@@ -64,6 +112,119 @@ class _PassthroughArgs(ArgModelBase):
 
 
 _PASSTHROUGH_METADATA = FuncMetadata(arg_model=_PassthroughArgs)
+
+
+def _declares_form_elicitation(capabilities: ClientCapabilities | None) -> bool:
+    """Whether the client said, at the handshake, that it can put a form to its
+    human. Never assumed: a client that cannot ask gets the fallback in
+    `_confirm` rather than a question nothing will answer.
+
+    Spec 2025-11-25 splits the capability into `form` and `url` modes; a client
+    on the 2025-06-18 shape declares a bare `elicitation: {}` and means form,
+    the only mode there was. A client declaring `url` alone cannot show a form
+    and is treated as unable to confirm.
+    """
+    if capabilities is None or capabilities.elicitation is None:
+        return False
+    elicitation = capabilities.elicitation
+    return elicitation.form is not None or elicitation.url is None
+
+
+def _client_capabilities(mcp: Context | None) -> ClientCapabilities | None:
+    if mcp is None:
+        return None
+    params = mcp.session.client_params
+    return None if params is None else params.capabilities
+
+
+def _declined(refusal: dict[str, Any], armed: PendingOp, reason: str) -> dict[str, Any]:
+    """The gate's refusal, marked as answered with a no. Nothing ran."""
+    return {
+        **refusal,
+        "error": (
+            f"{armed.name} did not run: {reason}. Nothing ran and nothing is armed."
+        ),
+        "declined": True,
+    }
+
+
+async def _confirm(
+    mcp: Context | None,
+    registry: ToolRegistry,
+    ctx: ToolContext,
+    armed: PendingOp,
+    refusal: dict[str, Any],
+) -> dict[str, Any]:
+    """Put the gate's question to the client's human; run the op on their yes.
+
+    The sequence of `docs/mcp-confirmation-surface.md` ("The design"). The lock
+    was released with the dispatch and stays released across the question — a
+    human waits on this step, and a concurrent call must be answered while the
+    question is open. The question is the app's own (`CONFIRM_QUESTIONS`), the
+    same words the board dialog shows and the free-text reader judges against,
+    never a paraphrase. On a yes the lock is taken again around
+    `confirm_pending` — the existing sole key, unchanged — which re-reads the op
+    through `live_pending`, so a board that moved while the question was open
+    runs nothing (`stale: true`); so does a question that is no longer the one
+    standing, because a later gated call asked another (MCP is windowless: the
+    newest question is the one a yes answers, as on the buttons, and the
+    earlier yes must not run the later op). Every other outcome — a no, a
+    dismissed form, a form accepted with the box unticked, a client that
+    errored on the ask or cannot ask at all — runs nothing and leaves nothing
+    armed: an op nothing can confirm must not sit armed for a later call to
+    stumble on, which was the untruth in the gate's "runs when they say yes" on
+    this surface.
+    """
+    try:
+        if not _declares_form_elicitation(_client_capabilities(mcp)):
+            return {
+                **refusal,
+                "error": (
+                    f"confirmation required: {armed.name} would end the current "
+                    "game, and this client cannot ask the player to confirm, so "
+                    "nothing was armed and nothing ran."
+                ),
+                "confirmation_unavailable": True,
+            }
+        assert mcp is not None  # a client with capabilities came through a request
+        try:
+            answer = await mcp.session.elicit_form(
+                CONFIRM_QUESTIONS[armed.name],
+                _CONFIRM_SCHEMA,
+                related_request_id=mcp.request_context.request_id,
+            )
+        except McpError as exc:
+            return _declined(
+                refusal,
+                armed,
+                f"the client could not ask the player ({exc.error.message})",
+            )
+        content = answer.content or {}
+        if answer.action != "accept" or content.get("confirm") is not True:
+            return _declined(refusal, armed, "the player did not confirm")
+        with ctx.mutation_lock:
+            # Identity, not name: the yes answers *this* question. A later call
+            # that armed its own question replaced this one, and a board that
+            # moved is caught one layer down, in `live_pending`.
+            confirmed = confirm_pending(registry, ctx) if ctx.pending is armed else None
+        if confirmed is None:
+            return registry.refusal(
+                f"{armed.name} did not run: the question is no longer the one "
+                "standing — the board moved while the player was being asked, "
+                "or a later call asked a different question. Nothing is armed "
+                "for it; if the player still wants it, they can ask again.",
+                RETRY_NEVER,
+                stale=True,
+            )
+        _name, result = confirmed
+        if result.get("ok") is True:
+            return {**result, "confirmed": True}
+        return result
+    finally:
+        # Settled for good, whichever way it went — but only *this* question:
+        # a newer one another call armed while this one was open is theirs.
+        if ctx.pending is armed:
+            ctx.pending = None
 
 
 def _mcp_tool(
@@ -90,11 +251,24 @@ def _mcp_tool(
     therefore take turns; what they cannot do is check one board and act on
     another. Held around reads too, which cost nothing and keeps the rule "one
     call, one hold" rather than a list of which tools mutate.
+
+    The wrapper's second MCP-specific job is the confirmation (`_confirm`): a
+    dispatch that comes back with a *newly* armed op is a gated call the gate
+    refused, and on this surface the only thing that can answer it is the
+    client's human, asked right here. The registry, the gate and
+    `confirm_pending` do not change; this is a caller of `confirm_pending`,
+    exactly as `/api/game/confirm` is.
     """
 
-    def _call(**kwargs: Any) -> dict[str, Any]:
+    async def _call(**kwargs: Any) -> dict[str, Any]:
+        mcp: Context | None = kwargs.pop(_CONTEXT_KWARG, None)
+        armed_before = ctx.pending
         with ctx.mutation_lock:
-            return registry.dispatch(name, kwargs)
+            result = registry.dispatch(name, kwargs)
+        armed = ctx.pending
+        if armed is None or armed is armed_before:
+            return result
+        return await _confirm(mcp, registry, ctx, armed, result)
 
     return MCPTool(
         fn=_call,
@@ -102,7 +276,8 @@ def _mcp_tool(
         description=description,
         parameters=parameters,
         fn_metadata=_PASSTHROUGH_METADATA,
-        is_async=False,
+        is_async=True,
+        context_kwarg=_CONTEXT_KWARG,
     )
 
 

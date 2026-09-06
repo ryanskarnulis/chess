@@ -13,7 +13,6 @@ fast path.
 from fastapi.testclient import TestClient
 
 from chessapp.api import (
-    _CONFIRM_QUESTIONS,
     _DECLINED_REPLY,
     MOVE_ADVICE_REPLY,
     PROVIDER_LOST_RETRY,
@@ -28,7 +27,7 @@ from chessapp.conversation import RECENT_TURNS
 from chessapp.engine import DEFAULT_TIER, CandidateMove, Evaluation
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
-from chessapp.tools import ToolContext
+from chessapp.tools import CONFIRM_QUESTIONS, ToolContext
 from fakes import FakeEngine, ScriptedBrain, receive_state, scripted_app
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -1945,7 +1944,7 @@ def test_the_reader_is_asked_about_the_question_the_player_was_asked():
 
     client.post("/api/command", json={"text": "hold on"})
 
-    assert brain.answer_calls == [(_CONFIRM_QUESTIONS["resign"], "hold on")]
+    assert brain.answer_calls == [(CONFIRM_QUESTIONS["resign"], "hold on")]
 
 
 def test_the_reader_is_only_asked_while_an_op_is_armed():

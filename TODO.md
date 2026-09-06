@@ -19,17 +19,21 @@ with the probe scripts in its appendices). Decisions taken 2026-09-05: a
 restored engine-to-move position is settled by the coordinator; a question
 that names two or more legal moves is a clarification, not advice; eval
 coverage completeness outranks GPU budget, so every proposed scenario lands.
-All ten findings' follow-ups landed 2026-09-05 (#262–#271, DONE.md): one PR
+All ten findings' follow-ups landed 2026-09-05 (#262–#272, DONE.md): one PR
 each, tool-boundary tests with every change, a gate run after every loop or
 prompt change, and the baseline re-recorded whenever the harness changed.
-What remains is the one item the last PR deliberately left as a design:
+Finding 3 closed as a design note (#271, agreed the same day) and its
+implementation (#272). One check the note asked of the implementation is a
+live one rather than code:
 
-- [ ] **MCP confirmation surface — implement** (finding 3), once
-      `docs/mcp-confirmation-surface.md` is agreed: MCP form-mode elicitation
-      in the `mcp_server` call wrapper, the server calling `confirm_pending`
-      on the human's yes, built against the note's acceptance criteria at the
-      tool boundary (no GPU, `list_tools` byte-identical). No code before the
-      note is agreed.
+- [ ] **Run the MCP confirmation end to end once**: connect
+      `python -m chessapp.mcp_server` from a fresh Claude Code session, play a
+      move, ask for a new game, and see the Accept/Decline form. Claude Code
+      renders MCP elicitation forms (its changelog fixes their layout in
+      2.1.239; the local CLI is 2.1.261), so what is left to see is our
+      question in that form and the yes running the op. The capability is
+      read off the handshake, so a client that does not declare it gets the
+      truthful `confirmation_unavailable` refusal, never a hang.
 
 ## Next
 
