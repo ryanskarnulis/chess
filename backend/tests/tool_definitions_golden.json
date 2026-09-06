@@ -203,7 +203,7 @@
   },
   {
     "function": {
-      "description": "Claim a draw by threefold repetition or the fifty-move rule. Call this as soon as the player asks to claim a draw — do not ask them to confirm first. If a game is in progress the result comes back refusing and asking you to confirm; relay that to the player and stop, do not call again. When it returns ok, the game really did end in a draw.",
+      "description": "Claim a draw by threefold repetition or the fifty-move rule. Call this as soon as the player asks to claim a draw \u2014 do not ask them to confirm first. If a game is in progress the result comes back refusing and asking you to confirm; relay that to the player and stop, do not call again. When it returns ok, the game really did end in a draw.",
       "name": "claim_draw",
       "parameters": {
         "additionalProperties": false,
@@ -212,6 +212,19 @@
       }
     },
     "type": "function"
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "offer_draw",
+      "description": "Offer the engine a draw on the player's behalf. Call this as soon as\nthe player offers or asks for a draw by agreement (\"call it a draw?\",\n\"split the point?\") \u2014 do not decide the answer yourself and do not ask\nthem to confirm first. The result says whether the offer was accepted\nand, if not, why (engine_ahead, player_ahead, not_an_endgame,\ntoo_early); relay that answer and stop \u2014 never call it twice in one\nturn. When accepted is true the game really did end in a draw; when it\nis false nothing changed and the game goes on. A draw the rules already\nallow claiming is `claim_draw`, not this.",
+      "parameters": {
+        "properties": {},
+        "title": "offer_drawArguments",
+        "type": "object",
+        "additionalProperties": false
+      }
+    }
   },
   {
     "function": {
@@ -249,7 +262,7 @@
   },
   {
     "function": {
-      "description": "Export the game so far as PGN. The app shows the player the notation\nitself, with a button to copy it, so the reply should say it is ready —\nnever recite the moves or the headers.",
+      "description": "Export the game so far as PGN. The app shows the player the notation\nitself, with a button to copy it, so the reply should say it is ready \u2014\nnever recite the moves or the headers.",
       "name": "export_pgn",
       "parameters": {
         "additionalProperties": false,

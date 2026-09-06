@@ -143,6 +143,9 @@ class GameSession:
         # Whether a claimable draw was claimed. Session-level like `_resigned`:
         # a board knows a claim is *available*, never that anybody made it.
         self._draw_claimed = False
+        # Whether the two sides agreed a draw (`agree_draw`). Session-level for
+        # the same reason: agreement is not a property of any position.
+        self._draw_agreed = False
         self._player_color = _validate_player_color(player_color)
         self._started: str | None = date.today().isoformat()
         self._revision = 0
@@ -216,6 +219,7 @@ class GameSession:
         self._board.reset()
         self._resigned = None
         self._draw_claimed = False
+        self._draw_agreed = False
         self._started = date.today().isoformat()
         if player_color is not None:
             self._player_color = player_color
@@ -276,6 +280,23 @@ class GameSession:
         if not self.claimable_draws():
             raise ValueError("cannot claim a draw: no draw is available to claim")
         self._draw_claimed = True
+        self._revision += 1
+        return self.outcome()
+
+    def agree_draw(self) -> Outcome:
+        """Record a draw by agreement. Refuses on a finished game.
+
+        The third session-level ending beside `resign` and `claim_draw`, and
+        the one with no board predicate at all: a claim is *available* on a
+        position, a resignation is *by* a side, but agreement is a fact about
+        the two players and nothing on the board can hold it. Whether the
+        engine's side agrees is not decided here — `chessapp.draw_offer` owns
+        that rule; this only records that it did. A refusal leaves the session
+        untouched, revision included.
+        """
+        if self.is_game_over():
+            raise ValueError("cannot agree a draw: game is already over")
+        self._draw_agreed = True
         self._revision += 1
         return self.outcome()
 
@@ -344,6 +365,7 @@ class GameSession:
             "resigned": _COLOR_NAMES[resigned] if resigned is not None else None,
             "player_color": self._player_color,
             "draw_claimed": self._draw_claimed,
+            "draw_agreed": self._draw_agreed,
             "started": self._started,
         }
 
@@ -369,6 +391,9 @@ class GameSession:
         draw_claimed = data.get("draw_claimed", False)
         if not isinstance(draw_claimed, bool):
             raise ValueError(f"invalid draw_claimed flag: {draw_claimed!r}")
+        draw_agreed = data.get("draw_agreed", False)
+        if not isinstance(draw_agreed, bool):
+            raise ValueError(f"invalid draw_agreed flag: {draw_agreed!r}")
         if not isinstance(root_fen, str):
             raise ValueError("save data root_fen must be a string")
         if not isinstance(moves, list):
@@ -398,6 +423,11 @@ class GameSession:
             # reason the moves are replayed rather than trusted: a file claiming a
             # draw the position does not support must not produce a drawn board.
             session.claim_draw()
+        if draw_agreed:
+            # The same refusal a live agreement gets on a finished game: a file
+            # carrying both a checkmate and an agreement is not a game that was
+            # played.
+            session.agree_draw()
         return session
 
     def save(self, path: str | Path) -> None:
@@ -422,6 +452,8 @@ class GameSession:
             return UndoResult(
                 ok=False, reason="cannot undo: game ended by a claimed draw"
             )
+        if self._draw_agreed:
+            return UndoResult(ok=False, reason="cannot undo: game ended by agreement")
         available = len(self._board.move_stack)
         if plies < 1:
             return UndoResult(ok=False, reason="plies must be at least 1")
@@ -552,6 +584,27 @@ class GameSession:
                 totals[color] += value * len(self._board.pieces(piece_type, color))
         player = self.player_color == "white"
         return totals[player] - totals[not player]
+
+    def material_profile(self) -> dict[str, Any]:
+        """The material facts a draw offer is judged on, off the board:
+        whether any queen stands on it, each side's non-pawn material in pawns
+        (`_PIECE_VALUES`, so a promoted queen counts as the queen it is), and
+        `material_balance()` for the player. Reported whole so the caller's
+        rule (`chessapp.draw_offer`) reads facts and holds no chess of its own.
+        """
+        non_pawn = {}
+        for color, name in _COLOR_NAMES.items():
+            non_pawn[name] = sum(
+                value * len(self._board.pieces(piece_type, color))
+                for piece_type, value in _PIECE_VALUES.items()
+                if piece_type != chess.PAWN
+            )
+        return {
+            "queens": bool(self._board.pieces(chess.QUEEN, chess.WHITE))
+            or bool(self._board.pieces(chess.QUEEN, chess.BLACK)),
+            "non_pawn": non_pawn,
+            "balance": self.material_balance(),
+        }
 
     def piece_placement(self) -> dict[str, dict[str, list[str]]]:
         """Where each side's pieces stand: `{"white": {"king": ["e1"], ...}}`.
@@ -719,8 +772,10 @@ class GameSession:
         # whether a claimed game is finished. It is only ever True on a position
         # whose claim was available when it was made, and every mutation is
         # refused from then on, so the board's answer cannot go stale.
-        return self._resigned is not None or self._board.is_game_over(
-            claim_draw=self._draw_claimed
+        return (
+            self._resigned is not None
+            or self._draw_agreed
+            or self._board.is_game_over(claim_draw=self._draw_claimed)
         )
 
     def outcome(self) -> Outcome | None:
@@ -731,6 +786,8 @@ class GameSession:
                 winner=_COLOR_NAMES[winner],
                 result="1-0" if winner == chess.WHITE else "0-1",
             )
+        if self._draw_agreed:
+            return Outcome(termination="agreement", winner=None, result="1/2-1/2")
         raw = self._board.outcome(claim_draw=self._draw_claimed)
         if raw is None:
             return None

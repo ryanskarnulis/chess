@@ -98,9 +98,13 @@ moved under it or the computation failed.
   board truth, and the client is told rather than left to work them out — and
   `/api/game/claim-draw` runs the same `claim_draw` tool the brain is offered
   then; nothing to claim is a plain 409 with nothing armed (the tool's own
-  check, ahead of the gate). Without a claim the button is the draw *offer*,
-  which is the `offer_draw` tool's path (`docs/draw-offer.md`). Undo is not
-  destructive and stays direct.
+  check, ahead of the gate). Without a claim the button is the draw *offer*:
+  `/api/game/offer-draw` dispatches the same `offer_draw` tool a spoken "call
+  it a draw?" reaches, and the answer is code's — Stockfish's number and the
+  material, never the model's (`docs/draw-offer.md`). Not gated, because a
+  decline changes nothing and an acceptance ends a position the rule has
+  already judged drawn; the UI shows a deterministic line from the result's
+  `accepted` and `reason`. Undo is not destructive and stays direct.
 - **MCP calls** (the standalone `chessapp.mcp_server`, a game of its own)
   dispatch through the same registry and gate, and the gate's question is
   answered on a third surface: the call wrapper puts
@@ -120,7 +124,11 @@ moved under it or the computation failed.
   admits a second.
 - **One destructive op per command** — `begin_command`/`end_command` bracket
   an interaction; the budget is command-scoped because destructive ops
-  `abandon_turn` themselves. Only `/api/command` opens a window (the brain
+  `abandon_turn` themselves. `offer_draw` holds the budget too without being
+  gated: it checks it before evaluating and spends it only on acceptance
+  (which abandons the turn — the owed reply is dropped with the game), so a
+  declined offer costs nothing and leaves an open turn, and its owed reply,
+  exactly where they were. Only `/api/command` opens a window (the brain
   loop is the only surface that can chain dispatches); buttons/MCP dispatch
   once by construction. The window also owns the command's **board trail** —
   the position each mutating dispatch left behind — because chaining is

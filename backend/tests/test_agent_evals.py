@@ -141,6 +141,7 @@ from fastapi.testclient import TestClient
 from chessapp.agent_api import reset_rate_limit
 from chessapp.api import STUCK_REPLY, create_app
 from chessapp.coordinator import TurnCoordinator
+from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession
@@ -275,6 +276,8 @@ _FLOORS: dict[str, float] = {
     "play_as_black": 0.8,
     "resume_not_denied": 0.8,
     "resign_never_pretends": 0.8,
+    "offer_draw_routes": 0.8,
+    "offer_draw_accepted": 0.8,
     "advice_is_engine_backed": 0.8,
     "advice_capture_survives_guard": 0.8,
     "verbosity_up_from_low": 0.8,
@@ -2416,6 +2419,135 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
         engine,
         "resign_never_pretends",
         _RESIGN_UTTERANCE,
+        check,
+        floor=floor,
+        setup=setup,
+    )
+
+    _assert_floor(result, floor)
+
+
+# --- draw offers (docs/draw-offer.md) -----------------------------------------
+#
+# The player offers; code decides for the engine. What the model owns is the
+# routing — an offer is `offer_draw`, not a resignation and not a rules claim —
+# and voicing the tool's answer without pretending. The middlegame case declines
+# by construction (every piece on the board is `not_an_endgame` whatever
+# Stockfish says about the score); the endgame case is accepted by construction,
+# and the setup asserts both premises against the real engine so a fixture that
+# quietly stopped judging as named fails as a premise rather than as the model.
+
+_OFFER_UTTERANCE = "eh, wanna just call it a draw?"
+_OFFER_ACCEPT_UTTERANCE = "let's just call it a draw here, deal?"
+# Rook and three pawns each, rooks on different files: dead level, an endgame.
+# The two king moves are the player's investment (the rule's first premise).
+_DEAD_DRAWN_ROOK_ENDGAME = "4k3/r4ppp/8/8/8/8/2R2PPP/4K3 w - - 0 40"
+
+
+def test_eval_offer_draw_routes_and_the_decline_is_voiced_honestly(
+    engine: EnginePlayer,
+) -> None:
+    """A mid-game draw offer reaches `offer_draw` — not `resign` (the nearest
+    tool by mood), not `claim_draw` (withheld: no claim exists) — and the
+    engine declines it, because a Ruy Lopez with every piece on is not an
+    endgame whatever the score. The narration has to match that answer: the
+    game is not over, so "game over" or "we drew" is an ending the board does
+    not back and the guard would replace it. Nothing on the board moves, no
+    question is armed (the offer is not gated), and the turn completes."""
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
+            assert app.ctx.session.submit_move(san).legal
+        assert not app.ctx.session.is_game_over()
+        assert app.ctx.session.claimable_draws() == ()
+        _stays_a_model_eval(_OFFER_UTTERANCE, app.ctx.session.fen())
+        before["fen"] = app.ctx.session.fen()
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _attempted(assistant, "offer_draw"), (
+            f"expected an offer_draw call: {_trajectory(assistant)}"
+        )
+        assert _attempted(assistant, "resign") == [], (
+            f"an offer is not a resignation: {_trajectory(assistant)}"
+        )
+        assert _attempted(assistant, "claim_draw") == [], (
+            f"no claim exists to make: {_trajectory(assistant)}"
+        )
+        offers = _succeeded(assistant, "offer_draw")
+        assert offers, f"the offer did not run: {_trajectory(assistant)}"
+        verdict = json.loads(offers[0]["result"])
+        assert verdict["accepted"] is False, (
+            f"a middlegame offer is declined by the rule: {verdict!r}"
+        )
+        assert verdict["reason"] in ("not_an_endgame", "engine_ahead", "player_ahead")
+        assert not app.ctx.session.is_game_over(), "a decline ends nothing"
+        assert app.ctx.session.fen() == before["fen"]
+        assert app.ctx.live_pending() is None, "an offer is not gated"
+        assert app.ctx.settings.snapshot() == before["settings"]
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 5, (
+            "expected the planner's offer turn, its note and the narrator "
+            f"(one recovery allowed), got {len(app.provider.calls)} model calls"
+        )
+
+    floor = _FLOORS["offer_draw_routes"]
+    result = _pass_rate(
+        engine,
+        "offer_draw_routes",
+        _OFFER_UTTERANCE,
+        check,
+        floor=floor,
+        setup=setup,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_offer_draw_accepted_in_a_dead_drawn_endgame(
+    engine: EnginePlayer,
+) -> None:
+    """The other half of the answer: on a position the rule judges drawn the
+    offer is accepted, the game ends by agreement, and the narration says so
+    without inventing anything. The premise — that Stockfish really reads the
+    fixture as level — is asserted in the setup against the same engine the
+    tool will consult."""
+
+    def setup(app: EvalApp) -> None:
+        app.ctx.session = GameSession(
+            fen=_DEAD_DRAWN_ROOK_ENDGAME, player_color="white"
+        )
+        for san in ("Kd2", "Kd7"):
+            assert app.ctx.session.submit_move(san).legal
+        verdict = judge_draw_offer(
+            app.ctx.session,
+            engine.evaluate_position(app.ctx.session),
+            player_has_moved=True,
+        )
+        assert verdict.accepted, f"the fixture no longer judges as drawn: {verdict}"
+        _stays_a_model_eval(_OFFER_ACCEPT_UTTERANCE, app.ctx.session.fen())
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        offers = _succeeded(assistant, "offer_draw")
+        assert offers, f"expected an accepted offer_draw call: {_trajectory(assistant)}"
+        verdict = json.loads(offers[0]["result"])
+        assert verdict["accepted"] is True, verdict
+        assert _attempted(assistant, "resign") == [], _trajectory(assistant)
+        assert app.ctx.session.is_game_over()
+        assert app.ctx.session.outcome().termination == "agreement"
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 5, (
+            f"got {len(app.provider.calls)} model calls"
+        )
+
+    floor = _FLOORS["offer_draw_accepted"]
+    result = _pass_rate(
+        engine,
+        "offer_draw_accepted",
+        _OFFER_ACCEPT_UTTERANCE,
         check,
         floor=floor,
         setup=setup,

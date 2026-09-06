@@ -168,6 +168,18 @@ time: its three conditions differ only in the transcript, which the resign
 route never reads, so their recorded 5/5 ×3 measured one deterministic thing
 three times.
 
+### Draw offers (added 2026-09-05, floor 0.8 each)
+
+`docs/draw-offer.md`: the player offers, code decides for the engine. The
+model owns the routing and the voicing; the rule owns the answer, so both
+outcomes are deterministic on their fixtures and the setup asserts the premise
+against the real engine.
+
+| Scenario | Utterance; setup | Pins | Kind |
+| --- | --- | --- | --- |
+| `offer_draw_routes` | "eh, wanna just call it a draw?"; the Ruy Lopez after 3...a6 | `offer_draw` attempted, `resign` and `claim_draw` not; the result is a decline (a middlegame with every piece on is `not_an_endgame` whatever the score); the game is not over, the board unchanged, nothing armed, **not guarded** — "game over"/"we drew" on a decline is the ending claim the guard exists for; `completed`, 3–5 calls | Lock |
+| `offer_draw_accepted` | "let's just call it a draw here, deal?"; a seeded rook-and-three-pawns endgame, two king moves played so the player has moved | `offer_draw` succeeded with `accepted: true`, no `resign`; the game ends by `agreement`; not guarded; `completed`, 3–5 calls | Lock |
+
 ### Compositions (added 2026-09-05, floor 0.8 each)
 
 The 2026-09-05 audit's flat finding about this suite was that "the only
@@ -216,6 +228,8 @@ Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Run 2026-09-06 on the draw-offer tree (#276, `offer_draw` added to the schema): 47 passed in a single run, 10 m 50 s, 202 samples, infra 0; every pass-rate scenario ABOVE_FLOOR — `undo_and_replace` 5/5, `undo_twice_and_replace` 5/5, `long_capture` 5/5 ×3, `ambiguous_knight_then_selection` 8/10 (one escalation block), `impossible_capture_is_refused_not_asked` 4/5, everything else 5/5 STABLE; `judgment_question` 9.1 s.** The two new scenarios erred on their first sample in that run on a harness bug (the check indexed the wire's `result`, which is a JSON string) and were re-run on the fixed check with no production change between the two trees: `offer_draw_routes` 5/5 and `offer_draw_accepted` 5/5, both 3 model calls, trajectory `[offer_draw]` on every sample. Costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The schema gained one tool and nothing collapsed; the gate is here because a changed tool list has collapsed `undo_and_replace` before.
 
 **Run 2026-09-05 on the one-question-per-command gate rule (#270): 47 passed in a single run, 11 m 50 s, infra 0 — the first clean 47 of the day; `undo_twice_and_replace` 4/5 ABOVE_FLOOR (the miss two `undo(plies=1)` calls, then `d4` on a board still holding `Nf3` — the plies misread #267 left as the residual), `pgn_is_handed_over_not_recited` 4/5 ABOVE_FLOOR (the miss the narrator reciting the headers after `export_pgn`, the old dump reappearing once), every other pass-rate scenario 5/5 ABOVE_FLOOR STABLE including `ambiguous_knight_then_selection` 5/5 on its second unmarked run; `judgment_question` 10.4 s.**
 `long_capture` 5/5 ×3, costs unmoved (`fast_path_low` 0 model calls,
