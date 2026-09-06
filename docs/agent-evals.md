@@ -168,6 +168,18 @@ time: its three conditions differ only in the transcript, which the resign
 route never reads, so their recorded 5/5 ×3 measured one deterministic thing
 three times.
 
+### Draw offers (added 2026-09-05, floor 0.8 each)
+
+`docs/draw-offer.md`: the player offers, code decides for the engine. The
+model owns the routing and the voicing; the rule owns the answer, so both
+outcomes are deterministic on their fixtures and the setup asserts the premise
+against the real engine.
+
+| Scenario | Utterance; setup | Pins | Kind |
+| --- | --- | --- | --- |
+| `offer_draw_routes` | "eh, wanna just call it a draw?"; the Ruy Lopez after 3...a6 | `offer_draw` attempted, `resign` and `claim_draw` not; the result is a decline (a middlegame with every piece on is `not_an_endgame` whatever the score); the game is not over, the board unchanged, nothing armed, **not guarded** — "game over"/"we drew" on a decline is the ending claim the guard exists for; `completed`, 3–5 calls | Lock |
+| `offer_draw_accepted` | "let's just call it a draw here, deal?"; a seeded rook-and-three-pawns endgame, two king moves played so the player has moved | `offer_draw` succeeded with `accepted: true`, no `resign`; the game ends by `agreement`; not guarded; `completed`, 3–5 calls | Lock |
+
 ### Compositions (added 2026-09-05, floor 0.8 each)
 
 The 2026-09-05 audit's flat finding about this suite was that "the only

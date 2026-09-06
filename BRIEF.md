@@ -49,7 +49,9 @@ utterance that is exactly one unambiguous legal move skips the LLM entirely
   (Stockfish MultiPV; also answers hint asks — hints are on-request, there is
   no hints mode)
 - **Writes:** make_move, undo, new_game, resign, claim_draw (offered only
-  while a claim is available), save_game, resume_game, export_pgn
+  while a claim is available), offer_draw (the engine's answer is a code-owned
+  rule over Stockfish's number and the material, `docs/draw-offer.md`),
+  save_game, resume_game, export_pgn
 - **Settings:** set_difficulty, set_verbosity, set_voice_output
 - **Output:** speak (TTS) + commentary text
 - **Future seam:** control_physical_board
@@ -61,7 +63,7 @@ commands to tools itself; ambiguous input earns a clarifying question.
 
 Interactive board, legal-move validation, play vs. agent, Stockfish moves,
 adjustable difficulty, move history, captured pieces, new game, undo, resign,
-claimable draws, save/resume, PGN export, whole-game review, analysis, hints
+claimable draws, draw offers, save/resume, PGN export, whole-game review, analysis, hints
 on request, explanations.
 
 ## Personality

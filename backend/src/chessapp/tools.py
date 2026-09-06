@@ -53,6 +53,7 @@ from chessapp.analysis import review_game as _review_game
 from chessapp.brain import RETRY_DIFFERENT_ARGS, RETRY_NEVER
 from chessapp.conversation import Transcript
 from chessapp.coordinator import TurnCoordinator
+from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import (
     DEFAULT_TIER,
     DIFFICULTY_TIERS,
@@ -1590,6 +1591,50 @@ def build_registry(
                 "result": outcome.result,
             },
         }
+
+    @registry.tool()
+    def offer_draw() -> dict[str, Any]:
+        """Offer the engine a draw on the player's behalf. Call this as soon as
+        the player offers or asks for a draw by agreement ("call it a draw?",
+        "split the point?") — do not decide the answer yourself and do not ask
+        them to confirm first. The result says whether the offer was accepted
+        and, if not, why (engine_ahead, player_ahead, not_an_endgame,
+        too_early); relay that answer and stop — never call it twice in one
+        turn. When accepted is true the game really did end in a draw; when it
+        is false nothing changed and the game goes on. A draw the rules already
+        allow claiming is `claim_draw`, not this."""
+        # Not gated (`docs/draw-offer.md`): a decline changes nothing, and an
+        # acceptance ends only a position the rule has judged level and an
+        # endgame — the outcome the player asked for. It does take the
+        # destructive budget, before it evaluates, so a command that has
+        # already ended a game cannot end the next one with an offer.
+        coordinator.require_destructive_budget()
+        if ctx.session.is_game_over():
+            raise ToolError(
+                "cannot offer a draw: the game is already over", retry=RETRY_NEVER
+            )
+        # Nobody is there to accept without an engine: the same refusal every
+        # analysis tool gives.
+        engine = _require_engine(ctx)
+        verdict = judge_draw_offer(
+            ctx.session,
+            engine.evaluate_position(ctx.session),
+            player_has_moved=_player_has_moved(ctx),
+        )
+        result: dict[str, Any] = {"ok": True, **verdict.to_dict()}
+        if not verdict.accepted:
+            # The open turn is untouched: with the engine to move the reply is
+            # still owed, and the pipeline collects and announces it.
+            return result
+        coordinator.abandon_turn()  # no reply is owed on a game that just ended
+        outcome = ctx.session.agree_draw()
+        coordinator.record_destructive_op()
+        result["outcome"] = {
+            "termination": outcome.termination,
+            "winner": outcome.winner,
+            "result": outcome.result,
+        }
+        return result
 
     @registry.tool()
     def export_pgn() -> dict[str, Any]:

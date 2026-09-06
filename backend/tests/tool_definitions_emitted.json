@@ -270,6 +270,19 @@
     {
       "type": "function",
       "function": {
+        "name": "offer_draw",
+        "description": "Offer the engine a draw on the player's behalf. Call this as soon as\nthe player offers or asks for a draw by agreement (\"call it a draw?\",\n\"split the point?\") — do not decide the answer yourself and do not ask\nthem to confirm first. The result says whether the offer was accepted\nand, if not, why (engine_ahead, player_ahead, not_an_endgame,\ntoo_early); relay that answer and stop — never call it twice in one\nturn. When accepted is true the game really did end in a draw; when it\nis false nothing changed and the game goes on. A draw the rules already\nallow claiming is `claim_draw`, not this.",
+        "parameters": {
+          "properties": {},
+          "title": "offer_drawArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "export_pgn",
         "description": "Export the game so far as PGN. The app shows the player the notation\nitself, with a button to copy it, so the reply should say it is ready —\nnever recite the moves or the headers.",
         "parameters": {
@@ -681,6 +694,19 @@
         "parameters": {
           "properties": {},
           "title": "claim_drawArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "offer_draw",
+        "description": "Offer the engine a draw on the player's behalf. Call this as soon as\nthe player offers or asks for a draw by agreement (\"call it a draw?\",\n\"split the point?\") — do not decide the answer yourself and do not ask\nthem to confirm first. The result says whether the offer was accepted\nand, if not, why (engine_ahead, player_ahead, not_an_endgame,\ntoo_early); relay that answer and stop — never call it twice in one\nturn. When accepted is true the game really did end in a draw; when it\nis false nothing changed and the game goes on. A draw the rules already\nallow claiming is `claim_draw`, not this.",
+        "parameters": {
+          "properties": {},
+          "title": "offer_drawArguments",
           "type": "object",
           "additionalProperties": false
         }

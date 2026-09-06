@@ -186,6 +186,11 @@ class ClaimDrawRequest(VersionedRequest):
     only the version precondition every mutating request may."""
 
 
+class OfferDrawRequest(VersionedRequest):
+    """No fields of its own: the answer is the rule's (`chessapp.draw_offer`),
+    so the body carries only the version precondition."""
+
+
 class ConfirmRequest(VersionedRequest):
     """The player's answer to an armed destructive op: yes runs it, no drops
     it. The same two answers `parse_confirmation` reads off a spoken turn, and
@@ -737,6 +742,14 @@ def _analysis_numbers(tool_results: Sequence[dict[str, Any]]) -> set[str]:
             continue
         if r["name"] == "evaluate_position":
             record(result.get("score_cp"), result.get("mate_in"))
+        elif r["name"] == "offer_draw":
+            # The verdict's number, from either side of the board: the narrator
+            # may say "he's up half a pawn" or "you're down half a pawn" about
+            # the same fact.
+            evaluation = result.get("evaluation") or {}
+            cp = evaluation.get("cp_engine_pov")
+            record(cp, evaluation.get("mate_in"))
+            record(-cp if cp is not None else None, None)
         elif r["name"] == "get_best_moves":
             for candidate in result.get("moves", ()):
                 record(candidate.get("score_cp"), candidate.get("mate_in"))
@@ -1903,6 +1916,47 @@ def create_app(
                 "outcome": outcome["outcome"],
                 "state": _state_dict_unlocked(ctx),
             }
+
+    @app.post("/api/game/offer-draw")
+    async def offer_draw(request: OfferDrawRequest) -> dict[str, Any]:
+        """Offer the engine a draw — the button half of the `offer_draw` tool
+        (`docs/draw-offer.md`). Not gated: a decline changes nothing and an
+        acceptance ends a position the rule has judged drawn, so there is no
+        question to ask. The answer comes back as the tool reports it —
+        `accepted`, `reason`, `evaluation`, `material`, plus `outcome` when the
+        game ended — and the UI composes its own line from those fields; no
+        model stands on this path, as on no other button's. A finished game or
+        a missing engine is a 409 with the tool's message.
+
+        Traced as a control interaction like the other buttons, and windowless,
+        so the tool's budget check is a no-op here as it is for every button.
+        """
+        async with _mutation(request.version):
+            turn_id = coordinator.turn_id
+            version_before = ctx.board_version
+            fen_before = ctx.session.fen()
+            result = registry.dispatch("offer_draw", {})
+            _trace_control(
+                "offer_draw",
+                {},
+                result,
+                turn_id=turn_id,
+                version_before=version_before,
+                fen_before=fen_before,
+            )
+            if result.get("ok") is not True:
+                raise HTTPException(
+                    status_code=409, detail=result.get("error", "cannot offer a draw")
+                )
+            if result["accepted"]:
+                # The game is over: whatever question was armed was about it.
+                ctx.pending = None
+                _publish_state()
+            return {
+                key: result[key]
+                for key in ("accepted", "reason", "evaluation", "material", "outcome")
+                if key in result
+            } | {"state": _state_dict_unlocked(ctx)}
 
     @app.post("/api/game/difficulty")
     def set_difficulty(request: DifficultyRequest) -> dict[str, Any]:
