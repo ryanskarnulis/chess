@@ -432,8 +432,11 @@ def test_the_mcp_surface_serializes_its_mutations():
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     make_move = tools["make_move"]
 
+    # The wrapper is a coroutine (it may await the client's human answering a
+    # gated call), so each thread runs it on a loop of its own; the lock is
+    # still taken synchronously inside it, which is what this test is about.
     threads = [
-        threading.Thread(target=make_move.fn, kwargs={"move": move})
+        threading.Thread(target=asyncio.run, args=(make_move.fn(move=move),))
         for move in ("e4", "d4")
     ]
     for thread in threads:
@@ -572,7 +575,7 @@ def test_public_state_catches_up_after_a_shared_mcp_mutation(ctx):
     server = build_mcp_server(ctx)
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
 
-    result = tools["make_move"].fn(move="e4")
+    result = asyncio.run(tools["make_move"].fn(move="e4"))
     state = endpoint()
 
     assert result["ok"] is True

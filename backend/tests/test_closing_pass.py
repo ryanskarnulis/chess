@@ -34,7 +34,12 @@ from chessapp.api import MOVE_ADVICE_REPLY, UNVERIFIED_CLAIM_REPLY, create_app
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain
-from chessapp.tools import BOARD_STATE_TOOLS, ToolContext, build_registry
+from chessapp.tools import (
+    BOARD_STATE_TOOLS,
+    CONFIRM_QUESTIONS,
+    ToolContext,
+    build_registry,
+)
 from chessapp.trace import JsonlTracer
 from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
 
@@ -412,8 +417,8 @@ def test_the_reader_is_handed_the_question_of_the_op_that_is_armed():
     reader = provider.calls[3]
     assert reader["tools"] is None
     question = reader["messages"][1]["content"]
-    assert api._CONFIRM_QUESTIONS["resign"] in question
-    assert api._CONFIRM_QUESTIONS["new_game"] not in question
+    assert CONFIRM_QUESTIONS["resign"] in question
+    assert CONFIRM_QUESTIONS["new_game"] not in question
     assert ctx.session.is_game_over(), "the confirmed resignation ran"
     assert ctx.session.move_history() == ["e4", "e5", "Nf3", "Nc6"], "not a reset"
 

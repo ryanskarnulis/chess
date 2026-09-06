@@ -466,6 +466,18 @@ class ToolContext:
 # can end one deliberately.
 DESTRUCTIVE_TOOLS = ("new_game", "resign", "claim_draw")
 
+# The question every answering surface puts to the player for an armed op, in
+# the app's own words: the board dialog shows it, the free-text reader judges a
+# reply against it (`api._confirm_question`), and the MCP server's elicitation
+# carries it to the client's human. One table, so no surface can ask a different
+# question from the one a yes will answer — and never a model paraphrase, since
+# the question is the gate's fact, not the narration's.
+CONFIRM_QUESTIONS = {
+    "new_game": "That ends the game in progress. Start a new one?",
+    "resign": "That's the game if you mean it. Resign?",
+    "claim_draw": "That ends the game in a draw. Claim it?",
+}
+
 # Reads whose answers are strict subsets of the board state the brain is handed
 # in its prompt every single turn (`_agent_state_dict`). They stay registered —
 # callers with no such injection (the MCP server, the delegate wire) need them,
