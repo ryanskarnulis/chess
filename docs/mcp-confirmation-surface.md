@@ -10,9 +10,11 @@ note says `_CONFIRM_QUESTIONS[op]`, read `CONFIRM_QUESTIONS[op]`. One
 concurrency rule the implementation added beyond the text below: a yes runs
 only if the armed op is still *this* call's (identity, not name), because with
 the lock released across the human's wait a later gated call can arm its own
-question, and the newest question is the one a yes answers. The one check the
-note asks of the implementation that stays open is in `TODO.md`: that Claude
-Code's client declares form elicitation and shows the prompt.
+question, and the newest question is the one a yes answers. On the client:
+Claude Code renders MCP elicitation forms with Accept/Decline (its changelog
+fixes their fullscreen layout in 2.1.239, and the CLI here is 2.1.261), so the
+capability this note leaned on is real; the one end-to-end run with our
+question in that form is the check left in `TODO.md`.
 
 ## The finding
 

@@ -26,12 +26,14 @@ Finding 3 closed as a design note (#271, agreed the same day) and its
 implementation (#272). One check the note asked of the implementation is a
 live one rather than code:
 
-- [ ] **Confirm Claude Code's MCP client declares form elicitation** and
-      shows the confirmation prompt: connect `python -m chessapp.mcp_server`
-      from a fresh Claude Code session, play a move, ask for a new game. The
-      capability is read off the handshake, so a client that does not declare
-      it gets the truthful `confirmation_unavailable` refusal, never a hang;
-      what this checks is that the human is actually asked.
+- [ ] **Run the MCP confirmation end to end once**: connect
+      `python -m chessapp.mcp_server` from a fresh Claude Code session, play a
+      move, ask for a new game, and see the Accept/Decline form. Claude Code
+      renders MCP elicitation forms (its changelog fixes their layout in
+      2.1.239; the local CLI is 2.1.261), so what is left to see is our
+      question in that form and the yes running the op. The capability is
+      read off the handshake, so a client that does not declare it gets the
+      truthful `confirmation_unavailable` refusal, never a hang.
 
 ## Next
 
