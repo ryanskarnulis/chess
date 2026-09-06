@@ -200,6 +200,17 @@ def test_a_resignation_bumps(client):
     assert version_of(client) == before + 1
 
 
+def test_a_claimed_draw_bumps_once_it_is_confirmed(client, ctx):
+    """The ask moves nothing; the yes is the mutation."""
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8") * 2:
+        ctx.session.submit_move(san)
+    before = version_of(client)
+    assert client.post("/api/game/claim-draw", json={}).status_code == 409
+    assert version_of(client) == before
+    assert client.post("/api/game/confirm", json={"confirm": True}).status_code == 200
+    assert version_of(client) == before + 1
+
+
 def test_an_op_the_gate_only_armed_does_not_bump(client, ctx):
     """A refused destructive op did not happen: the gate armed it and asked. The
     version is what the board is, so an unanswered question cannot move it."""
@@ -268,6 +279,7 @@ def test_a_stale_move_is_rejected_and_the_board_is_untouched(client):
         ("/api/game/undo", {}),
         ("/api/game/new", {"color": "white"}),
         ("/api/game/resign", {}),
+        ("/api/game/claim-draw", {}),
         ("/api/game/confirm", {"confirm": True}),
     ],
 )

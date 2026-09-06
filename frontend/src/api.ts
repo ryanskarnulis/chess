@@ -34,6 +34,11 @@ export interface GameState {
   legal_moves: string[]
   /** Legal destinations by origin square, e.g. `{ e2: ['e3', 'e4'] }`. */
   dests: Record<string, string[]>
+  /** The draw rules the side to move may claim right now (`threefold_repetition`,
+   * `fifty_moves`), empty when none. A claim is the one ending the rules leave to
+   * the player, so the UI cannot offer it without being told it exists. Optional
+   * only for compatibility with an older backend that sent none. */
+  claimable_draws?: string[]
 }
 
 export interface MoveResponse {
@@ -185,7 +190,7 @@ async function postLifecycle(
 
 /** A destructive op the backend's confirmation gate armed instead of running:
  * `detail` is the question to put to the player, `op` names what is armed
- * (`new_game` / `resign`). The same gate a spoken "new game" hits — and the
+ * (`new_game` / `resign` / `claim_draw`). The same gate a spoken "new game" hits — and the
  * same one armed op, so either surface can answer it. */
 export interface ConfirmQuestion {
   detail: string
@@ -293,6 +298,14 @@ export function undo(plies?: number, version?: number): Promise<GameState | null
  * question and the game only ends once it is answered. */
 export function resign(color?: 'white' | 'black', version?: number): Promise<LifecycleOutcome> {
   return postGated('/api/game/resign', color ? { color } : {}, version)
+}
+
+/** Claim a threefold-repetition or fifty-move draw. Gated like `resign`:
+ * mid-game the outcome carries the gate's question and the game only ends once
+ * it is answered. Which rule the claim lands under is the backend's to decide,
+ * so nothing is sent but the version. */
+export function claimDraw(version?: number): Promise<LifecycleOutcome> {
+  return postGated('/api/game/claim-draw', {}, version)
 }
 
 export interface DifficultyResponse {

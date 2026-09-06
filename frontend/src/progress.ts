@@ -41,6 +41,7 @@ const TOOL_LABELS: Record<string, string> = {
   undo: 'Taking the move back',
   new_game: 'Starting a new game',
   resign: 'Resigning',
+  claim_draw: 'Claiming the draw',
   save_game: 'Saving the game',
   resume_game: 'Loading the saved game',
   export_pgn: 'Exporting the PGN',

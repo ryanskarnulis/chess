@@ -36,10 +36,6 @@ op and the no left the game untouched. Nothing is open here.
       reply beat and validates against legal moves, with a deterministic
       fallback for an invalid pick, and the reply becomes a model call
       (latency + GPU serialization to think through).
-- [ ] **Claim-draw button** (#220 follow-up): `/api/game/claim-draw` through
-      the registry (same gate as resign) and the frontend button. The
-      `_CONFIRM_QUESTIONS` entry landed with #255. Until then claims are
-      unreachable in direct mode.
 - [ ] **Re-vendor the voice module downstream** (#232 follow-up): PCC's and
       conductor's `MicButton.tsx` copies predate the #232 wedge fix and the
       #242 inline icons. Their host api clients also need the

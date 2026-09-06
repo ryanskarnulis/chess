@@ -440,6 +440,67 @@ def test_resigning_a_finished_game_is_still_409():
     assert client.post("/api/game/resign", json={}).status_code == 409
 
 
+def repeated(ctx: ToolContext) -> ToolContext:
+    """A real game repeated into a claimable threefold draw — player investment
+    for the gate to guard, and a claim for the button to make."""
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8") * 2:
+        assert ctx.session.submit_move(san).legal
+    return ctx
+
+
+def test_claim_draw_mid_game_asks_first():
+    ctx = repeated(ToolContext(session=GameSession()))
+    client = TestClient(create_app(ctx))
+
+    response = client.post("/api/game/claim-draw", json={})
+
+    assert response.status_code == 409
+    assert response.json()["op"] == "claim_draw"
+    assert not ctx.session.is_game_over(), "gated: it asks before it ends the game"
+    assert ctx.pending is not None and ctx.pending.name == "claim_draw"
+
+
+def test_confirming_a_draw_claim_draws_the_game():
+    ctx = repeated(ToolContext(session=GameSession()))
+    client = TestClient(create_app(ctx))
+    client.post("/api/game/claim-draw", json={})
+
+    body = client.post("/api/game/confirm", json={"confirm": True}).json()
+
+    assert ctx.session.is_game_over()
+    assert body["state"]["game_over"] is True
+    assert body["state"]["outcome"]["termination"] == "threefold_repetition"
+    assert body["state"]["outcome"]["result"] == "1/2-1/2"
+
+
+def test_claiming_with_nothing_to_claim_is_409_and_arms_nothing():
+    """The claim check runs before the gate, as in the tool: a question about a
+    draw the rules do not allow must never be armed, because the yes to it would
+    fail on a game the player was told they could end."""
+    ctx = developed(ToolContext(session=GameSession()))
+    client = TestClient(create_app(ctx))
+
+    response = client.post("/api/game/claim-draw", json={})
+
+    assert response.status_code == 409
+    assert "confirm" not in response.json()
+    assert ctx.pending is None
+    assert not ctx.session.is_game_over()
+
+
+def test_a_button_armed_claim_is_confirmed_by_a_typed_yes():
+    """Same gate, same armed op, whichever surface asked and whichever answered."""
+    client, _, ctx = agent_client(narrations=("Half a point each.",))
+    repeated(ctx)
+    client.post("/api/game/claim-draw", json={})
+    assert ctx.pending is not None and ctx.pending.name == "claim_draw"
+
+    client.post("/api/command", json={"text": "yes"})
+
+    assert ctx.session.outcome().termination == "threefold_repetition"
+    assert ctx.pending is None
+
+
 def test_undo_is_not_gated():
     """A takeback throws nothing away — it keeps its direct endpoint."""
     ctx = developed(ToolContext(session=GameSession()))

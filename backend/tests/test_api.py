@@ -231,6 +231,81 @@ def test_resign_when_game_over_is_409(client):
     assert client.post("/api/game/resign", json={}).status_code == 409
 
 
+# --- claim-draw button ------------------------------------------------------
+#
+# The endpoint half of a claim the state document already advertises under
+# `claimable_draws`. Until it existed the `claim_draw` tool was reachable only
+# through the brain, so in direct mode a claim was unreachable (#220 follow-up).
+
+REPETITION = ("Nf3", "Nf6", "Ng1", "Ng8")
+
+# King and rook against a bare king with the fifty-move count complete: a claim
+# is available on a board nobody has moved on, so the gate stands aside.
+FIFTY_MOVE_FEN = "8/8/8/4k3/8/8/4K3/6R1 w - - 100 80"
+
+
+def repeated(ctx):
+    for san in REPETITION * 2:
+        assert ctx.session.submit_move(san).legal
+    return ctx
+
+
+def test_claim_draw_with_nothing_to_claim_is_409(client):
+    response = client.post("/api/game/claim-draw", json={})
+    assert response.status_code == 409
+    assert "no draw" in response.json()["detail"]
+    assert "confirm" not in response.json(), "nothing to claim, so nothing armed"
+
+
+def test_claim_draw_asks_then_draws_the_game(client, ctx):
+    repeated(ctx)
+    assert client.get("/api/state").json()["claimable_draws"] == [
+        "threefold_repetition"
+    ]
+
+    asked = client.post("/api/game/claim-draw", json={})
+    assert asked.status_code == 409
+    assert asked.json()["confirm"] is True
+    assert asked.json()["op"] == "claim_draw"
+
+    body = client.post("/api/game/confirm", json={"confirm": True}).json()
+    assert body["op"] == "claim_draw"
+    assert body["state"]["game_over"] is True
+    assert body["state"]["outcome"] == {
+        "termination": "threefold_repetition",
+        "winner": None,
+        "result": "1/2-1/2",
+    }
+    assert body["state"]["claimable_draws"] == [], "nothing left to claim"
+
+
+def test_claim_draw_runs_outright_where_the_gate_stands_aside():
+    """A fifty-move claim on a board the player never moved on: no investment to
+    guard, so the endpoint answers like `resign` does on a fresh board."""
+    ctx = ToolContext(session=GameSession(fen=FIFTY_MOVE_FEN))
+    client = TestClient(create_app(ctx))
+    body = client.post("/api/game/claim-draw", json={}).json()
+    assert body["outcome"] == {
+        "termination": "fifty_moves",
+        "winner": None,
+        "result": "1/2-1/2",
+    }
+    assert body["state"]["game_over"] is True
+
+
+def test_claim_draw_when_game_over_is_409(client):
+    client.post("/api/game/resign", json={})
+    assert client.post("/api/game/claim-draw", json={}).status_code == 409
+
+
+def test_export_pgn_after_a_claimed_draw(client, ctx):
+    repeated(ctx)
+    client.post("/api/game/claim-draw", json={})  # gated mid-game: it asks
+    client.post("/api/game/confirm", json={"confirm": True})
+    body = client.get("/api/game/pgn").json()
+    assert "1/2-1/2" in body["pgn"]
+
+
 def test_move_after_game_over_is_rejected_as_illegal(client):
     client.post("/api/game/resign", json={})
     body = client.post("/api/game/move", json={"move": "e4"}).json()

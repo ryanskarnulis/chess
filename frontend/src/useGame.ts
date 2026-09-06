@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  claimDraw as apiClaimDraw,
   confirmDestructive as apiConfirmDestructive,
   fetchHint,
   fetchSettings,
@@ -107,6 +108,8 @@ export interface UseGame {
   undo: () => Promise<void>
   /** Resign the game (the side to move, unless the backend decides otherwise). */
   resign: () => Promise<void>
+  /** Claim the draw `state.claimable_draws` advertises. Gated like `resign`. */
+  claimDraw: () => Promise<void>
   /** Set engine strength by named tier (beginner … maximum). */
   setDifficulty: (tier: string) => Promise<void>
   /** Server-confirmed difficulty tier; null until settings load (or when the
@@ -494,6 +497,10 @@ export function useGame(): UseGame {
     await settle(await apiResign(undefined, stateRef.current?.version))
   }, [settle])
 
+  const claimDraw = useCallback(async () => {
+    await settle(await apiClaimDraw(stateRef.current?.version))
+  }, [settle])
+
   const setDifficulty = useCallback(async (nextTier: string) => {
     // Difficulty is a settings change, not a board mutation — no state to
     // apply. The hook reflects only what the server confirmed, so the
@@ -604,6 +611,7 @@ export function useGame(): UseGame {
     newGame,
     undo,
     resign,
+    claimDraw,
     setDifficulty,
     tier,
     commentary,
