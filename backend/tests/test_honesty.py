@@ -20,7 +20,9 @@ import pytest
 from chessapp.honesty import (
     VerifiedFacts,
     claims_destructive_outcome,
+    corrections,
     unlicensed_advice,
+    unverified,
     unverified_claims,
 )
 
@@ -48,6 +50,21 @@ from chessapp.honesty import (
 )
 def test_an_asserted_ending_is_a_claim(text):
     assert claims_destructive_outcome(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Live, 2026-09-06: a threat spoken as a distance, cut as the ending it
+        # was forecasting. `close to` was a hedge; `close for` and a bare
+        # `looking` were not.
+        "Damn, checkmate's looking real close for me.",
+        "Checkmate is close.",
+        "Looking like mate soon, dude.",
+    ],
+)
+def test_a_near_miss_spoken_as_a_distance_is_not_a_claim(text):
+    assert claims_destructive_outcome(text) is False
 
 
 @pytest.mark.parametrize(
@@ -975,3 +992,124 @@ def test_a_game_result_is_not_an_evaluation_claim():
     guarding it would suppress the truth on every game that ends."""
     facts = VerifiedFacts(ended=True)
     assert unverified_claims("Game over: 1-0 (checkmate).", facts) == ()
+
+
+# --- the facts in words: what a rewrite is told ---------------------------------
+#
+# A claim the facts don't back is sent back to the narrator with the true fact
+# in plain words (`api._honest_words`). This is the spec for those words: one
+# line per unbacked claim, quoting the sentence, addressed to Glitch, stating
+# what is so and never what he did wrong.
+
+LEVEL = VerifiedFacts(
+    material=(0,),
+    settings={"voice": "on", "verbosity": "low", "difficulty": "casual"},
+    moves=frozenset({"e4", "e5", "Nf3", "Nc6"}),
+    moves_by_player=frozenset({"e4", "Nf3"}),
+    moves_by_opponent=frozenset({"e5", "Nc6"}),
+    captured_by_player=frozenset({"pawn"}),
+)
+
+
+@pytest.mark.parametrize(
+    "text, claim, fact",
+    [
+        (
+            "Game over.",
+            "ending",
+            "The game is not over and no new game began; it is still being played.",
+        ),
+        ("We drew that one.", "draw", "The game has not been drawn."),
+        ("You're in check.", "check", "Nobody is in check."),
+        (
+            "Snagged your bishop.",
+            "capture",
+            "The board does not show a bishop taken the way that sentence says. "
+            "Pieces the player has taken: pawn. Pieces you have taken: nothing.",
+        ),
+        (
+            "Rxe5 wins on the spot.",
+            "move",
+            "Rxe5 was not a move on this board, so do not name it.",
+        ),
+        (
+            "I played Nf3, obviously.",
+            "owned_move",
+            "You did not play Nf3. The player did.",
+        ),
+        (
+            "You played Nc6 there.",
+            "owned_move",
+            "The player did not play Nc6. You did.",
+        ),
+        ("Saved it as scholars.", "save", "Nothing was saved or loaded this turn."),
+        ("Voice is off now.", "voice", "The voice output is on."),
+        ("Difficulty is maximum now.", "difficulty", "The difficulty is casual."),
+        ("Verbosity is high.", "verbosity", "The verbosity is low."),
+        (
+            "Alright, more detail from now on.",
+            "verbosity_change",
+            "Verbosity was not changed this turn; it is still low.",
+        ),
+        (
+            "You're at -3.5 here.",
+            "evaluation",
+            "No engine evaluation ran this turn, so there is no score to quote.",
+        ),
+        ("You're up a knight.", "material", "Material is level right now."),
+    ],
+)
+def test_every_claim_class_has_its_fact_in_words(text, claim, fact):
+    found = unverified(text, LEVEL)
+    assert [item.claim for item in found] == [claim]
+    assert corrections(found, LEVEL) == (f'You wrote: "{text}" {fact}',)
+
+
+def test_the_fact_quotes_the_sentence_not_the_whole_reply():
+    found = unverified("Nice. Snagged your bishop. Your move.", LEVEL)
+    (line,) = corrections(found, LEVEL)
+    assert line.startswith('You wrote: "Snagged your bishop." ')
+
+
+def test_a_material_fact_names_the_count_and_both_sides():
+    up = VerifiedFacts(material=(3,))
+    (line,) = corrections(unverified("You're down a rook.", up), up)
+    assert line.endswith(
+        "The player is up 3 pawns of material right now, "
+        "so you are down 3 pawns of material."
+    )
+    down = VerifiedFacts(material=(-1,))
+    (line,) = corrections(unverified("You're up a knight.", down), down)
+    assert line.endswith(
+        "The player is down 1 pawn of material right now, "
+        "so you are up 1 pawn of material."
+    )
+
+
+def test_an_engine_number_fact_names_the_numbers_the_engine_gave():
+    facts = VerifiedFacts(numbers=frozenset({"1.5", "+1.5", "150"}))
+    (line,) = corrections(unverified("You're at -3.5 here.", facts), facts)
+    assert "No engine gave the number -3.5." in line
+    assert "The engine's numbers this turn were: +1.5, 1.5, 150." in line
+
+
+def test_a_difficulty_with_no_named_tier_says_so():
+    facts = VerifiedFacts(settings={"voice": "on", "verbosity": "low"})
+    (line,) = corrections(unverified("Difficulty is maximum now.", facts), facts)
+    assert line.endswith(
+        "The difficulty has no named level right now, so do not name one."
+    )
+
+
+def test_the_same_fact_is_stated_once_however_often_it_is_claimed():
+    found = unverified("Snagged your bishop. Ate your bishop. Word.", LEVEL)
+    assert [item.claim for item in found] == ["capture", "capture"]
+    assert len(corrections(found, LEVEL)) == 2, "two sentences, two quotes"
+    twice = unverified("Snagged your bishop. Snagged your bishop.", LEVEL)
+    assert len(corrections(twice, LEVEL)) == 1, "the same sentence twice is one line"
+
+
+def test_unverified_claims_is_the_same_reading_by_class_name():
+    text = "Word. Game over. Snagged your bishop. Rxe5 wins."
+    assert unverified_claims(text, LEVEL) == ("ending", "capture", "move")
+    assert unverified_claims("Nf3. Your move.", LEVEL) == ()

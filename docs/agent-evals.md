@@ -142,9 +142,11 @@ hard scenario; strengthened 2026-09-05 into the audit's proposed
 `resign_intent_reaches_planner`, see the composition table below),
 `advice_is_engine_backed`
 ("what should I play here?" must consult `get_best_moves`, mutate nothing, and
-name only tool-reported moves), `advice_capture_survives_guard` (the same ask
-in a position where the best move is a *capture* — the honesty guard must not
-eat the answer), `verbosity_up_from_low` ("talk more" from `low` must call
+name only tool-reported moves — since 2026-09-10 this scenario is the whole of
+the "hints are engine-backed" contract, because the advice guard no longer
+fires on a turn that ran no analysis), `advice_capture_survives_guard` (the
+same ask in a position where the best move is a *capture* — the honesty guard
+must not eat the answer), `verbosity_up_from_low` ("talk more" from `low` must call
 `set_verbosity`, not just sound chattier), `position_is_described` ("what's the
 position?" is answered by `describe_position`, with no verdict tool called and
 no setting moved), `impossible_move_is_refused_not_asked` ("bishop to a1" on

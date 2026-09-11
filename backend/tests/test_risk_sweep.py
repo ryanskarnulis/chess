@@ -54,7 +54,6 @@ import time
 from fastapi.testclient import TestClient
 
 from chessapp.api import (
-    MOVE_ADVICE_REPLY,
     PROVIDER_LOST_TURN_STANDS,
     create_app,
 )
@@ -349,16 +348,31 @@ def test_the_delegate_wire_observes_the_player_move_before_the_reply():
     assert ctx.session.move_history() == ["e4", "e5"]
 
 
-def test_the_delegate_wire_scrubs_unbacked_move_advice():
+def test_the_delegate_wire_scrubs_a_move_the_engine_did_not_name():
     """The advice guard is the pipeline's, so it holds at every entry point:
-    a move no analysis tool reported is never handed over, whoever asked."""
-    ctx = ToolContext(session=GameSession())
-    app, _ = scripted_app(ctx, AgentResponse(text="Easy — play Nf3 and thank me."))
+    once the engine has been consulted (it said Nc3), a move it did not name
+    is never handed over, whoever asked. The unscripted rewrite repeats the
+    move, so the turn is cut."""
+    ctx = ToolContext(
+        session=GameSession(),
+        engine=FakeEngine(
+            best_moves=(
+                CandidateMove(uci="b1c3", san="Nc3", score_cp=20, mate_in=None),
+            )
+        ),
+    )
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Easy — play Nf3 and thank me.",
+            tool_calls=(ToolCall(name="get_best_moves", args={}),),
+        ),
+    )
     client = TestClient(app)
 
     exchange = say(client, conversation_on(client), "what should I play?")
 
-    assert exchange["assistant_message"]["content"] == MOVE_ADVICE_REPLY
+    assert "Nf3" not in exchange["assistant_message"]["content"]
 
 
 def test_a_provider_failure_on_the_delegate_wire_keeps_the_move_and_says_so():

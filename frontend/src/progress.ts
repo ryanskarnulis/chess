@@ -31,6 +31,7 @@ const PHASE_LABELS: Record<string, string> = {
 const BRAIN_LABELS: Record<string, string> = {
   planning: 'Glitch is thinking',
   narrating: 'Glitch is reacting',
+  rewriting: 'Glitch is rephrasing',
 }
 
 // Every tool the registry holds, in the player's language. A tool missing from

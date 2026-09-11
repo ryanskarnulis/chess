@@ -85,6 +85,9 @@ def turn_record(
     guarded: bool = False,
     guarded_claims: Sequence[str] = (),
     suppressed: str = "",
+    rewrite: str = "",
+    rewrite_claims: Sequence[str] = (),
+    rewrite_suppressed: str = "",
     provider_failure: str = "",
     model_calls: int = 0,
     prompt_tokens: int = 0,
@@ -113,10 +116,18 @@ def turn_record(
     classifies a sample by, so a retryable death is retried and a refusal is
     reported rather than re-sent five times.
 
-    `guarded` marks a turn whose commentary was suppressed by the honesty guard,
-    `guarded_claims` names the classes the turn's facts did not back, and
-    `suppressed` is the text that was cut. `commentary` stays what the player
-    actually saw.
+    `guarded` marks a turn whose first commentary asserted something the honesty
+    guard's facts did not back, `guarded_claims` names the classes, and
+    `suppressed` is that first text. `commentary` stays what the player actually
+    saw. `rewrite` says what became of the second try the guard then asked the
+    narrator for: `""` when none ran (nothing was guarded), `"spoken"` when the
+    rewrite passed and is the commentary, `"cut"` when it still asserted
+    something — `rewrite_claims` names what, `rewrite_suppressed` keeps its
+    text — and the player got the deterministic fallback, `"lost"` when the
+    provider died on it. A guarded turn is still a model miss whatever the
+    rewrite did, which is why `guarded` reads the first draft: the eval floor
+    measures the model's own discipline, and the rewrite is what spares the
+    player the miss.
 
     The lie used to be dropped on purpose — the event was countable and that
     read like enough. It is not. A false positive is now the guard's likelier
@@ -166,6 +177,9 @@ def turn_record(
         "guarded": guarded,
         "guarded_claims": list(guarded_claims),
         "suppressed": suppressed,
+        "rewrite": rewrite,
+        "rewrite_claims": list(rewrite_claims),
+        "rewrite_suppressed": rewrite_suppressed,
         "turn_id": turn_id,
         "correlation_id": correlation_id,
         "mutations": mutations,

@@ -669,8 +669,8 @@ def test_an_accepted_offer_beside_a_move_ends_the_game_with_no_reply():
 
 def test_a_decline_narrated_as_a_draw_is_guarded():
     """The honesty guard: "we drew" on a decline is an ending the board does not
-    back, and the player is told the truth instead."""
-    from chessapp.api import UNTRUE_CLAIM_REPLY
+    back. The rewrite is unscripted, so the fake repeats it and the turn is cut:
+    the player hears neither the draw nor the ending."""
     from chessapp.brain import AgentResponse, ToolCall
 
     client, ctx = pipeline_client(
@@ -683,14 +683,14 @@ def test_a_decline_narrated_as_a_draw_is_guarded():
     )
     body = client.post("/api/command", json={"text": "call it a draw?"}).json()
     assert not ctx.session.is_game_over()
-    assert body["commentary"] == UNTRUE_CLAIM_REPLY
+    assert "drew" not in body["commentary"]
+    assert "Game over" not in body["commentary"]
 
 
 def test_the_verdicts_number_may_be_quoted_from_either_side():
     """`_analysis_numbers` learns the offer's evaluation, both signs: an honest
     "up three" survives whichever side it is said from, an invented number
     does not."""
-    from chessapp.api import UNVERIFIED_CLAIM_REPLY
     from chessapp.brain import AgentResponse, ToolCall
 
     def narrated(text: str) -> str:
@@ -708,4 +708,4 @@ def test_the_verdicts_number_may_be_quoted_from_either_side():
     yours = "Nope. You're down 3.0, play on."
     assert narrated(mine) == mine
     assert narrated(yours) == yours
-    assert narrated("Nope. I'm up 7.0 here, play on.") == UNVERIFIED_CLAIM_REPLY
+    assert "7.0" not in narrated("Nope. I'm up 7.0 here, play on.")
