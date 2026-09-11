@@ -1242,12 +1242,12 @@ class CommandOutcome:
     budget stop, a dead provider — the turn remembers the deterministic facts
     instead, because an app line fed back as his own words is a register he
     imitates (`_remembered_facts`). A guard rewrite that passed is his own
-    second draft and is remembered as such. And when the app spoke *after* him — the reply
-    announcement composed onto every move turn — only his reaction is
-    remembered, because the appended "\\n\\ne5." fed back as his own words is a
-    format he completes at the beat where the reply does not exist yet (#193).
-    The player gets the whole composed line; the model gets its own words or
-    the facts."""
+    second draft and is remembered as such. And when the app spoke *after*
+    him — the reply announcement composed onto every move turn — only his
+    reaction is remembered, because the appended "\\n\\ne5." fed back as his
+    own words is a format he completes at the beat where the reply does not
+    exist yet (#193). The player gets the whole composed line; the model gets
+    its own words or the facts."""
 
     commentary: str
     tool_results: list[dict[str, Any]]
