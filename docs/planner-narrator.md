@@ -38,6 +38,40 @@ stall: a second `undo` carries the same empty arguments as the first and pops
 a different exchange, and keying the stall on the call alone once ended
 "undo, undo, then play X" with X never played.
 
+## The narrator's second draft (the honesty guard, 2026-09-10)
+
+Every operational claim in the narrator's text — an ending, a draw, a check, a
+capture, a move, who played it, a save, a setting, an engine number, the
+material count — is checked against the board and the turn's tool results
+before it is spoken (`honesty.unverified`, `api._verified_facts`). A claim the
+facts don't back used to be answered with one of three canned "Scratch that"
+lines in Glitch's place. It is now answered with **one more narrator call**
+(`Brain.rewrite`): the same persona prompt and conversation, no tools, and a
+brief holding the first draft plus one plain sentence per unbacked claim
+saying what is actually so (`honesty.corrections` — "You wrote: 'Snagged your
+bishop.' Pieces you have taken: nothing."). The rewrite is checked the same
+way. If it passes it is the commentary and is remembered as Glitch's; if it
+still asserts something unbacked it is cut and the turn says only what the app
+already says with no usable model text — the deterministic move line on a move
+turn, the stuck line otherwise. Never a third try, never an apology for a
+sentence the player did not hear.
+
+The split is the house rule one step later: code decides what is true, the
+model decides how to say it, and a guard false positive costs one round trip
+rather than the reply. The trace records both drafts and both verdicts
+(`guarded`, `suppressed`, `rewrite`, `rewrite_claims`, `rewrite_suppressed`);
+`guarded` still reads the *first* draft, because the eval floor measures the
+model's own discipline and the rewrite is what spares the player the miss.
+
+The advice check rides the same call and was inverted the same day: it fires
+only when the turn consulted the engine (`get_best_moves` /
+`analyze_last_move` reported moves) and the reply names a playable move the
+engine did not — an honesty problem. With no analysis in the turn a move
+Glitch names is his own opinion and is his to give; the planner still routes
+hint asks to the engine (`advice_is_engine_backed` measures it). Before the
+inversion the guard ate a correct London answer and a refused move's own
+list of alternatives (live, 2026-09-04 and 2026-09-06).
+
 ## What the narrator is not given
 
 - **The board.** Tool results are the record of what changed; the fast path
@@ -52,7 +86,9 @@ a different exchange, and keying the stall on the call alone once ended
 ## Cost
 
 The fast path is unchanged (0 calls at verbosity=low, 1 otherwise); brain
-turns pay one extra short tool-free completion (plain move 2 → 3 calls).
+turns pay one extra short tool-free completion (plain move 2 → 3 calls). A
+guarded turn pays one more for the rewrite (6 of 150 deployed turns were
+guarded when the rewrite landed, four of them false positives since fixed).
 Ceilings: planner 2048 / narrator 4096 `max_tokens`; a truncated call is a
 failed turn, never a truncated reply that travels — and the reader in front of
 the destructive gate fails the same way, to the `unrelated` that changes

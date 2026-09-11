@@ -110,6 +110,12 @@ class ScriptedBrain:
     destructive question — pops the next scripted verdict. Unscripted it says
     `UNRELATED`, the answer that changes nothing, so a test that never thought
     about confirmations behaves exactly as it did before the seam existed.
+
+    `rewrite` — the honesty guard's second try — pops the next scripted
+    rewrite and records what it was asked to fix. Unscripted it says the first
+    draft again, word for word: a fake that changed nothing is the one that
+    lets a test reach the guard's fallback without scripting a second lie, and
+    a fake that invented a clean rewrite would hide what the guard cut.
     """
 
     def __init__(
@@ -118,11 +124,15 @@ class ScriptedBrain:
         dispatcher=None,
         narrations: tuple[str | Narration | Exception, ...] = (),
         answers: tuple[str | Answer, ...] = (),
+        rewrites: tuple[str | Narration | Exception, ...] = (),
     ) -> None:
         self._responses = list(responses)
         self._narrations = list(narrations)
         self._answers = list(answers)
+        self._rewrites = list(rewrites)
         self.answer_calls: list[tuple[str, str]] = []
+        self.rewrite_calls: list[tuple[str, list[str]]] = []
+        self.rewrite_transcripts: list[list] = []
         self.dispatcher = dispatcher
         self.calls: list[tuple[dict, str]] = []
         self.narrate_calls: list[tuple[dict, list]] = []
@@ -152,6 +162,14 @@ class ScriptedBrain:
         # A bare verdict is the common case; a full `Answer` lets a test script
         # the cost fields the trace reads.
         return scripted if isinstance(scripted, Answer) else Answer(verdict=scripted)
+
+    def rewrite(self, commentary: str, corrections, transcript=()) -> Narration:
+        self.rewrite_calls.append((commentary, list(corrections)))
+        self.rewrite_transcripts.append(list(transcript))
+        scripted = self._rewrites.pop(0) if self._rewrites else commentary
+        if isinstance(scripted, Exception):
+            raise scripted
+        return scripted if isinstance(scripted, Narration) else Narration(text=scripted)
 
     def narrate(self, board_state: dict, changes: list, transcript=()) -> Narration:
         self.narrate_calls.append((board_state, changes))

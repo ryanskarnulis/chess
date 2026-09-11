@@ -10,8 +10,11 @@ ended. A prompt rule is no defense: a 12B follows one about half the time.
 
 So the pipeline checks the claim against the board before it emits it. This
 module owns only the string half of that check — does this text *assert* an
-event? Whether it happened is the session's answer, and `api._run_command` puts
-the two together.
+event? Whether it happened is the session's answer, and `api._honest_words` puts
+the two together. What it does with a claim the facts don't back is a second
+narrator call handed the true facts in plain words (`corrections`), never a
+canned line in Glitch's place: code decides what is true, the model decides how
+to say it, and a false positive costs one round trip instead of the reply.
 
 The ending is where the rule started and it is not where it stops (audit item
 13). `unverified_claims` takes the same shape to every operational fact a turn
@@ -65,7 +68,12 @@ _HEDGES = re.compile(
           # report that the game ended in one.
           | basically | practically | essentially | pretty \s+ much
           | heading | headed | toward | towards | probably | likely
-          | looks \s+ like | looked \s+ like | feels \s+ like | dead \s+ drawn )\b
+          | looks \s+ like | looked \s+ like | feels \s+ like | dead \s+ drawn
+          # A near miss spoken as a distance or a forecast. Live, "checkmate's
+          # looking real close for me" was read as the ending it was
+          # threatening (2026-09-06): `close to` was here and `close for` and a
+          # bare `looking` were not.
+          | close | looking )\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -788,31 +796,172 @@ _CLAIM_CLASSES = (
 )
 
 
-def unverified_claims(text: str, facts: VerifiedFacts) -> tuple[str, ...]:
-    """The claim classes this commentary asserts that the facts don't support.
+@dataclass(frozen=True)
+class Unverified:
+    """One claim the facts did not back: which class, the sentence carrying
+    it, and the span that matched.
+
+    The span is what the correction is written about — "Rxe5" is the move to
+    name in the fact, "queen" the piece — and the sentence is what the model
+    is shown beside it, so it can find the words it has to change. Every
+    matching sentence is reported, one entry per class per sentence: a reply
+    that invents a capture twice in two sentences has two things to fix.
+    """
+
+    claim: str
+    sentence: str
+    said: str
+    match: re.Match[str] = field(compare=False, repr=False)
+
+
+def unverified(text: str, facts: VerifiedFacts) -> tuple[Unverified, ...]:
+    """Every operational claim in this commentary that the facts don't support.
 
     Empty for commentary that claims nothing operational, which is most of it.
     Sentence by sentence and hedge by hedge, on the same bar the ending class
     set: an assertion in its own sentence, never a mention. Trash talk, threats,
     questions and hypotheticals are the whole point of the commentary, so a
     class that cannot tell them from a report does not belong here.
-
-    Returned as an ordered list of class names rather than a bool so the
-    pipeline can log *which* fact the model invented — that is the thing worth
-    knowing when a guarded turn shows up in a trace.
     """
-    found: list[str] = []
+    found: list[Unverified] = []
     for sentence in _SENTENCES.split(text):
         if _HEDGES.search(sentence):
             continue
         for claim in _CLAIM_CLASSES:
-            if claim.name in found:
-                continue
             if claim.hedges is not None and claim.hedges.search(sentence):
                 continue
-            if any(
-                not claim.verified(match, facts)
-                for match in claim.pattern.finditer(sentence)
-            ):
-                found.append(claim.name)
+            for match in claim.pattern.finditer(sentence):
+                if not claim.verified(match, facts):
+                    found.append(
+                        Unverified(claim.name, sentence.strip(), match.group(0), match)
+                    )
+                    break  # one entry per class per sentence is one fact to fix
     return tuple(found)
+
+
+def unverified_claims(text: str, facts: VerifiedFacts) -> tuple[str, ...]:
+    """The claim classes this commentary asserts that the facts don't support,
+    each named once in the order first found.
+
+    The names are what the trace records (`guarded_claims`) and what a
+    reviewer reads: *which* fact the model invented is the thing worth knowing
+    when a guarded turn shows up. `unverified` is the same reading with the
+    sentences attached, for the rewrite.
+    """
+    return tuple(dict.fromkeys(item.claim for item in unverified(text, facts)))
+
+
+# --- the true facts, in words --------------------------------------------------
+#
+# A claim the facts don't back is sent back to the narrator with the fact that
+# contradicts it, one plain sentence per claim, and the narrator says it again.
+# The sentences are addressed to Glitch ("you" is him, "the player" is the
+# player) because that is who reads them; they state what is so and never what
+# he did wrong, since a rewrite is a second draft and not a reprimand — and
+# because on a false positive he has done nothing wrong at all, and the fact
+# still holds.
+
+
+def _list(items: Iterable[str]) -> str:
+    named = sorted(items)
+    return ", ".join(named) if named else "nothing"
+
+
+def _capture_fact(item: Unverified, facts: VerifiedFacts) -> str:
+    piece = (item.match.group("piece") or item.match.group("gone_piece") or "").lower()
+    piece = "knight" if piece == "horse" else piece
+    return (
+        f"The board does not show a {piece} taken the way that sentence says. "
+        f"Pieces the player has taken: {_list(facts.captured_by_player)}. "
+        f"Pieces you have taken: {_list(facts.captured_by_opponent)}."
+    )
+
+
+def _move_fact(item: Unverified, facts: VerifiedFacts) -> str:
+    return f"{item.said.rstrip('+#')} was not a move on this board, so do not name it."
+
+
+def _owned_move_fact(item: Unverified, facts: VerifiedFacts) -> str:
+    san = item.match.group("san").rstrip("+#")
+    if item.match.group("subject").lower() == "i":  # Glitch
+        fact = f"You did not play {san}."
+        if _names(san, facts.moves_by_player):
+            fact += " The player did."
+        return fact
+    fact = f"The player did not play {san}."
+    if _names(san, facts.moves_by_opponent):
+        fact += " You did."
+    return fact
+
+
+def _setting_fact(key: str, label: str) -> Callable[[Unverified, VerifiedFacts], str]:
+    def fact(item: Unverified, facts: VerifiedFacts) -> str:
+        value = facts.settings.get(key)
+        if value is None:
+            return f"The {label} has no named level right now, so do not name one."
+        return f"The {label} is {value}."
+
+    return fact
+
+
+def _verbosity_change_fact(item: Unverified, facts: VerifiedFacts) -> str:
+    return (
+        "Verbosity was not changed this turn; it is still "
+        f"{facts.settings.get('verbosity', 'what it was')}."
+    )
+
+
+def _evaluation_fact(item: Unverified, facts: VerifiedFacts) -> str:
+    if facts.numbers:
+        return (
+            f"No engine gave the number {item.said}. The engine's numbers this "
+            f"turn were: {_list(facts.numbers)}."
+        )
+    return "No engine evaluation ran this turn, so there is no score to quote."
+
+
+def _material_fact(item: Unverified, facts: VerifiedFacts) -> str:
+    if not facts.material:
+        return "No material count is available this turn, so do not quantify material."
+    balance = facts.material[0]  # the board as it stands now (see `_verified_facts`)
+    if balance == 0:
+        return "Material is level right now."
+    pawns = f"{abs(balance)} pawn{'s' if abs(balance) != 1 else ''} of material"
+    if balance > 0:
+        return f"The player is up {pawns} right now, so you are down {pawns}."
+    return f"The player is down {pawns} right now, so you are up {pawns}."
+
+
+_FACTS: dict[str, Callable[[Unverified, VerifiedFacts], str]] = {
+    "ending": lambda item, facts: (
+        "The game is not over and no new game began; it is still being played."
+    ),
+    "draw": lambda item, facts: "The game has not been drawn.",
+    "check": lambda item, facts: "Nobody is in check.",
+    "capture": _capture_fact,
+    "move": _move_fact,
+    "owned_move": _owned_move_fact,
+    "save": lambda item, facts: "Nothing was saved or loaded this turn.",
+    "voice": _setting_fact("voice", "voice output"),
+    "difficulty": _setting_fact("difficulty", "difficulty"),
+    "verbosity": _setting_fact("verbosity", "verbosity"),
+    "verbosity_change": _verbosity_change_fact,
+    "evaluation": _evaluation_fact,
+    "material": _material_fact,
+}
+
+
+def corrections(found: Iterable[Unverified], facts: VerifiedFacts) -> tuple[str, ...]:
+    """The true fact behind each unbacked claim, as a line for the rewrite brief:
+    the sentence the model wrote, then what is actually so.
+
+    One line per entry, in order, duplicates dropped — two sentences inventing
+    the same capture get the same line once. Every claim class has a fact
+    here; a class without one would be a class the guard can cut but not
+    explain, and an unexplained cut is what the canned lines were.
+    """
+    lines = (
+        f'You wrote: "{item.sentence}" {_FACTS[item.claim](item, facts)}'
+        for item in found
+    )
+    return tuple(dict.fromkeys(lines))

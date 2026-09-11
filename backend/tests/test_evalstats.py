@@ -590,6 +590,34 @@ def test_a_brain_turn_splits_into_the_planner_and_the_narrator() -> None:
     assert latencies.total_ms == 41200  # and the parts still sum to the whole
 
 
+def test_a_guard_rewrite_is_narrator_time() -> None:
+    """The honesty guard's second try is one more narrator round trip on the
+    same prompt, so a rewritten brain turn's boundary sits one call earlier:
+    planner, note, narrator, rewrite."""
+    latencies = split_latencies(
+        (1200, 900, 3000, 2500), route="brain", stop_reason="completed", rewrites=1
+    )
+    assert latencies.attribution is Attribution.SPLIT
+    assert latencies.planner_ms == 2100
+    assert latencies.narrator_ms == 5500
+
+
+def test_a_rewrite_on_a_narrate_route_is_still_all_narrator() -> None:
+    latencies = split_latencies(
+        (3000, 2500), route="fast_path", stop_reason="completed", rewrites=1
+    )
+    assert latencies.attribution is Attribution.SPLIT
+    assert latencies.planner_ms == 0
+    assert latencies.narrator_ms == 5500
+
+
+def test_more_narrator_calls_than_calls_is_unknown_not_a_guess() -> None:
+    latencies = split_latencies(
+        (3000,), route="brain", stop_reason="completed", rewrites=1
+    )
+    assert latencies.attribution is Attribution.UNKNOWN
+
+
 def test_a_repeat_stop_still_reached_its_narrator() -> None:
     """The case this function was written for. `no_progress` ends the *planning*
     phase, and the narrator still runs (CLAUDE.md), so the split is knowable —

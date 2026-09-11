@@ -22,7 +22,7 @@ import json
 
 from fastapi.testclient import TestClient
 
-from chessapp.api import UNTRUE_CLAIM_REPLY, create_app
+from chessapp.api import create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.game import GameSession
@@ -39,12 +39,13 @@ def agent_client(
     narrations: tuple = (),
     verbosity: str = "normal",
     engine=None,
+    rewrites: tuple = (),
     **create_kwargs,
 ):
     """An app with a brain in the path — agent mode — over a fresh game."""
     ctx = ToolContext(session=GameSession(), engine=engine)
     ctx.settings.verbosity = verbosity
-    brain = ScriptedBrain(*responses, narrations=narrations)
+    brain = ScriptedBrain(*responses, narrations=narrations, rewrites=rewrites)
     app, _ = scripted_app(ctx, brain=brain, **create_kwargs)
     return TestClient(app), brain, ctx
 
@@ -193,10 +194,27 @@ def test_a_game_ending_drag_has_no_reply_to_announce():
     assert body["engine_move"] is None
 
 
-def test_a_dishonest_drag_reaction_is_guarded():
+def test_a_dishonest_drag_reaction_is_said_again_with_the_facts():
     """The honesty guard runs on every route, this one included: a reaction that
-    invents an ending is replaced with the truth — and only the reaction is,
-    so the drag still hears what the engine played back."""
+    invents an ending goes back to the narrator with the truth, and the second
+    draft is the reaction — with the engine's reply announced after it, as on
+    every move turn."""
+    client, brain, ctx = agent_client(
+        narrations=("That's the game. Game over.",),
+        rewrites=("That's a start. Long way to go.",),
+        engine=FakeEngine(),
+    )
+
+    body = client.post("/api/game/move", json={"move": "e2e4"}).json()
+
+    assert not ctx.session.is_game_over()
+    assert body["commentary"] == "That's a start. Long way to go.\n\ne5."
+    assert brain.rewrite_calls[0][0] == "That's the game. Game over."
+
+
+def test_a_drag_reaction_whose_rewrite_still_lies_falls_back_to_the_facts():
+    """Only the reaction is cut, so the drag still hears what the engine
+    played back — the deterministic move turn, never a canned apology."""
     client, _, ctx = agent_client(
         narrations=("That's the game. Game over.",), engine=FakeEngine()
     )
@@ -204,7 +222,7 @@ def test_a_dishonest_drag_reaction_is_guarded():
     body = client.post("/api/game/move", json={"move": "e2e4"}).json()
 
     assert not ctx.session.is_game_over()
-    assert body["commentary"] == f"{UNTRUE_CLAIM_REPLY}\n\ne5."
+    assert body["commentary"] == "e4. e5."
 
 
 def test_a_drag_records_the_turn_on_the_transcript():

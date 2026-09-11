@@ -1157,6 +1157,77 @@ def test_a_raised_round_trip_is_timed_too():
     assert resp.model_latencies_ms == (3500,)
 
 
+# --- the honesty guard's second try: `rewrite` is the narrator once more -----
+
+
+def test_rewrite_is_the_narrator_phase_with_no_tools_and_no_thinking():
+    brain, provider = make_brain(
+        text_turn("Still on. Your move."), enable_thinking=True
+    )
+
+    narration = brain.rewrite(
+        "Word. Game over.",
+        ['You wrote: "Word. Game over." The game is not over.'],
+        transcript=[{"role": "user", "content": "i'm done"}],
+    )
+
+    assert narration.text == "Still on. Your move."
+    (call,) = provider.calls
+    assert call["tools"] is None, "the phase that talks still cannot act"
+    assert call["enable_thinking"] is False, (
+        "a rephrase, not a position to reason about"
+    )
+    assert call["max_tokens"] == brain.narrator_max_tokens
+    assert system_prompts(provider) == [PERSONA], (
+        "the persona prompt, not the planner's"
+    )
+    assert call["messages"][1] == {"role": "user", "content": "i'm done"}, (
+        "same conversation"
+    )
+
+
+def test_the_rewrite_brief_holds_the_first_draft_and_every_fact():
+    brain, provider = make_brain(text_turn("ok"))
+
+    brain.rewrite(
+        "Word. Game over. Snagged your rook.",
+        [
+            'You wrote: "Game over." The game is not over.',
+            'You wrote: "Snagged your rook." Pieces you have taken: nothing.',
+        ],
+    )
+
+    brief = provider.calls[0]["messages"][-1]["content"]
+    assert "Word. Game over. Snagged your rook." in brief
+    assert '- You wrote: "Game over." The game is not over.' in brief
+    assert '- You wrote: "Snagged your rook." Pieces you have taken: nothing.' in brief
+    assert "Say it again, in character" in brief
+    assert "Do not mention this correction or apologize" in brief
+    assert "Do not call any tools." in brief
+
+
+def test_rewrite_reports_its_own_phase_and_times_its_call():
+    phases: list[str] = []
+    brain, _ = make_brain(
+        text_turn("ok"), clock=stub_clock(0.0, 0.25), on_phase=phases.append
+    )
+    narration = brain.rewrite("Game over.", ["The game is not over."])
+    assert phases == ["rewriting"], (
+        "not `narrating`: that report opens the observe beat"
+    )
+    assert narration.latency_ms == 250
+    assert narration.model_calls == 1
+
+
+def test_a_truncated_rewrite_says_nothing_but_still_costs():
+    brain, _ = make_brain(
+        text_turn("Still on, and the game is act", finish_reason="length")
+    )
+    narration = brain.rewrite("Game over.", ["The game is not over."])
+    assert narration.text == ""
+    assert narration.model_calls == 1
+
+
 def test_narrate_times_its_one_call():
     brain, _ = make_brain(text_turn("e4!"), clock=stub_clock(0.0, 0.12))
     narration = brain.narrate(board_state={}, changes=[])

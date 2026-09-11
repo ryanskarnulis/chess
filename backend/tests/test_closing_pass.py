@@ -30,8 +30,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp import api
-from chessapp.api import MOVE_ADVICE_REPLY, UNVERIFIED_CLAIM_REPLY, create_app
+from chessapp.api import STUCK_REPLY, create_app
 from chessapp.coordinator import TurnCoordinator, TurnPhase
+from chessapp.engine import CandidateMove
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain
 from chessapp.tools import (
@@ -618,15 +619,52 @@ def test_a_count_from_a_board_the_batch_held_survives_the_guard(trace_path):
 
 def test_a_count_no_board_the_batch_held_backs_is_still_guarded(trace_path):
     """Widening to the batch's own boards is not the same as waving counts
-    through: nobody was ever a rook up in that exchange."""
+    through: nobody was ever a rook up in that exchange. The scripted provider
+    repeats its last turn, so the rewrite says the rook again and is cut,
+    leaving the app's own announcement of the reply."""
     client, _, _ = exchange_client("You are up a rook.", tracer=JsonlTracer(trace_path))
 
     response = client.post(
         "/api/command", json={"text": "grab the pawn on d5 and tell me the material"}
     ).json()
 
-    assert response["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\nQxd5."
-    assert last_turn(trace_path)["guarded"] is True
+    assert response["commentary"] == "Qxd5."
+    traced = last_turn(trace_path)
+    assert traced["guarded"] is True
+    assert traced["rewrite"] == "cut"
+    assert traced["rewrite_claims"] == ["material"]
+
+
+def test_the_rewrite_is_tool_free_and_is_what_the_player_hears(trace_path):
+    """The file's own property, on the guard's second call: the round trip
+    that produces the player-facing text carries no tools — and a second
+    draft the facts back is the commentary, in Glitch's words."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci="d8d5"))
+    for san in ("e4", "d5"):
+        assert ctx.session.submit_move(san).legal
+    client, provider, _ = make_client(
+        tool_calls_turn(("make_move", {"move": "exd5"}), ("describe_position", {})),
+        text_turn("note: took on d5, player a pawn up"),
+        text_turn("You are up a rook."),
+        text_turn("You are up a pawn. For now."),
+        ctx=ctx,
+        tracer=JsonlTracer(trace_path),
+    )
+
+    response = client.post(
+        "/api/command", json={"text": "grab the pawn on d5 and tell me the material"}
+    ).json()
+
+    assert response["commentary"] == "You are up a pawn. For now.\n\nQxd5."
+    assert offered_tools(provider)[-2:] == [False, False], "narrator, then rewrite"
+    rewrite_brief = provider.calls[-1]["messages"][-1]["content"]
+    assert "You are up a rook." in rewrite_brief, "handed its own first draft"
+    assert "Material is level right now." in rewrite_brief
+    traced = last_turn(trace_path)
+    assert traced["guarded"] is True
+    assert traced["rewrite"] == "spoken"
+    assert traced["suppressed"] == "You are up a rook."
+    assert traced["model_calls"] == 4, "planner, note, narrator, rewrite"
 
 
 def test_a_move_only_a_board_the_batch_never_held_makes_legal_is_guarded(trace_path):
@@ -642,7 +680,7 @@ def test_a_move_only_a_board_the_batch_never_held_makes_legal_is_guarded(trace_p
     ).json()
 
     assert "Nxd5" not in ctx.session.legal_moves()
-    assert response["commentary"] == f"{UNVERIFIED_CLAIM_REPLY}\n\nQxd5."
+    assert response["commentary"] == "Qxd5."
     assert last_turn(trace_path)["guarded"] is True
 
 
@@ -708,14 +746,34 @@ def test_a_read_only_command_leaves_the_trail_empty(monkeypatch):
     assert observed == [[]]
 
 
+def consulted_client(narration: str, tracer=None):
+    """A batch that asked the engine — it said Nc3 — before the narrator spoke,
+    so the advice guard has evidence to hold the reply to."""
+    ctx = ToolContext(
+        session=GameSession(),
+        engine=FakeEngine(
+            best_moves=(
+                CandidateMove(uci="b1c3", san="Nc3", score_cp=20, mate_in=None),
+            )
+        ),
+    )
+    return make_client(
+        tool_calls_turn(("get_best_moves", {})),
+        text_turn("note: engine says Nc3"),
+        text_turn(narration),
+        ctx=ctx,
+        tracer=tracer,
+    )
+
+
 def test_a_clarifying_question_naming_two_moves_survives_the_advice_guard(trace_path):
     """Audit finding 6, from its own probe. "move my kings knight" is genuinely
     ambiguous on a fresh board, the narrator asks the right question, and the
-    advice guard replaced the whole thing with the unbacked-move correction."""
-    client, _, ctx = make_client(
-        text_turn("note: ambiguous, ask which knight"),
-        text_turn("Do you mean Nf3 or Nh3?"),
-        tracer=JsonlTracer(trace_path),
+    advice guard replaced the whole thing with the unbacked-move correction.
+    The engine was consulted here so that the guard is actually in play: with
+    no analysis in the turn it no longer looks at all."""
+    client, _, ctx = consulted_client(
+        "Do you mean Nf3 or Nh3?", tracer=JsonlTracer(trace_path)
     )
 
     response = client.post("/api/command", json={"text": "move my kings knight"}).json()
@@ -726,19 +784,33 @@ def test_a_clarifying_question_naming_two_moves_survives_the_advice_guard(trace_
     assert last_turn(trace_path)["guarded"] is False
 
 
-def test_handing_over_one_unbacked_move_is_still_advice(trace_path):
+def test_handing_over_a_move_the_engine_did_not_name_is_still_advice(trace_path):
     """The converse, and the reason the loosening is a sentence rule rather
-    than an exemption for knights: naming one playable move nothing checked is
-    the leak the guard was built for, question mark or not."""
+    than an exemption for knights: the engine said Nc3, and naming one other
+    playable move is the leak the guard exists for, question mark or not. The
+    provider repeats itself, so the rewrite names it again and is cut."""
+    client, _, _ = consulted_client("Nf3 is the move.", tracer=JsonlTracer(trace_path))
+
+    response = client.post("/api/command", json={"text": "move my kings knight"}).json()
+
+    assert response["commentary"] == STUCK_REPLY
+    traced = last_turn(trace_path)
+    assert traced["guarded"] is True
+    assert traced["guarded_claims"] == ["move_advice"]
+    assert traced["rewrite"] == "cut"
+    assert traced["rewrite_claims"] == ["move_advice"]
+
+
+def test_a_move_named_with_no_engine_in_the_turn_is_not_the_guards_business(trace_path):
+    """Decided 2026-09-10: no analysis, no evidence, no advice guard. The
+    move is Glitch's own opinion and reaches the player as said."""
     client, _, _ = make_client(
         text_turn("note: tell them to play Nf3"),
         text_turn("Nf3 is the move."),
         tracer=JsonlTracer(trace_path),
     )
 
-    response = client.post("/api/command", json={"text": "move my kings knight"}).json()
+    response = client.post("/api/command", json={"text": "what should I play?"}).json()
 
-    assert response["commentary"] == MOVE_ADVICE_REPLY
-    traced = last_turn(trace_path)
-    assert traced["guarded"] is True
-    assert traced["guarded_claims"] == ["move_advice"]
+    assert response["commentary"] == "Nf3 is the move."
+    assert last_turn(trace_path)["guarded"] is False

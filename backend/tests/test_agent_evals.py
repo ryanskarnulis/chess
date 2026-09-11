@@ -844,10 +844,15 @@ def _measured(
     # reading that covers a died turn. `stop_reason` and `route` come from the
     # same record, so the attribution and the readings can never be from
     # different turns.
+    # A guard rewrite is one more narrator call (`trace.turn_record`'s
+    # `rewrite`), and the splitter needs to know or it hands the planner the
+    # first narrator round trip.
+    rewrites = 1 if traced.get("rewrite") else 0
     latencies = split_latencies(
         traced.get("model_latencies_ms", ()),
         route=traced.get("route"),
         stop_reason=traced.get("stop_reason"),
+        rewrites=rewrites,
     )
     # Tokens come off the *call meter* rather than the trace, because the trace
     # sums the turn and a sum is exactly what could not answer the last
@@ -859,6 +864,7 @@ def _measured(
         [(call.prompt_tokens, call.completion_tokens) for call in model_calls],
         route=traced.get("route"),
         stop_reason=traced.get("stop_reason"),
+        rewrites=rewrites,
     )
     tok_s = generation_rate(tokens.narrator_out, latencies.narrator_ms)
     print(

@@ -30,6 +30,7 @@ describe('progressLabel', () => {
   it('tells the brain’s two phases apart', () => {
     expect(progressLabel(event('brain', 'planning'))).toBe('Glitch is thinking')
     expect(progressLabel(event('brain', 'narrating'))).toBe('Glitch is reacting')
+    expect(progressLabel(event('brain', 'rewriting'))).toBe('Glitch is rephrasing')
   })
 
   it('puts tools in the player’s language', () => {

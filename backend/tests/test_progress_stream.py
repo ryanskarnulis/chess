@@ -281,6 +281,9 @@ class BlockingBrain:
     def read_answer(self, question, text):  # pragma: no cover
         raise AssertionError("this route answers no questions")
 
+    def rewrite(self, commentary, corrections, transcript=()):  # pragma: no cover
+        raise AssertionError("this route claims nothing to rewrite")
+
 
 @pytest.fixture
 def blocking():

@@ -29,15 +29,18 @@ brain:
 - **No model writes the summary.** Code copies the player's words; a
   model-written rollup would be an unguarded place to hallucinate, plus a
   third model phase per turn.
-- **What the app said is never remembered as Glitch's.** Canned substitutions
-  (guard corrections, lost-brain lines) and appended announcements are for the
-  player, not the model's memory — remembered as such, the narrator imitates
-  the register (live: "I almost said something that didn't happen") or
-  completes the format (announcing a move before the reply exists, #193). A
-  move turn is remembered by the reaction alone; a substituted turn by what it
-  *did* (the deterministic move confirmation) or an empty message, which
-  `condense` renders as the inert ack (chat templates must alternate roles).
-  Carriers: `api.CommandOutcome.memory`, `StoredMessage.memory`.
+- **What the app said is never remembered as Glitch's.** App lines (the
+  deterministic fallback after a cut guard rewrite, lost-brain lines, the stuck
+  line) and appended announcements are for the player, not the model's memory
+  — remembered as such, the narrator imitates the register (live, back when
+  the guard's fallback was a canned first-person apology: "I almost said
+  something that didn't happen") or completes the format (announcing a move
+  before the reply exists, #193). A move turn is remembered by the reaction
+  alone; a guard *rewrite* that passed is Glitch's own second draft and is
+  remembered like any reaction; a turn cut to the fallback is remembered by
+  what it *did* (the deterministic move confirmation) or an empty message,
+  which `condense` renders as the inert ack (chat templates must alternate
+  roles). Carriers: `api.CommandOutcome.memory`, `StoredMessage.memory`.
 
 ## Call sites
 

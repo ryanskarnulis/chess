@@ -270,6 +270,28 @@ class Brain(Protocol):
         zero-LLM."""
         ...
 
+    def rewrite(
+        self,
+        commentary: str,
+        corrections: Sequence[str],
+        transcript: Sequence[dict[str, str]] = (),
+    ) -> Narration:
+        """Say `commentary` again with the facts in `corrections` right.
+
+        The honesty guard's second try. The pipeline checks every operational
+        claim in the narrator's text against the board and the tool results
+        (`honesty.unverified`); when one is not backed, this is what happens
+        next — the narrator is handed its own reply and one plain sentence
+        per unbacked claim saying what is actually so, and writes the reply
+        again. Same persona, same conversation, no tools, so the second draft
+        is Glitch's words and not the app's, and the phase still cannot act.
+
+        The pipeline checks the rewrite too and falls back to the
+        deterministic facts if it still asserts something the board does not
+        back; an implementation is never asked twice. A `ProviderError` here
+        costs the words and nothing else — the turn is already settled."""
+        ...
+
     def read_answer(self, question: str, text: str) -> Answer:
         """Read a reply to a pending destructive-op question as one of
         `CONFIRM` / `CANCEL` / `UNRELATED`.

@@ -40,10 +40,12 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 - **Code owns truth and safety; the model owns understanding.**
   Deterministic code decides legality, what the settings actually are, when a
   destructive op may run, and whether a claim in the commentary is backed by
-  the board. Working out what the player *meant* is the model's job. So no
-  regex fast paths or literal parsers for language, and when a guard fires on
-  a correct answer, loosen the guard rather than script the answer. Glitch
-  should feel alive, not canned.
+  the board. Working out what the player *meant* is the model's job, and so
+  is *saying* it: when the honesty guard cuts a claim, the narrator is asked
+  to say it again with the true facts, never handed a canned line
+  (`docs/planner-narrator.md`). So no regex fast paths or literal parsers
+  for language, and when a guard fires on a correct answer, loosen the guard
+  rather than script the answer. Glitch should feel alive, not canned.
 - **Personality is tone only** — never move choice, difficulty, or settings.
   The global Glitch text is vendored from `../agent-standard/`; fix drift by
   re-copying, never by editing the copy.

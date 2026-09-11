@@ -142,9 +142,11 @@ hard scenario; strengthened 2026-09-05 into the audit's proposed
 `resign_intent_reaches_planner`, see the composition table below),
 `advice_is_engine_backed`
 ("what should I play here?" must consult `get_best_moves`, mutate nothing, and
-name only tool-reported moves), `advice_capture_survives_guard` (the same ask
-in a position where the best move is a *capture* — the honesty guard must not
-eat the answer), `verbosity_up_from_low` ("talk more" from `low` must call
+name only tool-reported moves — since 2026-09-10 this scenario is the whole of
+the "hints are engine-backed" contract, because the advice guard no longer
+fires on a turn that ran no analysis), `advice_capture_survives_guard` (the
+same ask in a position where the best move is a *capture* — the honesty guard
+must not eat the answer), `verbosity_up_from_low` ("talk more" from `low` must call
 `set_verbosity`, not just sound chattier), `position_is_described` ("what's the
 position?" is answered by `describe_position`, with no verdict tool called and
 no setting moved), `impossible_move_is_refused_not_asked` ("bishop to a1" on
@@ -228,6 +230,8 @@ Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Run 2026-09-10 on the guard-rewrite tree (the honesty guard's cut is a narrator rewrite and the advice guard fires only against engine evidence): 48 passed, 1 failed in a single run, 13 m 08 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except `ambiguous_knight_then_selection` 2/5 BELOW_FLOOR — every miss the planner playing a knight instead of asking, at 3 model calls (planner, note, narrator: no rewrite ran on any sample), and nothing the planner sees changed on this tree (no prompt, schema or state-view change; the rewrite is a narrator call after the guard). Re-measured interleaved on one server, four blocks of five a tree alternating: this tree 13/20 (3, 3, 4, 3), unchanged main `f4deeed` 11/20 (2, 4, 3, 2). The day's rate on that ask is ~60% on both trees, so the red is the model server's day and not this change; it is filed in `TODO.md` rather than re-floored.** No sample in the run was guarded, so the rewrite's own live rate is unmeasured here — the deployed trace is where it will show (`rewrite` field). `long_capture` 5/5 ×3, `judgment_question` 11.0 s, costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).
 
 **Run 2026-09-06 on the draw-offer tree (#276, `offer_draw` added to the schema): 47 passed in a single run, 10 m 50 s, 202 samples, infra 0; every pass-rate scenario ABOVE_FLOOR — `undo_and_replace` 5/5, `undo_twice_and_replace` 5/5, `long_capture` 5/5 ×3, `ambiguous_knight_then_selection` 8/10 (one escalation block), `impossible_capture_is_refused_not_asked` 4/5, everything else 5/5 STABLE; `judgment_question` 9.1 s.** The two new scenarios erred on their first sample in that run on a harness bug (the check indexed the wire's `result`, which is a JSON string) and were re-run on the fixed check with no production change between the two trees: `offer_draw_routes` 5/5 and `offer_draw_accepted` 5/5, both 3 model calls, trajectory `[offer_draw]` on every sample. Costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The schema gained one tool and nothing collapsed; the gate is here because a changed tool list has collapsed `undo_and_replace` before.
 

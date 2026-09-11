@@ -64,6 +64,11 @@ KIND_END = "end"
 # A `Brain` that reports these needs to know nothing about turns.
 BRAIN_PLANNING = "planning"
 BRAIN_NARRATING = "narrating"
+# The narrator saying a reply again with the facts corrected (the honesty
+# guard's second try, `Brain.rewrite`). Its own name rather than a second
+# `narrating`: that report also opens the observation beat, and a rewrite runs
+# after the turn has settled, with nothing to observe.
+BRAIN_REWRITING = "rewriting"
 
 
 @dataclass(frozen=True)

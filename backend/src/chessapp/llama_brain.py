@@ -127,7 +127,7 @@ from chessapp.brain import (
     _RunState,
 )
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
-from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING
+from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING, BRAIN_REWRITING
 from chessapp.provider import (
     ChatProvider,
     ChatResult,
@@ -413,6 +413,27 @@ class LlamaBrain:
             _fast_path_brief(board_state, changes),
             transcript,
             thinking=self.enable_thinking,
+        )
+        return replace(narration, latency_ms=self._elapsed_ms(started))
+
+    def rewrite(
+        self,
+        commentary: str,
+        corrections: Sequence[str],
+        transcript: Sequence[dict[str, str]] = (),
+    ) -> Narration:
+        # The honesty guard's second try: the narrator phase once more, on the
+        # same persona prompt and the same conversation, with a brief that
+        # holds its own reply and the facts the board actually backs. No
+        # tools, like every narrator call; thinking off, because this is a
+        # rephrase and not a position to reason about. Timed here for the
+        # reason `narrate` is: the `Narration` is this call's accounting.
+        self._report(BRAIN_REWRITING)
+        started = self.clock()
+        narration = self._speak(
+            _rewrite_brief(commentary, corrections),
+            transcript,
+            thinking=False,
         )
         return replace(narration, latency_ms=self._elapsed_ms(started))
 
@@ -720,6 +741,27 @@ def _closing_brief(command: str, changes: list[dict[str, Any]], note: str) -> st
         + "Reply to the player in character, based only on those results"
         + (" and that note." if note else ".")
         + " Do not call any tools."
+    )
+
+
+def _rewrite_brief(commentary: str, corrections: Sequence[str]) -> str:
+    """The narrator's brief for saying a reply again with the facts right.
+
+    The reply comes back whole, so the rewrite can keep everything that was
+    fine — the tone, the trash talk, the answer to what the player asked —
+    and one line per unbacked claim says what is actually so (built by
+    `honesty.corrections`, addressed to Glitch). It asks for a second draft
+    and states facts; it does not scold, because a reprimand fed to a 12B
+    produces an apology, and the player never heard the first draft.
+    """
+    facts = "\n".join(f"- {line}" for line in corrections)
+    return (
+        f"You were about to reply to the player with:\n{commentary}\n\n"
+        f"Some of that is not what the board says. The facts:\n{facts}\n\n"
+        "Say it again, in character, keeping everything that was right and "
+        "making it fit those facts. Do not mention this correction or apologize "
+        "for it — the player has not seen the first version. Do not call any "
+        "tools."
     )
 
 
