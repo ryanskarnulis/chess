@@ -231,6 +231,22 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-17 on the reaction-budget tree (#283: the observe beat is bounded,
+and `narrate` carries a read ceiling): 49 passed in a single run, infra 0; every
+pass-rate scenario ABOVE_FLOOR STABLE — `undo_twice_and_replace` 4/5,
+`ambiguous_knight_then_selection` 4/5, `freeform_confirmation_answers[unrelated]`
+4/5, `long_capture` 5/5 ×3, everything else 5/5; `judgment_question` 9.1 s
+(narrator 8.2 s, thinking on — the phase this change deliberately does not
+bound). Costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1,
+`plain_move` 3, `resign_literal_fast_path` 0).** No prompt, schema or tool-offer
+change; what the gate is really asked here is whether the budget ever cuts a
+real reaction, and the answer is in the one number that measures the beat it
+bounds: `fast_path_normal`'s narrator call ran **1.2 s** against a 10 s budget,
+which is the same 0.7–2.1 s band the deployed trace showed when the number was
+chosen. The three 4/5 scenarios are the known ones and are not this tree's: the
+knight ask is TODO's ~60%-day item, and `undo_twice_and_replace` 4/5 is where
+the 2026-09-05 baseline left it.
+
 **Run 2026-09-17 on the planner board-refresh tree (#282: the loop is told when
 its own tools move the board): 49 passed in a single run, infra 0; every
 pass-rate scenario ABOVE_FLOOR STABLE — `undo_and_replace` 5/5,
