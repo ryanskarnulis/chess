@@ -103,6 +103,12 @@ Model-specific quirks, split across the two layers:
   would strand a batch half-done. The loop dispatches them, goes on to the
   next iteration, and treats the `content` fragment beside them as no handoff
   note at all (audit 2026-09-05, decided).
+- `narrate` — and only `narrate` — also carries a wall-clock ceiling
+  (`_NARRATE_TIMEOUT`). A token cap bounds generation, not queueing or a
+  stalled server, and the observe beat is the one phase whose caller has
+  already decided how long it will wait (`api._REACTION_BUDGET_S`): hanging up
+  is what stops an abandoned reaction holding a llama-server slot the next
+  turn needs (#283).
 """
 
 import json
@@ -168,6 +174,18 @@ _NARRATOR_MAX_TOKENS = 4096
 # this call sits in front of a destructive op and must not be a place a
 # thought loop can live.
 _ANSWER_MAX_TOKENS = 16
+
+# How long one `narrate` round trip may take before the socket is closed on it.
+# The *pipeline* is what gives up first: `api._REACTION_BUDGET_S` stops waiting
+# for the reaction at 10 s and plays the reply Stockfish already computed, so
+# ordinary slowness is always that budget's call and never this one. This is the
+# backstop underneath it — without it the abandoned generation keeps a
+# llama-server slot until the 300 s read timeout and the next turn's planner
+# queues behind words nobody will ever hear. Sized just above the budget so the
+# two cannot race, and scoped to `narrate` alone: the planner and the loop's own
+# closing narrator legitimately run 30 s and more with thinking on
+# (`docs/agent-evals.md`), and they are not calls the app stops waiting for.
+_NARRATE_TIMEOUT = 15.0
 
 # The whole prompt for that phase. No persona and no board — the question is
 # about what the player meant, and every extra line is one more thing for a
@@ -247,6 +265,10 @@ class LlamaBrain:
     # travels: the loop and `_speak` both check `finish_reason == "length"`.
     planner_max_tokens: int = _PLANNER_MAX_TOKENS
     narrator_max_tokens: int = _NARRATOR_MAX_TOKENS
+    # The observe beat's own read ceiling (see `_NARRATE_TIMEOUT`). Only
+    # `narrate` carries one, because it is the only phase whose caller has
+    # already decided it will not wait; `None` disables it.
+    narrate_timeout: float | None = _NARRATE_TIMEOUT
     # Wall clock for the per-call latencies the trace records. Injected so the
     # timing is testable, and read *here* rather than in the provider because a
     # round trip that raises has a latency too — and only the caller of a raising
@@ -454,6 +476,7 @@ class LlamaBrain:
             _fast_path_brief(board_state, changes),
             transcript,
             thinking=self.enable_thinking,
+            timeout=self.narrate_timeout,
         )
         return replace(narration, latency_ms=self._elapsed_ms(started))
 
@@ -578,10 +601,15 @@ class LlamaBrain:
         transcript: Sequence[dict[str, str]],
         *,
         thinking: bool,
+        timeout: float | None = None,
     ) -> Narration:
         """One narrator round trip: the persona prompt, the conversation, a
         brief describing what happened — and no tools, so this phase cannot
-        act on anything it reads."""
+        act on anything it reads.
+
+        `timeout` is the observe beat's alone (`_NARRATE_TIMEOUT`): the rewrite
+        and the loop's closer are calls the pipeline waits for, so they send
+        none and keep the client's."""
         messages = [
             {"role": "system", "content": self._resolve_system_prompt()},
             *transcript,
@@ -592,6 +620,7 @@ class LlamaBrain:
             tools=None,
             enable_thinking=thinking,
             max_tokens=self.narrator_max_tokens,
+            timeout=timeout,
         )
         prompt_tokens, completion_tokens = _usage_ints(result.usage)
         # A narration the cap cut off is not commentary: the words stop

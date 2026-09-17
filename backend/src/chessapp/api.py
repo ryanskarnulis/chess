@@ -52,10 +52,13 @@ object on the context.
 """
 
 import asyncio
+import contextvars
 import logging
 import math
 import mimetypes
+import queue
 import random
+import threading
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -684,6 +687,91 @@ def _engine_lost_words(commentary: str) -> str:
     )
 
 
+# How long the app waits for Glitch's *optional* words before going on without
+# them (#283). The reaction is optional by construction — the coordinator starts
+# Stockfish the moment the player's move lands and collecting the reply is legal
+# with or without a narration — but until this it was only optional in the sense
+# that it could be *skipped*, never that it could be *late*: the reply was
+# applied after the words came back, so a stalled narrator held an answer already
+# sitting in memory and, with it, the mutation lock every other road onto the
+# board waits on.
+#
+# Measured rather than derived from the token cap, which bounds generation and
+# not queueing or a dead server. Across 58 observe beats in the deployed trace
+# (routes `fast_path` and `board`, one thinking-off narrator call each) the
+# reaction took 0.7–2.1 s, median ~1.5 s, with a single 7.5 s outlier. Ten
+# seconds is above every reaction ever observed with room for the shared GPU
+# having a bad minute, and still far below the point where a player decides the
+# board is frozen. A cold llama-swap load (~100 s to first byte, first move
+# after a reboot) is over it and loses that one reaction to the app's own line;
+# hanging up does not unload the upstream, so the next turn is warm.
+_REACTION_BUDGET_S = 10.0
+
+
+class LateReaction(ProviderError):
+    """The app stopped waiting for a narration — the model may still be writing.
+
+    A `ProviderError` on purpose, and the same design choice `TurnStateError`
+    makes by subclassing `ValueError`: every branch that already treats the
+    words as the one thing a failure may cost — the observe beat, the
+    confirmed-op and resign narrations — handles lateness with no new failure
+    shape to learn. The distinct type is what keeps the record honest about
+    which of the two happened, since the player hears the same deterministic
+    line either way.
+
+    Deliberately *not* a `ProviderFailure`: that vocabulary answers "would
+    asking again work", and nothing here says the provider failed. It answered
+    too late for a turn that had already gone on without it, which is the app's
+    judgment about this beat and not a fact about the server.
+    """
+
+
+def _within_budget[T](work: Callable[[], T], budget: float) -> T:
+    """Run `work` on its own thread and give up on it after `budget` seconds.
+
+    Giving up is all this does: a model round trip cannot be cancelled, so the
+    thread runs on and whatever it produces is dropped — the same shape
+    `coordinator._PendingReply` uses for an engine computation the board moved
+    out from under, and safe for the same reason. The work handed here touches
+    no session: the narrator is given a board view snapshotted before the call
+    and answers with words, so a late thread has nothing to land. The one piece
+    of machine it can reach is the observation *phase* (a brain reports
+    `narrating`, and assembly reads that report as the beat opening), and that
+    is a mark on a turn the board is already waiting on: no mutation, and
+    collecting the reply is legal from either phase by construction.
+
+    The call's own exceptions cross back to the caller's thread unchanged; only
+    the deadline is this function's own answer.
+
+    It runs in a *copy* of the caller's context, which is what keeps the live
+    progress stream working: which interaction an event belongs to is a
+    `ContextVar` (`progress._CURRENT`), a bare thread starts from an empty
+    context, and the beat's own "narrating" frame would simply stop being sent
+    — the one thing the UI shows while Glitch is writing. A copy rather than
+    the context itself because the caller goes on without this thread and must
+    be free to close the interaction out from under it.
+    """
+    # Either the value in a 1-tuple or the exception that replaced it — never
+    # bare, so a `T` that is itself an exception could not be mistaken for one.
+    settled: queue.Queue[tuple[T] | BaseException] = queue.Queue(maxsize=1)
+    context = contextvars.copy_context()
+
+    def _run() -> None:
+        try:
+            settled.put((context.run(work),))
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller's thread
+            settled.put(exc)
+
+    threading.Thread(target=_run, name="bounded-words", daemon=True).start()
+    try:
+        outcome = settled.get(timeout=budget)
+    except queue.Empty:
+        raise LateReaction(f"no answer within {budget:.1f}s") from None
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return outcome[0]
+
+
 def _failure_name(exc: BaseException) -> str:
     """One failure, as the short string a record can carry: class and message.
 
@@ -781,6 +869,12 @@ class _MoveBeats:
     rather than because it had nothing to say. Empty on every other turn — the
     record's way of saying "did not die" rather than "not recorded", the same
     as the trace's `provider_failure`.
+
+    `reaction_late` marks the beat the budget cut (`_REACTION_BUDGET_S`): the
+    words were still being written when the turn went on without them. False
+    on a beat that spoke, on one a provider failure killed, and on one that
+    never ran — the player hears the same deterministic line on three of those
+    four, so this is the only place the difference survives.
     """
 
     changes: list[dict[str, Any]]
@@ -789,6 +883,7 @@ class _MoveBeats:
     owed_reply: bool
     observed_fen: str | None = None
     engine_failure: str = ""
+    reaction_late: bool = False
 
     @property
     def result(self) -> dict[str, Any]:
@@ -1500,6 +1595,7 @@ def create_app(
     tracer: Tracer | None = None,
     coordinator: TurnCoordinator | None = None,
     progress: ProgressReporter | None = None,
+    reaction_budget: float = _REACTION_BUDGET_S,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
     does), so what the agent is offered is exactly what the app runs; omit it
@@ -1518,7 +1614,12 @@ def create_app(
     phases nothing else can see — and this binds it to the websocket and points
     the coordinator and the registry at it. Omit it and the app builds one, so a
     turn's phases and tool calls are reported whoever assembled the app; only
-    the brain's own two phases go unheard."""
+    the brain's own two phases go unheard.
+
+    `reaction_budget` is how many seconds Glitch's optional words get before the
+    turn goes on without them (`_REACTION_BUDGET_S`, and see `_narrate`). A
+    parameter so a test can hand it a fraction of a second instead of sleeping
+    through the real one."""
     app = FastAPI(title="chessapp", lifespan=lambda _app: _lifespan())
     broadcaster = StateBroadcaster()
     if coordinator is None:
@@ -1648,6 +1749,40 @@ def create_app(
         """
         return await anyio.to_thread.run_sync(fn, *args)
 
+    def _narrate(
+        board_state: dict[str, Any],
+        changes: list[dict[str, Any]],
+        transcript: Sequence[dict[str, str]],
+        correlation_id: str,
+    ) -> Narration:
+        """Glitch's words for one beat, or `LateReaction` if they are late.
+
+        Every narration in the app goes through here, so the budget is a rule
+        rather than a special case at the one site that exposed it: the observe
+        beat holds a computed engine reply while it waits, and the confirmed-op
+        and resign beats hold the mutation lock every other road onto the board
+        needs. All three already lose their words to a dead provider and say
+        the app's own line instead, which is exactly what a late one does.
+
+        The words the late call eventually writes are dropped, never spoken a
+        beat behind the board they were about: by then the reply has landed and
+        the turn has closed, so they would describe a position that no longer
+        exists — and voice-first, stale audio arrives over whatever is true now.
+        """
+        assert brain is not None  # every narration site is agent-mode only
+        try:
+            return _within_budget(
+                lambda: brain.narrate(board_state, changes, transcript),
+                reaction_budget,
+            )
+        except LateReaction:
+            logger.warning(
+                "narration_late budget=%.1fs",
+                reaction_budget,
+                extra={"correlation_id": correlation_id},
+            )
+            raise
+
     @app.exception_handler(StaleVersionError)
     async def _stale_version(_request: Request, exc: StaleVersionError) -> JSONResponse:
         """409 for a request about a superseded board (audit item 7).
@@ -1738,8 +1873,9 @@ def create_app(
         stops, the engine starts thinking the moment it lands, and the reaction
         runs *while* it does — so the observation costs no wall clock. Then the
         reply is collected and the turn closed. The reaction is optional by
-        construction: verbosity=low skips it, and a `ProviderError` costs the
-        words and nothing else, because the move it was about is already on the
+        construction: verbosity=low skips it, a `ProviderError` costs the words
+        and nothing else, and a narrator that is merely slow costs the same
+        (`_narrate`'s budget) — because the move it was about is already on the
         board and the engine's answer is not the model's to hold up.
 
         The reply is not optional, but it can be *lost*: an engine that dies on
@@ -1757,6 +1893,7 @@ def create_app(
         changes = [{"name": "make_move", "result": result}]
         narration: Narration | None = None
         observed_fen: str | None = None
+        reaction_late = False
         if result.get("legal") is True and ctx.settings.verbosity != "low":
             # This is the observe beat, so the machine is told so — the phase
             # the coordinator has always had a slot for, finally entered
@@ -1766,14 +1903,23 @@ def create_app(
             coordinator.mark_observation()
             fen_at_observation = ctx.session.fen()
             try:
-                narration = brain.narrate(
-                    _narrator_state_dict(ctx), changes, transcript
+                narration = _narrate(
+                    _narrator_state_dict(ctx), changes, transcript, correlation_id
                 )
                 # Kept only once something was actually said from it: this is
                 # "the board the reaction was written from", and a beat the
                 # provider killed wrote no reaction. Read off the session,
                 # because the narrator's own view deliberately carries no FEN.
                 observed_fen = fen_at_observation
+            except LateReaction:
+                # The budget expired with the reply already computed and
+                # waiting. Falling through is the whole fix: the collect below
+                # puts Stockfish's answer on the board, the turn closes on the
+                # app's own announcement, and the lock goes back to whoever is
+                # queued behind this one. `_narrate` has logged it; the beat
+                # records it so the trace can tell a late reaction from a lost
+                # one or a skipped one.
+                reaction_late = True
             except ProviderError:
                 logger.warning(
                     "observe_narration_failed",
@@ -1825,6 +1971,7 @@ def create_app(
             owed_reply=owed_reply,
             observed_fen=observed_fen,
             engine_failure=engine_failure,
+            reaction_late=reaction_late,
         )
 
     async def _agent_move(move: str) -> dict[str, Any]:
@@ -1938,6 +2085,7 @@ def create_app(
                 rewrite_claims=verdict.rewrite_claims,
                 rewrite_suppressed=verdict.rewrite_suppressed,
                 engine_failure=beats.engine_failure,
+                reaction_late=beats.reaction_late,
                 **_ModelCost.of(narration).plus(verdict.cost).as_trace(),
             )
             return {
@@ -2566,6 +2714,11 @@ def create_app(
             # it stopped, and what changed is that the turn is one move short
             # and still owes the other.
             engine_failure = ""
+            # Whether this turn's narration was still being written when the
+            # turn went on without it (`_narrate`'s budget). Not a failure
+            # either: the words were the only thing owed and the app said its
+            # own line instead, so the record is the only place it shows.
+            reaction_late = False
             # The fast path's move beats, held for the commentary below: with no
             # narration to speak for the turn (verbosity=low, or a provider failure)
             # the move and the engine's reply become one canned confirmation. None on
@@ -2663,13 +2816,22 @@ def create_app(
                             # after the mutation, before the broadcast.
                             try:
                                 narration = await _offloop(
-                                    brain.narrate,
+                                    _narrate,
                                     _narrator_state_dict(ctx),
                                     tool_results,
                                     transcript,
+                                    correlation_id,
                                 )
-                            except ProviderError:
-                                logger.warning("close_narration_failed", exc_info=True)
+                            except ProviderError as exc:
+                                # Late words and lost words cost the same thing
+                                # here — the canned line — and differ only in
+                                # what the record says happened. A late one is
+                                # already logged by `_narrate`.
+                                reaction_late = isinstance(exc, LateReaction)
+                                if not reaction_late:
+                                    logger.warning(
+                                        "close_narration_failed", exc_info=True
+                                    )
                                 commentary = _destructive_confirmation(
                                     name, result, ctx.session
                                 )
@@ -2725,13 +2887,19 @@ def create_app(
                         # the only thing a dead provider may cost.
                         try:
                             narration = await _offloop(
-                                brain.narrate,
+                                _narrate,
                                 _narrator_state_dict(ctx),
                                 tool_results,
                                 transcript,
+                                correlation_id,
                             )
-                        except ProviderError:
-                            logger.warning("close_narration_failed", exc_info=True)
+                        except ProviderError as exc:
+                            # Same deal as the confirmed op above: the
+                            # resignation is on the record either way, and only
+                            # the record tells late from lost.
+                            reaction_late = isinstance(exc, LateReaction)
+                            if not reaction_late:
+                                logger.warning("close_narration_failed", exc_info=True)
                             commentary = _destructive_confirmation(
                                 "resign", result, ctx.session
                             )
@@ -2786,6 +2954,7 @@ def create_app(
                         move_beats.owed_reply,
                         move_beats.engine_failure,
                     )
+                    reaction_late = move_beats.reaction_late
                 elif coordinator.phase in (
                     TurnPhase.PLAYER_MOVE_APPLIED,
                     TurnPhase.AGENT_OBSERVING,
@@ -3012,6 +3181,7 @@ def create_app(
                 # and its bookkeeping still counts what it moved.
                 traced["route"] = route
                 traced["stop_reason"] = stop_reason
+                traced["reaction_late"] = reaction_late
                 traced["mutations"] = ctx.board_version - version_before
                 traced["fen_after"] = ctx.session.fen()
                 # `turn_record` zips the call args and the results strictly, and

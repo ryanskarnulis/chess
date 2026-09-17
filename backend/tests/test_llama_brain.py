@@ -1487,6 +1487,43 @@ def test_narrate_carries_the_narrator_cap():
     assert provider.calls[0]["max_tokens"] == brain.narrator_max_tokens
 
 
+# A token cap bounds generation; it says nothing about queueing or a server
+# that stopped answering. The observe beat is the one phase whose caller has
+# already decided it will not wait (`api._REACTION_BUDGET_S`), so it is the one
+# phase that also carries a wall-clock ceiling — and hanging up is what stops an
+# abandoned reaction holding a slot the next turn needs (#283).
+
+
+def test_narrate_carries_the_observe_beats_read_ceiling():
+    brain, provider = make_brain(text_turn("nice"))
+    brain.narrate(board_state={}, changes=[])
+    assert provider.calls[0]["timeout"] == brain.narrate_timeout
+    assert brain.narrate_timeout is not None
+    # That it clears the pipeline's own budget is the pipeline's invariant, and
+    # is pinned where the budget lives (`test_reaction_budget.py`).
+
+
+def test_the_phases_the_pipeline_waits_for_send_no_ceiling():
+    # The planner is not optional and the loop's closing narrator legitimately
+    # runs 30 s and more with thinking on (docs/agent-evals.md) — neither is a
+    # call anyone stops waiting for, so neither may be cut short.
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    assert all(call["timeout"] is None for call in provider.calls)
+
+
+def test_the_rewrite_sends_no_ceiling_either():
+    # The honesty guard's second try happens on a turn that is already settled:
+    # nothing is being held while it runs, so nothing gives up on it.
+    brain, provider = make_brain(text_turn("said again, truthfully"))
+    brain.rewrite("first draft", ["the board says otherwise"])
+    assert provider.calls[0]["timeout"] is None
+
+
 def test_the_caps_are_generous_enough_for_measured_real_turns():
     # The floor the numbers may never sink under: legitimate thinking-on
     # narrations reached 2,633 completion tokens (docs/agent-evals.md;

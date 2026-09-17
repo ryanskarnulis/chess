@@ -314,6 +314,7 @@ class ScriptedProvider:
         enable_thinking: bool = False,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        timeout: float | None = None,
     ) -> ChatResult:
         self.calls.append(
             {
@@ -327,6 +328,9 @@ class ScriptedProvider:
                 # Same for the generation cap: which phase's ceiling a call
                 # carried is the runaway-thought fix's whole assertion.
                 "max_tokens": max_tokens,
+                # And for the wall-clock ceiling: only the observe beat sends
+                # one (#283), so which call carried it is that fix's assertion.
+                "timeout": timeout,
             }
         )
         turn = self._turns[min(len(self.calls) - 1, len(self._turns) - 1)]
@@ -391,6 +395,7 @@ class CountingProvider:
         enable_thinking: bool = False,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        timeout: float | None = None,
     ) -> ChatResult:
         started = time.monotonic()
         # Bound before the call so the `finally` can read it after a raise, where
@@ -404,6 +409,7 @@ class CountingProvider:
                 enable_thinking=enable_thinking,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                timeout=timeout,
             )
             return result
         finally:
