@@ -10,6 +10,8 @@ loop's own closing turn, the transcript, the broadcast, and the deterministic
 fast path.
 """
 
+import threading
+
 from fastapi.testclient import TestClient
 
 from chessapp.api import (
@@ -2220,3 +2222,170 @@ def test_a_narrator_failure_after_a_confirmed_resign_degrades_the_same_way():
     assert response.status_code == 200
     assert ctx.session.is_game_over()
     assert response.json()["commentary"].startswith("Game over:")
+
+
+# --- Overlapping panel commands: read, run and record are one section (#285).
+#
+# Two panel commands can genuinely overlap — a voice utterance and a typed one,
+# or two tabs on the one shared game. The *board* has always been safe: every
+# turn runs under `ctx.mutation_lock`, so the second waits. The conversation was
+# not. Memory was snapshotted before the lock and the exchange recorded after
+# it, so a follow-up that queued behind a running turn was handed a transcript
+# missing the exchange that had finished before it started — a perfectly current
+# board and a conversation from before the question it was answering. The
+# delegate route never had this: `agent_api` serializes the three under its own
+# per-conversation lock. These tests sequence on events, never on sleeps.
+
+
+class BlockingBrain(ScriptedBrain):
+    """A `ScriptedBrain` that parks inside its first turn.
+
+    `reached` fires as the first command enters the brain — provably mid-turn,
+    and so provably holding the mutation lock — which is how a test sends the
+    second command knowing the first cannot have finished. `release` lets it
+    out. The park happens *before* the scripted response is popped, so the two
+    turns still take their answers in the order they reach the brain. Later
+    turns run straight through.
+    """
+
+    def __init__(self, *responses: AgentResponse) -> None:
+        super().__init__(*responses)
+        self.reached = threading.Event()
+        self.release = threading.Event()
+
+    def get_agent_response(self, board_state, command, transcript=()):
+        if not self.reached.is_set():
+            self.reached.set()
+            assert self.release.wait(10), "the first turn was never released"
+        return super().get_agent_response(board_state, command, transcript)
+
+
+class QueueingLock:
+    """The context's mutation lock, with a doorbell on the first waiter.
+
+    The moment a test cannot otherwise observe is the one that matters here:
+    when the second request *parks*. That is the point the old ordering had
+    already read its memory by, so waiting for it — rather than for a sleep to
+    expire — is what makes these tests deterministic rather than merely
+    usually-right. A blocking acquire that cannot be satisfied at once rings
+    `contended` and then waits as it always did; the non-blocking probe
+    `_published_state` makes is not a waiter and never rings it.
+
+    Plain and non-reentrant like the lock it stands in for (`ToolContext`).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.contended = threading.Event()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if self._lock.acquire(False):
+            return True
+        if not blocking:
+            return False
+        self.contended.set()
+        return self._lock.acquire(True, timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self) -> "QueueingLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.release()
+
+
+def overlapping_commands(first_text: str, second_text: str, *responses: AgentResponse):
+    """Send two panel commands that genuinely overlap, and hand back what came
+    of it: `(brain, ctx, results)`, the results keyed "first"/"second".
+
+    The interleaving, in order: the first command reaches the brain and parks
+    there holding the lock; the second is sent and queues on that lock; only
+    then is the first let go. Every step waits on an event, so the sequence is
+    the same on a loaded machine as on an idle one.
+    """
+    ctx = ToolContext(session=GameSession())
+    ctx.mutation_lock = QueueingLock()
+    app, brain = scripted_app(ctx, brain=BlockingBrain(*responses))
+    client = TestClient(app)
+    results: dict[str, dict] = {}
+
+    def post(name: str, text: str) -> None:
+        results[name] = client.post("/api/command", json={"text": text}).json()
+
+    first = threading.Thread(target=post, args=("first", first_text))
+    first.start()
+    assert brain.reached.wait(10), "the first command never reached the brain"
+    second = threading.Thread(target=post, args=("second", second_text))
+    second.start()
+    assert ctx.mutation_lock.contended.wait(10), "the second command never queued"
+    brain.release.set()
+    for thread in (first, second):
+        thread.join(10)
+        assert not thread.is_alive(), "a command never came back"
+    return brain, ctx, results
+
+
+def test_a_queued_command_sees_the_exchange_that_finished_before_it():
+    """The acceptance test for #285. The second command asks about the first,
+    and what it is handed to answer from *is* the first — verbatim, the way any
+    recent turn reaches the brain (`docs/turn-memory.md`). Before the fix this
+    was `[]`: the follow-up reasoned about what the player had just asked from a
+    conversation in which nothing had been asked."""
+    brain, _, results = overlapping_commands(
+        "what opening is this?",
+        "what did I just ask?",
+        AgentResponse(text="It is the Italian."),
+        AgentResponse(text="You asked about the opening."),
+    )
+
+    assert brain.transcripts[1] == [
+        {"role": "user", "content": "what opening is this?"},
+        {"role": "assistant", "content": "It is the Italian."},
+    ]
+    assert results["second"]["commentary"] == "You asked about the opening."
+
+
+def test_overlapping_commands_are_each_recorded_once_in_order():
+    """The other half: serializing the read must not cost a recording or
+    reorder one. Both exchanges are stored, each exactly once, in the order they
+    ran — the transcript a save file carries and every later turn reads."""
+    _, ctx, _ = overlapping_commands(
+        "what opening is this?",
+        "what did I just ask?",
+        AgentResponse(text="It is the Italian."),
+        AgentResponse(text="You asked about the opening."),
+    )
+
+    assert ctx.transcript.to_dict() == [
+        {"role": "user", "content": "what opening is this?"},
+        {"role": "assistant", "content": "It is the Italian."},
+        {"role": "user", "content": "what did I just ask?"},
+        {"role": "assistant", "content": "You asked about the opening."},
+    ]
+
+
+def test_a_stale_command_leaves_the_conversation_untouched():
+    """The precondition is still the first thing that happens inside the guard,
+    ahead of the memory read, so a command the board has moved past costs the
+    conversation nothing: no brain call, and no half-turn left in the transcript
+    for the next command to remember."""
+    ctx = ToolContext(session=GameSession())
+    app, brain = scripted_app(ctx, AgentResponse(text="It is the Italian."))
+    client = TestClient(app)
+    stale = client.get("/api/state").json()["version"]
+    ctx.session.submit_move("e4")
+
+    response = client.post(
+        "/api/command", json={"text": "what opening is this?", "version": stale}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["stale"] is True
+    assert brain.calls == [], "refused before the model was asked anything"
+    assert ctx.transcript.to_dict() == [], "and before the conversation was touched"

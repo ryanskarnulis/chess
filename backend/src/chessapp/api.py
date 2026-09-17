@@ -2648,18 +2648,38 @@ def create_app(
     @app.post("/api/command")
     async def command(request: CommandRequest) -> dict[str, Any]:
         """User string → brain → tool call(s) → new state, for the web panel.
-        A thin wrapper over `_run_command` that supplies the panel's own
-        conversation memory and records the settled turn back onto it. Memory,
-        not the raw window: recent turns verbatim behind a digest of what the
-        player asked for earlier (`docs/turn-memory.md`)."""
+
+        Supplies the panel's own conversation memory and records the settled
+        turn back onto it. Memory, not the raw window: recent turns verbatim
+        behind a digest of what the player asked for earlier
+        (`docs/turn-memory.md`).
+
+        **Read, run, record is one serialized section**, which is why this
+        opens `_mutation` itself rather than going through `_run_command` (the
+        delegate route's entry, which guards the run alone because `agent_api`
+        already serializes the three under its own per-conversation lock). Split
+        them and the panel's conversational causality reorders: two overlapping
+        commands — voice and text, or two tabs — would both snapshot memory
+        before either ran, and the second would reason from a conversation
+        missing the exchange that finished before it started, while the board it
+        was handed was perfectly up to date (#285). Under the guard, a queued
+        follow-up's read cannot begin until the turn ahead of it has recorded.
+
+        The lock order is "mutation lock only": there is no second, panel-side
+        exchange lock to take, so a follow-up parks on `ctx.mutation_lock` and
+        nothing else. The version precondition still refuses a stale request
+        before anything runs — `_mutation` checks it on the inside of the
+        acquire — so a 409 turn reads no memory and records nothing.
+        """
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
-        transcript = ctx.transcript.memory()
-        outcome = await _run_command(request.text, transcript, request.version)
-        # Record on the context, not a captured reference: resume_game may
-        # have just swapped in the saved game's transcript, and this turn
-        # belongs to that thread.
-        ctx.transcript.record(request.text, outcome.memory)
+        async with _mutation(request.version):
+            transcript = ctx.transcript.memory()
+            outcome = await _command_turn(request.text, transcript)
+            # Record on the context, not a captured reference: resume_game may
+            # have just swapped in the saved game's transcript, and this turn
+            # belongs to that thread.
+            ctx.transcript.record(request.text, outcome.memory)
         return {
             "commentary": outcome.commentary,
             "tool_results": outcome.tool_results,
