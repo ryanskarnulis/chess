@@ -21,7 +21,7 @@ from chessapp.engine import CandidateMove
 from chessapp.game import GameSession
 from chessapp.tools import Settings, ToolContext
 from chessapp.trace import JsonlTracer, turn_record
-from fakes import FakeEngine, ScriptedBrain, scripted_app
+from fakes import DyingEngine, FakeEngine, ScriptedBrain, scripted_app
 
 
 def read_records(path):
@@ -132,6 +132,24 @@ def test_turn_record_provider_failure_defaults_to_none_named():
     """Every other turn records the empty string, not a missing key: a reader
     never has to tell "did not die" from "not recorded"."""
     assert _record_fields()["provider_failure"] == ""
+
+
+def test_turn_record_names_the_engine_failure_when_the_reply_died():
+    """The same question about the other half of a turn: the board shows a move
+    that went unanswered, and only this says why (#284)."""
+    record = _record_fields(engine_failure="EngineTerminatedError: gone")
+    assert record["engine_failure"] == "EngineTerminatedError: gone"
+
+
+def test_turn_record_names_an_exception_that_escaped_the_turn():
+    record = _record_fields(error="IndexError")
+    assert record["error"] == "IndexError"
+
+
+def test_turn_record_engine_failure_and_error_default_to_none_named():
+    record = _record_fields()
+    assert record["engine_failure"] == ""
+    assert record["error"] == ""
 
 
 # --- what a turn records ----------------------------------------------------
@@ -409,6 +427,48 @@ def test_a_healthy_turn_names_no_provider_failure(trace_path):
     client.post("/api/command", json={"text": "e4"})
     (record,) = read_records(trace_path)
     assert record["provider_failure"] == ""
+
+
+def test_a_turn_whose_engine_died_leaves_one_record_naming_it(trace_path):
+    """The turn a reviewer is likeliest to come looking for: the board holds a
+    move nothing answered. It used to leave no record at all — the exception
+    escaped the pipeline before the tracer was reached (#284) — so the one
+    interaction anybody wanted to read was the one that wrote nothing."""
+    client, ctx = make_client(trace_path, engine=DyingEngine())
+
+    client.post("/api/command", json={"text": "e4"})
+
+    (record,) = read_records(trace_path)
+    assert record["engine_failure"].startswith("EngineTerminatedError")
+    assert record["stop_reason"] == "completed", "the loop's own word, untouched"
+    assert record["engine_reply"] is None, "there was none to record"
+    assert record["mutations"] == 1, "the player's move and nothing else"
+    assert record["fen_after"] == ctx.session.fen()
+
+
+def test_a_healthy_turn_names_no_engine_failure(trace_path):
+    client, _ = make_client(trace_path, engine=FakeEngine("e7e5"))
+    client.post("/api/command", json={"text": "e4"})
+    (record,) = read_records(trace_path)
+    assert record["engine_failure"] == ""
+    assert record["error"] == ""
+
+
+def test_a_turn_that_dies_still_leaves_a_record(trace_path):
+    """The envelope is owned by a `finally`, so *any* escape is recorded before
+    it is re-raised: the utterance, the road the turn was on when it died, and
+    the exception itself. An under-scripted `ScriptedBrain` stands in for
+    whatever goes wrong next — what is pinned is that the record exists."""
+    client, _ = make_client(trace_path)
+
+    with pytest.raises(IndexError):
+        client.post("/api/command", json={"text": "how does it look?"})
+
+    (record,) = read_records(trace_path)
+    assert record["error"] == "IndexError: pop from empty list"
+    assert record["utterance"] == "how does it look?"
+    assert record["route"] == "brain"
+    assert record["changed"] is False, "it died before it moved anything"
 
 
 def test_trace_carries_the_position_the_turn_acted_from(trace_path):

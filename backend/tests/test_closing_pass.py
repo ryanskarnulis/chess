@@ -510,9 +510,13 @@ def test_an_engine_that_died_mid_command_is_healed_by_the_next_one():
     a failure left open, and for an engine failure it was not true: the phase
     stayed at `engine_calculating`, where `_require` refuses every ordinary
     player move, so only an undo, a reset or a resume could dig the game out.
-    The failure is loud — nothing swallows it, and the command that hit it ends
-    in the error it raised — but the player's move stands and the reply is still
-    owed, so the next command pays one utterance and the game goes on."""
+    The player's move stands and the reply is still owed, so the next command
+    pays one utterance and the game goes on.
+
+    The command that hits the failure answers with the turn rather than raising
+    (#284): the move is committed and broadcast by then, so what the player
+    gets is their move, whatever Glitch said about it, and the app's line for
+    the reply that never came."""
     ctx = ToolContext(session=GameSession(), engine=FailEngine())
     coordinator = TurnCoordinator(ctx)
     client, _, ctx = make_client(
@@ -526,8 +530,9 @@ def test_an_engine_that_died_mid_command_is_healed_by_the_next_one():
         coordinator=coordinator,
     )
 
-    with pytest.raises(ValueError, match="engine died"):
-        client.post("/api/command", json={"text": "play e4"})
+    died = client.post("/api/command", json={"text": "play e4"})
+    assert died.status_code == 200, "the move landed; the request did not fail"
+    assert died.json()["commentary"] == f"e4, then.\n\n{api.ENGINE_LOST_REPLY_OWED}"
     assert ctx.session.move_history() == ["e4"], "the player's move stands"
     assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED, "the reply is owed"
 

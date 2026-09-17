@@ -89,6 +89,8 @@ def turn_record(
     rewrite_claims: Sequence[str] = (),
     rewrite_suppressed: str = "",
     provider_failure: str = "",
+    engine_failure: str = "",
+    error: str = "",
     model_calls: int = 0,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
@@ -115,6 +117,19 @@ def turn_record(
     context", and those want opposite fixes; it is also what the eval harness
     classifies a sample by, so a retryable death is retried and a refusal is
     reported rather than re-sent five times.
+
+    `engine_failure` is the same fact about the *other* half of a turn: empty
+    unless Stockfish died on the reply the player's move had already earned,
+    and then the exception's class and message (`api._failure_name`). The
+    board says a move went unanswered; only this says why, and the turn is
+    otherwise an ordinary `completed` one — the loop's stop reason stays the
+    loop's, because a delegate caller reads it as the run's outcome and the
+    engine is not the run.
+
+    `error` is the last resort: an exception that escaped the turn entirely,
+    named by class and message. Every other field is then whatever the turn had
+    learned before it died, which is the point — the record a reviewer most
+    wants is the one a half-finished turn used to leave nothing of.
 
     `guarded` marks a turn whose first commentary asserted something the honesty
     guard's facts did not back, `guarded_claims` names the classes, and
@@ -173,6 +188,8 @@ def turn_record(
         "commentary": commentary,
         "stop_reason": stop_reason,
         "provider_failure": provider_failure,
+        "engine_failure": engine_failure,
+        "error": error,
         "changed": changed,
         "guarded": guarded,
         "guarded_claims": list(guarded_claims),

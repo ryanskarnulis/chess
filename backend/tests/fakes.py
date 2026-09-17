@@ -6,7 +6,8 @@ real, so the *pipeline* can be exercised deterministically without a model.
 `FakeEngine` is the canonical no-Stockfish engine double: it plays a scripted
 reply and records every strength setting and MultiPV request, so tests can
 pin that difficulty reaches the engine and that replies never take an
-analysis detour. `ScriptedProvider` is the canonical no-LLM `ChatProvider`
+analysis detour; `DyingEngine` is the same double with its process gone.
+`ScriptedProvider` is the canonical no-LLM `ChatProvider`
 double, one layer below `ScriptedBrain`: it returns scripted `ChatResult`s and
 records the `chat()` requests, so the real `LlamaBrain` loop (tool messages,
 the iteration and correction budgets, thinking toggles) can be exercised
@@ -20,6 +21,8 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
+
+import chess.engine
 
 from chessapp.api import create_app
 from chessapp.brain import UNRELATED, AgentResponse, Answer, Narration
@@ -81,6 +84,22 @@ class FakeEngine:
 
     def set_tier(self, tier: str) -> None:
         self.tiers.append(tier)
+
+
+class DyingEngine(FakeEngine):
+    """Engine double whose process is gone: asked to think, it raises.
+
+    `EngineTerminatedError` is what a real Stockfish going away raises, and the
+    shape matters as much as the name: it is deliberately *not* a `ValueError`,
+    so nothing on the way up converts it into result data and every layer above
+    the coordinator has to have decided what it does about a reply that will
+    never arrive (#284). It dies in the background thread and in the
+    collector's synchronous retry alike — the background failure is swallowed
+    by design, so the retry is where it surfaces.
+    """
+
+    def choose_move(self, session):
+        raise chess.engine.EngineTerminatedError("engine process died")
 
 
 class ScriptedBrain:
