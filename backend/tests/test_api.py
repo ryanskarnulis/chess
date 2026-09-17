@@ -141,14 +141,20 @@ def test_board_move_advances_the_coordinator(ctx):
 
 def test_board_move_out_of_turn_is_409(ctx):
     """A turn-state rejection is a domain failure on the trusted path, the same
-    as an impossible undo — the agent sees the same refusal as result data."""
+    as an impossible undo — the agent sees the same refusal as result data.
+
+    The refusal settles the reply that open turn was owed on its way out, which
+    is what agent mode's close beat has always done with a drag it refused
+    (`_agent_move`) and what lets a turn an engine failure left open be healed
+    by the next drag rather than needing an undo or a reset (#284)."""
     ctx.engine = FakeEngine()
     coordinator = TurnCoordinator(ctx)
     client = TestClient(create_app(ctx, coordinator=coordinator))
     coordinator.apply_player_move("e4")  # a turn is open, mid-sequence
     response = client.post("/api/game/move", json={"move": "d4"})
     assert response.status_code == 409
-    assert ctx.session.move_history() == ["e4"]
+    assert ctx.session.move_history() == ["e4", "e5"], "d4 refused, e4's reply owed"
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
 
 
 def test_new_game_opening_move_comes_from_the_coordinator(ctx):

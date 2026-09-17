@@ -89,7 +89,10 @@ moved under it or the computation failed.
 
 - **Dragged moves**: in agent mode `/api/game/move` runs the same beats as the
   fast path (`api._play_move`, trace route `board`), so drag-played games get
-  reactions and memory. In direct mode it answers exactly what it always did.
+  reactions and memory. In direct mode it answers exactly what it always did —
+  bar the one turn an engine dies on, where it gains the app's line as
+  `commentary` (see the dead-engine edge below) and its next drag settles the
+  reply that turn was left owing.
 - **New game / resign / claim-draw buttons** dispatch through the registry, so
   the same gate (`tools._gate`) that answers a spoken "new game" arms and asks
   here: 409 + `{"detail", "confirm": true, "op"}`, answered at
@@ -173,13 +176,26 @@ the control buttons report nothing (no interaction window).
 ## Known edges, deliberately left
 
 - A route that raises after the player's move landed leaves the turn open, and
-  so does an engine that raises mid-calculation — the failure is loud (the
-  command ends in the error) but the phase comes back to `player_move_applied`,
-  so the next command heals it: refused move, owed reply played, at the cost of
-  one utterance. Until 2026-09-05 the engine case did not: the phase stayed at
-  `engine_calculating`, where `_require` refuses every ordinary player move, and
-  only an undo, a reset or a resume could dig the game out. This paragraph
-  claimed otherwise; the code now matches it.
+  so does an engine that raises mid-calculation — the phase comes back to
+  `player_move_applied`, so the next command heals it: refused move, owed reply
+  played, at the cost of one utterance. Until 2026-09-05 the engine case did
+  not: the phase stayed at `engine_calculating`, where `_require` refuses every
+  ordinary player move, and only an undo, a reset or a resume could dig the game
+  out. This paragraph claimed otherwise; the code now matches it.
+- **A dead engine is a structured outcome, not a failed request** (#284, 2026-09-16).
+  The player's move is committed and broadcast before Stockfish is asked
+  anything, so every surface that collects a reply catches the failure instead
+  of raising through it (`api._play_move`'s close beat, the command
+  convergence, and direct mode's atomic exchange): 200 with the committed
+  results and the current board, the turn deliberately left open with the reply
+  owed, and the app's own line saying so composed where the reply announcement
+  would have been (`ENGINE_LOST_REPLY_OWED` — the app's words, never Glitch's,
+  so the turn is remembered by the facts). The loop's `stop_reason` is
+  untouched (it is the delegate wire's word for how the *run* ended); what the
+  turn carries instead is `engine_failure`, class and message, on the outcome
+  and in the trace. The trace itself is written from a `finally`-owned envelope
+  now, so any exception escaping a turn still leaves exactly one record, with
+  an `error` field naming it.
 - `/api/game/confirm` returns only state (the dialog already asked) but is
   traced (route `control`). Undo and direct-mode drags stay untraced — neither
   can be an agent failure.

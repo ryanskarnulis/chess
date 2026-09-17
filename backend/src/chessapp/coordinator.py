@@ -309,7 +309,9 @@ class TurnCoordinator:
             # finish the turn: its move is refused as mid-turn, the owed reply
             # is played, and the game goes on — which is what
             # `docs/turn-coordinator.md` claimed all along and this makes true
-            # (audit 2026-09-05, engine-failure recovery).
+            # (audit 2026-09-05, engine-failure recovery). The raise itself gets
+            # no further than those branches: each turns it into a structured
+            # outcome for a caller whose move is already on the board (#284).
             self._enter(TurnPhase.PLAYER_MOVE_APPLIED)
             raise
         # Every engine move still enters the game through the session's legality

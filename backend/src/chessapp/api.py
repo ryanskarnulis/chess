@@ -571,6 +571,47 @@ PROVIDER_LOST_TURN_STANDS = (
     "My brain cut out mid-turn, but everything it already did stands."
 )
 
+# What the player hears when *Stockfish* died after their move was already on
+# the board (#284). The same deal as the lines above, one layer down: the move
+# is committed and broadcast, so the failure is not the request's — it is a
+# turn with half its moves in it, and the player is owed the fact rather than a
+# 500. It says the reply is still owed because it is: the coordinator puts the
+# phase back to `player_move_applied` and the next command settles it. Public
+# so tests pin the substitution, not a wording.
+ENGINE_LOST_REPLY_OWED = (
+    "My engine dropped out before it answered — your move stands, "
+    "and I still owe you a reply."
+)
+
+
+def _engine_lost_words(commentary: str) -> str:
+    """The engine-lost line composed around whatever the turn already said.
+
+    After it, not before: this line stands exactly where the reply
+    announcement would have (`_reply_announcement`), because it is the same
+    sentence's negative — the app reporting what answered the player's move,
+    and here what did not. The lost-brain line leads instead, for the opposite
+    reason: it explains why there is nothing else to read.
+    """
+    return (
+        f"{commentary}\n\n{ENGINE_LOST_REPLY_OWED}"
+        if commentary
+        else ENGINE_LOST_REPLY_OWED
+    )
+
+
+def _failure_name(exc: BaseException) -> str:
+    """One failure, as the short string a record can carry: class and message.
+
+    The trace's `provider_failure` names a *kind* from a vocabulary the brain
+    owns; nothing owns a vocabulary for a dying Stockfish or for whatever else
+    escapes a turn, so the exception names itself. Class alone when it carries
+    no message — `EngineTerminatedError` is already the whole story.
+    """
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 # There is no canned line for a claim the honesty guard cuts. Until 2026-09-10
 # there were three ("Scratch that — the game's still live..."), and every one
 # of them put the app's words in Glitch's mouth on a turn the player had heard
@@ -650,6 +691,12 @@ class _MoveBeats:
     checking a reaction against the position that came *after* the one it
     reacted to is how ordinary trades came to be guarded as lies. `None` when
     no narration ran, because then there is nothing that saw a board.
+
+    `engine_failure` names what killed the reply, on the one shape where
+    `owed_reply` is True and `engine_reply` is None because Stockfish died
+    rather than because it had nothing to say. Empty on every other turn — the
+    record's way of saying "did not die" rather than "not recorded", the same
+    as the trace's `provider_failure`.
     """
 
     changes: list[dict[str, Any]]
@@ -657,6 +704,7 @@ class _MoveBeats:
     engine_reply: MoveResult | None
     owed_reply: bool
     observed_fen: str | None = None
+    engine_failure: str = ""
 
     @property
     def result(self) -> dict[str, Any]:
@@ -1236,6 +1284,14 @@ class CommandOutcome:
     ran are still here, and the turn was still closed). The fast path is
     always `completed` — it never reaches the model.
 
+    `engine_failure` names what killed the engine's reply, empty on every turn
+    it did not (`_failure_name`). It is a field of its own rather than a stop
+    reason because the *loop* stopped normally: the stop reason is the delegate
+    wire's word for how the run ended, and a run that ended with an answer did,
+    whatever Stockfish was doing. What the engine's death changes is the turn —
+    the player's move stands, the reply is still owed, and the commentary says
+    so in the app's own line.
+
     `memory` is the assistant text the turn is *remembered* by: what Glitch
     himself said, and never the app's words. They part company two ways. When
     the app spoke *in his place* — a guard cut whose rewrite failed too, a
@@ -1243,11 +1299,11 @@ class CommandOutcome:
     instead, because an app line fed back as his own words is a register he
     imitates (`_remembered_facts`). A guard rewrite that passed is his own
     second draft and is remembered as such. And when the app spoke *after*
-    him — the reply announcement composed onto every move turn — only his
-    reaction is remembered, because the appended "\\n\\ne5." fed back as his
-    own words is a format he completes at the beat where the reply does not
-    exist yet (#193). The player gets the whole composed line; the model gets
-    its own words or the facts."""
+    him — the reply announcement composed onto every move turn, or the line
+    standing in for it when the engine died — only his reaction is remembered,
+    because the appended "\\n\\ne5." fed back as his own words is a format he
+    completes at the beat where the reply does not exist yet (#193). The player
+    gets the whole composed line; the model gets its own words or the facts."""
 
     commentary: str
     tool_results: list[dict[str, Any]]
@@ -1256,6 +1312,7 @@ class CommandOutcome:
     changed: bool
     stop_reason: str
     memory: str = ""
+    engine_failure: str = ""
 
 
 class StateBroadcaster:
@@ -1601,6 +1658,12 @@ def create_app(
         words and nothing else, because the move it was about is already on the
         board and the engine's answer is not the model's to hold up.
 
+        The reply is not optional, but it can be *lost*: an engine that dies on
+        the collect leaves the turn open with the move standing, and that comes
+        back as `engine_failure` rather than as an exception — the player's
+        move is committed either way, and a committed move may not reach the
+        caller as a failed request.
+
         `correlation_id` is the caller's id for the interaction, carried only so
         the beat's own warning lands under it: a lost reaction is a thing you
         find in the log and then want the turn record for.
@@ -1642,9 +1705,28 @@ def create_app(
             TurnPhase.AGENT_OBSERVING,
         )
         engine_reply: MoveResult | None = None
+        engine_failure = ""
         if owed_reply:
-            engine_reply = coordinator.collect_engine_reply()
-            coordinator.complete_turn()
+            try:
+                engine_reply = coordinator.collect_engine_reply()
+            except Exception as exc:
+                # Stockfish died with the player's move already committed and
+                # broadcast, so the failure is not this request's to fail on
+                # (#284): it is a turn holding one move instead of two, and it
+                # goes back as that. The turn is deliberately *not* completed —
+                # the coordinator has put the phase back to
+                # `player_move_applied`, where the reply is still owed and the
+                # next command settles it, and completing it here would be the
+                # one thing the coordinator exists to refuse: skipping the
+                # engine's move. `owed_reply` stays True for the same reason.
+                engine_failure = _failure_name(exc)
+                logger.warning(
+                    "engine_reply_failed",
+                    exc_info=True,
+                    extra={"correlation_id": correlation_id},
+                )
+            else:
+                coordinator.complete_turn()
         elif (played := result.get("engine_move")) is not None:
             # An atomic registry played the reply inside the tool (not how the
             # app is assembled — see `build_registry`'s `atomic_exchange`), so
@@ -1658,6 +1740,7 @@ def create_app(
             engine_reply=engine_reply,
             owed_reply=owed_reply,
             observed_fen=observed_fen,
+            engine_failure=engine_failure,
         )
 
     async def _agent_move(move: str) -> dict[str, Any]:
@@ -1728,6 +1811,12 @@ def create_app(
                     beats.owed_reply,
                     ctx.session,
                 )
+                if beats.engine_failure:
+                    # The drag landed and the reply did not. The app says so
+                    # where the reply announcement would have been — one more
+                    # deterministic line composed around Glitch's reaction,
+                    # never a thing he is asked to say (#284).
+                    commentary = _engine_lost_words(commentary)
                 # What the turn is remembered by, the same rule as the command
                 # pipeline's: the reaction when Glitch spoke one (never the
                 # composed commentary — the appended reply line is the app's,
@@ -1763,6 +1852,7 @@ def create_app(
                 rewrite=verdict.rewrite,
                 rewrite_claims=verdict.rewrite_claims,
                 rewrite_suppressed=verdict.rewrite_suppressed,
+                engine_failure=beats.engine_failure,
                 **_ModelCost.of(narration).plus(verdict.cost).as_trace(),
             )
             return {
@@ -1782,6 +1872,33 @@ def create_app(
                 "speak": ctx.settings.voice_output,
             }
 
+    def _settle_owed_reply() -> bool:
+        """Play the reply a previous turn was left owing, if there is one.
+
+        Direct mode's half of the healing the agent path gets for free: there,
+        the refused move is a `make_move` *result* and `_play_move`'s close beat
+        runs anyway, so the owed reply is collected on the way past. Here the
+        refusal is an exception out of the atomic exchange, so the settling is
+        spelled out — same rule, same one reply, so the two surfaces recover a
+        dead-engine turn identically.
+
+        An engine that is *still* dead settles nothing and says so: the turn
+        stays open with the reply owed, which is exactly where it already was.
+        Returns whether the board moved.
+        """
+        if coordinator.phase not in (
+            TurnPhase.PLAYER_MOVE_APPLIED,
+            TurnPhase.AGENT_OBSERVING,
+        ):
+            return False
+        try:
+            coordinator.collect_engine_reply()
+        except Exception:
+            logger.warning("engine_reply_failed", exc_info=True)
+            return False
+        coordinator.complete_turn()
+        return True
+
     @app.post("/api/game/move")
     async def submit_move(request: MoveRequest) -> dict[str, Any]:
         """A move from the board: through the agent's beats when there is an
@@ -1793,6 +1910,13 @@ def create_app(
         carries not one new key. Agent mode adds the beats — and only the beats;
         legality, the engine's reply, and the response's existing fields are the
         same machine's answers either way.
+
+        The one key direct mode does answer with is `commentary`, and only on
+        the turn Stockfish dies on (#284): the move is committed, so the
+        request did not fail, and a board that moved once with no word about
+        the answer that never came is a board the player cannot follow. It is
+        the app's own line, the same one the agent path composes onto Glitch's
+        reaction — no model is consulted in either mode.
         """
         async with _mutation(request.version):
             if brain is not None:
@@ -1800,10 +1924,38 @@ def create_app(
             # The coordinator runs the exchange: player move, then the engine's
             # reply if one is owed. Trusted path, so a turn-state rejection is a
             # 409 rather than the error *result* the agent gets for the same thing.
+            fen_before = ctx.session.fen()
             try:
                 result, reply = await _offloop(coordinator.play_exchange, request.move)
             except TurnStateError as exc:
+                # Mid-turn: a previous exchange's engine died on the collect and
+                # the reply is still owed. Settle that one before refusing this
+                # move, so the game goes on at the cost of one drag rather than
+                # needing an undo or a reset to dig it out.
+                if await _offloop(_settle_owed_reply):
+                    _publish_state()
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except Exception:
+                # The engine died with the player's move already applied. The
+                # atomic call's own `MoveResult` went with the raise, so what is
+                # reported is read off the board it left behind — the one thing
+                # that certainly survived — and only when the board says a move
+                # landed at all. Nothing committed means nothing to protect, and
+                # the failure is the request's after all.
+                if ctx.session.fen() == fen_before:
+                    raise
+                logger.warning("engine_reply_failed", exc_info=True)
+                history = ctx.session.move_history()
+                _publish_state()
+                return {
+                    "legal": True,
+                    "san": history[-1] if history else None,
+                    "uci": None,
+                    "reason": None,
+                    "engine_move": None,
+                    "state": _state_dict_unlocked(ctx),
+                    "commentary": ENGINE_LOST_REPLY_OWED,
+                }
             engine_move = _move_dict(reply) if reply is not None else None
             if result.legal:
                 _publish_state()
@@ -2139,12 +2291,16 @@ def create_app(
         }
 
     def _trace_turn(**fields: Any) -> None:
-        """Record the finished turn, and never let that cost the player one.
+        """Record the turn, and never let that cost the player one.
 
         A tracer is a diagnostic sink — a file that may be full, unwritable, or
         on a disk that just went away. None of that is the game's problem, so a
         failure here is logged and dropped rather than turned into a 500 on a
-        turn whose moves have already been played.
+        turn whose moves have already been played. The swallow covers the
+        record's own assembly too, which is the other half of that rule now
+        that the pipeline traces from a `finally`: the turn handed over may be
+        a half-finished one, and a field it never reached must not become a
+        second exception on top of the one that ended it.
         """
         if tracer is None:
             return
@@ -2282,10 +2438,21 @@ def create_app(
             # words sets it, and `_remembered_facts` fills an empty one in below.
             memory: str | None = None
             stop_reason = "completed"
+            # The road this turn took. Its default is the confirmation branch's,
+            # and each other branch names its own on the way in; it is settled
+            # here rather than beside that branch because the record below is
+            # owned by a `finally` now, and a turn that dies before it has
+            # chosen a road still has to say which one it was on.
+            route = ROUTE_CONFIRMATION
             # Named only when the brain's loop died on the provider; every other
             # route leaves it empty, which is the record's way of saying "did not
             # die" rather than "not recorded".
             provider_failure = ""
+            # The same, for the engine dying on the reply this turn's move had
+            # already earned (#284). Not a stop reason: the loop stopped however
+            # it stopped, and what changed is that the turn is one move short
+            # and still owes the other.
+            engine_failure = ""
             # The fast path's move beats, held for the commentary below: with no
             # narration to speak for the turn (verbosity=low, or a provider failure)
             # the move and the engine's reply become one canned confirmation. None on
@@ -2296,56 +2463,137 @@ def create_app(
             # confirmation, a declined op) leave this at zero — a real, readable
             # zero, which is what tells a later cut it changed nothing here.
             cost = _ModelCost()
-            # An armed destructive op (the tool gate refused new_game/resign last
-            # turn and asked). This turn is its answer — and the answer is ours, not
-            # the model's: a bare yes runs it with the gate open, a bare no drops it,
-            # and anything else is a new intent that disarms it on the way past. The
-            # op never survives the turn, so a stale "yes" can never revive it.
-            # Read through `live_pending`: a question is about a position, so an
-            # op armed against a board that has since moved — the player dragged
-            # a move, undid one, another client played — is not something this
-            # "yes" can be an answer to, and is dropped instead of run.
-            armed = ctx.live_pending()
-            ctx.pending = None
-            answer = parse_confirmation(text) if armed is not None else None
-            if armed is not None and answer is None and brain is not None:
-                # Deterministic first, model second (walkthrough #6). The
-                # literal reader is a short list of bare affirmations, and a
-                # player who says "just do it" after a resign question has
-                # answered it as plainly as "yes" — they just did not use the
-                # word. Reading that is understanding, which is the model's
-                # job; *acting* on it is not, so a confirm goes down the same
-                # `confirm_pending` path a bare yes takes and the model never
-                # touches a destructive tool. `unrelated` — the answer for a
-                # new intent, a provider death, or anything the reader could
-                # not place — leaves the op disarmed and the turn falls
-                # through, exactly as it did before.
-                read = await _offloop(
-                    brain.read_answer, _confirm_question(armed.name), text
-                )
-                cost = _ModelCost.of(read) if read.model_calls else cost
-                if read.verdict == CONFIRM:
-                    answer = True
-                elif read.verdict == CANCEL:
-                    answer = False
-            route = ROUTE_CONFIRMATION
-            if armed is not None and answer is not None:
-                if answer:
-                    ctx.pending = armed  # confirm_pending consumes it
-                    confirmed = await _offloop(confirm_pending, registry, ctx)
-                    assert confirmed is not None
-                    name, result = confirmed
-                    tool_results.append({"name": name, "result": result})
-                    tool_args.append(dict(armed.args))
-                    if ctx.settings.verbosity == "low":
+            # The turn's trace record, filled in as the turn learns things and
+            # written exactly once, by the `finally` below. Owned there rather
+            # than by the happy path because the turn a reviewer most wants a
+            # record of is the one that died half-way through (#284) — an
+            # engine, a narrator, anything — and such a turn used to leave none
+            # at all, so whatever it had already put on the board had no
+            # explanation anywhere. Now it leaves the utterance, whatever route
+            # and results it had reached, and the exception that ended it.
+            traced: dict[str, Any] = {
+                "utterance": text,
+                # What was said, and what it was about: filled in by the happy
+                # path alone, because a turn that died said nothing to anybody.
+                "commentary": "",
+                "changed": False,
+                "turn_id": turn_id,
+                "correlation_id": correlation_id,
+                "fen_before": before["fen"],
+            }
+            try:
+                # An armed destructive op (the tool gate refused new_game/resign
+                # last turn and asked). This turn is its answer — and the answer is
+                # ours, not the model's: a bare yes runs it with the gate open, a
+                # bare no drops it, and anything else is a new intent that disarms
+                # it on the way past. The op never survives the turn, so a stale
+                # "yes" can never revive it.
+                # Read through `live_pending`: a question is about a position, so an
+                # op armed against a board that has since moved — the player dragged
+                # a move, undid one, another client played — is not something this
+                # "yes" can be an answer to, and is dropped instead of run.
+                armed = ctx.live_pending()
+                ctx.pending = None
+                answer = parse_confirmation(text) if armed is not None else None
+                if armed is not None and answer is None and brain is not None:
+                    # Deterministic first, model second (walkthrough #6). The
+                    # literal reader is a short list of bare affirmations, and a
+                    # player who says "just do it" after a resign question has
+                    # answered it as plainly as "yes" — they just did not use the
+                    # word. Reading that is understanding, which is the model's
+                    # job; *acting* on it is not, so a confirm goes down the same
+                    # `confirm_pending` path a bare yes takes and the model never
+                    # touches a destructive tool. `unrelated` — the answer for a
+                    # new intent, a provider death, or anything the reader could
+                    # not place — leaves the op disarmed and the turn falls
+                    # through, exactly as it did before.
+                    read = await _offloop(
+                        brain.read_answer, _confirm_question(armed.name), text
+                    )
+                    cost = _ModelCost.of(read) if read.model_calls else cost
+                    if read.verdict == CONFIRM:
+                        answer = True
+                    elif read.verdict == CANCEL:
+                        answer = False
+                if armed is not None and answer is not None:
+                    if answer:
+                        ctx.pending = armed  # confirm_pending consumes it
+                        confirmed = await _offloop(confirm_pending, registry, ctx)
+                        assert confirmed is not None
+                        name, result = confirmed
+                        tool_results.append({"name": name, "result": result})
+                        tool_args.append(dict(armed.args))
+                        if ctx.settings.verbosity == "low":
+                            commentary = _destructive_confirmation(
+                                name, result, ctx.session
+                            )
+                        else:
+                            # The op already ran; the narration is a garnish on a
+                            # board that changed, so a provider failure costs the
+                            # words and degrades to the canned line — never a 500
+                            # after the mutation, before the broadcast.
+                            try:
+                                narration = await _offloop(
+                                    brain.narrate,
+                                    _narrator_state_dict(ctx),
+                                    tool_results,
+                                    transcript,
+                                )
+                            except ProviderError:
+                                logger.warning("close_narration_failed", exc_info=True)
+                                commentary = _destructive_confirmation(
+                                    name, result, ctx.session
+                                )
+                            else:
+                                commentary = narration.text
+                                cost = cost.plus(_ModelCost.of(narration))
+                    else:
+                        # Declined: nothing ran, so there is nothing to narrate from.
+                        commentary = _DECLINED_REPLY
+                elif (fast_san := parse_move(text, ctx.session.fen())) is not None:
+                    # The same beats a board drag runs, on the same helper: the parse is
+                    # what differs between the two routes, never the sequencing.
+                    route = ROUTE_FAST_PATH
+                    move_beats = await _offloop(
+                        _play_move, fast_san, transcript, correlation_id
+                    )
+                    tool_results.extend(move_beats.changes)
+                    tool_args.append({"move": fast_san})
+                    if not move_beats.legal:
+                        # `parse_move` already matched the move against this board, so a
+                        # refusal here is a turn-state rejection (a previous turn left
+                        # the machine mid-sequence), not an illegal move: nothing moved,
+                        # so there is nothing to react to. The beats still settled
+                        # whatever that turn left owing.
+                        commentary = STUCK_REPLY
+                        memory = ""
+                    elif move_beats.narration is not None:
+                        commentary = move_beats.narration.text
+                        cost = _ModelCost.of(move_beats.narration)
+                elif parse_resign(text):
+                    # An explicit resignation is deterministic text, so the model
+                    # gets no vote on whether it happened: live, it took one and
+                    # answered "Word. Game over." with no tool call on a live
+                    # board. The call still goes through the registry, so the gate
+                    # arms it and the player's yes — not the agent's word — is
+                    # what ends the game.
+                    route = ROUTE_RESIGN
+                    args = {"color": ctx.session.player_color}
+                    result = registry.dispatch("resign", args)
+                    tool_results.append({"name": "resign", "result": result})
+                    tool_args.append(args)
+                    if not result.get("ok"):
+                        commentary = (
+                            _RESIGN_CONFIRM  # the gate armed it; the answer is theirs
+                        )
+                    elif ctx.settings.verbosity == "low":
                         commentary = _destructive_confirmation(
-                            name, result, ctx.session
+                            "resign", result, ctx.session
                         )
                     else:
-                        # The op already ran; the narration is a garnish on a
-                        # board that changed, so a provider failure costs the
-                        # words and degrades to the canned line — never a 500
-                        # after the mutation, before the broadcast.
+                        # Same degradation as the confirmed-op narration above: the
+                        # resignation is already on the record, so the words are
+                        # the only thing a dead provider may cost.
                         try:
                             narration = await _offloop(
                                 brain.narrate,
@@ -2356,294 +2604,290 @@ def create_app(
                         except ProviderError:
                             logger.warning("close_narration_failed", exc_info=True)
                             commentary = _destructive_confirmation(
-                                name, result, ctx.session
+                                "resign", result, ctx.session
                             )
                         else:
                             commentary = narration.text
-                            cost = cost.plus(_ModelCost.of(narration))
+                            cost = _ModelCost.of(narration)
                 else:
-                    # Declined: nothing ran, so there is nothing to narrate from.
-                    commentary = _DECLINED_REPLY
-            elif (fast_san := parse_move(text, ctx.session.fen())) is not None:
-                # The same beats a board drag runs, on the same helper: the parse is
-                # what differs between the two routes, never the sequencing.
-                route = ROUTE_FAST_PATH
-                move_beats = await _offloop(
-                    _play_move, fast_san, transcript, correlation_id
-                )
-                tool_results.extend(move_beats.changes)
-                tool_args.append({"move": fast_san})
-                if not move_beats.legal:
-                    # `parse_move` already matched the move against this board, so a
-                    # refusal here is a turn-state rejection (a previous turn left
-                    # the machine mid-sequence), not an illegal move: nothing moved,
-                    # so there is nothing to react to. The beats still settled
-                    # whatever that turn left owing.
-                    commentary = STUCK_REPLY
-                    memory = ""
-                elif move_beats.narration is not None:
-                    commentary = move_beats.narration.text
-                    cost = _ModelCost.of(move_beats.narration)
-            elif parse_resign(text):
-                # An explicit resignation is deterministic text, so the model gets no
-                # vote on whether it happened: live, it took one and answered "Word.
-                # Game over." with no tool call on a live board. The call still goes
-                # through the registry, so the gate arms it and the player's yes —
-                # not the agent's word — is what ends the game.
-                route = ROUTE_RESIGN
-                args = {"color": ctx.session.player_color}
-                result = registry.dispatch("resign", args)
-                tool_results.append({"name": "resign", "result": result})
-                tool_args.append(args)
-                if not result.get("ok"):
-                    commentary = (
-                        _RESIGN_CONFIRM  # the gate armed it; the answer is theirs
+                    route = ROUTE_BRAIN
+                    response = await _offloop(
+                        brain.get_agent_response, before, text, transcript
                     )
-                elif ctx.settings.verbosity == "low":
-                    commentary = _destructive_confirmation(
-                        "resign", result, ctx.session
+                    tool_results = list(response.tool_results)
+                    tool_args = [call.args for call in response.tool_calls]
+                    stop_reason = response.stop_reason
+                    provider_failure = response.provider_failure
+                    cost = _ModelCost.of(response)
+                    # A budget stop (max_iterations / correction_limit) carries no
+                    # commentary: the loop never reached a text turn. A provider
+                    # stop is left empty here — what it should say depends on
+                    # whether anything changed, which the close beat below settles.
+                    commentary = response.text
+                    if not commentary and stop_reason != "provider_error":
+                        commentary = STUCK_REPLY
+                        memory = ""
+                    elif stop_reason == "provider_error":
+                        # The lost-brain line prefixed below is the app's, not
+                        # Glitch's. Whatever he managed to say before the provider
+                        # died is his and is remembered; an empty one falls through
+                        # to the facts.
+                        memory = commentary
+                # The close beat, at the one point every route converges. A
+                # coordinator left mid-sequence means the player's move landed
+                # without its reply — whichever route played it — and whatever
+                # narration that route produced was this turn's reaction to it.
+                # So: collect the answer the engine has been computing all along,
+                # close the turn, and announce the reply in the app's own words.
+                # `complete_turn` is deliberately the pipeline's and not the
+                # tool's: nothing may close a turn the engine still owes a move to.
+                engine_reply: MoveResult | None = None
+                owed_reply = False
+                if move_beats is not None:
+                    # The fast path ran the beats already, close included; what they
+                    # settled is what this turn has to say for itself — including a
+                    # reply its engine died on.
+                    engine_reply, owed_reply, engine_failure = (
+                        move_beats.engine_reply,
+                        move_beats.owed_reply,
+                        move_beats.engine_failure,
                     )
-                else:
-                    # Same degradation as the confirmed-op narration above: the
-                    # resignation is already on the record, so the words are
-                    # the only thing a dead provider may cost.
+                elif coordinator.phase in (
+                    TurnPhase.PLAYER_MOVE_APPLIED,
+                    TurnPhase.AGENT_OBSERVING,
+                ):
+                    owed_reply = True
                     try:
-                        narration = await _offloop(
-                            brain.narrate,
-                            _narrator_state_dict(ctx),
-                            tool_results,
-                            transcript,
-                        )
-                    except ProviderError:
-                        logger.warning("close_narration_failed", exc_info=True)
-                        commentary = _destructive_confirmation(
-                            "resign", result, ctx.session
+                        engine_reply = await _offloop(coordinator.collect_engine_reply)
+                    except Exception as exc:
+                        # The player's move is committed and broadcast, so an
+                        # engine that dies here is not this command's failure to
+                        # report — it is a turn with one move in it (#284). The
+                        # same recovery the fast path's close beat has: name what
+                        # died, leave the turn open where the coordinator put it
+                        # (the reply is still owed and the next command settles
+                        # it), and tell the player in the app's own line below.
+                        engine_failure = _failure_name(exc)
+                        logger.warning(
+                            "engine_reply_failed",
+                            exc_info=True,
+                            extra={"correlation_id": correlation_id},
                         )
                     else:
-                        commentary = narration.text
-                        cost = _ModelCost.of(narration)
-            else:
-                route = ROUTE_BRAIN
-                response = await _offloop(
-                    brain.get_agent_response, before, text, transcript
-                )
-                tool_results = list(response.tool_results)
-                tool_args = [call.args for call in response.tool_calls]
-                stop_reason = response.stop_reason
-                provider_failure = response.provider_failure
-                cost = _ModelCost.of(response)
-                # A budget stop (max_iterations / correction_limit) carries no
-                # commentary: the loop never reached a text turn. A provider
-                # stop is left empty here — what it should say depends on
-                # whether anything changed, which the close beat below settles.
-                commentary = response.text
-                if not commentary and stop_reason != "provider_error":
-                    commentary = STUCK_REPLY
-                    memory = ""
-                elif stop_reason == "provider_error":
-                    # The lost-brain line prefixed below is the app's, not
-                    # Glitch's. Whatever he managed to say before the provider
-                    # died is his and is remembered; an empty one falls through
-                    # to the facts.
-                    memory = commentary
-            # The close beat, at the one point every route converges. A coordinator
-            # left mid-sequence means the player's move landed without its reply —
-            # whichever route played it — and whatever narration that route produced
-            # was this turn's reaction to it. So: collect the answer the engine has
-            # been computing all along, close the turn, and announce the reply in the
-            # app's own words. `complete_turn` is deliberately the pipeline's and not
-            # the tool's: nothing may close a turn the engine still owes a move to.
-            engine_reply: MoveResult | None = None
-            owed_reply = False
-            if move_beats is not None:
-                # The fast path ran the beats already, close included; what they
-                # settled is what this turn has to say for itself.
-                engine_reply, owed_reply = (
-                    move_beats.engine_reply,
-                    move_beats.owed_reply,
-                )
-            elif coordinator.phase in (
-                TurnPhase.PLAYER_MOVE_APPLIED,
-                TurnPhase.AGENT_OBSERVING,
-            ):
-                owed_reply = True
-                engine_reply = await _offloop(coordinator.collect_engine_reply)
-                coordinator.complete_turn()
-            elif (settled := _settled_engine_move(tool_results)) is not None:
-                # No turn was open, and the engine moved anyway: a restore left
-                # it on move and the coordinator settled that board inside the
-                # tool (a resumed mid-exchange save, an odd-ply takeback, a new
-                # game as black). Nothing to collect, but the same thing to say
-                # — the player asked to load a game and the board moved twice,
-                # so the app announces the move it made the way it announces
-                # every other one. Voice-first, an unannounced reply is a board
-                # the player cannot see changing under them.
-                owed_reply = True
-                engine_reply = settled
-            # The honesty guard, at the one point every route converges: an
-            # operational claim the turn cannot back is not shown to the player.
-            # The board, the engine's reply and the tool results are the record of
-            # what happened; the model's prose is not, and live it has claimed
-            # resignations and checkmates that never occurred (trace review,
-            # finding 6). This is the same rule as the gate, applied one step
-            # later — the model may neither *do* a destructive op unasked nor
-            # *say* it did, nor announce any other fact it invented. What it
-            # may do is say it again with the facts right (`_honest_words`).
-            #
-            # It runs on the *model's* half of the turn and nothing else. The
-            # app's own lines — the reply announcement, the canned confirmation,
-            # the lost-brain line — are composed around whatever survives, below.
-            # They are deterministic truth by construction, so there is nothing
-            # in them to guard; running them through it only risks taking back
-            # the engine's move along with the lie, which is the one fact a
-            # guarded turn cannot afford to drop (the board moved under the
-            # player and a rewrite may say nothing about how).
+                        coordinator.complete_turn()
+                elif (settled := _settled_engine_move(tool_results)) is not None:
+                    # No turn was open, and the engine moved anyway: a restore left
+                    # it on move and the coordinator settled that board inside the
+                    # tool (a resumed mid-exchange save, an odd-ply takeback, a new
+                    # game as black). Nothing to collect, but the same thing to say
+                    # — the player asked to load a game and the board moved twice,
+                    # so the app announces the move it made the way it announces
+                    # every other one. Voice-first, an unannounced reply is a board
+                    # the player cannot see changing under them.
+                    owed_reply = True
+                    engine_reply = settled
+                # The honesty guard, at the one point every route converges: an
+                # operational claim the turn cannot back is not shown to the player.
+                # The board, the engine's reply and the tool results are the record of
+                # what happened; the model's prose is not, and live it has claimed
+                # resignations and checkmates that never occurred (trace review,
+                # finding 6). This is the same rule as the gate, applied one step
+                # later — the model may neither *do* a destructive op unasked nor
+                # *say* it did, nor announce any other fact it invented. What it
+                # may do is say it again with the facts right (`_honest_words`).
+                #
+                # It runs on the *model's* half of the turn and nothing else. The
+                # app's own lines — the reply announcement, the canned confirmation,
+                # the lost-brain line — are composed around whatever survives, below.
+                # They are deterministic truth by construction, so there is nothing
+                # in them to guard; running them through it only risks taking back
+                # the engine's move along with the lie, which is the one fact a
+                # guarded turn cannot afford to drop (the board moved under the
+                # player and a rewrite may say nothing about how).
 
-            # Every board this turn actually held, and not just its two ends.
-            # The trail is what the command's own mutating calls left behind, in
-            # order; the fast path names its observation board on top, because
-            # that route knows *which* position its words were written from.
-            # (The two overlap — a fast-path `make_move` is a dispatch like any
-            # other — and `_verified_facts` dedupes them.)
-            observed = list(command_boards or ())
-            if move_beats is not None and move_beats.observed_fen is not None:
-                observed.append(move_beats.observed_fen)
-            # The advice guard rides along, at the same point (audit item 11's
-            # second half): a currently-playable move in the commentary is a
-            # hint whatever prose carries it. It applies on a turn that left
-            # the *board* alone — reacting to a move just played is
-            # description, not advice — and only once the turn has evidence:
-            # an analysis tool reported moves, and the reply names a playable
-            # move outside everything the tools reported. With no analysis in
-            # the turn there is nothing to contradict, and a move Glitch names
-            # is his opinion (decided 2026-09-10; `_analysis_moves`).
-            #
-            # The board, specifically, and not the agent view: a turn that
-            # changed a *setting* changed nothing about what the player should
-            # play, so a setter must not buy an exemption. It used to, for
-            # every setter whose value the view carried — `set_verbosity` was
-            # only ever the exception because verbosity was missing from that
-            # view, which is the very gap walkthrough #3 came out of.
-            #
-            # A question naming two or more legal moves is exempt, and it is
-            # the model doing its job: "Do you mean Nf3 or Nh3?" is what an
-            # ambiguous request deserves, and the guard used to eat it whole
-            # (audit finding 6). `unlicensed_advice` owns that reading — the
-            # code still decides what is licensed, the model still owns the
-            # words.
-            advice = None
-            if ctx.board_version == version_before and (
-                evidence := _analysis_moves(tool_results)
-            ):
-                legal = frozenset(ctx.session.legal_moves())
-                advice = _AdviceLicence(
-                    unlicensed=legal - _reported_moves(tool_results),
-                    legal=legal,
-                    evidence=frozenset(evidence),
+                # Every board this turn actually held, and not just its two ends.
+                # The trail is what the command's own mutating calls left behind, in
+                # order; the fast path names its observation board on top, because
+                # that route knows *which* position its words were written from.
+                # (The two overlap — a fast-path `make_move` is a dispatch like any
+                # other — and `_verified_facts` dedupes them.)
+                observed = list(command_boards or ())
+                if move_beats is not None and move_beats.observed_fen is not None:
+                    observed.append(move_beats.observed_fen)
+                # The advice guard rides along, at the same point (audit item 11's
+                # second half): a currently-playable move in the commentary is a
+                # hint whatever prose carries it. It applies on a turn that left
+                # the *board* alone — reacting to a move just played is
+                # description, not advice — and only once the turn has evidence:
+                # an analysis tool reported moves, and the reply names a playable
+                # move outside everything the tools reported. With no analysis in
+                # the turn there is nothing to contradict, and a move Glitch names
+                # is his opinion (decided 2026-09-10; `_analysis_moves`).
+                #
+                # The board, specifically, and not the agent view: a turn that
+                # changed a *setting* changed nothing about what the player should
+                # play, so a setter must not buy an exemption. It used to, for
+                # every setter whose value the view carried — `set_verbosity` was
+                # only ever the exception because verbosity was missing from that
+                # view, which is the very gap walkthrough #3 came out of.
+                #
+                # A question naming two or more legal moves is exempt, and it is
+                # the model doing its job: "Do you mean Nf3 or Nh3?" is what an
+                # ambiguous request deserves, and the guard used to eat it whole
+                # (audit finding 6). `unlicensed_advice` owns that reading — the
+                # code still decides what is licensed, the model still owns the
+                # words.
+                advice = None
+                if ctx.board_version == version_before and (
+                    evidence := _analysis_moves(tool_results)
+                ):
+                    legal = frozenset(ctx.session.legal_moves())
+                    advice = _AdviceLicence(
+                        unlicensed=legal - _reported_moves(tool_results),
+                        legal=legal,
+                        evidence=frozenset(evidence),
+                    )
+                verdict = await _honest_words(
+                    brain,
+                    _offloop,
+                    commentary,
+                    _verified_facts(
+                        ctx, tool_results, engine_reply, before["fen"], observed
+                    ),
+                    advice,
+                    transcript,
+                    {"text": text, "correlation_id": correlation_id},
                 )
-            verdict = await _honest_words(
-                brain,
-                _offloop,
-                commentary,
-                _verified_facts(
-                    ctx, tool_results, engine_reply, before["fen"], observed
-                ),
-                advice,
-                transcript,
-                {"text": text, "correlation_id": correlation_id},
-            )
-            commentary = verdict.text
-            cost = cost.plus(verdict.cost)
-            if verdict.fell_back:
-                memory = ""
-            elif memory is None:
-                # What Glitch himself said, taken *before* the app's lines are
-                # composed around it below. The reply announcement is the app's
-                # voice: remembered as his, its trailing "\n\ne5." is a format
-                # he completes at the beat where the reply does not exist yet —
-                # live, the first announced move followed the first remembered
-                # announcement by exactly one turn (#193). The player hears the
-                # composed whole; the model is given back only its own words.
-                memory = commentary
-            if move_beats is not None and move_beats.legal:
-                commentary = _move_commentary(
-                    commentary, move_beats.result, engine_reply, owed_reply, ctx.session
+                commentary = verdict.text
+                cost = cost.plus(verdict.cost)
+                if verdict.fell_back:
+                    memory = ""
+                elif memory is None:
+                    # What Glitch himself said, taken *before* the app's lines are
+                    # composed around it below. The reply announcement is the app's
+                    # voice: remembered as his, its trailing "\n\ne5." is a format
+                    # he completes at the beat where the reply does not exist yet —
+                    # live, the first announced move followed the first remembered
+                    # announcement by exactly one turn (#193). The player hears the
+                    # composed whole; the model is given back only its own words.
+                    memory = commentary
+                if move_beats is not None and move_beats.legal:
+                    commentary = _move_commentary(
+                        commentary,
+                        move_beats.result,
+                        engine_reply,
+                        owed_reply,
+                        ctx.session,
+                    )
+                elif owed_reply and (
+                    reply_line := _reply_announcement(engine_reply, ctx.session)
+                ):
+                    commentary = (
+                        f"{commentary}\n\n{reply_line}" if commentary else reply_line
+                    )
+                if verdict.fell_back and not commentary:
+                    # Both drafts cut and no deterministic line to stand in: the
+                    # same thing the player hears when the loop ran out of budget,
+                    # because it is the same situation — the model produced no
+                    # usable answer — and an empty bubble reads as a crash.
+                    commentary = STUCK_REPLY
+                if stop_reason == "provider_error":
+                    # Recovery semantics (audit item 20): the turn is already
+                    # settled — whatever ran stands, the reply was collected above —
+                    # so the only thing left to own is what the player is told. The
+                    # line the code picks is the one the board supports.
+                    lost = (
+                        PROVIDER_LOST_TURN_STANDS
+                        if _agent_state_dict(ctx) != before
+                        else PROVIDER_LOST_RETRY
+                    )
+                    commentary = f"{lost}\n\n{commentary}" if commentary else lost
+                if engine_failure:
+                    # The other half of the same deal, one layer down: the move
+                    # stands, the reply does not exist, and the player is told
+                    # so in the app's own words rather than by a 500 arriving
+                    # after their move was already broadcast. Composed after
+                    # the reply announcement's slot, because it is the sentence
+                    # that slot could not hold (`_engine_lost_words`), and
+                    # deliberately not in `memory`: the app's lines are shown
+                    # to the player and never fed back as Glitch's.
+                    commentary = _engine_lost_words(commentary)
+                agent_state = _agent_state_dict(ctx)
+                # If this turn armed a destructive op, the question goes to the
+                # player about the board they can see *now* — this turn's mutations
+                # included, since the gate arms mid-turn and the engine's reply can
+                # land after it ("play e4 and start over"). Their yes next turn is
+                # an answer to that board and no other.
+                ctx.restamp_pending()
+                # The UI still gets its own full document; a mutation shows up in the
+                # agent view too (any board change moves the fen), so that comparison
+                # decides the broadcast. What the turn already published as it ran
+                # is not sent again — the emitter dedupes by board version.
+                state = _state_dict_unlocked(ctx)
+                changed = agent_state != before
+                if changed:
+                    _publish_state()
+                traced.update(
+                    commentary=commentary,
+                    changed=changed,
+                    engine_reply=_move_reply_dict(engine_reply),
+                    guarded=verdict.fired,
+                    guarded_claims=verdict.claims,
+                    suppressed=verdict.suppressed,
+                    rewrite=verdict.rewrite,
+                    rewrite_claims=verdict.rewrite_claims,
+                    rewrite_suppressed=verdict.rewrite_suppressed,
+                    provider_failure=provider_failure,
+                    engine_failure=engine_failure,
+                    **cost.as_trace(),
                 )
-            elif owed_reply and (
-                reply_line := _reply_announcement(engine_reply, ctx.session)
-            ):
-                commentary = (
-                    f"{commentary}\n\n{reply_line}" if commentary else reply_line
+                return CommandOutcome(
+                    commentary=commentary,
+                    tool_results=tool_results,
+                    tool_args=tool_args,
+                    state=state,
+                    changed=changed,
+                    stop_reason=stop_reason,
+                    # Every branch above has settled `memory` by here (the guard
+                    # block fills the last None in), so what is left is only the
+                    # empty case: a turn Glitch said nothing on remembers the
+                    # deterministic facts, or nothing at all.
+                    memory=memory
+                    or _remembered_facts(tool_results, engine_reply, ctx.session),
+                    engine_failure=engine_failure,
                 )
-            if verdict.fell_back and not commentary:
-                # Both drafts cut and no deterministic line to stand in: the
-                # same thing the player hears when the loop ran out of budget,
-                # because it is the same situation — the model produced no
-                # usable answer — and an empty bubble reads as a crash.
-                commentary = STUCK_REPLY
-            if stop_reason == "provider_error":
-                # Recovery semantics (audit item 20): the turn is already
-                # settled — whatever ran stands, the reply was collected above —
-                # so the only thing left to own is what the player is told. The
-                # line the code picks is the one the board supports.
-                lost = (
-                    PROVIDER_LOST_TURN_STANDS
-                    if _agent_state_dict(ctx) != before
-                    else PROVIDER_LOST_RETRY
-                )
-                commentary = f"{lost}\n\n{commentary}" if commentary else lost
-            agent_state = _agent_state_dict(ctx)
-            # If this turn armed a destructive op, the question goes to the
-            # player about the board they can see *now* — this turn's mutations
-            # included, since the gate arms mid-turn and the engine's reply can
-            # land after it ("play e4 and start over"). Their yes next turn is
-            # an answer to that board and no other.
-            ctx.restamp_pending()
-            # The UI still gets its own full document; a mutation shows up in the
-            # agent view too (any board change moves the fen), so that comparison
-            # decides the broadcast. What the turn already published as it ran
-            # is not sent again — the emitter dedupes by board version.
-            state = _state_dict_unlocked(ctx)
-            changed = agent_state != before
-            if changed:
-                _publish_state()
-            _trace_turn(
-                utterance=text,
-                route=route,
-                commentary=commentary,
-                stop_reason=stop_reason,
-                changed=changed,
-                turn_id=turn_id,
-                correlation_id=correlation_id,
-                mutations=ctx.board_version - version_before,
-                fen_before=before["fen"],
-                fen_after=agent_state["fen"],
-                tool_calls=tool_args,
-                tool_results=tool_results,
-                engine_reply=_move_reply_dict(engine_reply),
-                guarded=verdict.fired,
-                guarded_claims=verdict.claims,
-                suppressed=verdict.suppressed,
-                rewrite=verdict.rewrite,
-                rewrite_claims=verdict.rewrite_claims,
-                rewrite_suppressed=verdict.rewrite_suppressed,
-                provider_failure=provider_failure,
-                **cost.as_trace(),
-            )
-            return CommandOutcome(
-                commentary=commentary,
-                tool_results=tool_results,
-                tool_args=tool_args,
-                state=state,
-                changed=changed,
-                stop_reason=stop_reason,
-                # Every branch above has settled `memory` by here (the guard
-                # block fills the last None in), so what is left is only the
-                # empty case: a turn Glitch said nothing on remembers the
-                # deterministic facts, or nothing at all.
-                memory=memory
-                or _remembered_facts(tool_results, engine_reply, ctx.session),
-            )
+            except BaseException as exc:
+                # Nothing is handled here — the caller still gets its exception,
+                # and an endpoint still answers however it answers. What this
+                # buys is the *record*: the turn names what killed it, and the
+                # `finally` below writes the one it would otherwise never leave.
+                traced["error"] = _failure_name(exc)
+                # Board truth, not the agent view the happy path compares: a
+                # read that can itself fail would mask the exception being
+                # re-raised, and what a dead turn is asked here is whether it
+                # left anything behind.
+                traced["changed"] = ctx.board_version != version_before
+                raise
+            finally:
+                # What happened, as opposed to what was said: known wherever
+                # the turn got to, so it is read here rather than remembered at
+                # some point the turn may never have reached. The road is
+                # whichever branch claimed it (the default one if none did) and
+                # the stop reason is the loop's if the loop ran; the rest is
+                # read off the board, so a turn that died between a mutation
+                # and its bookkeeping still counts what it moved.
+                traced["route"] = route
+                traced["stop_reason"] = stop_reason
+                traced["mutations"] = ctx.board_version - version_before
+                traced["fen_after"] = ctx.session.fen()
+                # `turn_record` zips the call args and the results strictly, and
+                # a turn that died between a dispatch and the args beside it has
+                # one of a pair. Recording the complete pairs is worth more than
+                # a `TypeError` swallowed into no record at all.
+                pairs = min(len(tool_args), len(tool_results))
+                traced["tool_calls"] = tool_args[:pairs]
+                traced["tool_results"] = tool_results[:pairs]
+                _trace_turn(**traced)
 
     @app.post("/api/command")
     async def command(request: CommandRequest) -> dict[str, Any]:
