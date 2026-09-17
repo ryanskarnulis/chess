@@ -41,8 +41,11 @@ Conventions:
   button press too: mid-game those endpoints answer 409
   with the gate's question (`confirm: true`), and `/api/game/confirm` answers
   it. It is the *same* armed op the spoken road uses, so a question asked by a
-  button can be answered by a typed "yes" and vice versa. Undo is not
-  destructive and keeps its direct endpoint.
+  button can be answered by a typed "yes" and vice versa — they are one origin
+  (`tools.PANEL_ORIGIN`), the player at their own screen. A delegate
+  conversation is not: its question is answered in that conversation and
+  nowhere else (`tools.PendingOp.origin`, #281). Undo is not destructive and
+  keeps its direct endpoint.
 
 Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
@@ -101,6 +104,7 @@ from chessapp.provider import ProviderError
 from chessapp.tools import (
     CONFIRM_QUESTIONS,
     DESTRUCTIVE_TOOLS,
+    PANEL_ORIGIN,
     UNDO_PLIES_MAX,
     ToolContext,
     ToolRegistry,
@@ -1835,6 +1839,7 @@ def create_app(
             _trace_turn(
                 utterance=move,
                 route=ROUTE_BOARD,
+                origin=PANEL_ORIGIN,  # a drag on the player's own board
                 commentary=commentary,
                 stop_reason="completed",
                 changed=beats.legal,
@@ -1992,6 +1997,9 @@ def create_app(
         _trace_turn(
             utterance=op,
             route=ROUTE_CONTROL,
+            # The buttons are the player's own screen, which is one origin with
+            # the panel's free text (`tools.PANEL_ORIGIN`).
+            origin=PANEL_ORIGIN,
             commentary="",
             stop_reason="completed",
             changed=ctx.board_version != version_before,
@@ -2028,6 +2036,10 @@ def create_app(
         turn_id = coordinator.turn_id
         version_before = ctx.board_version
         fen_before = ctx.session.fen()
+        # Whose question this would be, declared before the gate can arm one
+        # (#281): a button press is the player at their own screen, the same
+        # origin the panel's free text answers from.
+        ctx.origin = PANEL_ORIGIN
         result = registry.dispatch(name, args)
         _trace_control(
             name,
@@ -2085,10 +2097,13 @@ def create_app(
 
         A click that arrives after the board moved has nothing to confirm (409,
         like a click with nothing armed at all): the question was about a
-        position, and that position is gone.
+        position, and that position is gone. A click while a *delegate* thread's
+        question is standing is the same 409 (#281) — that question was put to
+        someone else, and the button neither answers it nor disarms it, because
+        a click with nothing of its own to confirm is not a new command.
         """
         async with _mutation(request.version):
-            armed = ctx.live_pending()
+            armed = ctx.live_pending(PANEL_ORIGIN)
             if armed is None:
                 raise HTTPException(status_code=409, detail="nothing to confirm")
             turn_id = coordinator.turn_id
@@ -2109,7 +2124,7 @@ def create_app(
                     "confirmed": False,
                     "state": _state_dict_unlocked(ctx),
                 }
-            confirmed = confirm_pending(registry, ctx)
+            confirmed = confirm_pending(registry, ctx, PANEL_ORIGIN)
             assert confirmed is not None  # armed above, and only this consumes it
             name, result = confirmed
             _trace_control(
@@ -2342,8 +2357,11 @@ def create_app(
         text: str,
         transcript: Sequence[dict[str, str]],
         version: int | None = None,
+        *,
+        origin: str,
     ) -> CommandOutcome:
-        """The command pipeline, under the mutation guard.
+        """The command pipeline, under the mutation guard — the delegate route's
+        entry (the panel opens the guard itself; see `command`).
 
         A command is a mutation path like any other — one utterance can move the
         board — so it carries the same optional `version` precondition, and a
@@ -2351,12 +2369,16 @@ def create_app(
         the *whole* run rather than the individual dispatches inside it: a turn
         is one thing that happens to one board, and half of it landing on a
         board someone else changed is exactly the race this closes.
+
+        `origin` says whose turn this is (`tools.delegate_origin(id)` from the
+        delegate router) and is keyword-only and required: a confirmation may be
+        armed or answered here, and both halves belong to one conversation.
         """
         async with _mutation(version):
-            return await _command_turn(text, transcript)
+            return await _command_turn(text, transcript, origin=origin)
 
     async def _command_turn(
-        text: str, transcript: Sequence[dict[str, str]]
+        text: str, transcript: Sequence[dict[str, str]], *, origin: str
     ) -> CommandOutcome:
         """The single pipeline: user string → brain's tool loop → new state.
         Shared by `/api/command` and the delegate messages endpoint against the
@@ -2408,8 +2430,19 @@ def create_app(
         degrades to the same line, because the reaction is optional and the
         engine's reply is not. Anything ambiguous or non-move reaches the brain
         unchanged.
+
+        **Whose turn this is.** `origin` is the caller's surface — `PANEL_ORIGIN`
+        for the web panel, `tools.delegate_origin(id)` for one delegate
+        conversation — and it is declared on the context on the way in, under the
+        mutation lock, so the gate stamps whatever it arms with the conversation
+        the player is being asked in. The same string is what the confirmation
+        branch below answers with, so a "yes" settles the question *this* thread
+        was asked and no other's (#281).
         """
         assert brain is not None  # both callers guard; documents the invariant
+        # Under `_mutation` in both callers, so this is the one interaction
+        # running: whoever the gate arms for below, it is this one's question.
+        ctx.origin = origin
         before = _agent_state_dict(ctx)
         # What locates this turn afterwards (audit item 18): the coordinator turn
         # it opened under, an id for this one interaction, and the board version
@@ -2473,6 +2506,11 @@ def create_app(
             # and results it had reached, and the exception that ended it.
             traced: dict[str, Any] = {
                 "utterance": text,
+                # Which surface said it — the panel, or one delegate thread.
+                # Cheap, and it is the field this whole class of bug is read
+                # off: a turn that answered a question asked somewhere else
+                # (#281) is invisible in a record that names no origin.
+                "origin": origin,
                 # What was said, and what it was about: filled in by the happy
                 # path alone, because a turn that died said nothing to anybody.
                 "commentary": "",
@@ -2491,8 +2529,17 @@ def create_app(
                 # Read through `live_pending`: a question is about a position, so an
                 # op armed against a board that has since moved — the player dragged
                 # a move, undid one, another client played — is not something this
-                # "yes" can be an answer to, and is dropped instead of run.
-                armed = ctx.live_pending()
+                # "yes" can be an answer to, and is dropped instead of run. It is a
+                # question asked in a *conversation* too, so it is read with this
+                # turn's origin: an op armed for another thread (or for the panel,
+                # or by the buttons) is not this utterance's to answer, the reader
+                # is never asked to judge it, and the words go down the ordinary
+                # road as the fresh intent they are (#281). The disarm below is
+                # unconditional either way — every command from any origin clears
+                # what was pending on its way in, so the intervening interaction
+                # drops the question and the origin that *was* asked hears nothing
+                # run either.
+                armed = ctx.live_pending(origin)
                 ctx.pending = None
                 answer = parse_confirmation(text) if armed is not None else None
                 if armed is not None and answer is None and brain is not None:
@@ -2518,7 +2565,9 @@ def create_app(
                 if armed is not None and answer is not None:
                     if answer:
                         ctx.pending = armed  # confirm_pending consumes it
-                        confirmed = await _offloop(confirm_pending, registry, ctx)
+                        confirmed = await _offloop(
+                            confirm_pending, registry, ctx, origin
+                        )
                         assert confirmed is not None
                         name, result = confirmed
                         tool_results.append({"name": name, "result": result})
@@ -2919,7 +2968,7 @@ def create_app(
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
         async with _mutation(request.version):
             transcript = ctx.transcript.memory()
-            outcome = await _command_turn(request.text, transcript)
+            outcome = await _command_turn(request.text, transcript, origin=PANEL_ORIGIN)
             # Record on the context, not a captured reference: resume_game may
             # have just swapped in the saved game's transcript, and this turn
             # belongs to that thread.

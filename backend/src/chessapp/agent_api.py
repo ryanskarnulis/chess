@@ -36,13 +36,14 @@ from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from chessapp.conversation import DEFAULT_WINDOW_TURNS, condense
 from chessapp.provider import ProviderError
+from chessapp.tools import delegate_origin
 
 if TYPE_CHECKING:
     from chessapp.api import CommandOutcome
@@ -414,9 +415,24 @@ def rate_limit(
 
 # --- router -------------------------------------------------------------------
 
-RunCommand = Callable[
-    [str, Sequence[dict[str, str]], int | None], "Awaitable[CommandOutcome]"
-]
+
+class RunCommand(Protocol):
+    """The shared command pipeline, as this router calls it (`api._run_command`).
+
+    A `Protocol` rather than a `Callable` alias because `origin` is keyword-only
+    — a conversation's question may only be answered in that conversation
+    (#281), so the caller has to name which one it is speaking for, and a
+    `Callable[...]` cannot express a keyword at all.
+    """
+
+    def __call__(
+        self,
+        text: str,
+        transcript: Sequence[dict[str, str]],
+        version: int | None = None,
+        *,
+        origin: str,
+    ) -> Awaitable[CommandOutcome]: ...
 
 
 def build_agent_router(
@@ -523,6 +539,11 @@ def build_agent_router(
         replays as text turns only; ``X-Agent-Actor`` binds a trusted delegate
         caller (conductor) as the run's audit actor in the log, otherwise it
         falls back to the loop's default identity.
+
+        The run is tagged with this conversation's own origin, which is what
+        binds a destructive confirmation to the thread it was asked in (#281):
+        the board version alone could not, because nothing needs to move between
+        a question here and a "yes" said somewhere else.
         """
         # Fail fast before taking a lock, so an unknown id never mints one.
         _get_or_404(conversation_id)
@@ -548,7 +569,16 @@ def build_agent_router(
             user_message = store.append_user_message(conversation, data.content)
 
             try:
-                outcome = await run_command(data.content, history, data.version)
+                outcome = await run_command(
+                    data.content,
+                    history,
+                    data.version,
+                    # This thread, named: a destructive op the gate arms on this
+                    # turn is armed for this conversation, and only a later turn
+                    # *here* can answer it (#281). A "yes" posted to another
+                    # thread, or typed into the web panel, used to run it.
+                    origin=delegate_origin(conversation_id),
+                )
             except ProviderError as exc:
                 logger.error(
                     "agent_delegate_run_failed conversation_id=%s error=%s",
