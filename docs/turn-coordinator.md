@@ -85,6 +85,27 @@ announcement instead of paying for a second narration.
 A background answer is discarded (and recomputed synchronously) if the board
 moved under it or the computation failed.
 
+**The beat is bounded as well as optional** (#283). "Optional" used to mean only
+that the reaction could be *skipped*; a narrator that was merely slow still held
+a reply that was already computed, kept the turn in `agent_observing`, and —
+the command runs under the mutation lock — parked every other road onto the
+board behind it. Every `Brain.narrate` call now runs under
+`api._REACTION_BUDGET_S` (10 s, through `api._narrate` → `_within_budget`): when
+it expires the ready reply is applied, the turn closes on the deterministic
+announcement, the lock is released, and the words that arrive afterwards are
+dropped rather than spoken a beat behind the board they were about. The late
+call runs on its own thread and touches nothing — the same shape as an abandoned
+`_PendingReply`, safe for the same reason (a narrator is handed a board view
+snapshotted before the call and answers with words). The number is measured, not
+derived from the token cap: 58 observe beats in the deployed trace took 0.7–2.1 s
+(median ~1.5 s, one 7.5 s outlier), so the budget clears every healthy reaction
+with room for a busy GPU. Underneath it `llama_brain._NARRATE_TIMEOUT` (15 s)
+hangs up on the abandoned round trip, so it stops holding a llama-server slot the
+next turn needs; only `narrate` carries one, because the planner and the loop's
+closing narrator are calls nobody stops waiting for. The trace's `reaction_late`
+is where a cut beat shows — the commentary of one is indistinguishable from
+verbosity=low, from a dead provider, and from a beat that never opened.
+
 ## Board controls
 
 - **Dragged moves**: in agent mode `/api/game/move` runs the same beats as the

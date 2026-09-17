@@ -151,4 +151,13 @@ handoff note.
 `CHESSAPP_PLANNER_TEMPERATURE` samples the planner apart from the narrator;
 the eval harness reads the same variable.
 
+`narrate` is also the one phase with a wall-clock ceiling. A token cap bounds
+generation, not queueing or a stalled server, and the observe beat is the one
+call whose caller has already decided it will not wait: the pipeline drops the
+reaction at `api._REACTION_BUDGET_S` and plays the reply Stockfish computed
+during it (#283, `docs/turn-coordinator.md`), and `_NARRATE_TIMEOUT` hangs up
+just above that so the abandoned generation stops holding a server slot. The
+planner and the closing narrator send no ceiling — they legitimately run 30 s
+and more with thinking on, and nothing is being held while they do.
+
 Every prompt change here is eval-gated (`docs/agent-evals.md`).

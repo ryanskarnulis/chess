@@ -126,6 +126,49 @@ def test_chat_without_a_temperature_sends_the_default_unchanged():
     assert captured[0]["temperature"] == 1.0
 
 
+def test_chat_takes_a_read_ceiling_for_the_one_call_that_has_one():
+    # The observe beat's narration is a call the app has already decided it
+    # will not wait for (#283), so it hangs up instead of holding a
+    # llama-server slot until the 300 s read timeout. The connect phase keeps
+    # its own short ceiling either way — a dead server still fails fast.
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=_completion_body({"content": "ok"}))
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        timeout=httpx.Timeout(300.0, connect=10.0),
+    )
+    provider = LlamaCppProvider("http://llm.test/v1", "gemma-4-12b", client=client)
+
+    provider.chat(_USER, timeout=12.0)
+    assert captured[0].extensions["timeout"]["read"] == 12.0
+    assert captured[0].extensions["timeout"]["connect"] == 10.0
+
+    # And a caller with no opinion sends the client's own, exactly as every
+    # call did before the knob existed.
+    provider.chat(_USER)
+    assert captured[1].extensions["timeout"]["read"] == 300.0
+
+
+def test_a_read_ceiling_that_expires_is_an_unreachable_server():
+    # No new failure vocabulary: a timeout is already what UNREACHABLE names,
+    # so every degradation path the brain and the pipeline have handles a
+    # hung-up narration with nothing new to learn.
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = LlamaCppProvider("http://llm.test/v1", "gemma-4-12b", client=client)
+
+    with pytest.raises(ProviderRequestError) as excinfo:
+        provider.chat(_USER, timeout=0.01)
+    assert excinfo.value.failure is ProviderFailure.UNREACHABLE
+    assert excinfo.value.failure.transient
+
+
 def test_chat_thinking_can_be_enabled():
     captured: list[dict[str, Any]] = []
     body = _completion_body({"role": "assistant", "content": "deep thoughts"})

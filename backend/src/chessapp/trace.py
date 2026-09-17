@@ -91,6 +91,7 @@ def turn_record(
     rewrite_suppressed: str = "",
     provider_failure: str = "",
     engine_failure: str = "",
+    reaction_late: bool = False,
     error: str = "",
     model_calls: int = 0,
     prompt_tokens: int = 0,
@@ -127,6 +128,14 @@ def turn_record(
     otherwise an ordinary `completed` one — the loop's stop reason stays the
     loop's, because a delegate caller reads it as the run's outcome and the
     engine is not the run.
+
+    `reaction_late` marks a turn whose narration was still being written when
+    the turn went on without it (`api._REACTION_BUDGET_S`). It is not a failure
+    — the words are optional and the app said its own line instead — and that
+    is exactly why it is recorded: the commentary of a cut reaction is
+    indistinguishable from verbosity=low, from a dead provider and from a beat
+    that never opened, so without this the one thing worth tuning (the budget,
+    against how long the narrator really takes) is invisible.
 
     `error` is the last resort: an exception that escaped the turn entirely,
     named by class and message. Every other field is then whatever the turn had
@@ -208,6 +217,7 @@ def turn_record(
         "stop_reason": stop_reason,
         "provider_failure": provider_failure,
         "engine_failure": engine_failure,
+        "reaction_late": reaction_late,
         "error": error,
         "changed": changed,
         "guarded": guarded,

@@ -229,6 +229,13 @@ class ChatProvider(Protocol):
     `temperature` is the one sampling knob a caller may set per request, for
     the planner/narrator split's per-phase sampling; `None` means the module
     default, so a caller that does not care sends exactly what it always did.
+
+    `timeout` is the same shape of per-request override for how long this one
+    call may take: a phase whose words the app will stop waiting for
+    (`api._REACTION_BUDGET_S`) has no use for a round trip that outlives the
+    turn it was for, and hanging up is what frees the server's slot for the
+    next one. `None` is the client's configured read timeout, which is what
+    every phase that is worth waiting for still sends.
     """
 
     def chat(
@@ -239,6 +246,7 @@ class ChatProvider(Protocol):
         enable_thinking: bool = False,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        timeout: float | None = None,
     ) -> ChatResult: ...
 
 
@@ -281,6 +289,7 @@ class LlamaCppProvider:
         enable_thinking: bool = False,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        timeout: float | None = None,
     ) -> ChatResult:
         """One completion turn, optionally offering tools."""
         payload = self._payload(
@@ -290,7 +299,7 @@ class LlamaCppProvider:
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        return self._result(self._post(payload))
+        return self._result(self._post(payload, timeout))
 
     def _payload(
         self,
@@ -320,10 +329,21 @@ class LlamaCppProvider:
             payload["tool_choice"] = "auto"
         return payload
 
-    def _post(self, payload: dict[str, Any]) -> _WireCompletion:
+    def _post(
+        self, payload: dict[str, Any], timeout: float | None = None
+    ) -> _WireCompletion:
+        # A per-request read ceiling for the callers that have one; the connect
+        # phase stays as short as it is on the client, so a dead server still
+        # fails fast either way. No ceiling means the client's own, which is
+        # what every call that is worth waiting for sends.
+        deadline = (
+            httpx.USE_CLIENT_DEFAULT
+            if timeout is None
+            else httpx.Timeout(timeout, connect=_CONNECT_TIMEOUT)
+        )
         try:
             response = self._client.post(
-                f"{self._base_url}/chat/completions", json=payload
+                f"{self._base_url}/chat/completions", json=payload, timeout=deadline
             )
         except httpx.HTTPError as exc:
             raise ProviderRequestError(

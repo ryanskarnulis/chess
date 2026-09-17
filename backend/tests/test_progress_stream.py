@@ -217,6 +217,27 @@ def test_the_narrator_turn_is_the_observation_beat():
     )
 
 
+def test_the_fast_paths_reaction_still_reports_its_phase():
+    """The observe beat runs on a thread of its own now, so that the turn can
+    stop waiting for it (#283) — and which interaction an event belongs to is a
+    `ContextVar`. A bare thread would start from an empty context and the one
+    frame the UI shows while Glitch is writing would silently stop being sent.
+    """
+    client = live_client(text_turn("Classic opener."))
+    with client.websocket_connect("/ws") as ws:
+        events = drain(ws, lambda: client.post("/api/command", json={"text": "e4"}))
+    narrating = [
+        event
+        for event in events
+        if (event["kind"], event["name"]) == (KIND_BRAIN, BRAIN_NARRATING)
+    ]
+    assert len(narrating) == 1, "the fast path's one narrator call, reported"
+    # Under this interaction and no other: the copied context carries the ids.
+    begun = next(event for event in events if event["kind"] == KIND_BEGIN)
+    assert narrating[0]["correlation_id"] == begun["correlation_id"]
+    assert narrating[0]["turn_id"] == begun["turn_id"]
+
+
 def test_a_turn_that_moves_nothing_never_claims_an_observation():
     """The narrator runs on every turn; the observe beat exists only when a
     move is waiting on one."""
