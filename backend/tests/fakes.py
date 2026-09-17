@@ -295,6 +295,17 @@ class ScriptedProvider:
         self._turns = list(turns)
         self.calls: list[dict[str, Any]] = []
 
+    def rescript(self, *turns: ChatResult | Exception) -> None:
+        """Play `turns` from the start, and forget what was recorded.
+
+        For a test that drives two commands through one app: each gets its own
+        script, and the second's calls are `calls[0]`, `calls[1]`, … rather
+        than an offset a reader has to count. Clearing the record is what
+        rewinds the script — the two are the same cursor.
+        """
+        self._turns = list(turns)
+        self.calls.clear()
+
     def chat(
         self,
         messages: Sequence[dict[str, Any]],

@@ -34,6 +34,7 @@ from chessapp.game import GameSession
 from chessapp.llama_brain import (
     _ANSWER_MAX_TOKENS,
     _NO_PROGRESS_NOTE,
+    _REFRESH_LABEL,
     LlamaBrain,
     _fast_path_brief,
     create_llama_brain,
@@ -2209,3 +2210,241 @@ def test_read_answer_is_billed_as_one_call():
         30,
         2,
     )
+
+
+# --- the board refresh: the loop is told when its own tools move the board ---
+#
+# #282. The opening `Board state:` block is the only `legal_moves` this loop
+# ever holds, and it is stale the moment one of the turn's own tools mutates —
+# while the planner's contract says every move it submits must be an entry of
+# it. `board_refresh` is how the loop finds out. What the view holds, and when
+# it is withheld, belongs to app assembly (`api.planner_board_refresh`, pinned
+# in test_api.py); what is pinned here is the loop's whole share of the policy:
+# ask once an iteration, append when the answer changed, and never let asking
+# cost the turn.
+
+
+def _boards(*views: dict | None):
+    """A refresh seam answering `views` in order, the last repeating."""
+    answers = list(views)
+    calls = []
+
+    def refresh():
+        calls.append(None)
+        return answers[min(len(calls), len(answers)) - 1]
+
+    return refresh
+
+
+def _refreshes(call) -> list[dict]:
+    """Every board-refresh block one recorded planner call carried, parsed."""
+    blocks = []
+    for message in call["messages"]:
+        if message["role"] != "user":
+            continue
+        for part in message["content"].split(_REFRESH_LABEL)[1:]:
+            blocks.append(json.loads(part.split("\n\n")[0].strip()))
+    return blocks
+
+
+_BOARD_A = {"board_version": 1, "legal_moves": ["Nf3", "d4"]}
+_BOARD_B = {"board_version": 2, "legal_moves": ["e4", "d4"]}
+
+
+def test_without_the_seam_the_planner_prompt_is_what_it_always_was():
+    """The seam defaults off, and off must be byte-identical to before it
+    existed — every caller with no state to inject (the MCP server, a test
+    double, a direct construction) keeps exactly the loop it had."""
+    scripts = [
+        tool_calls_turn(("new_game", {})),
+        text_turn("reset it"),
+        text_turn("Fresh board."),
+    ]
+    unwired, without = make_brain(*scripts)
+    wired, withnone = make_brain(*scripts, board_refresh=lambda: None)
+    for brain in (unwired, wired):
+        brain.get_agent_response(board_state={"fen": "x"}, command="start over")
+
+    assert [c["messages"] for c in without.calls] == [
+        c["messages"] for c in withnone.calls
+    ]
+
+
+def test_a_changed_board_reaches_the_planner_as_one_more_user_message():
+    brain, provider = make_brain(
+        tool_calls_turn(("new_game", {})),
+        text_turn("reset it"),
+        text_turn("Fresh board."),
+        board_refresh=_boards(_BOARD_A, _BOARD_B),
+    )
+    brain.get_agent_response(board_state={"fen": "x"}, command="start over")
+
+    first, second = provider.calls[0]["messages"], provider.calls[1]["messages"]
+    # The list still only grew: the opening block is untouched above it, which
+    # is what keeps the KV prefix (and `_messages`' contract) intact.
+    assert second[: len(first)] == first
+    assistant, tool, refresh = second[-3:]
+    assert assistant["role"] == "assistant"
+    assert tool["role"] == "tool"
+    assert refresh == {
+        "role": "user",
+        "content": f"{_REFRESH_LABEL}\n{json.dumps(_BOARD_B)}",
+    }
+
+
+def test_an_unchanged_board_appends_nothing():
+    """A read-only batch leaves the position alone, so there is nothing to say
+    — and a block repeating what the planner already holds is the second,
+    ageing copy `docs/turn-memory.md` exists to forbid."""
+    brain, provider = make_brain(
+        tool_calls_turn(("get_best_moves", {})),
+        text_turn("read them"),
+        text_turn("Here's the line."),
+        board_refresh=_boards(_BOARD_A),
+    )
+    brain.get_agent_response(board_state={"fen": "x"}, command="what should I play?")
+
+    assert _refreshes(provider.calls[1]) == []
+    assert provider.calls[1]["messages"][-1]["role"] == "tool"
+
+
+def test_a_withheld_board_appends_nothing():
+    """`None` is "nobody can say" — which is what app assembly answers while an
+    engine reply is owed, because mid-exchange the legal moves are the
+    engine's. The loop does not second-guess it."""
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+        board_refresh=_boards(_BOARD_A, None),
+    )
+    brain.get_agent_response(board_state={"fen": "x"}, command="play e4")
+
+    assert _refreshes(provider.calls[1]) == []
+
+
+def test_a_batch_of_calls_is_answered_by_one_refresh_at_the_end():
+    """Once per iteration, never per call: a block between two tool messages
+    would break the contiguous answer-per-call shape the wire expects."""
+    brain, provider = make_brain(
+        tool_calls_turn(("new_game", {}), ("new_game", {})),
+        text_turn("reset twice"),
+        text_turn("Fresh board."),
+        board_refresh=_boards(_BOARD_A, _BOARD_B),
+    )
+    brain.get_agent_response(board_state={"fen": "x"}, command="start over, twice")
+
+    messages = provider.calls[1]["messages"]
+    assert [m["role"] for m in messages[-4:]] == ["assistant", "tool", "tool", "user"]
+    assert len(_refreshes(provider.calls[1])) == 1
+
+
+def test_the_refresh_is_the_planners_alone_and_never_the_narrators():
+    """The one thing a result may not do is name a side to play for (#193), and
+    the narrator's brief is built from the turn's results. Keeping the board
+    out of the results and in a message of its own is what makes that safe —
+    `_close` assembles a fresh list and never sees this one."""
+    brain, provider = make_brain(
+        tool_calls_turn(("new_game", {})),
+        text_turn("reset it"),
+        text_turn("Fresh board."),
+        board_refresh=_boards(_BOARD_A, _BOARD_B),
+    )
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="start over")
+
+    narrator = " ".join(str(m["content"]) for m in provider.calls[-1]["messages"])
+    assert _REFRESH_LABEL not in narrator
+    assert "legal_moves" not in narrator
+    # And the results themselves are exactly what the dispatcher returned.
+    assert [r["result"] for r in resp.tool_results] == [{"ok": True}]
+
+
+def test_a_changing_board_does_not_rescue_a_stalled_turn():
+    """The stall rule keys on the exchange — call, args and what came back —
+    and the refresh is none of those. A turn that keeps asking one question and
+    getting one answer is still over, however the board moves underneath."""
+    brain, _ = make_brain(
+        tool_calls_turn(("get_best_moves", {})),
+        tool_calls_turn(("get_best_moves", {})),
+        text_turn("nothing new"),
+        text_turn("Same as before."),
+        board_refresh=_boards(_BOARD_A, _BOARD_B, _BOARD_A),
+    )
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="best move?")
+
+    assert resp.stop_reason == "no_progress"
+
+
+def test_a_refresh_that_raises_does_not_cost_the_turn():
+    """The same rule the tracer and the phase observer keep, and sharper here:
+    this runs on a turn whose move may already have landed, so a broken seam
+    must degrade to the loop that shipped before it — never to a dead turn."""
+
+    def explode():
+        raise RuntimeError("no board today")
+
+    registry, session = real_registry()
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+        dispatcher=registry,
+        tool_definitions=registry.definitions(),
+        board_refresh=explode,
+    )
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="play e4")
+
+    assert resp.stop_reason == "completed"
+    assert session.move_history()[0] == "e4"
+    assert _refreshes(provider.calls[1]) == []
+
+
+def test_a_refresh_and_a_correction_do_not_stack_two_player_turns():
+    """Both are things the app says in the player's role, and one iteration can
+    produce them back to back. A chat template is within its rights to reject
+    two consecutive user turns, so they merge into one."""
+    brain, provider = make_brain(
+        tool_calls_turn(("new_game", {})),
+        ToolCallArgumentsError("make_move", "not json"),
+        text_turn("gave up on that"),
+        text_turn("Couldn't do it."),
+        board_refresh=_boards(_BOARD_A, _BOARD_B),
+    )
+    brain.get_agent_response(
+        board_state={"fen": "x"}, command="start over then play d4"
+    )
+
+    roles = [m["role"] for m in provider.calls[2]["messages"]]
+    pairs = zip(roles, roles[1:], strict=False)
+    assert all(not (a == "user" and b == "user") for a, b in pairs), roles
+    merged = provider.calls[2]["messages"][-1]["content"]
+    assert _REFRESH_LABEL in merged
+    assert "failed before execution" in merged
+
+
+def test_the_run_reports_which_boards_the_planner_was_shown():
+    """`state_refreshes` is what a trace is read with: beside `mutations`, it
+    says whether a turn that moved the board went on to decide against it."""
+    brain, _ = make_brain(
+        tool_calls_turn(("new_game", {})),
+        tool_calls_turn(("new_game", {})),
+        text_turn("reset twice"),
+        text_turn("Fresh board."),
+        board_refresh=_boards(_BOARD_A, _BOARD_B, {"board_version": 7}),
+    )
+    resp = brain.get_agent_response(
+        board_state={"fen": "x"}, command="start over, twice"
+    )
+
+    assert resp.state_refreshes == (2, 7)
+
+
+def test_a_run_with_no_refresh_reports_none():
+    brain, _ = make_brain(
+        tool_calls_turn(("get_best_moves", {})),
+        text_turn("read them"),
+        text_turn("Here."),
+    )
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="best move?")
+
+    assert resp.state_refreshes == ()

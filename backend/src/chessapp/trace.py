@@ -96,6 +96,7 @@ def turn_record(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     model_latencies_ms: Sequence[int] = (),
+    state_refreshes: Sequence[int] = (),
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -189,6 +190,15 @@ def turn_record(
       — the player's move and the engine's answer — so the duplicated-move bug
       the coordinator exists to prevent reads as a third under one `turn_id`,
       and a bypass reads as a mutation on a route that should have had none.
+    - `state_refreshes` is the board versions the planner was *re-shown* inside
+      the command, in order (#282) — its opening state block ages the moment
+      one of the turn's own tools mutates, and this is the record of it being
+      told. Empty on a turn that mutated nothing, and equally on one whose
+      mutation left the board mid-exchange, where the refresh is withheld
+      because the legal moves would be the engine's; `mutations` beside it is
+      what tells those two apart. `mutations: 2, state_refreshes: []` is a
+      healthy move turn, and a mutating turn that goes on to decide again with
+      nothing here is the bug this field exists to make visible.
     """
     return {
         "utterance": utterance,
@@ -209,6 +219,7 @@ def turn_record(
         "turn_id": turn_id,
         "correlation_id": correlation_id,
         "mutations": mutations,
+        "state_refreshes": list(state_refreshes),
         "model_calls": model_calls,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,

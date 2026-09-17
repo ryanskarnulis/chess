@@ -120,6 +120,13 @@ class AgentResponse:
     # measure: an unmeasured turn is not a fast one, so it records no readings
     # rather than zeros.
     model_latencies_ms: tuple[int, ...] = ()
+    # The board versions the planner was shown *during* the run, in order —
+    # one per mid-command refresh of its state block (#282). Empty on a turn
+    # that mutated nothing, and equally on one whose mutation left the board
+    # mid-exchange, where the refresh is withheld by design; `mutations` beside
+    # it in the trace is what tells those two apart. Plain ints, like the token
+    # counts, so the seam stays model-agnostic.
+    state_refreshes: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -189,10 +196,16 @@ class _RunState:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latencies_ms: list[int] = field(default_factory=list)
+    boards_shown: list[int] = field(default_factory=list)
 
     def record(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
         self.tool_calls.append(ToolCall(name=name, args=args))
         self.tool_results.append({"name": name, "result": result})
+
+    def show_board(self, version: int) -> None:
+        """Note that the planner was handed the board as of `version` — one
+        reading per mid-command state refresh, in the order they were sent."""
+        self.boards_shown.append(version)
 
     def count_call(
         self,
@@ -222,6 +235,7 @@ class _RunState:
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
             model_latencies_ms=tuple(self.latencies_ms),
+            state_refreshes=tuple(self.boards_shown),
         )
 
 
@@ -239,8 +253,11 @@ class Brain(Protocol):
         the utterance a second time. `board_state` is the agent-facing view
         (fen, turn, player_color,
         in_check, SAN history, captured, legal_moves, game_over/outcome — not
-        the UI state document), captured before the loop runs; the loop reads
-        every later state change from the tool results themselves.
+        the UI state document), captured before the loop runs. A later change
+        the loop's own tools make reaches it two ways: in the tool results
+        themselves, and — for the legal-move menu, which no result reports —
+        through whatever board-refresh seam the implementation was wired with
+        (#282). A brain given no such seam works from the opening view alone.
         `transcript` is the prior conversation as chat messages (final answers
         only) so the agent can follow references to earlier turns. How far back
         it reaches and in what form is the app's memory policy, not the brain's:

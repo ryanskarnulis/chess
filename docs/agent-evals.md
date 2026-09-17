@@ -231,6 +231,50 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-17 on the planner board-refresh tree (#282: the loop is told when
+its own tools move the board): 49 passed in a single run, infra 0; every
+pass-rate scenario ABOVE_FLOOR STABLE — `undo_and_replace` 5/5,
+`undo_twice_and_replace` 4/5, `ambiguous_knight_then_selection` 5/5,
+`move_save_resume_finishes_exchange` 5/5, `save_then_new_game` 5/5,
+`voice_setting_and_move` 5/5, `best_move_then_play` 5/5, `long_capture` 5/5 ×3,
+everything else 5/5; `judgment_question` 8.1 s. Costs unmoved (`fast_path_low`
+0 model calls, `fast_path_normal` 1, `plain_move` 3,
+`resign_literal_fast_path` 0).** The refresh costs **~180 prompt tokens on the
+planner call that follows a mutation** and nothing anywhere else:
+`undo_and_replace` reads `call_in=[2723, 2995, 3078, 1078]` against unchanged
+main's `[2723, 2813, 2900, 1082]`, while `late_game_tool_composition` (save +
+describe, no board change) is untouched at `[3234, 3644, 1645]` seeded and
+`[3018, 3428, 1373]` control. A command that mutates nothing sends nothing.
+
+**The first cut of that change failed this gate, and the record is the useful
+part.** It sent the planner's *whole* opening view back after a mutation, and
+`undo_twice_and_replace` came in 4/10 BELOW_FLOOR STABLE — every miss the same
+shape: "undo the bishop move and undo the knight move, then play d4" took back
+one exchange and played d4 on a board still holding `Nf3`. Interleaved blocks of
+five against unchanged main on one server, 20 a side: **4/20 against 19/20.**
+The cause was `history`. A history the bishop move has just left reads to a 12B
+as *the takebacks are done*, so a block meant to say what may be played was
+answering a question about what had been finished — the same "words about
+playing prime playing" shape the knight-ask campaign found, one level up. The
+payload was trimmed to the menu and the facts that qualify it
+(`api._REFRESH_KEYS`: `turn`, `player_color`, `in_check`, `game_over`,
+`legal_moves`, `captures`, plus `board_version`), and the same screen read
+**19/20 against 16/20**. What a tool undid is that tool's own result to report.
+
+**No new scenario, and that is a measurement too.** `undo_then_capture` was
+built to be the one scenario that could see #282: seeded `e4 d5 exd5 Qxd5`,
+"take that back and take the pawn", a position whose `captures` is empty and
+whose takeback restores exactly one (`exd5`), so a planner reading the stale
+block should refuse on facts its own undo had just falsified. It read **20/20 on
+unfixed main** — the board is the referee, so the planner ignores the stale
+list and the capture lands anyway. It does not separate, so it was not added
+rather than bought GPU time every gate run. #282 is pinned instead where the
+evidence actually is: tests that assert on the prompt the planner was handed
+(`test_app.py`, `test_llama_brain.py`) and the `state_refreshes` trace field
+over real games. Worth remembering before building another scenario around a
+stale-input bug: an input the tool layer re-validates is one the model can be
+wrong about for free.
+
 **Run 2026-09-10 on the guard-rewrite tree (the honesty guard's cut is a narrator rewrite and the advice guard fires only against engine evidence): 48 passed, 1 failed in a single run, 13 m 08 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except `ambiguous_knight_then_selection` 2/5 BELOW_FLOOR — every miss the planner playing a knight instead of asking, at 3 model calls (planner, note, narrator: no rewrite ran on any sample), and nothing the planner sees changed on this tree (no prompt, schema or state-view change; the rewrite is a narrator call after the guard). Re-measured interleaved on one server, four blocks of five a tree alternating: this tree 13/20 (3, 3, 4, 3), unchanged main `f4deeed` 11/20 (2, 4, 3, 2). The day's rate on that ask is ~60% on both trees, so the red is the model server's day and not this change; it is filed in `TODO.md` rather than re-floored.** No sample in the run was guarded, so the rewrite's own live rate is unmeasured here — the deployed trace is where it will show (`rewrite` field). `long_capture` 5/5 ×3, `judgment_question` 11.0 s, costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).
 
 **Run 2026-09-06 on the draw-offer tree (#276, `offer_draw` added to the schema): 47 passed in a single run, 10 m 50 s, 202 samples, infra 0; every pass-rate scenario ABOVE_FLOOR — `undo_and_replace` 5/5, `undo_twice_and_replace` 5/5, `long_capture` 5/5 ×3, `ambiguous_knight_then_selection` 8/10 (one escalation block), `impossible_capture_is_refused_not_asked` 4/5, everything else 5/5 STABLE; `judgment_question` 9.1 s.** The two new scenarios erred on their first sample in that run on a harness bug (the check indexed the wire's `result`, which is a JSON string) and were re-run on the fixed check with no production change between the two trees: `offer_draw_routes` 5/5 and `offer_draw_accepted` 5/5, both 3 model calls, trajectory `[offer_draw]` on every sample. Costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The schema gained one tool and nothing collapsed; the gate is here because a changed tool list has collapsed `undo_and_replace` before.

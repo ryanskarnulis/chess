@@ -430,6 +430,86 @@ def _narrator_state_dict(ctx: ToolContext) -> dict[str, Any]:
     return state
 
 
+# What a mid-command refresh carries: the menu, and the facts that say whose it
+# is and whether there is one. Named against `_agent_state_dict`'s keys rather
+# than re-derived from the session, so the block that supersedes the opening one
+# cannot describe the position in a second vocabulary — a rename there is a
+# `KeyError` here on the first mutating command, and a test pins the
+# containment. `player_color` is in it because `new_game` can change it
+# mid-command ("new game as white and open e4"); `game_over` because it is what
+# empties the menu.
+_REFRESH_KEYS = (
+    "turn",
+    "player_color",
+    "in_check",
+    "game_over",
+    "legal_moves",
+    "captures",
+)
+
+
+def planner_board_refresh(
+    ctx: ToolContext, coordinator: TurnCoordinator
+) -> dict[str, Any] | None:
+    """The board as the planner's *next* decision inside a command must see it.
+
+    The opening state block is the only `legal_moves` the brain's loop ever
+    holds, and it is stale the moment one of the turn's own tools mutates —
+    while the planner's contract says every move it submits must be an entry of
+    that list (#282). No tool result can close the gap either: a mutation
+    reports `fen`/`turn`/`engine_move`, never the menu, and it must not report
+    the menu, because the same results are what the narrator speaks from (the
+    reason `save_game` answers with a bare `board_version`). This is the view
+    that supersedes the opening block, and it reaches the planner alone.
+
+    It carries the menu and the little that qualifies it, and deliberately not
+    the rest of the opening block. Everything else that can move inside a
+    command is already in the planner's context by the time it decides again:
+    each settings tool answers with its own new value, `save_game` with the
+    name it wrote, and every mutating tool describes what it did — `undo`
+    reports the moves it took back, `make_move` the move it made. The
+    legal-move menu is the one fact nothing reports.
+
+    `history` is the pointed omission, and it was measured: the first cut sent
+    the whole view, and `undo_twice_and_replace` went 19/20 → 4/20 (interleaved
+    blocks of five against unchanged main on one server, 2026-09-17). Every
+    miss was the same — "undo the bishop move and undo the knight move, then
+    play d4" took one exchange back and played d4 on a board still holding the
+    knight move. A history the bishop move has just left reads to a 12B as the
+    takebacks being done, so a block meant to tell the planner what it *may
+    play* was answering a question about what it had already *finished*. The
+    tool's own result says what it undid; this says what is legal now.
+
+    `None` when a reply is owed. Mid-exchange the side to move is the engine's
+    and `legal_moves` is the engine's menu, and handing a move-choosing phase
+    that menu is #193's shape one layer up — which is exactly why `make_move`'s
+    split payload reports the move and not the board it left. Nothing is lost:
+    a second player move under one turn is refused by the phase machine, and
+    the move that landed is fully described by its own result. The invariant is
+    that the planner sees a board the player is to move on, or no board at all.
+
+    Takes no lock: the command already holds `ctx.mutation_lock` while the
+    brain thinks, and that lock is not reentrant.
+    """
+    if coordinator.phase in (
+        TurnPhase.PLAYER_MOVE_APPLIED,
+        TurnPhase.AGENT_OBSERVING,
+    ):
+        return None
+    # `board_version` rides along because it is what the loop decides on: a
+    # refresh is sent when the *board* is a different one, and this is the
+    # app's counter for that. The rest of the view is here because it is the
+    # planner's own block re-read — the same dict, so the two cannot describe
+    # the position in two different vocabularies — and a fact in it that moved
+    # without the board moving (a setting, a save) is one the tool that moved
+    # it already reported. It is also the vocabulary every refusal speaks, so a
+    # rejected call's version and this block's line up.
+    state = _agent_state_dict(ctx)
+    return {"board_version": ctx.board_version} | {
+        key: state[key] for key in _REFRESH_KEYS
+    }
+
+
 def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
 
@@ -2668,6 +2748,11 @@ def create_app(
                     stop_reason = response.stop_reason
                     provider_failure = response.provider_failure
                     cost = _ModelCost.of(response)
+                    # Which boards the planner was re-shown as its own tools
+                    # moved them (#282). Stamped on `traced` directly rather
+                    # than carried through `_ModelCost`: it is not a cost, and
+                    # this is the only route that has a loop to report one.
+                    traced["state_refreshes"] = response.state_refreshes
                     # A budget stop (max_iterations / correction_limit) carries no
                     # commentary: the loop never reached a text turn. A provider
                     # stop is left empty here — what it should say depends on
