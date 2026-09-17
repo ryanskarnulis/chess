@@ -261,6 +261,21 @@ class LlamaBrain:
     # itself. Nothing is reported for a phase that does not run: a budget stop
     # and a dead provider reach no narrator, and must not claim to.
     on_phase: Callable[[str], None] | None = None
+    # The board as of *now*, asked once per planner iteration (#282). The
+    # opening state block is the only `legal_moves` this loop holds, and it
+    # ages the moment one of the turn's own tools mutates; this is how the loop
+    # is told. `None` means nobody can say — no seam wired, or a caller
+    # declining because the board is mid-exchange and its side to move is not
+    # the player's. The brain reads nothing into the dict: it compares each
+    # answer with the last one it showed and appends it when they differ, and
+    # that is the whole of the policy here. What the view holds, and when it is
+    # withheld, is app assembly's judgment (`api.planner_board_refresh`) — this
+    # class holds no session, by design.
+    #
+    # Deliberately not a `_resolve`-style field: that is read once per command
+    # (the offer must not change under a run), and this is read once per
+    # iteration, which is the point.
+    board_refresh: Callable[[], dict[str, Any] | None] | None = None
 
     def _resolve_system_prompt(self) -> str:
         """The narrator's system prompt for this request. A callable is
@@ -294,6 +309,13 @@ class LlamaBrain:
         # back — so a turn that learns nothing new can be recognized as the
         # planner's last (see `_exchange_key`).
         seen: set[tuple[str, str, str]] = set()
+        # Which board the planner has been shown. Seeded from the seam before
+        # the first turn so the first refresh fires on a real change and not
+        # merely on the seam existing, and held as the version rather than the
+        # view because the version is what says "a different board": the view
+        # also carries facts a tool can move without touching the position (a
+        # setting, a save), and those the tool's own result already reports.
+        shown = _board_version_of(self._current_board())
 
         for _ in range(self.max_iterations):
             self._report(BRAIN_PLANNING)
@@ -314,7 +336,9 @@ class LlamaBrain:
                 corrections += 1
                 if corrections > self.max_corrections:
                     return run.response("", "correction_limit")
-                messages.append({"role": "user", "content": _wire_correction(exc)})
+                _append_user(
+                    messages, {"role": "user", "content": _wire_correction(exc)}
+                )
                 continue
             except ProviderError as exc:
                 # The provider died mid-turn (audit item 20). Whatever tools
@@ -370,6 +394,23 @@ class LlamaBrain:
                 seen.add(exchange)
                 run.record(call.name, call.arguments, payload)
                 messages.append(_tool_message(call.id, payload))
+            # What the next decision is actually about (#282). Once per
+            # iteration and never per call: a refresh between two tool messages
+            # would break the contiguous answer-per-call shape the wire expects,
+            # and the decision this repairs is the next *turn's*, not the next
+            # call's. Appended rather than merged into a result, which is what
+            # keeps it the planner's alone — the narrator's brief is built from
+            # `run.tool_results` and the stall rule keys on the payload, so a
+            # fact stapled to a result would reach both (#193, `no_progress`).
+            # Before the two branches below deliberately: the message is simply
+            # never sent on a turn that returns, and the alternative is a second
+            # copy of the condition.
+            current = self._current_board()
+            version = _board_version_of(current)
+            if current is not None and version != shown:
+                _append_user(messages, _board_refresh_message(current))
+                run.show_board(version)
+                shown = version
             if schema_error:
                 corrections += 1
                 if corrections > self.max_corrections:
@@ -591,6 +632,22 @@ class LlamaBrain:
             return self.dispatcher.refusal(error, retry), True
         return self.dispatcher.dispatch(call.name, call.arguments), False
 
+    def _current_board(self) -> dict[str, Any] | None:
+        """The refresh seam's answer, and never let asking cost the turn.
+
+        The same rule `_report` and the tracer keep, and sharper here: this runs
+        on a turn whose move may already have landed, so a closure that raises
+        must degrade to the behavior that shipped before the seam existed, not
+        to a dead turn.
+        """
+        if self.board_refresh is None:
+            return None
+        try:
+            return self.board_refresh()
+        except Exception:
+            logger.warning("board_refresh_failed", exc_info=True)
+            return None
+
     def _report(self, phase: str) -> None:
         """Say which phase is starting, and never let that cost the turn — the
         same rule the tracer and the tool observer keep."""
@@ -783,6 +840,58 @@ def _tool_message(call_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# The label the board-refresh block carries. Deliberately a label and not a
+# rule: it dates the block against the opening `Board state:` by naming what
+# happened in between, and nothing more. Every measured arm that added a *fact*
+# to what this model reads made the decision worse (docs/agent-evals.md), so
+# supersession is left to recency and adjacency — the block sits immediately
+# after the tool results that caused it, which narrate the same change in their
+# own words.
+_REFRESH_LABEL = "Board state after those tool calls:"
+
+
+def _board_version_of(state: dict[str, Any] | None) -> int | None:
+    """Which board a refresh view describes, or None when there is no view.
+
+    The one key the brain reads out of the seam's answer. Everything else in
+    there is for the model, but *whether to send it at all* is a question about
+    the position, and this is the app's counter for that (`board_version`).
+    """
+    return None if state is None else state.get("board_version")
+
+
+def _board_refresh_message(state: dict[str, Any]) -> dict[str, Any]:
+    """One board refresh, as the message the planner reads it in.
+
+    A `user` message and not a `tool` one: no tool produced this, a batch of N
+    calls has no honest id for an N+1st result, and reusing the last call's id
+    would break the one-answer-per-call shape both the wire and this loop's own
+    tests keep — besides stapling board facts onto whatever happened to come
+    last in the batch. The precedent in this loop is `_wire_correction`, for
+    the same reason: the app has something to say and no call to say it under.
+    """
+    return {"role": "user", "content": f"{_REFRESH_LABEL}\n{json.dumps(state)}"}
+
+
+def _append_user(messages: list[dict[str, Any]], message: dict[str, Any]) -> None:
+    """Append one loop-authored `user` message, merging into the last one when
+    it is already the player's role.
+
+    Chat templates are within their rights to reject two consecutive user
+    turns, and the loop now has two things it can say in that role — a board
+    refresh and a schema correction — which a single iteration can produce back
+    to back. Merging keeps the rendered conversation alternating whatever order
+    they arrive in.
+    """
+    if messages and messages[-1]["role"] == "user":
+        messages[-1] = {
+            "role": "user",
+            "content": f"{messages[-1]['content']}\n\n{message['content']}",
+        }
+        return
+    messages.append(message)
+
+
 def _validate_call(
     call: ProviderToolCall, schemas: dict[str, dict[str, Any]]
 ) -> tuple[str, str] | None:
@@ -831,6 +940,7 @@ def create_llama_brain(
     planner_temperature: float | None = None,
     provider: ChatProvider | None = None,
     on_phase: Callable[[str], None] | None = None,
+    board_refresh: Callable[[], dict[str, Any] | None] | None = None,
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8200/v1).
 
@@ -859,6 +969,11 @@ def create_llama_brain(
     progress seam (`progress.py`). Passed at construction rather than assigned
     later so the brain is complete when it is handed over, and optional because
     nothing about a turn depends on anyone listening.
+
+    `board_refresh` is how the loop learns that its own tools moved the board
+    (#282) — a zero-arg callable read once per planner iteration, answering
+    `None` when nobody can say. A caller with no state injection omits it and
+    gets exactly the loop that shipped before it existed.
     """
     if provider is None:
         provider = LlamaCppProvider(base_url, model)
@@ -883,4 +998,5 @@ def create_llama_brain(
         max_corrections=max_corrections,
         planner_temperature=planner_temperature,
         on_phase=on_phase,
+        board_refresh=board_refresh,
     )

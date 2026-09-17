@@ -86,6 +86,19 @@ def test_turn_record_engine_reply_defaults_to_none():
     assert _record_fields()["engine_reply"] is None
 
 
+def test_turn_record_carries_the_boards_the_planner_was_reshown():
+    """#282. Read beside `mutations`, this is what says whether a turn that
+    moved the board went on to decide against the board it moved to."""
+    record = _record_fields(mutations=2, state_refreshes=(4, 6))
+    assert record["state_refreshes"] == [4, 6]
+
+
+def test_turn_record_state_refreshes_default_to_none_shown():
+    """A route with no loop to refresh — and a mutating turn whose board was
+    left mid-exchange — both record the empty list rather than a gap."""
+    assert _record_fields()["state_refreshes"] == []
+
+
 def test_turn_record_model_cost_defaults_to_zero():
     """A route that made no model call (a canned confirmation) still records a
     cost — zero — so a reader never has to distinguish 'free' from 'unrecorded'."""
@@ -713,3 +726,16 @@ def test_a_free_text_confirmation_bills_both_of_its_round_trips(trace_path):
     assert confirmation["route"] == "confirmation"
     assert confirmation["model_calls"] == 2
     assert confirmation["prompt_tokens"] == 350
+
+
+def test_a_brain_turn_records_the_boards_it_was_reshown(trace_path):
+    """End to end: the loop reports which boards it handed the planner, and the
+    record carries them. A mutating turn with nothing here is the #282 bug, and
+    this record is where a reviewer would see it."""
+    client, _ = make_client(
+        trace_path, AgentResponse(text="Taken back.", state_refreshes=(3,))
+    )
+    client.post("/api/command", json={"text": "undo that and play d4"})
+
+    (record,) = read_records(trace_path)
+    assert record["state_refreshes"] == [3]

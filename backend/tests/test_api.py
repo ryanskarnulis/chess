@@ -18,7 +18,12 @@ import shutil
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.api import create_app
+from chessapp.api import (
+    _REFRESH_KEYS,
+    _agent_state_dict,
+    create_app,
+    planner_board_refresh,
+)
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.engine import DEFAULT_TIER, CandidateMove, EnginePlayer
 from chessapp.game import GameSession
@@ -748,3 +753,65 @@ def test_undo_default_is_one_ply_when_the_engine_did_not_reply():
     client.post("/api/game/move", json={"move": "Re8#"})
     body = client.post("/api/game/undo", json={}).json()
     assert body["undone"] == ["Re8#"]
+
+
+# --- the planner's mid-command board view (#282) ----------------------------
+
+
+def test_the_refresh_view_is_the_planners_own_block_plus_a_version():
+    """Built off `_agent_state_dict` rather than beside it, so the block that
+    supersedes the opening one cannot describe the position in a different
+    vocabulary — and carrying the version is what lets the loop tell one board
+    from the next."""
+    ctx = ToolContext(session=GameSession())
+    coordinator = TurnCoordinator(ctx)
+
+    refresh = planner_board_refresh(ctx, coordinator)
+
+    assert refresh is not None
+    assert set(refresh) == {"board_version", *_REFRESH_KEYS}
+    assert set(_REFRESH_KEYS) <= set(_agent_state_dict(ctx)), (
+        "the refresh must name the planner block's own keys, not a second set"
+    )
+    assert refresh["board_version"] == ctx.board_version
+    assert "e4" in refresh["legal_moves"]
+
+
+def test_the_refresh_view_leaves_out_the_history():
+    """Measured, not tidied: sending it cost `undo_twice_and_replace` 19/20 →
+    4/20, every miss one takeback short. A history the last move has just left
+    reads as the takebacks being finished, and this block's job is to say what
+    is legal now — what a tool undid is that tool's result to report."""
+    ctx = ToolContext(session=GameSession())
+    coordinator = TurnCoordinator(ctx)
+
+    assert "history" not in planner_board_refresh(ctx, coordinator)
+
+
+def test_the_refresh_view_is_withheld_while_a_reply_is_owed():
+    """Mid-exchange the side to move is the engine's and `legal_moves` is the
+    engine's menu. Handing that to the phase that chooses moves is #193 one
+    layer up, so nothing is handed over at all until the turn closes."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    coordinator = TurnCoordinator(ctx)
+
+    assert planner_board_refresh(ctx, coordinator) is not None
+    coordinator.apply_player_move("e4")
+    assert planner_board_refresh(ctx, coordinator) is None
+    coordinator.collect_engine_reply()
+    coordinator.complete_turn()
+    assert planner_board_refresh(ctx, coordinator) is not None
+
+
+def test_the_refresh_view_follows_a_takeback_to_the_board_it_left():
+    """The case #282 is about: after the takeback the move that was on the
+    board is legal again, and the view says so."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    coordinator = TurnCoordinator(ctx)
+    coordinator.play_exchange("e4")
+
+    assert "e4" not in planner_board_refresh(ctx, coordinator)["legal_moves"]
+    ctx.session.undo(2)
+    coordinator.abandon_turn()
+
+    assert "e4" in planner_board_refresh(ctx, coordinator)["legal_moves"]

@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from chessapp.api import create_app
+from chessapp.api import create_app, planner_board_refresh
 from chessapp.brain import Brain
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import EnginePlayer
@@ -142,6 +142,13 @@ def build_app(
             # can see inside `get_agent_response`, and the narrator half of it
             # is the observe beat.
             on_phase=progress.brain,
+            # The board as of now, for the planner's next decision *inside* a
+            # command (#282): its opening state block is the only `legal_moves`
+            # the loop holds, and the turn's own tools can leave it describing a
+            # position that is gone. Both halves of this closure are in scope
+            # here and nowhere else — the shared context, and the one
+            # coordinator that knows whether a reply is still owed.
+            board_refresh=lambda: planner_board_refresh(ctx, coordinator),
         )
     return create_app(
         ctx,

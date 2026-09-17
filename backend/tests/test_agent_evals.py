@@ -139,7 +139,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.agent_api import reset_rate_limit
-from chessapp.api import STUCK_REPLY, create_app
+from chessapp.api import STUCK_REPLY, create_app, planner_board_refresh
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
@@ -522,6 +522,12 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         planner_prompt_provider=lambda: PLANNER_PROMPT,
         planner_temperature=PLANNER_TEMPERATURE,
         provider=provider,
+        # Wired exactly as build_app wires it, through the *same* function: the
+        # planner's mid-command view of the board is part of what is being
+        # measured, and a harness whose loop is told about its own mutations
+        # when the shipped one is not (or the reverse) measures a different
+        # agent. `test_eval_harness.py` pins that these two stay in step.
+        board_refresh=lambda: planner_board_refresh(ctx, coordinator),
     )
     # The second departure, and it is observation only: the app's existing
     # tracer seam is pointed at a list. Nothing the model sees changes — a

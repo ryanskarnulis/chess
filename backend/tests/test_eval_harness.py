@@ -985,3 +985,49 @@ def test_a_whole_game_review_is_a_verdict() -> None:
     # whole game. A description ask answered with one is the walkthrough defect
     # wearing a bigger tool.
     assert "review_game" in _VERDICT_TOOLS
+
+
+# --- the harness and the app must wire the *same* planner ---------------------
+
+
+def _brain_kwargs(monkeypatch, module, build) -> dict[str, Any]:
+    """The keyword arguments `build` hands `create_llama_brain`, without
+    building a real one."""
+    captured: dict[str, Any] = {}
+
+    def spy(**kwargs: Any):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(module, "create_llama_brain", spy)
+    build()
+    return captured
+
+
+def test_the_harness_gives_the_planner_the_same_board_refresh_assembly_does(
+    monkeypatch,
+) -> None:
+    """The mid-command board view (#282) is part of what a gate run measures:
+    a planner told its own tools moved the board decides differently from one
+    that is not. A harness wired one way and a shipped app wired the other
+    measures an agent that does not exist — the same argument `offered_tools`
+    is shared for, and the failure mode the harness-bug precedent records.
+    """
+    import chessapp.app
+    import test_agent_evals
+
+    shipped = _brain_kwargs(
+        monkeypatch,
+        chessapp.app,
+        lambda: chessapp.app.build_app(engine=FakeEngine()),
+    )
+    measured = _brain_kwargs(
+        monkeypatch,
+        test_agent_evals,
+        lambda: test_agent_evals._build_eval_app(FakeEngine()),
+    )
+
+    for wiring in (shipped, measured):
+        assert wiring["board_refresh"] is not None, "a planner that is never told"
+        view = wiring["board_refresh"]()
+        assert view is not None and "legal_moves" in view

@@ -38,6 +38,57 @@ stall: a second `undo` carries the same empty arguments as the first and pops
 a different exchange, and keying the stall on the call alone once ended
 "undo, undo, then play X" with X never played.
 
+## The planner's board, mid-command (#282, 2026-09-17)
+
+The loop is handed the board once, in its opening user message, and from there
+it only *appends* — the assistant turn and one `role: "tool"` message per call,
+so the KV prefix holds. Which meant that inside one command the planner's
+second decision was made against the first decision's `legal_moves`: "undo that
+and play e4 instead" asked it to submit a move its own list could not contain,
+while its contract says a move no entry fits is illegal and the answer is to
+say so. No tool result could close the gap — a mutation reports
+`fen`/`turn`/`engine_move` and never the menu, and it must not report the menu,
+because the same results are what the narrator speaks from (the reason
+`save_game` answers with a bare `board_version`).
+
+So the loop now asks, once per iteration, whether the board is a different one,
+and appends the planner's own state block again when it is
+(`api.planner_board_refresh` → `LlamaBrain.board_refresh`, labelled "Board
+state after those tool calls:"). Three properties are load-bearing:
+
+- **The planner's alone.** It is a message, not a result — `run.tool_results`
+  is untouched, so the narrator's brief cannot see it and `_exchange_key`'s
+  stall rule still keys on what the tools actually answered.
+- **Keyed on the board, not the view.** `board_version` decides whether to
+  send; a setting or a save that moved without the position moving is already
+  reported by the tool that moved it, and a second copy would be the ageing
+  duplicate `docs/turn-memory.md` forbids.
+- **The menu, and not the turn's own history.** The first cut sent the whole
+  opening view back, and it cost `undo_twice_and_replace` 19/20 → 4/20
+  (interleaved blocks of five against unchanged main on one server,
+  2026-09-17), every miss one takeback short: "undo the bishop move and undo
+  the knight move, then play d4" took back one exchange and played d4 on a
+  board still holding the knight move. A `history` the bishop move has just
+  left reads to a 12B as *the takebacks are done* — a block meant to say what
+  may be played was answering a question about what had been finished. Trimmed
+  to the menu and what qualifies it (`api._REFRESH_KEYS`), the same screen read
+  19/20 against 16/20. What a tool undid is that tool's result to report.
+- **Withheld mid-exchange.** `make_move` applies the player's move and stops,
+  so the board it leaves has the engine to move and the engine's legal moves.
+  Handing a move-choosing phase that menu is #193 one layer up, so while a
+  reply is owed nothing is sent at all — the invariant is that the planner sees
+  a board the player is to move on, or no board at all. Nothing is lost: a
+  second player move under one turn is refused by the phase machine.
+
+It is per-iteration, not per-call: a model that emits `[undo, make_move e4]` in
+one batch still decides blind, and a refresh between two tool messages would
+break the one-answer-per-call shape the wire keeps. `PLANNER_PROMPT` is
+unchanged — the label dates the block and nothing more, because every measured
+arm that added a *fact* to that contract made it worse. The trace records the
+board versions the planner was re-shown (`state_refreshes`), which beside
+`mutations` is what says whether a turn that moved the board went on to decide
+against it.
+
 ## The narrator's second draft (the honesty guard, 2026-09-10)
 
 Every operational claim in the narrator's text — an ending, a draw, a check, a
