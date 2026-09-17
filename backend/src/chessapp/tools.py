@@ -328,6 +328,27 @@ def _narrow_integral_floats(args: Any, schema: dict[str, Any]) -> Any:
     }
 
 
+# Who a question was put to — the surfaces a pending op can be armed for and
+# answered from (#281). The player's own surfaces are deliberately **one**
+# origin: the panel's free text, the three board buttons and the confirm dialog
+# are one person at one screen, so an op armed by a button is answered by a
+# typed "yes" and the reverse, exactly as before. Every delegate conversation is
+# its own origin, and the standalone MCP server's context is its own.
+PANEL_ORIGIN = "panel"
+MCP_ORIGIN = "mcp"
+
+
+def delegate_origin(conversation_id: int) -> str:
+    """The origin of one delegate conversation.
+
+    Per conversation and not per wire: two threads on the delegate API are two
+    conversations with the player, and a question asked in one is not standing
+    in the other — which is the whole of #281, where a "yes" posted to a thread
+    that had never been asked ended the game.
+    """
+    return f"delegate:{conversation_id}"
+
+
 @dataclass(frozen=True)
 class PendingOp:
     """A destructive call that was refused, held for the player to confirm.
@@ -336,11 +357,19 @@ class PendingOp:
     `ToolContext.live_pending`): a "yes" is an answer to a position, and the
     position is part of the question rather than something the answer has to
     be trusted to still match.
+
+    `origin` is the other half of the same idea (#281): a question is asked in a
+    conversation, on a surface, and only that one can answer it. Stamped by the
+    gate off `ToolContext.origin`, which the calling surface declares on its way
+    in; the board version alone could never catch a foreign answer, because
+    nothing has to move between a question asked in one conversation and a "yes"
+    typed into another.
     """
 
     name: str
     args: dict[str, Any]
     board_version: int
+    origin: str
 
 
 @dataclass
@@ -361,6 +390,17 @@ class ToolContext:
     `confirm_pending` is the sole thing that turns it on, so nothing the model
     can emit opens the gate.
 
+    `origin` is **whose interaction is running right now**, and the one
+    invariant it rests on: every surface that can reach the gate declares itself
+    here on the way in, while it holds `mutation_lock` — the panel pipeline and
+    the buttons set `PANEL_ORIGIN`, a delegate turn sets `delegate_origin(id)`,
+    the MCP call wrapper sets `MCP_ORIGIN`. Commands are serialized under that
+    lock, so a single "current origin" is never two things at once, and the gate
+    stamps it onto the op it arms (#281). It defaults to the panel because that
+    is the surface a bare `ToolContext` belongs to; an op is *answered* through
+    an origin passed explicitly rather than read from here, so a surface that
+    forgot to declare itself can still never answer another's question.
+
     `board_version` and `mutation_lock` are the concurrency pair (audit item 7):
     the version says *which* board a client is acting on, the lock is what makes
     checking it and acting on it one indivisible step. Both live here rather
@@ -374,6 +414,7 @@ class ToolContext:
     settings: Settings = field(default_factory=Settings)
     transcript: Transcript = field(default_factory=Transcript)
     pending: PendingOp | None = None
+    origin: str = PANEL_ORIGIN
     _confirming: bool = False
     # Carried across session swaps so the version never goes backwards; see
     # `replace_session`. Not a public counter — `board_version` is.
@@ -411,8 +452,9 @@ class ToolContext:
         """
         return self._version_base + self.session.revision
 
-    def live_pending(self) -> PendingOp | None:
-        """The armed destructive op, if it is still about the board on screen.
+    def live_pending(self, origin: str | None = None) -> PendingOp | None:
+        """The armed destructive op, if `origin` is the one it was asked of and
+        it is still about the board on screen.
 
         A confirmation is an answer to a *question about a position* — "this
         game, the one in front of you, thrown away?" — so the position belongs
@@ -426,9 +468,27 @@ class ToolContext:
 
         Live, this was reachable in three keystrokes: "I resign" (the gate asks),
         a dragged move, then "yes" — and a game two plies further on ended.
+
+        It is equally a question *asked in a conversation* (#281), and that half
+        no board version can catch: nothing has to move between "I resign" in one
+        delegate thread and a "yes" posted to another, or typed into the web
+        panel, and all three used to run it. So an op armed for another origin is
+        not this caller's to answer — and not this caller's to *drop* either: it
+        reads as None with `pending` untouched, because a click on a button with
+        nothing of its own to confirm is not a new command and must leave another
+        surface's standing question alone. (What does drop it is the next command
+        from any origin, which disarms on its way in exactly as it always has.)
+
+        `origin=None` reads without answering — "what is armed at all, stale ones
+        aside" — which is what the tests and the eval harness want. It cannot run
+        anything: `confirm_pending` takes an origin of its own and re-reads
+        through here, so the key is never held by a caller that did not name
+        itself.
         """
         pending = self.pending
         if pending is None:
+            return None
+        if origin is not None and pending.origin != origin:
             return None
         if pending.board_version != self.board_version:
             self.pending = None
@@ -537,22 +597,25 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
 
 
 def confirm_pending(
-    registry: "ToolRegistry", ctx: ToolContext
+    registry: "ToolRegistry", ctx: ToolContext, origin: str
 ) -> tuple[str, dict[str, Any]] | None:
     """Run the armed destructive op, with the gate open. Returns
-    `(name, result)`, or None when nothing is armed.
+    `(name, result)`, or None when nothing is armed for `origin`.
 
     The only way past `_gate`. The pipeline calls this — and only after the
     player themselves answered yes on a *new* turn — which is what makes the
     confirmation deterministic: by this point there is nothing left to decide,
     so no model call stands between the yes and the reset.
 
-    Reads through `live_pending`, so an op about a board that has since moved is
-    dropped rather than run: this is the last gate before a game is thrown away,
-    and it owes its callers that check rather than trusting each of them to have
-    made it.
+    Reads through `live_pending`, so an op about a board that has since moved,
+    or one another origin was asked about, is dropped rather than run: this is
+    the last gate before a game is thrown away, and it owes its callers both
+    checks rather than trusting each of them to have made them. `origin` is the
+    answering surface's own (`PANEL_ORIGIN`, `delegate_origin(id)`,
+    `MCP_ORIGIN`) and is required for that reason — the key is never handed to a
+    caller that did not say who it is.
     """
-    pending = ctx.live_pending()
+    pending = ctx.live_pending(origin)
     if pending is None:
         return None
     ctx.pending = None
@@ -1438,7 +1501,8 @@ def build_registry(
         interaction (`TurnCoordinator.begin_command`): a button press or an MCP
         call is its own interaction, and across interactions the newest question
         is the one a yes answers — the previous one was disarmed as the new
-        command went past.
+        command went past. *Who* may give that yes is the other stamp the arm
+        below carries (`PendingOp.origin`).
 
         The gate stands aside when there is no game to lose — it guards the
         *player's* investment, not the idea of a game. That is true once it is
@@ -1471,8 +1535,15 @@ def build_registry(
                 RETRY_NEVER,
                 pending=armed.name,
             )
+        # Stamped with *both* halves of the question: the board it is about, and
+        # the origin it is being put to (`ToolContext.origin`, declared by
+        # whichever surface opened this interaction). Only that origin can
+        # answer it, and only while that board is still on screen.
         ctx.pending = PendingOp(
-            name=name, args=dict(args), board_version=ctx.board_version
+            name=name,
+            args=dict(args),
+            board_version=ctx.board_version,
+            origin=ctx.origin,
         )
         # `never`, and it is the sharpest example of why the key earns its
         # place: the refusal is not a failure to fix but a question to relay,

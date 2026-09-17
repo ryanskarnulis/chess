@@ -71,6 +71,7 @@ def turn_record(
     *,
     utterance: str,
     route: str,
+    origin: str = "",
     commentary: str,
     stop_reason: str,
     changed: bool,
@@ -168,6 +169,13 @@ def turn_record(
     a slow planner and a slow narrator are different problems, and the turn's
     total cannot tell them apart.
 
+    `origin` is which surface the interaction came from — `tools.PANEL_ORIGIN`
+    for the panel and its buttons, `tools.delegate_origin(id)` for one delegate
+    conversation — empty only on a record built without one. It is the field a
+    confirmation bug is read off: a "yes" that ran a question asked in another
+    thread (#281) looks identical to a legitimate one until the two records name
+    their origins.
+
     The three fields that say *which* turn this was, and how much of the board
     it moved:
 
@@ -185,6 +193,7 @@ def turn_record(
     return {
         "utterance": utterance,
         "route": route,
+        "origin": origin,
         "commentary": commentary,
         "stop_reason": stop_reason,
         "provider_failure": provider_failure,

@@ -897,6 +897,24 @@ def _measured(
     )
 
 
+def _answer_in_the_same_conversation(app: EvalApp, text: str) -> Any:
+    """Say something more in the delegate thread this sample is having.
+
+    How a scenario answers a confirmation it armed: the question belongs to the
+    conversation it was asked in (#281), so the yes goes back to that thread
+    rather than to a fresh one or to the web panel — either of which the
+    pipeline reads as a new utterance and disarms on its way past, never as an
+    answer. Each sample runs on a fresh app and `_run` opens exactly one
+    conversation on it, so there is never a choice to make here.
+    """
+    [conversation] = app.client.get("/api/agent/conversations").json()
+    return app.client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"content": text},
+        timeout=_REQUEST_TIMEOUT,
+    )
+
+
 def _run_once(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
     """One sample, for a scenario that only takes one — and the two ways such a
     sample can be worthless.
@@ -1378,8 +1396,9 @@ def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:
     )
 
     # The other half of the gate: the answer. Deterministic — no model call
-    # stands between the player's yes and the reset.
-    app.client.post("/api/command", json={"text": "yes"})
+    # stands between the player's yes and the reset. In the conversation the
+    # question was asked in, because that is where it can be answered (#281).
+    _answer_in_the_same_conversation(app, "yes")
 
     assert app.ctx.session.move_history() == [], "confirmed: the game really resets"
     assert app.ctx.pending is None
@@ -3462,16 +3481,15 @@ def test_eval_save_then_new_game(engine: EnginePlayer, tmp_path: Any) -> None:
 
         # The other half of the gate, and it is deterministic: no model call
         # stands between the player's yes and the reset. Metered separately —
-        # the sample's own cost was already recorded by `_measured`.
+        # the sample's own cost was already recorded by `_measured`. Said in the
+        # conversation that was asked, since that is the only place it is an
+        # answer rather than a fresh utterance (#281).
         app.provider.reset()
-        answered = app.client.post("/api/command", json={"text": "yes"})
+        answered = _answer_in_the_same_conversation(app, "yes")
         assert answered.status_code == 200, answered.text
-        ran = [
-            entry
-            for entry in answered.json()["tool_results"]
-            if entry["name"] == "new_game" and entry["result"].get("ok") is True
-        ]
-        assert len(ran) == 1, f"expected exactly one reset: {answered.json()}"
+        reply = answered.json()["assistant_message"]
+        ran = _succeeded(reply, "new_game")
+        assert len(ran) == 1, f"expected exactly one reset: {_trajectory(reply)}"
         assert app.ctx.session.move_history() == [], "confirmed: the game resets"
         assert app.ctx.session.player_color == "white", "the side is not the ask"
         assert app.ctx.pending is None

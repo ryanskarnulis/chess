@@ -155,11 +155,37 @@ moved under it or the computation failed.
   acquired off the event loop). MCP serializes on the same lock instead of a
   schema param (the tool schema is frozen by the eval floor). The brain never
   sees a version.
-- **An armed destructive op is a question about a position**: `PendingOp`
-  carries the `board_version` it was armed against (re-stamped where the
-  command closes, since the gate arms mid-turn), and all three answering
-  surfaces read it through `ctx.live_pending()`, which drops a stale one — so
-  a "yes" can never answer a question about a board that has since moved.
+- **An armed destructive op is a question about a position, asked in a
+  conversation**: `PendingOp` carries both, and all three answering surfaces
+  read it through `ctx.live_pending(origin)`, which returns it only if both
+  still hold.
+  - *The position*: the `board_version` it was armed against (re-stamped where
+    the command closes, since the gate arms mid-turn). A stale one is dropped
+    where the answer is read — so a "yes" can never answer a question about a
+    board that has since moved.
+  - *The conversation* (#281): the `origin` the gate stamped off
+    `ToolContext.origin`, which each surface declares on its way in, under the
+    mutation lock. Three of them. **`panel`** is the player's own screen —
+    `/api/command`, the three board buttons and `/api/game/confirm` are one
+    origin on purpose, so a question asked by a button is still answered by a
+    typed "yes" and the reverse. **`delegate:<conversation id>`** is one thread
+    on the delegate API, never the wire as a whole. **`mcp`** is the standalone
+    server's own context, which asks and answers inside a single call
+    (elicitation), so the rule costs that surface nothing.
+  - *An answer from another origin is not an answer at all*: it is a new
+    command, and every command from any origin disarms what is pending on its
+    way in, exactly as it always has. So the words are never shown to the
+    free-text reader and travel on as an ordinary utterance — and the origin
+    that *was* asked no longer has a question to answer either, because the
+    intervening command dropped it. The alternative, leaving a foreign op armed
+    across other origins' commands, was rejected: the gate would then refuse a
+    conversation that never asked ("a confirmation is already pending"), and
+    `restamp_pending` at the end of the other origin's command would re-point
+    the question at a board it was never about. A *button* click is not a
+    command, so it neither answers nor disarms a delegate's question — it is
+    the same 409 a click with nothing armed gets.
+  - The interaction's origin is on the turn record (`trace.turn_record`), which
+    is the only thing that tells two identical-looking "yes" turns apart.
 
 ## Live progress
 

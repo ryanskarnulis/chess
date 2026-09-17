@@ -434,7 +434,8 @@ class HeldPipeline:
     """A `run_command` double that parks the one run it is told to hold.
 
     Records `(text, transcript)` per call, so a test can assert both *when* a
-    run started and what history it was replayed.
+    run started and what history it was replayed, and `origins` keeps the
+    conversation each run was tagged with (`tools.delegate_origin`).
     """
 
     def __init__(self, hold: str) -> None:
@@ -442,9 +443,13 @@ class HeldPipeline:
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
         self.calls: list[tuple[str, list[dict[str, str]]]] = []
+        self.origins: list[str] = []
 
-    async def __call__(self, text, transcript, version=None) -> CommandOutcome:
+    async def __call__(
+        self, text, transcript, version=None, *, origin
+    ) -> CommandOutcome:
         self.calls.append((text, list(transcript)))
+        self.origins.append(origin)
         if text == self._hold:
             self.entered.set()
             await self.release.wait()
@@ -577,6 +582,9 @@ async def test_a_held_exchange_does_not_block_a_different_conversation():
 
     assert [m.role for m in store.get(other_thread).messages] == ["user", "assistant"]
     assert [m.role for m in store.get(held_thread).messages] == ["user", "assistant"]
+    # Two threads, two origins: what a destructive confirmation armed in one of
+    # them is bound to (#281, `tools.delegate_origin`).
+    assert pipeline.origins == [f"delegate:{held_thread}", f"delegate:{other_thread}"]
 
 
 async def test_a_thread_deleted_while_a_message_waits_404s():

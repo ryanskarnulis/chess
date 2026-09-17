@@ -35,7 +35,12 @@ from mcp.types import (
 
 from chessapp.game import GameSession
 from chessapp.mcp_server import _declares_form_elicitation, build_mcp_server
-from chessapp.tools import CONFIRM_QUESTIONS, ToolContext, build_registry
+from chessapp.tools import (
+    CONFIRM_QUESTIONS,
+    MCP_ORIGIN,
+    ToolContext,
+    build_registry,
+)
 from fakes import FakeEngine
 
 # --- schema-equivalence normalization (same normalizations as slice 3's
@@ -300,6 +305,28 @@ async def test_a_gated_call_asks_the_human_the_apps_own_question_and_a_yes_runs_
     assert result["confirmed"] is True
     assert ended(ctx, result)
     assert ctx.pending is None
+
+
+async def test_this_server_asks_and_answers_its_own_question():
+    """The origin half of the gate, on this surface (#281): a gated call here
+    arms the op for *MCP*, and the human's yes is answered as MCP. The whole
+    exchange lives inside one call on this process's own context, so the rule
+    costs this surface nothing — and a pending op armed elsewhere could never
+    be run by a form answered here.
+    """
+    ctx = _invested(ToolContext(session=GameSession(), engine=FakeEngine()))
+    armed: list[Any] = []
+
+    async def human(context: Any, params: Any) -> ElicitResult:
+        armed.append(ctx.pending)  # captured while the question is open
+        return ElicitResult(action="accept", content={"confirm": True})
+
+    async with mcp_client(ctx, elicitation_callback=human) as client:
+        result = await _call(client, "resign", {})
+
+    assert [op.origin for op in armed] == [MCP_ORIGIN]
+    assert result["ok"] is True and result["confirmed"] is True
+    assert ctx.session.is_game_over()
 
 
 @pytest.mark.parametrize(

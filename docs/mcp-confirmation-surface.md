@@ -54,11 +54,15 @@ gated tools are unreachable on a game in progress, and the refusal's text —
 - **The MCP module is transport wiring.** Game truth, the gate and the budget
   stay in `tools.py` and `coordinator.py`; whatever confirms on MCP is a
   caller of `confirm_pending`, exactly as `/api/game/confirm` is.
-- **A confirmation is an answer about a position.** `PendingOp` carries the
-  board version it was armed against and `confirm_pending` reads it through
-  `live_pending`, so a yes cannot run an op about a board that has since moved.
-  Whatever the surface, the answer is applied under `ctx.mutation_lock` with
-  that check, as the web dialog's is.
+- **A confirmation is an answer about a position, put to one surface.**
+  `PendingOp` carries the board version it was armed against *and* the origin
+  it was asked of (#281), and `confirm_pending` reads both through
+  `live_pending`: a yes cannot run an op about a board that has since moved,
+  nor one another surface was asked about. This server's calls declare
+  `tools.MCP_ORIGIN`, so a question it arms is answered by the form it opened
+  and by nothing else — and the whole exchange happens inside one call, so the
+  origin rule costs this surface nothing. Whatever the surface, the answer is
+  applied under `ctx.mutation_lock` with those checks, as the web dialog's is.
 
 ## Options considered
 

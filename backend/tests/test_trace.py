@@ -152,6 +152,18 @@ def test_turn_record_engine_failure_and_error_default_to_none_named():
     assert record["error"] == ""
 
 
+def test_turn_record_names_the_surface_the_interaction_came_from():
+    """Which surface said it — and the field a confirmation bug is read off: a
+    "yes" that answered a question asked in another conversation (#281) looks
+    identical to a legitimate one until the two records name their origins."""
+    record = _record_fields(origin="delegate:3")
+    assert record["origin"] == "delegate:3"
+
+
+def test_turn_record_origin_defaults_to_none_named():
+    assert _record_fields()["origin"] == ""
+
+
 # --- what a turn records ----------------------------------------------------
 
 
@@ -635,6 +647,19 @@ def test_a_claim_draw_button_is_traced_like_the_other_controls(trace_path):
     assert confirmed["utterance"] == "claim_draw"
     assert confirmed["changed"] is True
     assert confirmed["tools"][0]["result"]["outcome"]["result"] == "1/2-1/2"
+
+
+def test_the_players_own_surfaces_record_one_origin(trace_path):
+    """A spoken turn and a button press are the same person at the same screen,
+    and the record says so — which is what makes an origin that is *not* the
+    panel (a delegate conversation) worth reading (#281). The delegate half is
+    in `test_confirmation_origin.py`, where the router is already wired up."""
+    client, _ = _in_progress(trace_path, engine=FakeEngine("e7e5"))
+    client.post("/api/command", json={"text": "Nc6"})
+    client.post("/api/game/resign", json={})
+    spoken, clicked = read_records(trace_path)
+    assert spoken["origin"] == "panel"
+    assert clicked["origin"] == "panel"
 
 
 def test_a_control_record_carries_the_turn_it_answered_in(trace_path):

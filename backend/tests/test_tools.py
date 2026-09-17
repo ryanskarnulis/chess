@@ -18,6 +18,8 @@ from chessapp.game import GameSession
 from chessapp.tools import (
     BOARD_STATE_TOOLS,
     GAME_SAVE_DIRNAME,
+    MCP_ORIGIN,
+    PANEL_ORIGIN,
     Settings,
     Tool,
     ToolContext,
@@ -25,6 +27,7 @@ from chessapp.tools import (
     brain_tool_exclusions,
     build_registry,
     confirm_pending,
+    delegate_origin,
     saved_game_names,
 )
 from fakes import FakeEngine
@@ -1362,7 +1365,7 @@ def test_new_game_resets(session):
     registry.dispatch("make_move", {"move": "e4"})
 
     registry.dispatch("new_game", {})
-    _, result = confirm_pending(registry, ctx)
+    _, result = confirm_pending(registry, ctx, PANEL_ORIGIN)
 
     assert result["ok"] is True
     assert session.move_history() == []
@@ -1380,7 +1383,7 @@ def test_resign_defaults_to_the_player_not_the_side_to_move(session):
     assert session.turn == "black" and session.player_color == "white"
 
     registry.dispatch("resign", {})
-    _, result = confirm_pending(registry, ctx)
+    _, result = confirm_pending(registry, ctx, PANEL_ORIGIN)
 
     assert result["ok"] is True
     assert result["outcome"] == {
@@ -1433,7 +1436,7 @@ def test_claim_draw_reports_the_rule_the_claim_landed_under():
     registry = build_registry(ctx)
     registry.dispatch("claim_draw", {})  # gated: a real game is on the board
 
-    _, result = confirm_pending(registry, ctx)
+    _, result = confirm_pending(registry, ctx, PANEL_ORIGIN)
 
     assert result["outcome"]["termination"] == "threefold_repetition"
 
@@ -2050,7 +2053,7 @@ def test_the_requested_side_survives_the_confirmation_gate():
     assert refused["ok"] is False
     assert session.player_color == "white", "the gate must not mutate"
 
-    name, result = confirm_pending(registry, ctx)
+    name, result = confirm_pending(registry, ctx, PANEL_ORIGIN)
 
     assert name == "new_game"
     assert result["ok"] is True
@@ -2113,7 +2116,7 @@ def test_confirm_pending_executes_the_armed_op(session):
     registry = build_registry(ctx)
     registry.dispatch("new_game", {})
 
-    name, result = confirm_pending(registry, ctx)
+    name, result = confirm_pending(registry, ctx, PANEL_ORIGIN)
 
     assert name == "new_game"
     assert result["ok"] is True
@@ -2123,7 +2126,7 @@ def test_confirm_pending_executes_the_armed_op(session):
 
 def test_confirm_pending_with_nothing_armed_is_a_no_op(session, registry):
     ctx = ToolContext(session=session)
-    assert confirm_pending(build_registry(ctx), ctx) is None
+    assert confirm_pending(build_registry(ctx), ctx, PANEL_ORIGIN) is None
 
 
 # One question per command (decided 2026-09-05). Two refusals in one command
@@ -2167,7 +2170,7 @@ def test_the_yes_runs_the_op_the_player_was_asked_about():
     registry.dispatch("new_game", {})
     registry.dispatch("resign", {})
 
-    name, result = confirm_pending(registry, ctx)
+    name, result = confirm_pending(registry, ctx, PANEL_ORIGIN)
 
     assert name == "new_game" and result["ok"] is True
     assert ctx.session.move_history() == [], "the reset ran"
@@ -2277,7 +2280,7 @@ def test_a_confirmed_claim_draw_ends_the_game(session):
         session.submit_move(san)
     registry.dispatch("claim_draw", {})
 
-    name, result = confirm_pending(registry, ctx)
+    name, result = confirm_pending(registry, ctx, PANEL_ORIGIN)
 
     assert name == "claim_draw"
     assert result["ok"] is True
@@ -2331,7 +2334,7 @@ def test_confirm_pending_will_not_run_an_op_about_another_board(session):
     registry.dispatch("resign", {"color": "white"})
     ctx.session.submit_move("Nf3")
 
-    assert confirm_pending(registry, ctx) is None
+    assert confirm_pending(registry, ctx, PANEL_ORIGIN) is None
     assert not ctx.session.is_game_over()
 
 
@@ -2354,6 +2357,83 @@ def test_restamping_nothing_is_a_no_op(session):
     ctx = ToolContext(session=session)
     ctx.restamp_pending()
     assert ctx.pending is None
+
+
+# A question is asked *in a conversation* as well as about a position (#281).
+# The board version could never catch a foreign answer — nothing has to move
+# between "I resign" in one delegate thread and a "yes" said in another — so the
+# op carries the origin the gate armed it for, and only that one can answer it.
+# The pipeline's half of this is `test_confirmation_origin.py`.
+
+
+def test_an_armed_op_records_the_origin_that_was_asked(session):
+    """Whatever the surface declared on the context is what the gate stamps:
+    the op belongs to the interaction that raised it."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    ctx.origin = delegate_origin(7)
+    registry = build_registry(ctx)
+
+    registry.dispatch("resign", {"color": "white"})
+
+    assert ctx.pending is not None
+    assert ctx.pending.origin == "delegate:7"
+
+
+def test_a_bare_context_arms_for_the_panel(session):
+    """The default origin is the player's own screen, which is what a context
+    built without a surface declaring itself belongs to."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    registry = build_registry(ctx)
+
+    registry.dispatch("resign", {"color": "white"})
+
+    assert ctx.pending.origin == PANEL_ORIGIN
+
+
+def test_live_pending_answers_only_the_origin_that_was_asked(session):
+    """The read that makes the stamp matter, and the one thing it must *not* do:
+    a foreign origin gets nothing, and the question it was not asked is still
+    standing for the origin that was."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    ctx.origin = delegate_origin(1)
+    registry = build_registry(ctx)
+    registry.dispatch("resign", {"color": "white"})
+
+    assert ctx.live_pending(PANEL_ORIGIN) is None
+    assert ctx.live_pending(delegate_origin(2)) is None
+    assert ctx.live_pending(MCP_ORIGIN) is None
+    assert ctx.pending is not None, "a foreign read answers nothing and drops nothing"
+    assert ctx.live_pending(delegate_origin(1)) is not None
+
+
+def test_live_pending_without_an_origin_reads_without_answering(session):
+    """The inspection read — what is armed at all, stale ones aside. It cannot
+    run anything: `confirm_pending` takes an origin of its own."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    ctx.origin = delegate_origin(1)
+    registry = build_registry(ctx)
+    registry.dispatch("resign", {"color": "white"})
+
+    assert ctx.live_pending() is ctx.pending
+
+
+def test_confirm_pending_will_not_run_another_origins_op(session):
+    """The last gate before a game is thrown away checks both halves of the
+    question itself, exactly as it checks the board."""
+    ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
+    ctx.origin = delegate_origin(1)
+    registry = build_registry(ctx)
+    registry.dispatch("resign", {"color": "white"})
+
+    assert confirm_pending(registry, ctx, PANEL_ORIGIN) is None
+    assert confirm_pending(registry, ctx, delegate_origin(2)) is None
+    assert not ctx.session.is_game_over()
+    assert ctx.pending is not None, "still the question conversation 1 was asked"
+
+    name, result = confirm_pending(registry, ctx, delegate_origin(1))
+
+    assert name == "resign" and result["ok"] is True
+    assert ctx.session.is_game_over()
 
 
 def test_new_game_after_game_over_needs_no_confirmation(session, registry):

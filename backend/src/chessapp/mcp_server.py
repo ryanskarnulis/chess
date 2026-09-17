@@ -54,6 +54,7 @@ from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.tools import (
     CONFIRM_QUESTIONS,
+    MCP_ORIGIN,
     PendingOp,
     ToolContext,
     ToolRegistry,
@@ -205,8 +206,15 @@ async def _confirm(
         with ctx.mutation_lock:
             # Identity, not name: the yes answers *this* question. A later call
             # that armed its own question replaced this one, and a board that
-            # moved is caught one layer down, in `live_pending`.
-            confirmed = confirm_pending(registry, ctx) if ctx.pending is armed else None
+            # moved is caught one layer down, in `live_pending` — as is a
+            # question that belongs to another surface entirely, which on this
+            # process cannot happen and is checked anyway, since this is the
+            # last gate before a game is thrown away.
+            confirmed = (
+                confirm_pending(registry, ctx, MCP_ORIGIN)
+                if ctx.pending is armed
+                else None
+            )
         if confirmed is None:
             return registry.refusal(
                 f"{armed.name} did not run: the question is no longer the one "
@@ -264,6 +272,10 @@ def _mcp_tool(
         mcp: Context | None = kwargs.pop(_CONTEXT_KWARG, None)
         armed_before = ctx.pending
         with ctx.mutation_lock:
+            # This surface declaring itself, exactly as the panel and the
+            # delegate route do: an op the gate arms below is armed for MCP, and
+            # `_confirm` is the only thing that can answer it (#281).
+            ctx.origin = MCP_ORIGIN
             result = registry.dispatch(name, kwargs)
         armed = ctx.pending
         if armed is None or armed is armed_before:
