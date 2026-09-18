@@ -21,6 +21,8 @@ from fastapi.testclient import TestClient
 from chessapp.api import (
     _REFRESH_KEYS,
     _agent_state_dict,
+    _relative_outcome,
+    _verified_facts,
     create_app,
     planner_board_refresh,
 )
@@ -815,3 +817,55 @@ def test_the_refresh_view_follows_a_takeback_to_the_board_it_left():
     coordinator.abandon_turn()
 
     assert "e4" in planner_board_refresh(ctx, coordinator)["legal_moves"]
+
+
+# --- the ending, from the player's side (astra audit F7, #287) ------------------
+#
+# `GameSession.outcome()` names a color; the guard's winner fact and the trace
+# both want the player's side of it, and a resignation is session state the
+# board never shows. One helper answers both.
+
+
+def _mated(player_color: str) -> ToolContext:
+    ctx = ToolContext(session=GameSession(player_color=player_color))
+    for san in ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#"):
+        assert ctx.session.submit_move(san).legal
+    return ctx
+
+
+def test_a_live_board_has_no_outcome():
+    ctx = ToolContext(session=GameSession())
+    assert _relative_outcome(ctx.session) is None
+    facts = _verified_facts(ctx, [], None, ctx.session.fen())
+    assert (facts.ended, facts.winner, facts.termination) == (False, None, None)
+
+
+@pytest.mark.parametrize(
+    "player_color, winner", [("white", "player"), ("black", "opponent")]
+)
+def test_a_checkmate_is_read_from_the_players_side(player_color, winner):
+    ctx = _mated(player_color)
+    assert _relative_outcome(ctx.session) == {
+        "winner": winner,
+        "termination": "checkmate",
+    }
+    facts = _verified_facts(ctx, [], None, ctx.session.fen())
+    assert (facts.ended, facts.winner, facts.termination) == (True, winner, "checkmate")
+
+
+def test_a_resignation_names_the_side_that_did_not_resign():
+    ctx = ToolContext(session=GameSession())
+    ctx.session.submit_move("e4")
+    ctx.session.submit_move("e5")
+    ctx.session.resign("white")  # the player
+    facts = _verified_facts(ctx, [], None, ctx.session.fen())
+    assert (facts.winner, facts.termination) == ("opponent", "resignation")
+
+
+def test_an_agreed_draw_has_no_winner():
+    ctx = ToolContext(session=GameSession())
+    ctx.session.submit_move("e4")
+    ctx.session.submit_move("e5")
+    ctx.session.agree_draw()
+    facts = _verified_facts(ctx, [], None, ctx.session.fen())
+    assert (facts.drawn, facts.winner, facts.termination) == (True, None, "agreement")

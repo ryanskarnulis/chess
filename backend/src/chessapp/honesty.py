@@ -247,10 +247,22 @@ class VerifiedFacts:
     "taken that queen" perfectly. Live it backed exactly nothing — the engine
     said Qxe2 was the better move, Qxe2 takes a pawn, and the narration called
     it a queen (walkthrough #5).
+
+    `winner` and `termination` are the two halves of an ending that `ended`
+    alone cannot tell apart, read off the session's outcome: who won, from the
+    player's side (`"player"`, `"opponent"`, or `None` for a draw or a game
+    still running), and how (`game.py`'s vocabulary — `checkmate`,
+    `resignation`, `agreement`, `stalemate`, ...). `ended` licenses the words;
+    these decide *which* words (astra audit F7, #287). Both default to unknown,
+    and on a finished game an unknown termination fails closed like every other
+    missing fact: a `new_game` that really ran sets `ended` with no outcome
+    behind it, and "checkmate" said over a fresh board is a lie.
     """
 
     ended: bool = False
     drawn: bool = False
+    winner: str | None = None
+    termination: str | None = None
     check: bool = False
     captured_by_player: frozenset[str] = frozenset()
     captured_by_opponent: frozenset[str] = frozenset()
@@ -759,19 +771,76 @@ class _ClaimClass:
     hedges: re.Pattern[str] | None = _FUTURE
 
 
-# The ending class deliberately does not tell the winner from the termination:
-# every match is checked against the one `facts.ended` boolean, so "you win by
-# checkmate" passes on a game the player lost by resignation (audit 2026-09-05,
-# §"Result shapes, honesty limits, and prompts"). Left as it is on purpose. The
-# class exists for the ending that *never happened* — "Word. Game over." on a
-# live board, which is the lie the traces actually showed and the worst thing
-# the app can say — and a game that really ended is already the smaller error.
-# Widening it to winner and termination means two more facts to assemble and
-# two more classes that can misread trash talk, and it waits for a trace corpus
-# showing the wider lie. Nothing here is a substitute for that evidence.
+# The winner and the termination, as words the ending and draw classes already
+# read. Nothing here is new regex surface: every alternative is lifted from
+# `_CLAIMS` or `_DRAW`, and the class defers to `facts.ended` on a live board
+# (below), so the only sentences it can newly touch are spoken over a finished
+# game — where who won and how are deterministic. The named groups are what
+# `_outcome_matches` reads: a termination word, or a subject and what it did.
+_OUTCOME = re.compile(
+    r"""
+    \b(?: (?P<kind> checkmate | stalemate )
+        | (?: it | that ) (?: 's | \s+ is ) \s+ (?P<mate> mate )
+        | (?P<subject> i | you ) \s+ (?P<verb> win | won | lose | lost )
+        | (?P<resigner> i | you ) \s+ (?P<resign> resign (?: ed | s )? )
+        | (?P<resigned> resign (?: s | ed | ing ) )
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _outcome_matches(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    """True when the ending this sentence describes is the one that happened.
+
+    On a live board the answer is yes: the lie there is that the game ended
+    at all, and the ending class already owns it — two classes firing on one
+    sentence would hand the narrator two corrections for one fact. On a
+    finished game the termination word has to be the termination ("checkmate"
+    over a resignation is wrong), and an owned verb has to point at the
+    winner. Glitch is speaking, so "I" is the opponent and "you" the player:
+    "you win", "I lost" and "I resigned" all say the player won; "I win",
+    "you lost" and "you resigned" all say the player did not. A draw has no
+    winner, so either claim of one is unbacked there. An unknown termination
+    on a finished game fails closed (see `VerifiedFacts`).
+    """
+    if not facts.ended:
+        return True
+    if facts.termination is None:
+        return False
+    said = match.groupdict()
+    kind = (said["kind"] or "").lower()
+    if said["mate"]:
+        kind = "checkmate"
+    if said["resign"] or said["resigned"]:
+        kind = "resignation"
+    if kind and facts.termination != kind:
+        return False
+    subject = (said["subject"] or said["resigner"] or "").lower()
+    if not subject:
+        return True
+    speaker = "opponent" if subject == "i" else "player"
+    other = "player" if speaker == "opponent" else "opponent"
+    verb = (said["verb"] or "").lower()
+    if verb in ("win", "won"):
+        return facts.winner == speaker
+    return facts.winner == other  # lose, lost, or resigned
+
+
+# The ending class checks one boolean, `facts.ended`, and exists for the ending
+# that *never happened* — "Word. Game over." on a live board, the lie the traces
+# actually showed and the worst thing the app can say. Until 2026-09-18 it was
+# deliberately the only ending check, so "you win by checkmate" passed on a game
+# the player lost by resignation (audit 2026-09-05, §"Result shapes, honesty
+# limits, and prompts"; astra audit F7, #287). The outcome class is that gap
+# closed on the terms the old note set: no new words to misread trash talk with,
+# and the false-positive measurement — `test_honesty.py`'s labeled corpus of
+# finished-game commentary and the deployed-trace sweep in docs/agent-evals.md —
+# taken before it shipped.
 _CLAIM_CLASSES = (
     _ClaimClass("ending", _CLAIMS, lambda match, facts: facts.ended, hedges=None),
     _ClaimClass("draw", _DRAW, lambda match, facts: facts.drawn),
+    _ClaimClass("outcome", _OUTCOME, _outcome_matches),
     _ClaimClass("capture", _CAPTURE, _capture_happened, hedges=_CAPTURE_HEDGES),
     _ClaimClass("check", _CHECK, lambda match, facts: facts.check),
     _ClaimClass("move", _SAN_CLAIM, _move_happened),
@@ -932,11 +1001,45 @@ def _material_fact(item: Unverified, facts: VerifiedFacts) -> str:
     return f"The player is down {pawns} right now, so you are up {pawns}."
 
 
+# How a game ends, in the words the narrator is handed. `game.py`'s ids are
+# the keys; anything unlisted (a python-chess termination the map never
+# named) reads as its id with the underscores taken out.
+_TERMINATION_WORDS = {
+    "checkmate": "checkmate",
+    "stalemate": "stalemate",
+    "agreement": "agreement",
+    "insufficient_material": "insufficient material",
+    "threefold_repetition": "repetition",
+    "fivefold_repetition": "repetition",
+    "fifty_moves": "the move-count rule",
+    "seventyfive_moves": "the move-count rule",
+}
+
+
+def _outcome_fact(item: Unverified, facts: VerifiedFacts) -> str:
+    """The ending as it actually stands. Only reached on a finished game (a
+    live board is the ending class's line), so the one unknown left is a
+    `new_game` that ran with no outcome behind it."""
+    if facts.termination is None:
+        return "A new game began; there is no result to report."
+    if facts.termination == "resignation":
+        if facts.winner == "player":
+            return "The game is over: you resigned, so the player won."
+        return "The game is over: the player resigned, so you won."
+    how = _TERMINATION_WORDS.get(facts.termination, facts.termination.replace("_", " "))
+    if facts.winner == "player":
+        return f"The game is over: the player won, by {how}; you lost."
+    if facts.winner == "opponent":
+        return f"The game is over: you won, by {how}; the player lost."
+    return f"The game ended in a draw, by {how}; nobody won."
+
+
 _FACTS: dict[str, Callable[[Unverified, VerifiedFacts], str]] = {
     "ending": lambda item, facts: (
         "The game is not over and no new game began; it is still being played."
     ),
     "draw": lambda item, facts: "The game has not been drawn.",
+    "outcome": _outcome_fact,
     "check": lambda item, facts: "Nobody is in check.",
     "capture": _capture_fact,
     "move": _move_fact,

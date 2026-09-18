@@ -91,10 +91,11 @@ against it.
 
 ## The narrator's second draft (the honesty guard, 2026-09-10)
 
-Every operational claim in the narrator's text — an ending, a draw, a check, a
-capture, a move, who played it, a save, a setting, an engine number, the
-material count — is checked against the board and the turn's tool results
-before it is spoken (`honesty.unverified`, `api._verified_facts`). A claim the
+Every operational claim in the narrator's text — an ending, a draw, who won
+and how, a check, a capture, a move, who played it, a save, a setting, an
+engine number, the material count — is checked against the board and the
+turn's tool results before it is spoken (`honesty.unverified`,
+`api._verified_facts`). A claim the
 facts don't back used to be answered with one of three canned "Scratch that"
 lines in Glitch's place. It is now answered with **one more narrator call**
 (`Brain.rewrite`): the same persona prompt and conversation, no tools, and a
@@ -106,6 +107,17 @@ still asserts something unbacked it is cut and the turn says only what the app
 already says with no usable model text — the deterministic move line on a move
 turn, the stuck line otherwise. Never a third try, never an apology for a
 sentence the player did not hear.
+
+The winner and the termination became facts on 2026-09-18 (astra audit F7,
+#287): the ending class still checks one boolean and owns the lie on a live
+board ("Game over." with the game running), and an `outcome` class reads the
+same words — "checkmate", "you win", "I resigned", "stalemate" — against the
+session's outcome only once the game is over, so "I win" over the mate the
+player just delivered goes back with "the player won, by checkmate; you
+lost". No new words were added to do it: every alternative it matches was
+already the ending or draw class's, and its correction is the ending as it
+stands. The trace's `outcome` field (winner from the player's side, plus the
+termination) is what lets a finished game's commentary be re-judged later.
 
 The split is the house rule one step later: code decides what is true, the
 model decides how to say it, and a guard false positive costs one round trip

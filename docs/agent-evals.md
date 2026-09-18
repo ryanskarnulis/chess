@@ -174,7 +174,11 @@ name only tool-reported moves — since 2026-09-10 this scenario is the whole of
 the "hints are engine-backed" contract, because the advice guard no longer
 fires on a turn that ran no analysis), `advice_capture_survives_guard` (the
 same ask in a position where the best move is a *capture* — the honesty guard
-must not eat the answer), `verbosity_up_from_low` ("talk more" from `low` must call
+must not eat the answer), `checkmate_reaction_survives_guard` ("queen takes
+f7" delivering Scholar's mate on the fast path — the reaction to a real mate
+is the turn's only words, and the guard's outcome class, which reads
+"checkmate" / "you win" / "I lost" against the session's outcome, must not
+send a truthful one back for a rewrite), `verbosity_up_from_low` ("talk more" from `low` must call
 `set_verbosity`, not just sound chattier), `position_is_described` ("what's the
 position?" is answered by `describe_position`, with no verdict tool called and
 no setting moved), `impossible_move_is_refused_not_asked` ("bishop to a1" on
@@ -209,6 +213,17 @@ against the real engine.
 | --- | --- | --- | --- |
 | `offer_draw_routes` | "eh, wanna just call it a draw?"; the Ruy Lopez after 3...a6 | `offer_draw` attempted, `resign` and `claim_draw` not; the result is a decline (a middlegame with every piece on is `not_an_endgame` whatever the score); the game is not over, the board unchanged, nothing armed, **not guarded** — "game over"/"we drew" on a decline is the ending claim the guard exists for; `completed`, 3–5 calls | Lock |
 | `offer_draw_accepted` | "let's just call it a draw here, deal?"; a seeded rook-and-three-pawns endgame, two king moves played so the player has moved | `offer_draw` succeeded with `accepted: true`, no `resign`; the game ends by `agreement`; not guarded; `completed`, 3–5 calls | Lock |
+
+### The guard on a finished game (added 2026-09-18, floor 0.8)
+
+Astra audit F7, #287: the honesty guard's `outcome` class reads the winner and
+termination words against the session's outcome once the game is over. The
+hard spec is `test_honesty.py`'s labeled corpus; this scenario prices the
+misfire in live turns, the `advice_capture_survives_guard` precedent.
+
+| Scenario | Utterance; setup | Pins | Kind |
+| --- | --- | --- | --- |
+| `checkmate_reaction_survives_guard` | "queen takes f7"; after 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6, the player white | the fast path (`parse_move` settles `Qxf7#`, asserted in setup), one model call — the observe beat reacting from the finished board, with no reply owed and no result line beside it; the game is over with the player the winner; the record's `outcome` is `{"winner": "player", "termination": "checkmate"}`; the commentary is a reaction and not the app's own `Qxf7#. Game over: 1-0 (checkmate).`; **not guarded** | Lock |
 
 ### Compositions (added 2026-09-05, floor 0.8 each)
 
@@ -258,6 +273,22 @@ Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Run 2026-09-18 on the guard-outcome tree (#287, astra audit F7: the honesty
+guard's `outcome` class checks the winner and the termination on a finished
+game, one new scenario): 49 passed, 1 failed in a single run, 11 m 48 s, infra
+0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE, `checkmate_reaction_survives_guard`
+5/5 on its first run (route `fast_path`, one narration call, 0.3–0.8 s, no
+sample guarded), `long_capture` 5/5 ×3. Costs unmoved (`fast_path_low` 0 model
+calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).
+The failure is `judgment_question`'s 30 s latency ceiling on a correct
+trajectory (`evaluate_position`, 3 calls; a 30.2 s narrator thought), the tail
+the wordiness note describes and the same red #269's gate carried; re-run alone
+on the same tree it passed at 16.2 s (narrator 14.6 s, thinking on).** No
+prompt, schema or tool-offer change; the model-facing text that changed is the
+guard's correction line for a wrong winner or termination, which no sample
+needed. The false-positive measurement is under "Standing results" (the
+outcome-class sweep).
 
 **Run 2026-09-17 on the reaction-budget tree (#283: the observe beat is bounded,
 and `narrate` carries a read ceiling): 49 passed in a single run, infra 0; every
@@ -637,6 +668,21 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
 - **Honesty-guard false-positive sweep** (2026-07-25): `unverified_claims`
   over the 46 recorded live turns guards exactly the two known lies (2/46).
   Re-run the sweep when a fresh trace corpus exists.
+- **Outcome-class sweep** (2026-09-18, #287): the guard's new `outcome` class
+  (winner and termination, checked only on a finished game) re-judged every
+  finished-game turn in the deployed trace — 9 of 236 (4 checkmates by the
+  player across the fast path, a drag, and the brain route; 5 confirmed
+  resignations) — and fired on none, 0/9. The corpus the class is measured
+  against is `test_honesty.py`'s two labeled tables (13 must-fire lines of the
+  wrong winner or termination, 27 must-not-fire lines: those 9 deployed
+  commentaries, true reports in the class's own words, post-mortem hedges,
+  clarification questions, and trash talk it has no words for), which pass by
+  construction: 0 false positives, 0 false negatives on the labeled set. The
+  deployed trace predates the record's `outcome` field, so that sweep rebuilt
+  the ending from `fen_after` and the `resign` result, assuming the player was
+  white; from here the field carries the ending from the player's side and the
+  sweep needs no assumption. No new regex surface was added: every word the
+  class reads was already the ending or draw class's.
 - **The answer-shape misses do reproduce** (2026-09-04): "what's the
   position?" reached `evaluate_position` 5/5, "bishop to a1" was asked "which
   bishop" 5/5 and "take the pawn" "which pawn" 5/5 on the pre-fix build

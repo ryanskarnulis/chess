@@ -1208,6 +1208,87 @@ def test_a_confirmed_resignation_may_say_the_game_is_over():
     assert response["commentary"] == "Done. Game over."
 
 
+# --- ...and, on a game that really ended, who won and how (astra audit F7, #287).
+#
+# `ended` licensed the words; it could not tell "I win" from the mate the player
+# just delivered. The outcome class reads the same words against the session's
+# outcome, only over a finished game, and the correction it hands back is the
+# ending as it stands — so the narrator says it again with the right side up.
+
+
+def scholars_mate_client(*, narration: str, rewrites: tuple[str, ...] = ()):
+    """White (the player) to move with Qxf7# on the board; the brain plays it and
+    speaks `narration` as its closing turn."""
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"):
+        ctx.session.submit_move(san)
+    brain = ScriptedBrain(
+        AgentResponse(
+            text=narration,
+            tool_calls=(ToolCall(name="make_move", args={"move": "Qxf7#"}),),
+        ),
+        rewrites=rewrites,
+    )
+    app, brain = scripted_app(ctx, brain=brain)
+    return TestClient(app), brain, ctx
+
+
+def test_the_wrong_winner_on_a_real_ending_is_said_again_with_the_result():
+    client, brain, ctx = scholars_mate_client(
+        narration="Checkmate. I win, bro.",
+        rewrites=("Checkmate. You win, bro.",),
+    )
+
+    response = client.post("/api/command", json={"text": "finish him"}).json()
+
+    assert ctx.session.is_game_over()
+    assert ctx.session.outcome().winner == ctx.session.player_color
+    assert response["commentary"] == "Checkmate. You win, bro."
+    assert corrections_asked(brain) == (
+        'You wrote: "I win, bro." The game is over: the player won, by '
+        "checkmate; you lost."
+    )
+
+
+def test_the_right_winner_on_a_real_ending_is_narrated_as_it_stands():
+    client, brain, ctx = scholars_mate_client(narration="Checkmate. You win, bro.")
+
+    response = client.post("/api/command", json={"text": "finish him"}).json()
+
+    assert ctx.session.is_game_over()
+    assert response["commentary"] == "Checkmate. You win, bro."
+    assert brain.rewrite_calls == []
+
+
+def test_a_confirmed_resignation_may_say_who_resigned():
+    """The player resigned, so "you resigned" is the fact and "I win" is too."""
+    client, brain, ctx = make_developed_client(
+        narrations=("You resigned. I win — take the L.",)
+    )
+    client.post("/api/command", json={"text": "i resign"})
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert ctx.session.outcome().termination == "resignation"
+    assert ctx.session.outcome().winner != ctx.session.player_color
+    assert response["commentary"] == "You resigned. I win — take the L."
+    assert brain.rewrite_calls == []
+
+
+def test_a_confirmed_resignation_called_a_checkmate_is_corrected():
+    client, brain, ctx = make_developed_client(
+        narrations=("Checkmate. You lose.",), rewrites=("You resigned. You lose.",)
+    )
+    client.post("/api/command", json={"text": "i resign"})
+
+    response = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert response["commentary"] == "You resigned. You lose."
+    assert corrections_asked(brain) == (
+        'You wrote: "Checkmate." The game is over: the player resigned, so you won.'
+    )
+
+
 def test_a_confirmed_draw_claim_may_say_the_game_is_a_draw():
     """The draw class is its own fact, and a claimed draw is exactly the case it
     has to license: the board says drawn, so the narrator may say so."""
