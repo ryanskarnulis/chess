@@ -169,6 +169,21 @@ _DEFAULT_MAX_CORRECTIONS = 2
 # every observed real narration intact and bounds a runaway to ~60 s.
 _PLANNER_MAX_TOKENS = 2048
 _NARRATOR_MAX_TOKENS = 4096
+# The planner's sampling temperature. The narrator keeps the model profile's
+# 1.0 (`provider._TEMPERATURE`, agent-standard/model-profile.md): its job is
+# words, and words want the spread. The planner's job is a parse — which tool,
+# if any, and with what arguments — and a parse wants the mode. Measured, not
+# derived (2026-09-17, #286, `docs/knight-ask-campaign.md`): "move my kings
+# knight" on a fresh board must be asked about, never played, and at 1.0 the
+# planner played one of the two knights 6/40; at 0.6, 3/40; at 0.3, 0/40 —
+# arms round-robin per sample on one server, the interleaving the correlated
+# server makes necessary. Cooling it did not make a wrong parse consistent
+# anywhere the rule also governs: the STT knight, the rook ask, both
+# refusals, castling and the undo-then-replace first call all read 20/20 at
+# both temperatures, and the harness confirm and the full gate are recorded
+# in `docs/agent-evals.md`. `CHESSAPP_PLANNER_TEMPERATURE` still overrides
+# it, so the next measurement needs no code change either.
+_PLANNER_TEMPERATURE = 0.3
 # The answer-reading phase writes one word. Sized for the word plus whatever
 # punctuation or preamble a 12B insists on wrapping it in, and nothing more:
 # this call sits in front of a destructive op and must not be a place a
@@ -257,8 +272,11 @@ class LlamaBrain:
     enable_thinking: bool = False
     max_iterations: int = _DEFAULT_MAX_ITERATIONS
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS
-    # Per-phase sampling: the planner may run cooler than the narrator, which
-    # keeps the provider's default. None means "whatever the provider samples at".
+    # Per-phase sampling: the planner runs cooler than the narrator, which
+    # keeps the provider's default. The shipped number is `_PLANNER_TEMPERATURE`,
+    # applied by `create_llama_brain`; here None still means "whatever the
+    # provider samples at", so a direct construction changes nothing it did not
+    # ask for.
     planner_temperature: float | None = None
     # Per-phase generation ceilings (see the module constants for the sizing).
     # A call the ceiling cuts off is a failed turn, never a truncated one that
@@ -966,7 +984,7 @@ def create_llama_brain(
     enable_thinking: bool = False,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS,
-    planner_temperature: float | None = None,
+    planner_temperature: float | None = _PLANNER_TEMPERATURE,
     provider: ChatProvider | None = None,
     on_phase: Callable[[str], None] | None = None,
     board_refresh: Callable[[], dict[str, Any] | None] | None = None,
@@ -987,8 +1005,9 @@ def create_llama_brain(
     app-assembly wires both to read `ctx.settings`). Either way the brain stays
     prompt-agnostic: it just carries a string or a callable.
 
-    `planner_temperature` samples the planner phase apart from the narrator;
-    None leaves both on the provider's default.
+    `planner_temperature` samples the planner phase apart from the narrator,
+    `_PLANNER_TEMPERATURE` (0.3) unless a caller says otherwise; None leaves
+    both on the provider's default.
 
     `provider` is injected in tests / alternate backends; otherwise the factory
     builds a real `LlamaCppProvider` against `base_url` + `model` (no API key —

@@ -186,6 +186,83 @@ loosened, not scripted around; evals stay a manual local command.
    refuse and say why. An unload drops another client's in-flight request,
    which is what the pre-flight is for.
 
+## Measurement record (2026-09-17)
+
+All probe runs: `probe_planner.py` on `main@196686f` (the Phase 0 tree; its
+planner call is byte-identical to `main`'s), one llama-server session
+identity `8a6b8b51f728` (the sha of `/running`, i.e. the model and the exact
+flags), thinking off, arms round-robin per sample. Pass = the planner called
+no tool on an ambiguous or impossible ask.
+
+**Phase 1 — fresh vs warm, knight ask only, control arm (temperature 1.0):**
+
+| block | server | asked | lag-1 (independent) |
+| --- | --- | --- | --- |
+| F1 | unloaded, then 20 | 16/20 | 0.74 (0.68) |
+| W1 | the same session, 20 more | 17/20 | 0.79 (0.74) |
+| F2 | unloaded, then 20 | 14/20 | 0.58 (0.58) |
+| W2 | the same session, 20 more | 12/20 | 0.58 (0.52) |
+
+Fresh 30/40, warm 29/40. Freshness is not the lever, and the lag-1 agreement
+sits at the binomial expectation, so the 2026-09-05 clustering did not show
+today either; the day's rate is ~74%, between the recorded 60% and 85% days.
+Decision gate row two: the prompt or the model. The Phase 1 *harness* fresh/warm
+blocks were not run — the probe had already answered the fresh-vs-warm
+question, and the harness GPU time went to confirming the winning arm below.
+
+**Phase 2 — the screen, knight ask, 40 a arm interleaved:**
+
+| arm | knob | asked |
+| --- | --- | --- |
+| control | shipped planner, temperature 1.0 | **34/40** |
+| A `nocache` | `cache_prompt: false` per request | 30/40 |
+| B `cool` | planner temperature 0.3 | **40/40** |
+| C `trim_grab` | delete the `("grab that pawn")` example clause | 23/40 |
+| C `trim_mm` | delete `make_move`'s worked example sentence | 35/40 |
+
+Arm A is dead: no better within a warm session, and Phase 1 had already shown
+fresh ≈ warm. Arm C's planner-bullet trim made the ask *worse* (the 2026-09-05
+"deletions help" lesson does not generalise to every example clause; this one
+apparently anchors "loose phrasing" to the *mapping* step where the next
+sentence's one/several/none procedure then applies) and the tool-text trim
+moved nothing. Arm B wins outright.
+
+**Dose, knight ask, 40 a arm interleaved:** 1.0 → 34/40, 0.6 → 37/40, 0.3 →
+40/40. Monotone; 0.3 ships.
+
+**Neighbours and held-out items, control vs 0.3, 20 a arm interleaved:**
+`bishop_a1` 20/20 vs 20/20, `take_pawn` 20/20 vs 20/20, `rook_ask` 20/20 vs
+20/20, `stt_knight` played Nf3 20/20 vs 20/20, `castle_one` played O-O 20/20 vs
+20/20, `undo_replace` first call `undo` with `plies` omitted 20/20 vs 20/20,
+held-out `bishop_ask` asked 20/20 vs 20/20, `knight_ask` 17/20 vs **20/20**. A
+cooler planner made no wrong parse consistent anywhere the rule governs.
+
+**Finding, not this campaign's:** held-out `castle_both` ("castle" with O-O
+and O-O-O both legal) was *played* as O-O 20/20 on both arms. The planner
+reads a bare "castle" as kingside. Whether that is the player's own convention
+(short castling is what "castle" usually means at the board) or an ambiguity
+to ask about is a design decision for Ryan; the app's fast path never sees
+this case (`parse_move` returns None when both are legal), so today it always
+reaches the planner and always lands O-O.
+
+**Harness confirm (arm B vs control, four alternating blocks of five on one
+server, `eval_campaign.sh --a main --b main --env-b
+CHESSAPP_PLANNER_TEMPERATURE=0.3`, the same tree `196686f` under both arms,
+~64 s an arm-block, infra 0):**
+
+| scenario | control (1.0) | 0.3 |
+| --- | --- | --- |
+| `ambiguous_knight_then_selection` | 18/20 (5, 4, 5, 4) | **19/20** (5, 4, 5, 5) |
+| `undo_twice_and_replace` | 16/20 (4, 3, 5, 4) | **20/20** (5, 5, 5, 5) |
+| `ambiguous_move`, both `impossible_*`, both `stt_knight_repair`, `undo_and_replace` | 20/20 each | 20/20 each |
+| `long_capture` ×3, `plain_move` (hard, single-shot) | passed every block | passed every block |
+
+`plain_move` 3 model calls on both arms. The harness knight rate on the day
+was high on both arms (the day's ~74% probe rate did not reproduce at the
+harness seam this hour), so the harness's own reading of arm B is "no worse,
+and the multi-undo residual (the `plies` misread #267 left) closes". The full
+gate is recorded in `docs/agent-evals.md` "Current baseline".
+
 ## Estimated GPU time
 
 | step | time |

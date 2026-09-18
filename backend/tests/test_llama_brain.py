@@ -34,6 +34,7 @@ from chessapp.game import GameSession
 from chessapp.llama_brain import (
     _ANSWER_MAX_TOKENS,
     _NO_PROGRESS_NOTE,
+    _PLANNER_TEMPERATURE,
     _REFRESH_LABEL,
     LlamaBrain,
     _fast_path_brief,
@@ -1898,7 +1899,19 @@ def test_create_llama_brain_defaults_to_the_planner_prompt_for_the_loop():
         tool_definitions=[],
     )
     assert brain.planner_prompt == PLANNER_PROMPT
-    assert brain.planner_temperature is None  # the provider's default
+    # The shipped planner samples cooler than the narrator (#286); a bare
+    # `LlamaBrain(...)` still leaves it on the provider's default, so the
+    # policy lives in one place — the factory every real assembly goes through.
+    assert brain.planner_temperature == _PLANNER_TEMPERATURE == 0.3
+    assert (
+        LlamaBrain(
+            provider=ScriptedProvider(),
+            dispatcher=FakeDispatcher(),
+            tool_definitions=[],
+            system_prompt="x",
+        ).planner_temperature
+        is None
+    )
 
 
 def test_create_llama_brain_carries_a_planner_temperature():
@@ -1907,9 +1920,17 @@ def test_create_llama_brain_carries_a_planner_temperature():
         model="gemma",
         dispatcher=FakeDispatcher(),
         tool_definitions=[],
-        planner_temperature=0.3,
+        planner_temperature=0.7,
     )
-    assert brain.planner_temperature == 0.3
+    assert brain.planner_temperature == 0.7
+    explicit_default = create_llama_brain(
+        base_url="http://localhost:8200/v1",
+        model="gemma",
+        dispatcher=FakeDispatcher(),
+        tool_definitions=[],
+        planner_temperature=None,
+    )
+    assert explicit_default.planner_temperature is None  # the provider's own
 
 
 # --- live prompt switching --------------------------------------------------

@@ -140,6 +140,7 @@ from fastapi.testclient import TestClient
 
 from chessapp.agent_api import reset_rate_limit
 from chessapp.api import STUCK_REPLY, create_app, planner_board_refresh
+from chessapp.app import _planner_temperature_from_env
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
@@ -191,14 +192,12 @@ LLAMACPP_BASE_URL = os.environ.get("LLAMACPP_BASE_URL", "http://127.0.0.1:8200/v
 LLAMACPP_MODEL = os.environ.get("LLAMACPP_MODEL", "gemma-4-12b")
 STOCKFISH_PATH = os.environ.get("CHESSAPP_STOCKFISH", "/usr/bin/stockfish")
 
-# The planner phase's sampling temperature, read exactly as `build_app_from_env`
-# reads it: unset means the provider's default, so a measurement run is
-# `CHESSAPP_PLANNER_TEMPERATURE=0.3 CHESSAPP_AGENT_EVALS=1 pytest …` and the
-# baseline it produces is the app's own behavior at that number.
-_PLANNER_TEMPERATURE_ENV = os.environ.get("CHESSAPP_PLANNER_TEMPERATURE")
-PLANNER_TEMPERATURE = (
-    float(_PLANNER_TEMPERATURE_ENV) if _PLANNER_TEMPERATURE_ENV else None
-)
+# The planner phase's sampling temperature, resolved by the *same function*
+# `build_app_from_env` uses: unset means the brain's shipped number, and a
+# measurement run is `CHESSAPP_PLANNER_TEMPERATURE=1.0 CHESSAPP_AGENT_EVALS=1
+# pytest …` — the baseline it produces is the app's own behavior at that
+# number, and `test_eval_harness.py` pins that the two cannot drift apart.
+PLANNER_TEMPERATURE = _planner_temperature_from_env()
 
 # Generous request timeout: a cold llama-swap load is ~100 s before the first
 # byte (the provider's own read timeout is 300 s). TestClient's ASGI transport

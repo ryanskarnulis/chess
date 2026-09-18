@@ -30,7 +30,7 @@ from chessapp.brain import Brain
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
-from chessapp.llama_brain import create_llama_brain
+from chessapp.llama_brain import _PLANNER_TEMPERATURE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider
@@ -60,7 +60,7 @@ def build_app(
     speech: SpeechClient | None = None,
     static_dir: Path | None = None,
     tracer: Tracer | None = None,
-    planner_temperature: float | None = None,
+    planner_temperature: float | None = _PLANNER_TEMPERATURE,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -69,8 +69,8 @@ def build_app(
     prompts from `ctx.settings` on every command so `set_verbosity` takes
     effect live. `provider` injects a fake `ChatProvider` into that default
     brain without a real llama-server. `planner_temperature` samples the
-    planner phase apart from the narrator (None: both on the provider's
-    default).
+    planner phase apart from the narrator, the brain's `_PLANNER_TEMPERATURE`
+    unless overridden (None: both on the provider's default).
 
     `agent_enabled=False` is **direct mode**: no brain is constructed at all, so
     `/api/command` 503s and the board plays the deterministic exchange. It needs
@@ -219,15 +219,17 @@ def _tracer_from_env() -> Tracer | None:
     return JsonlTracer(Path(path)) if path else None
 
 
-def _planner_temperature_from_env() -> float | None:
-    """The planner phase's sampling temperature, if one is pinned.
+def _planner_temperature_from_env() -> float:
+    """The planner phase's sampling temperature.
 
-    Unset (the default) means the provider's own temperature, so nothing
-    changes until the number has been measured — the split's sampling
-    experiment is run through this knob, not by editing a constant.
+    Unset (the default) means the brain's own `_PLANNER_TEMPERATURE`, the
+    number the knight-ask campaign measured (#286). The variable stays the
+    experiment's knob: a measurement run sets it and needs no code change, and
+    the eval harness resolves its temperature through this same function so
+    a gate can never sample the planner differently from the app it gates.
     """
     value = os.environ.get("CHESSAPP_PLANNER_TEMPERATURE")
-    return float(value) if value else None
+    return float(value) if value else _PLANNER_TEMPERATURE
 
 
 def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:

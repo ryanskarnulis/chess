@@ -5,6 +5,11 @@
 #   scripts/eval_campaign.sh --a /path/to/main --b /path/to/branch \
 #       --k 'ambiguous_knight_then_selection or ambiguous_move' --blocks 4 [--fresh-per-block]
 #
+# An arm may also be an environment setting on the same tree, for a knob the
+# app reads from the environment (the planner temperature):
+#
+#   scripts/eval_campaign.sh --a . --b . --env-b CHESSAPP_PLANNER_TEMPERATURE=0.3 --k ...
+#
 # Each block runs `tests/test_agent_evals.py -k <expr>` once per arm with
 # CHESSAPP_EVAL_RUNS=5 CHESSAPP_EVAL_MAX_RUNS=5, the `chessapp` under test
 # selected by PYTHONPATH=<tree>/backend/src. The tests dir is THIS checkout's
@@ -26,6 +31,7 @@ PYTHON="$BACKEND/.venv/bin/python"
 [ -x "$PYTHON" ] || PYTHON="$(command -v python)"
 
 A=""; B=""; K=""; BLOCKS=4; FRESH=0; OUT=""; RUNS=5
+ENV_A=(); ENV_B=()
 BASE_URL="${LLAMACPP_BASE_URL:-http://127.0.0.1:8200/v1}"
 MODEL="${LLAMACPP_MODEL:-gemma-4-12b}"
 while [ $# -gt 0 ]; do
@@ -33,6 +39,8 @@ while [ $# -gt 0 ]; do
     --a) A="$2"; shift 2 ;;
     --b) B="$2"; shift 2 ;;
     --k) K="$2"; shift 2 ;;
+    --env-a) ENV_A+=("$2"); shift 2 ;;
+    --env-b) ENV_B+=("$2"); shift 2 ;;
     --blocks) BLOCKS="$2"; shift 2 ;;
     --runs) RUNS="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
@@ -52,13 +60,17 @@ SWAP_ROOT="${BASE_URL%/v1}"
 
 log() { echo "$*" | tee -a "$LOG"; }
 
+arm_env() {  # $1 = arm name → that arm's KEY=VALUE settings, one per line
+  if [ "$1" = a ]; then printf '%s\n' "${ENV_A[@]+"${ENV_A[@]}"}"; else printf '%s\n' "${ENV_B[@]+"${ENV_B[@]}"}"; fi
+}
+
 identity() {  # $1 = arm name, $2 = tree
   local head sha file running
   head="$(git -C "$2" rev-parse --short HEAD)"
   sha="$(sha256sum "$2/backend/src/chessapp/personality.py" | cut -c1-12)"
   file="$(cd "$BACKEND" && PYTHONPATH="$2/backend/src" "$PYTHON" -c 'import chessapp; print(chessapp.__file__)')"
   running="$(curl -s -m 5 "$SWAP_ROOT/running" || echo '{}')"
-  log "  arm $1: tree $2 HEAD $head personality $sha chessapp $file running $running"
+  log "  arm $1: tree $2 HEAD $head personality $sha chessapp $file env [$(arm_env "$1" | tr '\n' ' ')] running $running"
   case "$file" in "$2"/*) ;; *) log "  !! chessapp resolved outside $2; aborting"; exit 1 ;; esac
 }
 
@@ -74,7 +86,9 @@ run_block() {  # $1 = block number, $2 = arm name, $3 = tree
   log "block $1 arm $2 start $(date -u +%H:%M:%SZ)"
   [ "$FRESH" = 1 ] && fresh
   identity "$2" "$3"
-  (cd "$BACKEND" && PYTHONPATH="$3/backend/src" CHESSAPP_AGENT_EVALS=1 \
+  local -a extra=()
+  while IFS= read -r kv; do [ -n "$kv" ] && extra+=("$kv"); done < <(arm_env "$2")
+  (cd "$BACKEND" && env "${extra[@]+"${extra[@]}"}" PYTHONPATH="$3/backend/src" CHESSAPP_AGENT_EVALS=1 \
      CHESSAPP_EVAL_RUNS="$RUNS" CHESSAPP_EVAL_MAX_RUNS="$RUNS" CHESSAPP_EVAL_REPORT="$report" \
      LLAMACPP_BASE_URL="$BASE_URL" LLAMACPP_MODEL="$MODEL" \
      "$PYTHON" -m pytest "$BACKEND/tests/test_agent_evals.py" -k "$K" -s 2>&1 | tee -a "$OUT/block-$1-$2.out" | grep -E '^\[eval\]|passed|failed' || true)

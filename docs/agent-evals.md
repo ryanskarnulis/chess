@@ -275,6 +275,43 @@ chosen. The three 4/5 scenarios are the known ones and are not this tree's: the
 knight ask is TODO's ~60%-day item, and `undo_twice_and_replace` 4/5 is where
 the 2026-09-05 baseline left it.
 
+**Run 2026-09-17 on the planner-temperature tree (#286, the knight-ask
+campaign's shipped variable: the planner phase samples at 0.3,
+`llama_brain._PLANNER_TEMPERATURE`, the narrator stays at 1.0): 49 passed in a
+single run, 12 m 20 s, 205 samples, infra 0; every pass-rate scenario
+ABOVE_FLOOR STABLE — `ambiguous_knight_then_selection` 5/5, `undo_and_replace`
+5/5, `undo_twice_and_replace` 5/5, `save_then_new_game` 4/5, everything else
+5/5; `long_capture` 5/5 ×3; `judgment_question` 14.0 s (narrator 12.8 s,
+thinking on — the tail the wordiness note describes; the planner call in front
+of it took 0.5 s). Costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).** The
+measurement that chose the number is in `docs/knight-ask-campaign.md`
+("Measurement record"): the re-baseline first — the knight ask on unchanged
+`main` read 30/40 asked on a freshly unloaded server and 29/40 warm on the same
+session, so serving state was not the lever the 2026-09-10 60% day suggested,
+and the day's rate was ~74% — then the screen, arms round-robin per sample on
+one server, 40 each: control 34/40, `cache_prompt: false` 30/40, **planner
+temperature 0.3 40/40**, the planner bullet's `("grab that pawn")` clause
+deleted 23/40 (worse), `make_move`'s worked example deleted 35/40; the dose
+1.0 → 34/40, 0.6 → 37/40, 0.3 → 40/40; and the neighbours (both refusals, the
+rook ask, the STT knight, one-side castling, undo-then-replace's first call,
+the held-out two-bishop ask) 20/20 at both temperatures — a cooler planner made
+no wrong parse consistent. Harness confirm, four alternating blocks of five on
+one server, control vs `CHESSAPP_PLANNER_TEMPERATURE=0.3` on the same tree:
+`ambiguous_knight_then_selection` 18/20 → **19/20**, `undo_twice_and_replace`
+16/20 → **20/20** (the `plies` misread #267 left as the residual closes with
+it), `ambiguous_move`, both `impossible_*`, both `stt_knight_repair`,
+`undo_and_replace` 20/20 → 20/20, `long_capture` ×3 and `plain_move` passed
+every block, `plain_move` 3 calls on both. One finding the campaign did not
+act on: "castle" with both castlings legal is *played* as O-O 20/20 at both
+temperatures (held-out probe item `castle_both`; the fast path never settles
+that case, so it always reaches the planner) — whether a bare "castle" is the
+player's convention for kingside or an ambiguity to ask about is an open
+design decision. The eval harness now resolves its planner temperature
+through `app._planner_temperature_from_env`, the function `build_app_from_env`
+uses, and `test_eval_harness.py` pins that the two agree with the variable
+unset and set.
+
 **Run 2026-09-17 on the planner board-refresh tree (#282: the loop is told when
 its own tools move the board): 49 passed in a single run, infra 0; every
 pass-rate scenario ABOVE_FLOOR STABLE — `undo_and_replace` 5/5,
@@ -583,7 +620,11 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
   key fails in CI before anyone has to measure it; regenerating that fixture
   is a schema change and runs this gate.
 - **Sampling is gemma-tuned** (temp 1.0, top-p 0.95, top-k 64, per
-  `../agent-standard/model-profile.md`): override before judging a different
+  `../agent-standard/model-profile.md`) for the narrator; **the planner phase
+  samples at 0.3** since 2026-09-17 (#286: the knight ask read 34/40 asked at
+  1.0, 37/40 at 0.6, 40/40 at 0.3, interleaved per sample on one server, with
+  every single-fit neighbour 20/20 at both). `CHESSAPP_PLANNER_TEMPERATURE`
+  overrides it for a measurement run. Override before judging a different
   model with this harness.
 - **Narrator wordiness** (2026-07-27): a repeat-stop narration writes ~2.6×
   the tokens at a flat rate (r² ≈ 0.998 between tokens and ms); legit and

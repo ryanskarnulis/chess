@@ -1004,6 +1004,49 @@ def _brain_kwargs(monkeypatch, module, build) -> dict[str, Any]:
     return captured
 
 
+def test_the_harness_samples_the_planner_at_the_temperature_assembly_does(
+    monkeypatch,
+) -> None:
+    """The planner's temperature is the knight-ask campaign's shipped variable
+    (#286): at the provider's 1.0 the planner played one of two knights 6/40,
+    at 0.3 none. A harness sampling one way and a shipped app the other would
+    gate a planner that does not exist, so both resolve the number through
+    `app._planner_temperature_from_env` and this pins that they agree — with
+    the variable unset and with it set.
+    """
+    import chessapp.app
+    import test_agent_evals
+
+    def both() -> tuple[Any, Any]:
+        shipped = _brain_kwargs(
+            monkeypatch, chessapp.app, lambda: chessapp.app.build_app_from_env()
+        )
+        measured = _brain_kwargs(
+            monkeypatch,
+            test_agent_evals,
+            lambda: test_agent_evals._build_eval_app(FakeEngine()),
+        )
+        return shipped["planner_temperature"], measured["planner_temperature"]
+
+    monkeypatch.delenv("CHESSAPP_PLANNER_TEMPERATURE", raising=False)
+    monkeypatch.setattr(
+        test_agent_evals,
+        "PLANNER_TEMPERATURE",
+        test_agent_evals._planner_temperature_from_env(),
+    )
+    shipped, measured = both()
+    assert shipped == measured == 0.3
+
+    monkeypatch.setenv("CHESSAPP_PLANNER_TEMPERATURE", "1.0")
+    monkeypatch.setattr(
+        test_agent_evals,
+        "PLANNER_TEMPERATURE",
+        test_agent_evals._planner_temperature_from_env(),
+    )
+    shipped, measured = both()
+    assert shipped == measured == 1.0
+
+
 def test_the_harness_gives_the_planner_the_same_board_refresh_assembly_does(
     monkeypatch,
 ) -> None:

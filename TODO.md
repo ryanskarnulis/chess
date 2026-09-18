@@ -13,15 +13,9 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Open
 
-- `ambiguous_knight_then_selection` read ~60% on 2026-09-10 on *both* the
-  guard-rewrite tree and unchanged main (13/20 vs 11/20, interleaved blocks of
-  five on one server), against 17/20 on 2026-09-05 and 5/5, 5/5, 8/10 in the
-  gates since. Not a prompt or schema change on either tree. Re-measure on a
-  fresh llama-server (the per-server sample correlation, `docs/agent-evals.md`)
-  before touching the planner's matching procedure; if it holds, the knight
-  ask is the next planner campaign. **Campaign: #286**, plan and decision log
-  in `docs/knight-ask-campaign.md`; tooling `backend/scripts/probe_planner.py`
-  and `eval_campaign.sh` (PR 1); a model swap is split out to #298.
+Nothing open (2026-09-17). Findings recorded, not filed: a bare "castle" with both
+castlings legal is played as O-O (`docs/knight-ask-campaign.md`, "Measurement
+record") — a design decision for whoever picks it up.
 
 ## Agent audit follow-ups (2026-09-05)
 

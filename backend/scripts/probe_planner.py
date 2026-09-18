@@ -66,7 +66,11 @@ from chessapp.api import _agent_state_dict
 from chessapp.coordinator import TurnCoordinator
 from chessapp.fastparse import parse_move
 from chessapp.game import GameSession
-from chessapp.llama_brain import _PLANNER_MAX_TOKENS, create_llama_brain
+from chessapp.llama_brain import (
+    _PLANNER_MAX_TOKENS,
+    _PLANNER_TEMPERATURE,
+    create_llama_brain,
+)
 from chessapp.personality import PLANNER_PROMPT
 from chessapp.provider import ChatResult, LlamaCppProvider, ProviderError
 from chessapp.tools import Settings, ToolContext, brain_tool_exclusions, build_registry
@@ -194,7 +198,7 @@ class Arm:
 
     name: str
     prompt: str = PLANNER_PROMPT
-    temperature: float | None = None
+    temperature: float | None = _PLANNER_TEMPERATURE
     cache_prompt: bool | None = None
     model: str | None = None
     tool_text: dict[str, str] = field(default_factory=dict)
