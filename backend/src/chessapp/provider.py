@@ -290,14 +290,26 @@ class LlamaCppProvider:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        cache_prompt: bool | None = None,
     ) -> ChatResult:
-        """One completion turn, optionally offering tools."""
+        """One completion turn, optionally offering tools.
+
+        `cache_prompt` is llama-server's per-request switch for reusing the
+        slot's cached KV prefix (its default is on). It is not part of
+        `ChatProvider` yet: the only caller is the planner probe
+        (`scripts/probe_planner.py`), which measures whether prefix reuse on a
+        long-lived server is what moves the knight-ask rate (#286). `None`
+        omits the field, so every existing caller sends the bytes it always
+        did; the knob joins the protocol only if the measurement says the app
+        should send it.
+        """
         payload = self._payload(
             messages,
             tools=tools,
             enable_thinking=enable_thinking,
             max_tokens=max_tokens,
             temperature=temperature,
+            cache_prompt=cache_prompt,
         )
         return self._result(self._post(payload, timeout))
 
@@ -309,6 +321,7 @@ class LlamaCppProvider:
         enable_thinking: bool,
         max_tokens: int | None,
         temperature: float | None,
+        cache_prompt: bool | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._model,
@@ -323,6 +336,9 @@ class LlamaCppProvider:
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if cache_prompt is not None:
+            # llama-server's own field (not OpenAI's); omitted means its default.
+            payload["cache_prompt"] = cache_prompt
         if tools:
             # Already OpenAI-format dicts (registry `definitions()`) — verbatim.
             payload["tools"] = list(tools)

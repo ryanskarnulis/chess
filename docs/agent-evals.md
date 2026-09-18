@@ -90,6 +90,34 @@ Sampling and reporting knobs (defaults are a normal gate run):
 A 20-sample measurement campaign is `CHESSAPP_EVAL_RUNS=20
 CHESSAPP_EVAL_MAX_RUNS=20`.
 
+### Measuring a planner change
+
+Two committed tools (`backend/scripts/`, Phase 0 of the knight-ask campaign,
+#286; design and decision log in `docs/knight-ask-campaign.md`):
+
+- **`probe_planner.py`** makes the shipped planner call directly — the app's
+  state view, tool offer and opening messages, `LlamaCppProvider.chat` with the
+  planner's ceiling, thinking off — once per sample, and classifies the wire
+  result (`tool:<name>` per call, or `no_tool`; no language parsed). Arms vary
+  one knob each (prompt text, planner temperature, `cache_prompt`, one tool's
+  text, model id) and run **round-robin per sample**. `--fresh` unloads the
+  model first (after a pre-flight that refuses while a slot is processing or
+  another job holds the card); every record carries HEAD, the prompt and offer
+  shas, the model and sampling, llama-swap `/running`, and the request ordinal
+  since the load. The summary prints raw counts and a lag-1 agreement per arm —
+  the number that says whether consecutive samples cluster.
+- **`eval_campaign.sh`** is the harness confirm: alternating blocks of five
+  between two trees on one server (`PYTHONPATH` selects the `chessapp` under
+  test, this checkout's `tests/` serves both), the tree's HEAD, `personality.py`
+  sha and `chessapp.__file__` logged per block, `--fresh-per-block` to unload
+  before each. `campaign_report.py` joins the block reports into one arm table.
+
+The rule both exist to enforce: **consecutive samples of one prompt on one
+llama-server are correlated** (the unchanged planner text read 5/20, 19/40 and
+31/40 in three separate batches, 2026-09-05), so a batch of one arm alone is not
+a measurement of that arm. Interleave per sample in the probe, per block in the
+harness, and never compare arms run in separate batches — even 40 each.
+
 ## The gating rule
 
 **Run this harness before merging any prompt, model, or loop change; the

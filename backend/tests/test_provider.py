@@ -117,6 +117,26 @@ def test_chat_temperature_can_be_overridden_per_request():
     assert (payload["top_p"], payload["top_k"]) == (0.95, 64)
 
 
+def test_chat_can_switch_the_slot_prefix_cache_off_per_request():
+    # The planner probe's arm A (#286): `cache_prompt: false` makes llama-server
+    # prefill the prompt fresh instead of restoring the slot's cached prefix.
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    _provider_returning(body, captured=captured).chat(_USER, cache_prompt=False)
+
+    assert captured[0]["cache_prompt"] is False
+
+
+def test_chat_without_a_cache_prompt_opinion_omits_the_field():
+    # Every shipped caller says nothing, and saying nothing must send exactly
+    # the bytes it always did — the server's default is not restated.
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    _provider_returning(body, captured=captured).chat(_USER)
+
+    assert "cache_prompt" not in captured[0]
+
+
 def test_chat_without_a_temperature_sends_the_default_unchanged():
     # None is not "omit temperature" — it is "the module default", so an
     # untouched call is byte-identical to what it sent before the knob existed.

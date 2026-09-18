@@ -19,7 +19,9 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
   gates since. Not a prompt or schema change on either tree. Re-measure on a
   fresh llama-server (the per-server sample correlation, `docs/agent-evals.md`)
   before touching the planner's matching procedure; if it holds, the knight
-  ask is the next planner campaign.
+  ask is the next planner campaign. **Campaign: #286**, plan and decision log
+  in `docs/knight-ask-campaign.md`; tooling `backend/scripts/probe_planner.py`
+  and `eval_campaign.sh` (PR 1); a model swap is split out to #298.
 
 ## Agent audit follow-ups (2026-09-05)
 
