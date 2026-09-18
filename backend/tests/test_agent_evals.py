@@ -279,6 +279,7 @@ _FLOORS: dict[str, float] = {
     "offer_draw_accepted": 0.8,
     "advice_is_engine_backed": 0.8,
     "advice_capture_survives_guard": 0.8,
+    "checkmate_reaction_survives_guard": 0.8,
     "verbosity_up_from_low": 0.8,
     "position_is_described": 0.8,
     "impossible_move_is_refused_not_asked": 0.8,
@@ -2704,6 +2705,60 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
         # A canned stuck line is not a surviving hint; it is a turn that never
         # reached the narrator and so never tested the guard.
         requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_checkmate_reaction_survives_guard(engine: EnginePlayer) -> None:
+    """Glitch's reaction to being mated reaches the player.
+
+    The honesty guard's outcome class (astra audit F7, #287) reads "checkmate",
+    "you win" and "I lost" against the session's outcome on a finished game —
+    the first ending check that can fire on a game that really ended. The hard
+    spec is `test_honesty.py`'s labeled corpus; this scenario prices the
+    misfire in live turns the way `advice_capture_survives_guard` does for the
+    capture class: a truthful reaction to a real mate must not be sent back
+    for a rewrite.
+
+    The player delivers Scholar's mate. "queen takes f7" rides the fast path,
+    so the narrator's observe beat is the turn's only words and it reacts
+    from the finished board (the outcome is in its state block), with no
+    engine reply owed and no deterministic result line beside it — the one
+    shape where a wrong winner would reach the player unaccompanied. Scored on
+    the trace's verdict, never on wording: *how* he takes the loss is his."""
+    utterance = "queen takes f7"
+
+    def setup(app: EvalApp) -> None:
+        for san in ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"):
+            assert app.ctx.session.submit_move(san).legal
+        # The premise, asserted: the parser settles this move, so the sample
+        # measures the reaction alone, and the move mates.
+        assert parse_move(utterance, app.ctx.session.fen()) == "Qxf7#"
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        traced = app.tracer.last
+        assert app.ctx.session.is_game_over(), "the premise: the move mates"
+        assert app.ctx.session.outcome().winner == app.ctx.session.player_color
+        assert traced.get("outcome") == {"winner": "player", "termination": "checkmate"}
+        assert traced.get("model_calls") == 1, "one narration, nothing else"
+        # A reaction the narrator never produced degrades to the app's own
+        # move line, which would pass a guard check for never having been
+        # guarded; that sample measures nothing.
+        assert assistant["content"] != "Qxf7#. Game over: 1-0 (checkmate).", (
+            "no reaction was produced, so the guard was not tested"
+        )
+        _assert_not_guarded(traced)
+
+    floor = _FLOORS["checkmate_reaction_survives_guard"]
+    result = _pass_rate(
+        engine,
+        "checkmate_reaction_survives_guard",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        route=ROUTE_FAST_PATH,
     )
 
     _assert_floor(result, floor)

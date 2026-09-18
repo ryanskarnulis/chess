@@ -83,6 +83,7 @@ def turn_record(
     tool_calls: list[dict[str, Any]],
     tool_results: list[dict[str, Any]],
     engine_reply: dict[str, Any] | None = None,
+    outcome: dict[str, Any] | None = None,
     guarded: bool = False,
     guarded_claims: Sequence[str] = (),
     suppressed: str = "",
@@ -120,6 +121,13 @@ def turn_record(
     context", and those want opposite fixes; it is also what the eval harness
     classifies a sample by, so a retryable death is retried and a refusal is
     reported rather than re-sent five times.
+
+    `outcome` is how the game stood when the record was written, from the
+    player's side (`{"winner": "player" | "opponent" | None, "termination"}`),
+    or None on a live board. `fen_after` already says whether a board-ended
+    game ended, but not who the player was and not whether anyone resigned,
+    and those are exactly what a reviewer needs to re-judge a finished game's
+    commentary against the guard's winner and termination facts (#287).
 
     `engine_failure` is the same fact about the *other* half of a turn: empty
     unless Stockfish died on the reply the player's move had already earned,
@@ -238,6 +246,7 @@ def turn_record(
         "fen_before": fen_before,
         "fen_after": fen_after,
         "engine_reply": engine_reply,
+        "outcome": outcome,
         "tools": [
             {"name": result["name"], "args": args, "result": result["result"]}
             for args, result in zip(tool_calls, tool_results, strict=True)

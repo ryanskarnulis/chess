@@ -248,6 +248,21 @@ def _outcome_dict(session: GameSession) -> dict[str, Any] | None:
     }
 
 
+def _relative_outcome(session: GameSession) -> dict[str, Any] | None:
+    """The ending from the player's side, or None on a live board: the shape the
+    honesty guard checks a winner claim against (`VerifiedFacts.winner` is
+    `"player"` / `"opponent"` / None) and the shape the trace records, so a
+    traced turn on a finished game can be re-judged without knowing which
+    color the player had (#287)."""
+    outcome = session.outcome()
+    if outcome is None:
+        return None
+    winner = None
+    if outcome.winner is not None:
+        winner = "player" if outcome.winner == session.player_color else "opponent"
+    return {"winner": winner, "termination": outcome.termination}
+
+
 def _state_dict(ctx: ToolContext) -> dict[str, Any]:
     """Take one coherent snapshot of the full state the board UI renders.
 
@@ -1124,9 +1139,12 @@ def _verified_facts(
         # elo or skill level has no tier to be honest about, and mapping one
         # back would be the code inventing the fact instead of the model.
         settings["difficulty"] = ctx.settings.tier
+    ending = _relative_outcome(ctx.session)
     return VerifiedFacts(
         ended=ctx.session.is_game_over() or _destructive_succeeded(tool_results),
         drawn=outcome is not None and outcome.winner is None,
+        winner=ending["winner"] if ending is not None else None,
+        termination=ending["termination"] if ending is not None else None,
         check=checked,
         captured_by_player=frozenset(
             _PIECE_NAMES[symbol] for symbol in captured[ctx.session.player_color]
@@ -2548,6 +2566,10 @@ def create_app(
         if tracer is None:
             return
         try:
+            # Board truth at record time, the same rule as `fen_after`: every
+            # route's record says how the game stood when the turn was over,
+            # so a finished game's commentary can be re-judged from the trace.
+            fields.setdefault("outcome", _relative_outcome(ctx.session))
             tracer.record(turn_record(**fields))
         except Exception:
             logger.warning("trace_failed", exc_info=True)

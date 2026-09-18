@@ -518,7 +518,7 @@ def test_an_unbacked_draw_is_a_claim():
 
 
 def test_a_real_draw_is_reportable():
-    facts = VerifiedFacts(ended=True, drawn=True)
+    facts = VerifiedFacts(ended=True, drawn=True, termination="stalemate")
     assert unverified_claims("Stalemate. We're splitting it.", facts) == ()
 
 
@@ -990,8 +990,151 @@ def test_a_game_result_is_not_an_evaluation_claim():
     """The app's own closing line carries a result score, and `1-0` must not
     read as the number `-0`. It is the pipeline's own deterministic text, so
     guarding it would suppress the truth on every game that ends."""
-    facts = VerifiedFacts(ended=True)
+    facts = VerifiedFacts(ended=True, winner="player", termination="checkmate")
     assert unverified_claims("Game over: 1-0 (checkmate).", facts) == ()
+
+
+# --- the winner and the termination (astra audit F7, #287) ----------------------
+#
+# `ended` licenses the ending words; it cannot tell "you win by checkmate" from
+# the resignation the player actually lost by. The outcome class reads the same
+# words against the session's outcome — but only over a finished game, because
+# on a live board the lie is that the game ended at all and that is the ending
+# class's line. The bar is the file's: no new words, and the tables below are
+# the labeled corpus the class is measured against — every line of finished-game
+# commentary the deployed trace held on 2026-09-18 is in the must-not-fire table.
+
+PLAYER_MATED = VerifiedFacts(ended=True, winner="player", termination="checkmate")
+PLAYER_RESIGNED = VerifiedFacts(
+    ended=True, winner="opponent", termination="resignation"
+)
+GLITCH_RESIGNED = VerifiedFacts(ended=True, winner="player", termination="resignation")
+AGREED_DRAW = VerifiedFacts(ended=True, drawn=True, termination="agreement")
+FRESH_BOARD = VerifiedFacts(ended=True)  # a `new_game` ran: ended, no outcome behind it
+
+
+@pytest.mark.parametrize(
+    "text, facts",
+    [
+        # The wrong winner.
+        ("You win by checkmate.", PLAYER_RESIGNED),
+        ("I win. Better luck next time.", PLAYER_MATED),
+        ("You lost that one.", PLAYER_MATED),
+        ("I lost. GG.", PLAYER_RESIGNED),
+        ("You resigned, so I win.", PLAYER_MATED),
+        ("I resign.", PLAYER_RESIGNED),
+        # A winner where there was none.
+        ("I win.", AGREED_DRAW),
+        ("You lose.", AGREED_DRAW),
+        # The wrong termination.
+        ("Checkmate.", PLAYER_RESIGNED),
+        ("That's mate.", GLITCH_RESIGNED),
+        ("Stalemate.", AGREED_DRAW),
+        ("Resigning now.", PLAYER_MATED),
+        # A result on a board that has none: `ended` is true because a new game
+        # ran, and the termination is unknown, which fails closed.
+        ("Checkmate!", FRESH_BOARD),
+    ],
+)
+def test_a_wrong_winner_or_termination_is_a_claim(text, facts):
+    assert unverified_claims(text, facts) == ("outcome",)
+
+
+@pytest.mark.parametrize(
+    "text, facts",
+    [
+        # Every finished-game commentary the deployed trace held (2026-09-18).
+        (
+            "Damn, you actually did that. That's some filthy finishing move, bro.",
+            PLAYER_MATED,
+        ),
+        ("GG. You actually cooked me.", PLAYER_MATED),
+        ("Checkmate. That was nasty, bro.", PLAYER_MATED),
+        ("clean. that was a nasty finish, bro.", PLAYER_MATED),
+        ("Fr, that was a rough one.", PLAYER_RESIGNED),
+        ("Word. GG.", PLAYER_RESIGNED),
+        # The true report, in the words the class reads.
+        ("Checkmate, you win.", PLAYER_MATED),
+        ("You won, fair and square.", PLAYER_MATED),
+        ("I lost that one.", PLAYER_MATED),
+        ("You resigned. I'll take it.", PLAYER_RESIGNED),
+        ("You lose. Resigning was the right call, though.", PLAYER_RESIGNED),
+        ("I resigned. You had me.", GLITCH_RESIGNED),
+        (
+            "Stalemate. We're splitting it.",
+            VerifiedFacts(ended=True, drawn=True, termination="stalemate"),
+        ),
+        ("Game over.", PLAYER_MATED),
+        ("Fresh board. New game.", FRESH_BOARD),
+        # Post-mortem talk: hypothetical, conditional, hedged, a question.
+        ("You'd have won with Rxe5.", PLAYER_RESIGNED),
+        ("If you hadn't resigned I was losing.", PLAYER_RESIGNED),
+        ("I should've won that.", PLAYER_MATED),
+        ("You almost lost that one.", PLAYER_MATED),
+        ("I'll win the rematch.", PLAYER_MATED),
+        ("Want a new game?", PLAYER_MATED),
+        ("Rematch? I win next time.", PLAYER_MATED),
+        ("Not checkmate — you resigned.", PLAYER_RESIGNED),
+        # Trash talk the class has no words for, by design.
+        ("You're cooked.", PLAYER_RESIGNED),
+        ("I'm the winner here.", PLAYER_MATED),
+        ("That's a win for the good guys.", PLAYER_MATED),
+        ("Total domination.", PLAYER_RESIGNED),
+    ],
+)
+def test_finished_game_commentary_that_tells_the_truth_is_not_a_claim(text, facts):
+    assert unverified_claims(text, facts) == ()
+
+
+@pytest.mark.parametrize(
+    "text", ["I win.", "Checkmate!", "You resigned.", "That's mate, you lose."]
+)
+def test_on_a_live_board_only_the_ending_class_speaks(text):
+    """One correction per sentence: the outcome class defers to `ended`."""
+    assert unverified_claims(text, NOTHING) == ("ending",)
+
+
+@pytest.mark.parametrize(
+    "text, facts, fact",
+    [
+        (
+            "I win.",
+            PLAYER_MATED,
+            "The game is over: the player won, by checkmate; you lost.",
+        ),
+        (
+            "You win.",
+            VerifiedFacts(ended=True, winner="opponent", termination="checkmate"),
+            "The game is over: you won, by checkmate; the player lost.",
+        ),
+        (
+            "Checkmate.",
+            PLAYER_RESIGNED,
+            "The game is over: the player resigned, so you won.",
+        ),
+        (
+            "You resigned.",
+            GLITCH_RESIGNED,
+            "The game is over: you resigned, so the player won.",
+        ),
+        ("I win.", AGREED_DRAW, "The game ended in a draw, by agreement; nobody won."),
+        (
+            "Stalemate.",
+            VerifiedFacts(ended=True, drawn=True, termination="threefold_repetition"),
+            "The game ended in a draw, by repetition; nobody won.",
+        ),
+        (
+            "You win.",
+            VerifiedFacts(ended=True, winner="opponent", termination="fifty_moves"),
+            "The game is over: you won, by the move-count rule; the player lost.",
+        ),
+        ("Checkmate!", FRESH_BOARD, "A new game began; there is no result to report."),
+    ],
+)
+def test_the_outcome_fact_states_the_ending_as_it_stands(text, facts, fact):
+    found = unverified(text, facts)
+    assert [item.claim for item in found] == ["outcome"]
+    assert corrections(found, facts) == (f'You wrote: "{text}" {fact}',)
 
 
 # --- the facts in words: what a rewrite is told ---------------------------------

@@ -82,6 +82,15 @@ def test_turn_record_carries_the_engine_reply_when_there_was_one():
     assert record["engine_reply"] == {"san": "e5", "uci": "e7e5"}
 
 
+def test_turn_record_carries_the_outcome_when_the_game_is_over():
+    ending = {"winner": "player", "termination": "checkmate"}
+    assert _record_fields(outcome=ending)["outcome"] == ending
+
+
+def test_turn_record_outcome_defaults_to_a_live_board():
+    assert _record_fields()["outcome"] is None
+
+
 def test_turn_record_engine_reply_defaults_to_none():
     assert _record_fields()["engine_reply"] is None
 
@@ -288,6 +297,51 @@ def test_resign_turn_is_traced_as_its_own_route(trace_path):
     assert record["route"] == "resign"
     assert [t["name"] for t in record["tools"]] == ["resign"]
     assert record["changed"] is False, "gated: it asked, it did not end the game"
+
+
+def test_a_finished_game_records_its_outcome_from_the_players_side(trace_path):
+    """Who the player was is not in the FEN, and a resignation is not on the
+    board at all — so the record carries the ending the way the guard reads
+    it, and a finished game's commentary can be re-judged from the trace."""
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"):
+        ctx.session.submit_move(san)
+    app, _ = scripted_app(
+        ctx,
+        AgentResponse(
+            text="Checkmate.",
+            tool_calls=(ToolCall(name="make_move", args={"move": "Qxf7#"}),),
+        ),
+        tracer=JsonlTracer(trace_path),
+    )
+
+    TestClient(app).post("/api/command", json={"text": "finish him"})
+
+    (record,) = read_records(trace_path)
+    assert record["outcome"] == {"winner": "player", "termination": "checkmate"}
+
+
+def test_a_confirmed_resignation_records_the_resignation(trace_path):
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5", "Nf3", "Nc6"):
+        ctx.session.submit_move(san)
+    app, _ = scripted_app(ctx, tracer=JsonlTracer(trace_path))
+    client = TestClient(app)
+    client.post("/api/command", json={"text": "i give up. i resign"})
+
+    client.post("/api/command", json={"text": "yes"})
+
+    asked, confirmed = read_records(trace_path)
+    assert asked["outcome"] is None, "armed is not resigned"
+    assert confirmed["outcome"] == {"winner": "opponent", "termination": "resignation"}
+
+
+def test_a_live_board_records_no_outcome(trace_path):
+    client, _ = make_client(trace_path)
+    client.post("/api/command", json={"text": "e4"})
+
+    (record,) = read_records(trace_path)
+    assert record["outcome"] is None
 
 
 def test_a_confirmed_draw_claim_is_traced_as_one_mutation(trace_path):
