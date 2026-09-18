@@ -51,12 +51,14 @@ packages = ["src/chessapp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The developer scripts' pure parts are unit-tested (tests/test_probe_planner.py).
+pythonpath = ["scripts"]
 addopts = "-q"
 asyncio_mode = "auto"
 
 [tool.ruff]
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

@@ -22,3 +22,7 @@ stockfish*
 .vscode/
 .idea/
 .DS_Store
+
+# Planner probe / campaign output (backend/scripts/probe_planner.py, eval_campaign.sh)
+backend/probe-*.jsonl
+backend/campaign-*/
