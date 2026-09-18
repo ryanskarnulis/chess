@@ -17,6 +17,7 @@ import pytest
 
 import campaign_report
 from chessapp.fastparse import parse_move
+from chessapp.llama_brain import _PLANNER_TEMPERATURE
 from chessapp.personality import PLANNER_PROMPT
 from chessapp.provider import ChatResult, LlamaCppProvider, ToolCall
 from chessapp.tools import BOARD_STATE_TOOLS
@@ -157,7 +158,8 @@ def test_control_is_the_shipped_planner() -> None:
     arm = parse_arm("control")
     assert arm == Arm(name="control")
     assert arm.prompt == PLANNER_PROMPT
-    assert (arm.temperature, arm.cache_prompt, arm.model) == (None, None, None)
+    assert arm.temperature == _PLANNER_TEMPERATURE  # the shipped planner's, #286
+    assert (arm.cache_prompt, arm.model) == (None, None)
 
 
 def test_an_arm_spec_sets_exactly_the_knobs_it_names() -> None:

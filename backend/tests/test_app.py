@@ -25,7 +25,7 @@ from chessapp.app import (
 )
 from chessapp.brain import AgentResponse
 from chessapp.engine import DEFAULT_TIER
-from chessapp.llama_brain import _REFRESH_LABEL
+from chessapp.llama_brain import _PLANNER_TEMPERATURE, _REFRESH_LABEL
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.tools import BOARD_STATE_TOOLS
 from fakes import (
@@ -219,7 +219,9 @@ def test_build_app_offers_claim_draw_only_when_a_draw_is_claimable():
 
 def test_build_app_from_env_reads_the_planner_temperature(monkeypatch):
     # The sampling experiment's knob: a number in the environment, so a
-    # measurement run needs no code change. Unset means the provider's default.
+    # measurement run needs no code change. Unset means the brain's shipped
+    # planner temperature (#286), and the provider's own 1.0 is one more
+    # number to ask for, not a special case.
     captured: dict[str, object] = {}
 
     def fake_create_llama_brain(*, planner_temperature=None, **kwargs):
@@ -230,11 +232,11 @@ def test_build_app_from_env_reads_the_planner_temperature(monkeypatch):
 
     monkeypatch.delenv("CHESSAPP_PLANNER_TEMPERATURE", raising=False)
     build_app_from_env()
-    assert captured["planner_temperature"] is None
+    assert captured["planner_temperature"] == _PLANNER_TEMPERATURE == 0.3
 
-    monkeypatch.setenv("CHESSAPP_PLANNER_TEMPERATURE", "0.3")
+    monkeypatch.setenv("CHESSAPP_PLANNER_TEMPERATURE", "1.0")
     build_app_from_env()
-    assert captured["planner_temperature"] == 0.3
+    assert captured["planner_temperature"] == 1.0
 
 
 def test_build_app_from_env_honors_the_llamacpp_env_vars(monkeypatch):

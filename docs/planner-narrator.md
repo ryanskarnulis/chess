@@ -148,8 +148,13 @@ runs them and the loop goes on (decided 2026-09-05): the provider parses each
 call's arguments before the response exists, so a call that arrived is a whole
 call, and only the prose is lost — the fragment beside them is never the
 handoff note.
-`CHESSAPP_PLANNER_TEMPERATURE` samples the planner apart from the narrator;
-the eval harness reads the same variable.
+The planner samples at 0.3 (`llama_brain._PLANNER_TEMPERATURE`) and the
+narrator at the model profile's 1.0: a parse wants the mode, words want the
+spread. The number is measured, not chosen — at 1.0 the planner played one of
+two knights on "move my kings knight" 6/40, at 0.6 3/40, at 0.3 0/40, with no
+single-fit ask over-asked (2026-09-17, #286, `docs/knight-ask-campaign.md`).
+`CHESSAPP_PLANNER_TEMPERATURE` overrides it; the eval harness resolves the
+number through the same function the app does, and pins that it did.
 
 `narrate` is also the one phase with a wall-clock ceiling. A token cap bounds
 generation, not queueing or a stalled server, and the observe beat is the one
