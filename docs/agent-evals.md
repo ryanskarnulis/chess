@@ -274,6 +274,23 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-22 on the placement-and-draw-shape guard tree (#289 follow-up:
+the move class knows where the pieces stand, the draw class reads result
+shapes only): 50 passed in a single run, 12 m 41 s, infra 0; every pass-rate
+scenario 5/5 ABOVE_FLOOR STABLE except `pgn_is_handed_over_not_recited` 4/5
+ABOVE_FLOOR (the narrator recited the headers itself; nothing guarded),
+`long_capture` 5/5 ×3, `offer_draw_routes` and
+`freeform_confirmation_answers[unrelated]` 5/5, `judgment_question` 11.0 s.
+Costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1,
+`plain_move` 3, `resign_literal_fast_path` 0).** A guard change and not a
+prompt, model or loop change; the gate ran on the #263/#287/#289 precedent.
+Harness confirm (`eval_campaign.sh`, four alternating blocks of five against
+unchanged `main` on one server): `freeform_confirmation_answers[unrelated]`
+17/20 → 20/20 and `offer_draw_routes` 17/20 → 20/20, every one of `main`'s six
+misses one of the two false positives (the placement list, and "it's (way) too
+early to call it a draw" / "too early for a draw"); `[cancel]` and `[confirm]`
+20/20 both.
+
 **Run 2026-09-22 on the typed-clarification tree (#289 PR 2: the planner asks
 through `ask_player`, whose candidates are an enum of the live legal moves, and
 the ambiguity scenarios now require the question to name every candidate):
@@ -724,6 +741,35 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
 - **Honesty-guard false-positive sweep** (2026-07-25): `unverified_claims`
   over the 46 recorded live turns guards exactly the two known lies (2/46).
   Re-run the sweep when a fresh trace corpus exists.
+- **Placement and draw-shape sweep** (2026-09-22, #289 follow-up): the move
+  class learned where the pieces stand (a piece named on its own square is
+  placement) and the draw class reads result shapes only. Evidence taken
+  before either changed, on the deployed trace (236 turns, 2026-09-04..18,
+  230 drafts):
+  - every live guard firing was on a correct reply, 6/6, all since fixed:
+    rows 38–40 capture on a hint (#250), 15 and 122 advice (the 2026-09-06
+    inversion), 136 ending on "checkmate's looking real close" (the
+    `close`/`looking` hedges);
+  - re-judged by the current guard, the drafts fire only on the two real lies
+    (rows 50 and 54, "talk more" narrated with no `set_verbosity` call), the
+    same before and after this change; the draw pattern matches nothing in
+    the trace on either side of it;
+  - no draw lie appears anywhere in the record (2026-07-13 review, both audits,
+    the walkthrough), while a probe of the old class fired on most ways of
+    narrating a *declined* offer ("I turned down the draw", "Engine declined
+    the draw") and missed "Draw agreed." — the lie on a decline, which the new
+    shapes catch.
+  The labeled corpus is `test_honesty.py`'s placement and draw tables (both
+  gate misfires and the campaign's `main` misses verbatim; 7 must-not-fire
+  placement lines and 5 must-fire move lines
+  beside them, 11 draw mentions that must not fire, 11 draw reports that fire
+  live and pass on a drawn game, 2 over a checkmate), plus an end-to-end
+  `test_api.py` test of the placements `_verified_facts` builds, passing by
+  construction. The trade: a draw report in a shape
+  outside the list, and a bare SAN naming a piece on the square it already
+  holds, now go through. Priced live in the same day's campaign: 17/20 →
+  20/20 on both scenarios the misfires lived in (baseline above), whose
+  verbatim misses joined the corpus.
 - **Action and unplayed-reply sweep** (2026-09-22, #289): the three new guard
   classes — `takeback` and `restart` (checked against the turn's own `undo` /
   `new_game`) and `unplayed_reply` (a SAN the engine could play on the board

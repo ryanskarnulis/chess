@@ -565,6 +565,65 @@ def test_the_game_actually_ending_in_a_draw_is_still_a_report():
     assert "draw" in unverified_claims("Game's drawn. gg.", NOTHING)
 
 
+# The draw as a noun somebody offered, declined or called too early is not a
+# report that the game came to one. Found in #303's gate (2026-09-22,
+# `offer_draw_routes` 4/5): a declined offer explained correctly and cut,
+# because `(a|the) draw` read every mention as the result. A probe the same day
+# showed most natural ways of narrating a decline tripped it, so the class now
+# reads the shapes that report a result, and none of these has one.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Yo, the engine says it's too early to call it a draw. Keep going.",
+        # `main`'s three misses in the 2026-09-22 campaign, verbatim.
+        "Word, the engine says it's way too early to call it a draw.",
+        "Word, but the engine says it's too early for a draw. Keep going.",
+        "yo, the engine says it's way too early to call it a draw. keep going.",
+        "I turned down the draw.",
+        "You offered a draw, I said nah.",
+        "The draw offer got bounced.",
+        "Engine declined the draw.",
+        "Nobody's calling it a draw yet.",
+        "Let's call it a draw.",  # a proposal, the player's to accept
+        "Offering a draw in the Ruy? Cute.",
+    ],
+)
+def test_a_draw_mentioned_is_not_a_draw_reported(text):
+    assert "draw" not in unverified_claims(text, NOTHING)
+
+
+DECLINED = VerifiedFacts(moves=frozenset({"a6"}))
+AGREED = VerifiedFacts(ended=True, drawn=True, termination="agreement")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "That's a draw.",
+        "It's a draw by repetition.",
+        "We drew.",
+        "Game's drawn. gg.",
+        "Game ends in a draw.",
+        "The game ended in a draw, bro.",
+        "We called it a draw.",
+        # The lie on a declined offer, which the noun reading never caught.
+        "Draw agreed.",
+        "Draw accepted, gg.",
+        "A draw it is.",
+        "Split the point, man.",
+    ],
+)
+def test_a_draw_reported_on_a_live_board_is_a_claim_and_true_when_drawn(text):
+    assert "draw" in unverified_claims(text, DECLINED)
+    assert "draw" not in unverified_claims(text, AGREED)
+
+
+def test_a_draw_reported_over_a_checkmate_is_still_a_claim():
+    mated = VerifiedFacts(ended=True, winner="player", termination="checkmate")
+    assert "draw" in unverified_claims("That's a draw.", mated)
+    assert "draw" in unverified_claims("Stalemate.", mated)
+
+
 # --- moves that were never on the board ----------------------------------------
 #
 # Only unambiguous move notation counts: a bare pawn push is spelled like a
@@ -609,6 +668,76 @@ def test_a_move_the_turn_accounts_for_is_not_a_claim(text):
 )
 def test_a_threatened_move_is_not_a_claim(text):
     assert unverified_claims(text, PLAYED_NF3) == ()
+
+
+# --- ...and a piece named on the square it stands on ---------------------------
+#
+# Found in #289's gates (2026-09-22; 1/20 on `main` and on the #289 tree,
+# interleaved, and twice in #302's gate): asked to show the position, the
+# narrator listed it in piece-letter notation and the move class read `Ke1` as
+# a move nobody could play. A king cannot move to the square it stands on, so
+# no move list ever holds it — the facts had to learn where the pieces are.
+# Only the bare shape is placement: a capture, a check or a promotion mark
+# names an event, and a square the piece is not on is still an invention.
+
+AFTER_NF3_D5 = VerifiedFacts(
+    moves=frozenset({"Nf3", "d5", "g3", "c4", "Nc3", "e3"}),
+    placements=frozenset(
+        {"Ke1", "Qd1", "Ra1", "Rh1", "Bc1", "Bf1", "Nb1", "Nf3"}
+        | {"Ke8", "Qd8", "Ra8", "Rh8", "Bc8", "Bf8", "Nb8", "Nc6", "Ng8"}
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The misfire verbatim, from `main`'s arm of the 2026-09-22 campaign
+        # (3/20 there; the position after 1.e4 e5 2.Nf3 Nc6).
+        "White: Ke1, Qd1, Ra1, Rh1, Bc1, Bf1, Nb1, Nf3, Pawns a2, b2, c2, d2, "
+        "e4, f2, g2, h2.\nBlack: Ke8, Qd8, Ra8, Rh8, Bc8, Bf8, Nc6, Ng8, Pawns "
+        "a7, b7, c7, d7, e5, f7, g7, h7.",
+        "Here's where everything's at. White: Ke1, Qd1, Ra1, Rh1, Bc1, Bf1, "
+        "Nb1, Nf3, pawns on a2 through h2 except the ones that moved; Black: "
+        "Ke8, Qd8, Ra8, Rh8, Bc8, Bf8, Nb8, Ng8.",
+        "White — Ke1 Qd1 Ra1 Rh1 Bc1 Bf1 Nb1 Nf3. Black — Ke8 Qd8 Ra8 Rh8.",
+        "Your Nf3 is holding the whole kingside together.",
+        "My Ng8 is still asleep. Patience.",
+    ],
+)
+def test_a_piece_named_on_its_own_square_is_placement_not_a_move(text):
+    assert unverified_claims(text, AFTER_NF3_D5) == ()
+
+
+def test_placement_after_castling_and_promotion_is_still_placement():
+    facts = VerifiedFacts(placements=frozenset({"Kg1", "Rf1", "Qa8"}))
+    assert unverified_claims("White: Kg1, Rf1, and a fresh Qa8.", facts) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The 2026-07-13 lie the move class exists for: the engine played Na6.
+        "Bxa6. You're really just taking my pieces for free.",
+        "Nd5, and your center's gone.",  # no knight stands on d5
+        "Ke2. Bold.",  # the king is on e1
+        "Qxf7#, gg.",  # a capture and a mate are events, never placement
+        "Nxf3 was the move.",  # a capture onto a square a piece holds
+    ],
+)
+def test_a_move_the_board_does_not_hold_is_still_a_claim(text):
+    assert "move" in unverified_claims(text, AFTER_NF3_D5)
+
+
+def test_a_placement_list_over_a_pending_reply_is_not_the_reply():
+    """A quiet move cannot land on an occupied square, so a piece named on its
+    own square is never a reply the engine could still play there."""
+    facts = VerifiedFacts(
+        moves=frozenset({"e4", "Nf6", "Nc6", "e5"}),
+        placements=frozenset({"Ke8", "Ng8", "Nb8", "Ke1", "Ng1"}),
+        unplayed_replies=frozenset({"Nf6", "Nc6", "e5"}),
+    )
+    assert unverified_claims("Black: Ke8, Nb8, Ng8. White: Ke1, Ng1.", facts) == ()
 
 
 # --- ...and who played one -----------------------------------------------------

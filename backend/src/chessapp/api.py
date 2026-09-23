@@ -1224,6 +1224,30 @@ def _verified_facts(
         unplayed_replies=_unplayed_replies(
             ctx, engine_reply, fen_before, reported, pending_reply_fen
         ),
+        placements=_placements(
+            [
+                *boards,
+                *([GameSession(fen=pending_reply_fen)] if pending_reply_fen else []),
+            ]
+        ),
+    )
+
+
+# The piece word `GameSession.piece_placement` names → its SAN letter.
+_PIECE_LETTERS = {name: symbol.upper() for symbol, name in _PIECE_NAMES.items()}
+
+
+def _placements(boards: Sequence[GameSession]) -> frozenset[str]:
+    """Every non-pawn piece as SAN writes it — `"Ke1"`, `"Nf3"` — on any of
+    these boards, either colour: the move class's evidence that a piece named
+    on its own square is where it stands, not a move (`VerifiedFacts`)."""
+    return frozenset(
+        f"{_PIECE_LETTERS[name]}{square}"
+        for board in boards
+        for by_type in board.piece_placement().values()
+        for name, squares in by_type.items()
+        if name != "pawn"
+        for square in squares
     )
 
 
