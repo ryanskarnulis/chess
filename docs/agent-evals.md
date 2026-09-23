@@ -276,6 +276,22 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-22 on the gated resume/overwrite tree (#291 PR 1: `resume_game`
+asks over a game in progress, `save_game` asks before replacing a named save;
+two tool descriptions changed, two scenarios added, two rewritten to answer
+the gate): 52 passed in a single run, 12 m 47 s, infra 0; every pass-rate
+scenario 5/5 ABOVE_FLOOR STABLE — the new `resume_mid_game_asks` and
+`save_over_existing_asks` included — except `pgn_is_handed_over_not_recited`
+16/20 (escalated, at the floor: the narrator reciting the headers, the known
+miss). That scenario was then run in four alternating blocks of five against
+unchanged `main` on one server (`eval_campaign.sh`): `main` 15/20, this tree
+19/20, so the miss is the baseline's and not the change's — the narrator is
+never shown the tool descriptions this PR edits. `judgment_question` 10.9 s.
+Costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1,
+`plain_move` 3, `resign_literal_fast_path` 0).**
+
+Previously:
+
 **Run 2026-09-22 on the input-budget tree (#288 PR 4: an over-budget prompt
 drops the conversation's oldest exchanges; `late_game_tool_composition` gains
 its 4,800-token per-call ceiling): 50 passed in a single run, 12 m 29 s, infra
