@@ -46,6 +46,18 @@ what happened and that the rest did not, in Glitch's words. When nothing ran
 there is nothing verified to speak from: the turn ends silent and the pipeline
 says its stuck reply.
 
+Because the deadline is checked between round trips, the last planner call can
+start inside it and finish past it. The trace's `planning` field (#317) records
+this: the phase's `elapsed_ms`, the configured `deadline_ms`, and `overrun_ms`,
+which is how far past the deadline it finished. The trace's `calls` list has
+one entry per model round trip. Each entry records which phase made the call
+(`planner`, `closer`, `reaction`, `rewrite`, `answer`), how it ended (`ok`,
+`truncated`, `bad_args`, `failed`, `late`), how long it took, and its tokens,
+which are `null` when unknown. A `late` call's `ms` is the time the turn waited
+before giving up, with the limit it was held to in `budget_ms`. The call may
+have run longer than that, so report it as a censored wait rather than a
+duration.
+
 Prompt size has a budget too (`input_budget_tokens`, 32k estimated at three
 characters a token against llama-server's 131k window — about ten times the
 heaviest measured prompt, so it is a safety net, never a knob). Before the

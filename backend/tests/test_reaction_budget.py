@@ -305,6 +305,13 @@ def test_a_late_reaction_is_still_a_call_on_the_turn(tmp_path, slow):
     assert record["unmetered_calls"] == 1
     (waited,) = record["model_latencies_ms"]
     assert waited >= BUDGET * 1000 * 0.9
+    # #317: the call says which beat it was, that it was cut rather than
+    # failed, and what its censored reading was censored at.
+    (call,) = record["calls"]
+    assert call["phase"] == "reaction"
+    assert call["status"] == "late"
+    assert call["budget_ms"] == round(BUDGET * 1000)
+    assert call["failure"] == ""
 
 
 def test_a_turn_that_spoke_in_time_records_no_lateness(tmp_path):
@@ -522,6 +529,13 @@ def test_the_trace_records_one_late_brain_turn(tmp_path, blocked):
     # Planner, handoff, and the closer the turn stopped waiting for.
     assert record["model_calls"] == 3
     assert record["model_latencies_ms"][-1] >= BUDGET * 1000 * 0.9
+    assert [(c["phase"], c["status"]) for c in record["calls"]] == [
+        ("planner", "ok"),
+        ("planner", "ok"),
+        ("closer", "late"),
+    ]
+    assert record["calls"][-1]["budget_ms"] == round(BUDGET * 1000)
+    assert record["planning"]["deadline_ms"] is not None
 
 
 def test_a_closer_inside_the_budget_is_spoken_before_the_reply():

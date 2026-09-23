@@ -276,6 +276,25 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-23 on the phase-tagged-calls tree (#317 PR 1). Every model
+round trip now carries its phase and status, and the planner records its
+elapsed time against the deadline. Only accounting changed: no prompt, schema,
+model or sampling change. Result: 52 passed in a single run, 13 m 10 s, infra
+0. Every pass-rate scenario was 5/5 ABOVE_FLOOR STABLE (44 of 44,
+`pgn_is_handed_over_not_recited` included), and all 238 samples ended
+`completed`. `long_capture` 5/5 ×3; `judgment_question` 11.6 s. Costs
+unmoved: `fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3,
+`resign_literal_fast_path` 0.**
+
+The harness now splits latency by each call's phase tag instead of by call
+position. That left no UNKNOWN attribution on the run: 226 samples SPLIT, 10
+NO_NARRATOR, 2 NONE. The 10 NO_NARRATOR samples are
+`freeform_confirmation_answers[cancel]`: the reader's call is its own phase
+and no narrator ran, where the positional rule used to call that one call
+narrator time.
+
+Previously:
+
 **Run 2026-09-23 on the bounded-closer tree (#316: the loop's closing narrator
 is waited for on a budget inside `LlamaBrain._close` — 10 s when the reply is
 owed and the closer is only reacting, a 60 s stall ceiling when nothing is held

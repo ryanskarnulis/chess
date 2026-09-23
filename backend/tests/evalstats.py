@@ -161,7 +161,9 @@ class Attribution(StrEnum):
     # boundary the route and stop reason put there.
     SPLIT = "SPLIT"
     # A budget stop: no narrator ran, so every reading is the planner's and
-    # there is no narrator time — not an unmeasured one, none.
+    # there is no narrator time — not an unmeasured one, none. Also a tagged
+    # turn whose only call was the confirmation reader (#317): no narrator
+    # ran there either, and the reader is neither phase.
     NO_NARRATOR = "NO_NARRATOR"
     # No readings came back: either the model was never called (a canned
     # confirmation at verbosity=low) or nothing was traced at all (a request that
@@ -457,6 +459,40 @@ class TurnLatencies:
 
 _WHOLE_TURN = slice(None)
 
+# The phase tags a schema-2 trace puts on each call (`brain.PHASE_*`, #317),
+# restated here as strings because this module reads records, not the app. The
+# narrator's phases are the closer, a narrate route's reaction and the guard's
+# rewrite — the same persona call three ways. The reader (`answer`) is neither
+# phase, which is exactly the call the positional rule could never place.
+_PLANNER_PHASE = "planner"
+_NARRATOR_PHASES = frozenset({"closer", "reaction", "rewrite"})
+_KNOWN_PHASES = _NARRATOR_PHASES | {_PLANNER_PHASE, "answer"}
+
+# Which calls belong to a phase: a slice when derived from call positions, the
+# indices themselves when read off the tags (a reader call can sit in front of
+# a narrator one, so a tagged phase need not be contiguous).
+type _Phase = slice | tuple[int, ...]
+
+
+def _attribute_tagged(
+    phases: Sequence[str] | None, calls: int
+) -> tuple[Attribution, _Phase | None, _Phase | None] | None:
+    """The phases read off the calls' own tags, or `None` when the record has
+    none to read (schema 1), has a different number of them than readings, or
+    carries a call a brain could not tag — then the positional rule decides,
+    as it always did. A tag is the brain saying which phase ran, so nothing
+    here depends on the route or the stop reason, and a provider death is no
+    longer an unknown."""
+    if phases is None or len(phases) != calls or calls == 0:
+        return None
+    if any(phase not in _KNOWN_PHASES for phase in phases):
+        return None
+    planner = tuple(i for i, phase in enumerate(phases) if phase == _PLANNER_PHASE)
+    narrator = tuple(i for i, phase in enumerate(phases) if phase in _NARRATOR_PHASES)
+    if not narrator:
+        return Attribution.NO_NARRATOR, planner, None
+    return Attribution.SPLIT, planner, narrator
+
 
 def _attribute_phases(
     calls: int, *, route: str | None, stop_reason: str | None, rewrites: int = 0
@@ -524,14 +560,18 @@ def _attribute_phases(
     )
 
 
-def _total(readings: Sequence[int | None], phase: slice | None) -> int | None:
+def _total(readings: Sequence[int | None], phase: _Phase | None) -> int | None:
     """One phase's readings summed, or `None` for either honest unknown: the
     phase boundary was not knowable, or one of the phase's own calls reported no
     reading at all (a round trip that raised has no usage). Summing the rest
     would report a *smaller* number as though it were the whole."""
     if phase is None:
         return None
-    values = readings[phase]
+    values = (
+        readings[phase]
+        if isinstance(phase, slice)
+        else tuple(readings[i] for i in phase)
+    )
     if any(value is None for value in values):
         return None
     return sum(value for value in values if value is not None)
@@ -552,6 +592,7 @@ def split_latencies(
     route: str | None,
     stop_reason: str | None,
     rewrites: int = 0,
+    phases: Sequence[str] | None = None,
 ) -> TurnLatencies:
     """Attribute a turn's per-call readings to the phase that spent them.
 
@@ -577,9 +618,16 @@ def split_latencies(
       on `completed` and `no_progress` (both reach it), it does not exist on a
       budget stop, and on `provider_error` the dead call could have been either
       phase — the other case where the honest answer is UNKNOWN.
+
+    Both are fallbacks now (#317): a schema-2 record tags each call with the
+    phase that made it, and `phases` — the record's `calls[].phase`, in order —
+    is read before either rule is consulted. The rules still decide a schema-1
+    record, and one from a brain that does not tag its calls.
     """
     readings = tuple(call_ms)
-    attribution, planner, narrator = _attribute_phases(
+    attribution, planner, narrator = _attribute_tagged(
+        phases, len(readings)
+    ) or _attribute_phases(
         len(readings), route=route, stop_reason=stop_reason, rewrites=rewrites
     )
     return TurnLatencies(
@@ -665,6 +713,7 @@ def split_tokens(
     route: str | None,
     stop_reason: str | None,
     rewrites: int = 0,
+    phases: Sequence[str] | None = None,
 ) -> TurnTokens:
     """Attribute a turn's per-call token counts to the phase that spent them.
 
@@ -678,7 +727,9 @@ def split_tokens(
     """
     call_in = tuple(prompt for prompt, _ in usage)
     call_out = tuple(completion for _, completion in usage)
-    attribution, planner, narrator = _attribute_phases(
+    attribution, planner, narrator = _attribute_tagged(
+        phases, len(usage)
+    ) or _attribute_phases(
         len(usage), route=route, stop_reason=stop_reason, rewrites=rewrites
     )
     return TurnTokens(

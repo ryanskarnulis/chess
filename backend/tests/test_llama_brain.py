@@ -3474,3 +3474,138 @@ def test_an_offer_that_raises_mid_run_keeps_the_previous_one():
     assert resp.stop_reason == "completed"
     assert resp.offer_refreshes == ()
     assert provider.calls[1]["tools"] == [*TOOLS, ASK_TOOL]
+
+
+# --- every round trip is tagged with its phase and how it ended (#317) ------
+
+
+def _tags(response: AgentResponse) -> list[tuple[str, str]]:
+    return [(call.phase, call.status) for call in response.calls]
+
+
+def test_each_call_is_tagged_with_its_phase_and_its_totals_are_their_sum():
+    metered = Usage(prompt_tokens=100, completion_tokens=5)
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"}), usage=metered),
+        text_turn("done", usage=metered),
+        text_turn("e4, then.", usage=Usage(prompt_tokens=300, completion_tokens=20)),
+        clock=stub_clock(0.0, 1.0, 1.0, 1.5, 2.0, 4.0),
+    )
+    resp = brain.get_agent_response(board_state={}, command="e4")
+
+    assert _tags(resp) == [("planner", "ok"), ("planner", "ok"), ("closer", "ok")]
+    assert [call.ms for call in resp.calls] == [1000, 500, 2000]
+    assert resp.model_latencies_ms == (1000, 500, 2000)
+    assert resp.prompt_tokens == sum(call.prompt_tokens for call in resp.calls)
+    assert resp.completion_tokens == 30
+    assert resp.unmetered_calls == 0
+
+
+def test_a_malformed_call_is_a_bad_args_planner_call_with_no_tokens():
+    brain, _ = make_brain(
+        ToolCallArgumentsError("make_move", "not json"),
+        text_turn("nothing to do"),
+        text_turn("Try that again?"),
+    )
+    resp = brain.get_agent_response(board_state={}, command="e4")
+
+    assert resp.calls[0].phase == "planner"
+    assert resp.calls[0].status == "bad_args"
+    assert resp.calls[0].prompt_tokens is None
+    assert resp.unmetered_calls == sum(1 for c in resp.calls if not c.metered)
+
+
+def test_a_provider_death_mid_loop_keeps_its_phase_and_failure_kind():
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        ProviderRequestError("gone", ProviderFailure.SERVER_ERROR),
+    )
+    resp = brain.get_agent_response(board_state={}, command="e4 then e5")
+
+    assert resp.stop_reason == "provider_error"
+    assert _tags(resp) == [("planner", "ok"), ("planner", "failed")]
+    assert resp.calls[-1].failure == "server_error"
+
+
+def test_a_truncated_planner_call_is_tagged_truncated():
+    brain, _ = make_brain(
+        text_turn("thinking thinking", finish_reason="length"),
+        text_turn("Say that again?"),
+    )
+    resp = brain.get_agent_response(board_state={}, command="hm")
+    assert resp.calls[0].status == "truncated"
+
+
+def test_a_late_closer_is_tagged_late_and_censored_at_its_budget():
+    brain, provider = late_brain(
+        reply_owed=True, closing_budget_s=0.05, closing_ceiling_s=None
+    )
+    try:
+        resp = brain.get_agent_response(board_state={}, command="play e4")
+    finally:
+        provider.release.set()
+    assert _tags(resp)[-1] == ("closer", "late")
+    assert resp.calls[-1].budget_ms == 50
+    assert resp.calls[-1].prompt_tokens is None
+
+
+def test_a_dead_closer_is_a_failed_closer_call():
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("done"),
+        ProviderRequestError("gone", ProviderFailure.UNREACHABLE),
+    )
+    resp = brain.get_agent_response(board_state={}, command="e4")
+    assert _tags(resp)[-1] == ("closer", "failed")
+    assert resp.calls[-1].failure == "unreachable"
+
+
+def test_planning_records_its_elapsed_time_against_the_deadline():
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("done"),
+        text_turn("e4."),
+        planning_deadline_s=60.0,
+        clock=stub_clock(0.0, 2.0, 3.0, 4.5, 5.0, 6.0),
+    )
+    resp = brain.get_agent_response(board_state={}, command="e4")
+    assert resp.planning == {"elapsed_ms": 4500, "deadline_ms": 60000, "overrun_ms": 0}
+
+
+def test_a_round_trip_that_ends_past_the_deadline_is_an_overrun():
+    # The first call starts inside the deadline and ends 5 s past it; the check
+    # between round trips then declines the next one.
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("e4 is in."),
+        planning_deadline_s=60.0,
+        clock=stub_clock(0.0, 65.0, 66.0, 66.0, 67.0),
+    )
+    resp = brain.get_agent_response(board_state={}, command="e4 then e5")
+    assert resp.budget == "wall_time"
+    assert resp.planning == {
+        "elapsed_ms": 65000,
+        "deadline_ms": 60000,
+        "overrun_ms": 5000,
+    }
+
+
+def test_no_planner_call_means_no_planning_record():
+    assert AgentResponse(text="").planning is None
+
+
+def test_the_answer_reader_says_how_its_call_ended():
+    dead, _ = make_brain(ProviderRequestError("gone", ProviderFailure.UNREACHABLE))
+    answer = dead.read_answer("Resign?", "yes")
+    assert (answer.status, answer.failure) == ("failed", "unreachable")
+
+    cut, _ = make_brain(text_turn("conf", finish_reason="length"))
+    assert cut.read_answer("Resign?", "yes").status == "truncated"
+
+
+def test_a_narration_that_never_reached_the_model_is_no_call():
+    brain, provider = make_brain(text_turn("never sent"), input_budget_tokens=1)
+    narration = brain.narrate({}, [])
+    assert provider.calls == []
+    assert narration.model_calls == 0
+    assert narration.model_latencies_ms == ()

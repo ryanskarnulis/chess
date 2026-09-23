@@ -99,7 +99,14 @@ def test_a_reader_that_died_is_still_a_call_on_the_turn(trace_path):
     brain = ScriptedBrain(
         AgentResponse(text="Sure.", model_calls=1, prompt_tokens=200),
         answers=(
-            Answer(verdict=UNRELATED, model_calls=1, unmetered_calls=1, latency_ms=900),
+            Answer(
+                verdict=UNRELATED,
+                model_calls=1,
+                unmetered_calls=1,
+                latency_ms=900,
+                status="failed",
+                failure="unreachable",
+            ),
         ),
     )
     client, _ = client_for(trace_path, brain, opening=("e4", "e5"))
@@ -112,6 +119,16 @@ def test_a_reader_that_died_is_still_a_call_on_the_turn(trace_path):
     assert record["unmetered_calls"] == 1
     assert record["prompt_tokens"] == 200
     assert 900 in record["model_latencies_ms"]
+    # #317: the reader's call keeps its phase and why it died; the brain's,
+    # untagged by this double, is known to have happened and not as which.
+    reader, loop = record["calls"]
+    assert (reader["phase"], reader["status"], reader["failure"]) == (
+        "answer",
+        "failed",
+        "unreachable",
+    )
+    assert (reader["ms"], reader["prompt_tokens"]) == (900, None)
+    assert (loop["phase"], loop["prompt_tokens"]) == ("unknown", 200)
 
 
 def test_the_real_reader_counts_a_dead_provider_as_one_timed_call():
@@ -137,6 +154,11 @@ def test_a_dead_observe_beat_is_one_call_on_the_fast_path(trace_path):
     assert record["unmetered_calls"] == 1
     assert record["prompt_tokens"] == 0
     assert len(record["model_latencies_ms"]) == 1
+    (call,) = record["calls"]
+    assert (call["phase"], call["status"]) == ("reaction", "failed")
+    # The beat was bounded, so the call says by what, even though it died
+    # rather than ran out.
+    assert call["budget_ms"] is not None
 
 
 def test_a_dead_observe_beat_is_one_call_on_a_drag(trace_path):
@@ -190,6 +212,13 @@ def test_a_lost_rewrite_is_a_call_beside_the_draft_it_was_asked_to_fix(
     assert record["unmetered_calls"] == 1
     assert record["prompt_tokens"] == 500
     assert len(record["model_latencies_ms"]) == 3
+    assert [(c["phase"], c["status"]) for c in record["calls"]] == [
+        ("unknown", "ok"),
+        ("unknown", "ok"),
+        ("rewrite", "failed"),
+    ]
+    assert [c["seq"] for c in record["calls"]] == [0, 1, 2]
+    assert record["calls"][0]["ms"] == 300
 
 
 # --- a call with no usage is unknown, not free ------------------------------
