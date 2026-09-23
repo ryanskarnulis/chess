@@ -14,10 +14,28 @@ Under `CHESSAPP_SAVE_DIR` (the `/data/saves` volume in the container):
 |---|---|---|
 | `settings.json` | difficulty, verbosity, voice | on every settings change, best-effort |
 | `games/<name>.json` | a named save: the game plus the panel transcript | by `save_game`, atomically |
+| `live.json` | the live game: board, panel transcript, `game_id`, board version | on every change, atomically, best-effort |
 
-Everything else lives in process memory: the live board, the pending
-question, and the delegate conversations. A restart loses them. (#291 PR 2
-and PR 3 change this; this table is updated as they land.)
+**Restart** (#291). `live.json` is written whenever the board version or the
+panel transcript changes — from the mutation guard's exit and from the
+state broadcast, both under the mutation lock, so it is one coherent
+snapshot — and restored by `build_app` before anything reads the session
+(`tools.restore_live_checkpoint`). Restoring replays every move through the
+legality gate, so a tampered file cannot put up a board the rules never
+allowed; a missing, unreadable or invalid one means a fresh board and a
+warning, never a failed start. A checkpoint taken while the engine was
+thinking is settled on restore, as a resumed save is. The file sits at the
+save dir's root, outside `games/`, and nests the session under a key, so it
+is never listed as a save nor swept up by the legacy-save migration.
+
+What does **not** survive a restart:
+
+- **The pending question.** It was asked in a conversation about a board on
+  a screen; after a restart nothing is armed, and the player asks again. A
+  "yes" can never meet a question the restarted app did not ask.
+- **The delegate conversations** — process memory until #291 PR 3.
+- **An in-flight turn.** A command the process died inside has whatever
+  outcome the checkpoint recorded; nothing re-runs it.
 
 ## The gate: what asks before it runs
 
@@ -77,11 +95,24 @@ it did not ask.
 ## Board versions are opt-in
 
 Every mutating HTTP request may carry `version` (`api.VersionedRequest`), and
-a stale one is a 409 with the board untouched. It is optional by design
+a stale one is a 409 with the board untouched. A restored checkpoint comes
+back one version past the one it was taken at, so a number held across a
+restart is stale rather than silently meaning a different position. It is optional by design
 (audit item 7): the web UI sends it, but a caller that omits it acts on
 whatever board is live when its request lands. A client that wants "act on
 the board I saw, or not at all" must send it. A delegate message
 (`MessageCreate.version`) may carry it too.
+
+## Game identity
+
+`state.game_id` names the game on the board (`GameSession.game_id`, 32 hex
+characters). It changes on a new game and on a resume — resuming one save
+twice gives two games — and survives a move, a takeback and a restart.
+Every mutating request, and a delegate message, may carry `game_id` as a
+precondition beside `version`: a mismatch is the same 409 (`stale: true`,
+with the current `game_id` and state), so a delegate that sends it can never
+silently act on a game other than the one it was playing. Trace records
+carry it too, which is what ties turns to one game across restarts.
 
 ## `X-Agent-Actor` is a label
 
