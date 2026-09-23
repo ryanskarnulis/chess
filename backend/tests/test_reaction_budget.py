@@ -276,6 +276,23 @@ def test_a_dragged_move_records_its_lateness_too(tmp_path, slow):
     assert (record["route"], record["reaction_late"]) == ("board", True)
 
 
+def test_a_late_reaction_is_still_a_call_on_the_turn(tmp_path, slow):
+    """The turn waited out the budget on a round trip it made (#290): one call,
+    its latency the wait, its tokens unknown — never a turn that cost nothing."""
+    path = tmp_path / "turns.jsonl"
+    brain = slow()
+    client, _, _ = build(brain, tracer=JsonlTracer(path))
+
+    client.post("/api/command", json={"text": "e4"})
+
+    assert still_writing(brain)
+    record = json.loads(path.read_text().splitlines()[0])
+    assert record["model_calls"] == 1
+    assert record["unmetered_calls"] == 1
+    (waited,) = record["model_latencies_ms"]
+    assert waited >= BUDGET * 1000 * 0.9
+
+
 def test_a_turn_that_spoke_in_time_records_no_lateness(tmp_path):
     path = tmp_path / "turns.jsonl"
     client, _, _ = build(

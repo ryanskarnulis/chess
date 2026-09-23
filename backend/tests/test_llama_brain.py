@@ -2452,10 +2452,15 @@ def test_a_word_off_the_menu_is_unrelated(content):
 
 
 def test_a_dead_provider_cannot_confirm_anything():
+    """And the round trip it died on is still one the turn paid for (#290):
+    counted, timed, with its tokens marked unknown rather than zero."""
     brain, _ = make_brain(ProviderError("llama-server is gone"))
     answer = brain.read_answer("Resign?", "just do it")
     assert answer.verdict == UNRELATED
-    assert answer.model_calls == 0
+    assert answer.model_calls == 1
+    assert answer.unmetered_calls == 1
+    assert answer.prompt_tokens == 0
+    assert len(answer.model_latencies_ms) == 1
 
 
 def test_a_truncated_reading_cannot_confirm_anything_either():
