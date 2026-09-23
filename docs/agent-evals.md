@@ -274,6 +274,18 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-22 on the input-budget tree (#288 PR 4: an over-budget prompt
+drops the conversation's oldest exchanges; `late_game_tool_composition` gains
+its 4,800-token per-call ceiling): 50 passed in a single run, 12 m 29 s, infra
+0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except
+`pgn_is_handed_over_not_recited` 4/5 ABOVE_FLOOR (the miss the narrator
+reciting the PGN, 88 output tokens against 9–11 — the same miss the morning's
+baseline records, on a turn nowhere near the budget), `long_capture` 5/5 ×3,
+`judgment_question` 11.6 s, costs unmoved.** All 228 samples `completed`. The
+late-game prompts are byte-for-byte the PR 2 baseline's (`call_in` max 3,838
+seeded, 3,622 control), so the guard trimmed nothing on any real prompt — as a
+32k safety net should — and the new ceiling passed on its first run.
+
 **Run 2026-09-22 on the turn-budgets tree (#288 PR 3: per-turn caps on tool
 calls (8), Stockfish-backed calls (3) and planning wall time (60 s); a budget
 stop after real work is narrated): 50 passed in a single run, 11 m 39 s, infra
