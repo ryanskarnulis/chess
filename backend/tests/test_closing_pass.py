@@ -1039,3 +1039,40 @@ def test_a_typed_clarification_reaches_the_player_with_its_candidates(trace_path
     assert record["handoff"]["kind"] == "clarify"
     assert record["handoff"]["candidates"] == ["Nf3", "Nh3"]
     assert "has to choose between: Nf3, Nh3" in narrator_briefs(provider)[0]
+
+
+def test_a_landed_ask_leaves_the_move_after_it_unplayed():
+    """#314: the planner asks which knight, then plays one in the same batch.
+
+    The ask used to end the phase only after the whole batch ran, so Nf3 went
+    on the board under a handoff still reading `clarify`. It is terminal at the
+    call now: the move is answered unrun, the board is untouched, and the
+    question reaches the player with both candidates still open. The setting
+    changed *before* the ask stands, and is reported as done."""
+    turns = CollectedTurns()
+    client, provider, ctx = make_client(
+        tool_calls_turn(
+            ("set_verbosity", {"verbosity": "low"}),
+            ("ask_player", {"candidates": ["Nf3", "Nh3"]}),
+            ("make_move", {"move": "Nf3"}),
+        ),
+        text_turn("Nf3 or Nh3?"),
+        tracer=turns,
+    )
+
+    body = client.post("/api/command", json={"text": "move my kings knight"}).json()
+
+    assert ctx.session.move_history() == []
+    assert ctx.settings.verbosity == "low"
+    assert [r["name"] for r in body["tool_results"]] == [
+        "set_verbosity",
+        "ask_player",
+        "make_move",
+    ]
+    assert body["tool_results"][2]["result"]["ok"] is False
+    (record,) = turns.records
+    assert record["handoff"]["kind"] == "clarify"
+    assert record["handoff"]["candidates"] == ["Nf3", "Nh3"]
+    assert record["handoff"]["performed"] == ["set_verbosity"]
+    assert record["handoff"]["refused"] == ["make_move"]
+    assert len(provider.calls) == 2, "one planner turn, then the narrator"

@@ -204,7 +204,12 @@ the handler re-checks against the board, and the tool is withheld with fewer
 than two legal moves), so a candidate the board does not allow is a schema
 correction inside the loop. A landed ask ends the planning phase — only the
 player can answer it — and the handoff is `clarify`, with a brief line asking
-the narrator to name each candidate. The candidates count as reported moves,
+the narrator to name each candidate. It ends it at the call, not after the
+batch (#314, 2026-09-23): every call after a landed ask is answered "not run
+this turn" and never dispatched, so a planner that asks and then plays one of
+the candidates in the same batch leaves the board untouched. Calls before the
+ask ran and stand, reported as done — nothing is rolled back. An ask that is
+refused or off the enum stops nothing. The candidates count as reported moves,
 so the advice licence covers them. Before this, the question lived in the
 note and was paraphrased away: on `main` both ambiguity scenarios asked
 "which rook and which square?" 20/20, naming nothing. The tool is registered

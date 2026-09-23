@@ -2919,3 +2919,125 @@ def test_a_candidate_off_the_enum_is_a_schema_correction_not_a_question():
     assert resp.tool_results[0]["result"]["ok"] is False
     assert resp.handoff.kind == "declined"
     assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]
+
+
+# --- a landed ask stops the batch where it stands (#314) --------------------
+
+SETTING_TOOL = _fn(
+    "set_verbosity",
+    "Set verbosity.",
+    {
+        "type": "object",
+        "properties": {"verbosity": {"type": "string"}},
+        "required": ["verbosity"],
+        "additionalProperties": False,
+    },
+)
+ASK = ("ask_player", {"candidates": ["Nf3", "Nh3"]})
+
+
+def _ask_brain(*calls, dispatcher=None):
+    dispatcher = dispatcher or FakeDispatcher(
+        {"ask_player": {"ok": True, "candidates": ["Nf3", "Nh3"]}}
+    )
+    brain, provider = make_brain(
+        tool_calls_turn(*calls),
+        text_turn("Nf3 or Nh3?"),  # the narrator — no second planner turn
+        dispatcher=dispatcher,
+        tool_definitions=[*TOOLS, ASK_TOOL, SETTING_TOOL],
+    )
+    resp = brain.get_agent_response(board_state={}, command="move my kings knight")
+    return resp, dispatcher, provider
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        ("make_move", {"move": "Nf3"}),  # picking a candidate for the player
+        ("evaluate_position", {}),  # a read
+        ("set_verbosity", {"verbosity": "low"}),  # a setting
+        ("new_game", {}),  # a destructive op
+    ],
+    ids=["move", "read", "setting", "destructive"],
+)
+def test_nothing_after_a_landed_ask_runs(after):
+    resp, dispatcher, provider = _ask_brain(ASK, after)
+
+    assert [name for name, _ in dispatcher.calls] == ["ask_player"]
+    # Answered, never run: one result per call, in the calls' order.
+    assert [c.name for c in resp.tool_calls] == ["ask_player", after[0]]
+    assert len(resp.tool_results) == len(resp.tool_calls)
+    assert resp.tool_results[1]["result"]["ok"] is False
+    assert resp.tool_results[1]["result"]["error"] == _NOT_RUN
+    assert resp.tool_results[1]["result"]["retry"] == RETRY_NEVER
+    assert resp.handoff.kind == "clarify"
+    assert resp.handoff.candidates == ("Nf3", "Nh3")
+    assert resp.handoff.performed == ()
+    assert [e.tool for e in resp.handoff.refused] == [after[0]]
+    assert system_prompts(provider) == [PLANNER, PERSONA]
+    assert resp.budget == ""
+
+
+def test_work_before_a_landed_ask_stands_and_work_after_it_does_not_run():
+    resp, dispatcher, _ = _ask_brain(
+        ("set_verbosity", {"verbosity": "low"}),
+        ASK,
+        ("make_move", {"move": "Nf3"}),
+        ("new_game", {}),
+    )
+
+    assert [name for name, _ in dispatcher.calls] == ["set_verbosity", "ask_player"]
+    assert len(resp.tool_results) == 4
+    assert [r["result"].get("error") for r in resp.tool_results[2:]] == [
+        _NOT_RUN,
+        _NOT_RUN,
+    ]
+    # Reported as it happened: the setting was changed, nothing is undone.
+    assert resp.handoff.kind == "clarify"
+    assert [e.tool for e in resp.handoff.performed] == ["set_verbosity"]
+    assert [e.tool for e in resp.handoff.refused] == ["make_move", "new_game"]
+
+
+def test_an_ask_last_in_the_batch_lets_everything_before_it_run():
+    resp, dispatcher, provider = _ask_brain(
+        ("evaluate_position", {}), ("set_verbosity", {"verbosity": "low"}), ASK
+    )
+
+    assert [name for name, _ in dispatcher.calls] == [
+        "evaluate_position",
+        "set_verbosity",
+        "ask_player",
+    ]
+    assert resp.handoff.kind == "clarify"
+    assert resp.handoff.refused == ()
+    assert system_prompts(provider) == [PLANNER, PERSONA]
+
+
+def test_only_the_first_of_two_asks_is_put_to_the_player():
+    resp, dispatcher, _ = _ask_brain(ASK, ("ask_player", {"candidates": ["Nf3", "e4"]}))
+
+    assert [name for name, _ in dispatcher.calls] == ["ask_player"]
+    assert resp.handoff.candidates == ("Nf3", "Nh3")
+
+
+def test_a_refused_ask_does_not_stop_the_batch():
+    dispatcher = FakeDispatcher(
+        {"ask_player": {"ok": False, "error": "not legal here", "retry": "x"}}
+    )
+    resp, _, provider = _ask_brain(
+        ASK, ("make_move", {"move": "Nf3"}), dispatcher=dispatcher
+    )
+
+    assert [name for name, _ in dispatcher.calls] == ["ask_player", "make_move"]
+    assert resp.handoff.kind != "clarify"
+    assert _NOT_RUN not in [r["result"].get("error") for r in resp.tool_results]
+
+
+def test_an_ask_off_the_enum_does_not_stop_the_batch():
+    resp, dispatcher, _ = _ask_brain(
+        ("ask_player", {"candidates": ["Nf3", "Qh5"]}),
+        ("make_move", {"move": "Nf3"}),
+    )
+
+    assert [name for name, _ in dispatcher.calls] == ["make_move"]
+    assert resp.handoff.kind != "clarify"
