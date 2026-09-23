@@ -274,6 +274,41 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-22 on the typed-clarification tree (#289 PR 2: the planner asks
+through `ask_player`, whose candidates are an enum of the live legal moves, and
+the ambiguity scenarios now require the question to name every candidate):
+50 passed in a single run, 12 m 56 s, infra 0; every pass-rate scenario 5/5
+ABOVE_FLOOR STABLE except `offer_draw_routes` 4/5 ABOVE_FLOOR, `long_capture`
+5/5 ×3, `ambiguous_move` and `ambiguous_knight_then_selection` 5/5,
+`judgment_question` 10.8 s. Costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).** A planner
+prompt and tool-offer change, measured before the gate:
+
+- *Probe screen* (`probe_planner.py`, 20 per item per arm, arms round-robin per
+  sample): control (the tool dropped, old sentence), the tool offered under the
+  old sentence, and the tool offered with "Two or more fit: do not guess — call
+  `ask_player` with every entry that fits." Every item passed on every arm
+  except where noted; the old-sentence offer listed a partial candidate set on
+  the rook ask 6/20 (only the h-rook's moves), the new sentence 0/20. Both
+  refusals, the STT knight, one-side castling and undo-then-replace's first
+  call were 20/20 on all three arms. The king's-knight ask lists all four
+  knight moves on both offered arms (Nh3, Nf3, Nc3, Na3), and an arm adding
+  "exactly the entries that fit, and no others" to the tool's text moved
+  nothing, so no words were added. The held-out `castle_both` ("castle" with
+  both castlings legal) went from `make_move(O-O)` 20/20 to asking 20/20.
+- *Harness confirm* (`eval_campaign.sh`, four alternating blocks of five,
+  unchanged `main` vs this tree, one server): `ambiguous_move` 0/20 → 20/20
+  and `ambiguous_knight_then_selection` 0/20 → 20/20 on the new
+  candidate-naming check — on `main` every question was a variant of "which
+  rook and which square?" naming nothing — with `undo_and_replace`,
+  `undo_twice_and_replace`, both refusal scenarios and both STT knight repairs
+  20/20 → 20/20.
+
+The `offer_draw_routes` miss is a guard false positive on a correct answer
+("the engine says it's too early to call it a draw" read by the draw class),
+logged in `TODO.md`; the scenario's turn never offers `ask_player` a reason to
+run.
+
 **Run 2026-09-22 on the typed-handoff tree (#289 PR 1, astra audit F9: the
 brain route's narrator closes from a handoff the harness builds — results
 sorted into done / refused / looked up with an explicit "Done this turn:

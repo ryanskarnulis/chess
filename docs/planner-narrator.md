@@ -156,9 +156,22 @@ results with ids (`#1`, `#2`) that the sorted lines point at, says **"Done this
 turn: nothing."** when nothing was, and demotes the note to "The planner's
 reading of what the player wants (not a record of what happened)". It is kept
 because a `reply` turn has nothing else to answer from. Telling an answer from
-a clarification is language, so the harness does not try: both are `reply`,
-and a typed clarification is the planner's to declare (PR 2 of the issue's
-plan, measured separately).
+a clarification is language, so the harness does not try: the planner
+declares it.
+
+**Typed clarifications** (PR 2, 2026-09-22). When two or more `legal_moves`
+entries fit the player's words, the planner calls `ask_player` with them. Its
+`candidates` are an enum of the live legal moves (`tools.brain_tool_definitions`
+builds the offer for assembly, the eval harness and the planner probe alike;
+the handler re-checks against the board, and the tool is withheld with fewer
+than two legal moves), so a candidate the board does not allow is a schema
+correction inside the loop. A landed ask ends the planning phase — only the
+player can answer it — and the handoff is `clarify`, with a brief line asking
+the narrator to name each candidate. The candidates count as reported moves,
+so the advice licence covers them. Before this, the question lived in the
+note and was paraphrased away: on `main` both ambiguity scenarios asked
+"which rook and which square?" 20/20, naming nothing. The tool is registered
+on the app's split registry only; the MCP server's caller asks its own user.
 
 **Fresh facts through a seam.** `LlamaBrain.narrator_facts`, wired from
 `api.narrator_facts` by `build_app` and the eval harness alike (a test pins

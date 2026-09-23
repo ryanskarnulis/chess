@@ -13,9 +13,10 @@ merged, move its line to `DONE.md` with the date. Re-plan freely.
 
 ## Open
 
-Nothing open (2026-09-17). Findings recorded, not filed: a bare "castle" with both
-castlings legal is played as O-O (`docs/knight-ask-campaign.md`, "Measurement
-record") — a design decision for whoever picks it up.
+Findings recorded, not filed: a bare "castle" with both castlings legal was
+played as O-O (`docs/knight-ask-campaign.md`); since #289 PR 2 it is asked
+("O-O or O-O-O?") — revisit only if that reads as a nuisance in play. The
+king's-knight ask lists all four knight moves rather than the g1 knight's two.
 
 - [ ] The move guard reads a piece-placement list as moves (found 2026-09-22 in
   #289's gate, pre-existing): asked to show the position, the narrator
@@ -25,7 +26,10 @@ record") — a design decision for whoever picks it up.
   A correct answer the guard fires on, so the guard loosens (a token naming a
   piece on the square it occupies is placement, not a move), measured on a
   corpus first.
-- [ ] #289 PR 2: typed clarifications (`ask_player`), measured separately.
+- [ ] The draw class reads "too early to call it a draw" as a report (found
+  2026-09-22 in #289 PR 2's gate, `offer_draw_routes` 4/5): a declined draw
+  offer explained correctly. Same shape as the item above — loosen the guard
+  on a measured corpus.
 
 ## Agent audit follow-ups (2026-09-05)
 
