@@ -138,10 +138,14 @@ class AgentResponse:
     # the plan finished.
     handoff: Handoff | None = None
     # Which per-turn budget ended the planning phase (#288), or "" when none
-    # did: `iterations`, `corrections`, `tool_calls`, `analysis_calls` or
-    # `wall_time`. The stop reason says the phase ended early; this says on
-    # what, which is the number a trace reader tunes.
+    # did: `iterations`, `corrections`, `tool_calls`, `analysis_calls`,
+    # `wall_time` or `input`. The stop reason says the phase ended early; this says on
+    # what, which is the number a trace reader tunes. `input` is the prompt
+    # budget: the run's own results outgrew it.
     budget: str = ""
+    # How many of the conversation's oldest exchanges were dropped to fit the
+    # input budget (#288); 0 on every turn that fit, which is every real one.
+    input_trimmed: int = 0
 
 
 @dataclass(frozen=True)
@@ -214,6 +218,9 @@ class _RunState:
     boards_shown: list[int] = field(default_factory=list)
     # Which turn budget ended the planning phase (#288), or "" when none did.
     budget: str = ""
+    # How many of the conversation's oldest exchanges the input budget dropped
+    # from this run's prompts (#288).
+    input_trimmed: int = 0
 
     def record(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
         self.tool_calls.append(ToolCall(name=name, args=args))
@@ -259,6 +266,7 @@ class _RunState:
             state_refreshes=tuple(self.boards_shown),
             handoff=handoff,
             budget=self.budget,
+            input_trimmed=self.input_trimmed,
         )
 
 

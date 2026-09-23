@@ -249,7 +249,7 @@ snapshot, plus the guard verdict wherever text reaches the player.
 | `best_move_then_play` | "ask Stockfish for its top move and play it for me" | `get_best_moves` before one legal move; the played UCI is that call's first candidate, read off the result *and* the board; 4–5 calls; narrator thinking-on. Which SAN Stockfish picks is not pinned, and `get_legal_moves` is not required (HTTP withholds it) | Lock |
 | `resign_never_pretends` | (strengthened, not new) | The audit's proposed `resign_intent_reaches_planner`: the gate's refusal is now the contract rather than one of two answers, and the armed op must carry the player's own color | Lock |
 | `freeform_confirmation_answers` | "actually, forget it" / "just do it" / "show me the position instead"; panel, a resignation armed deterministically | cancel: no tools, 1 call, route `confirmation`. confirm: one successful resign, 1 call at `low`. unrelated: pending dropped, `describe_position` runs, 4–5 calls, route `brain`. Literal "yes"/"no" stay zero-model unit tests in `test_command.py` | Locks |
-| `late_game_tool_composition` | "save this as late_game and tell me the position"; panel, the 84-ply fixture, `seeded` (20 exchanges from the replay) paired with a `control` (same position, empty transcript) | Save and describe; the file reloads to the setup FEN and full history; board version unchanged; 3–4 calls. Prompt tokens are **recorded, not capped** — they are on the per-sample report line, and a ceiling waits for a baseline to set it against | Lock |
+| `late_game_tool_composition` | "save this as late_game and tell me the position"; panel, the 84-ply fixture, `seeded` (20 exchanges from the replay) paired with a `control` (same position, empty transcript) | Save and describe; the file reloads to the setup FEN and full history; board version unchanged; 3–4 calls. Every call's prompt stays under `_LATE_GAME_PROMPT_CEILING` (4,800: the 2026-09-22 baseline's 3,838 plus a quarter, #288) | Lock |
 | `stt_knight_repair` | "please put my night on f three" / "uh knight f three please" | One legal `make_move` landing Nf3, read off the board (`_expect_san`). The first deliberate STT-error family here; the fix for a miss is the model's understanding, never a parser rule | Locks |
 
 Two of these were expected to be **red on the pre-fix build**, and both were
@@ -273,6 +273,18 @@ Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Run 2026-09-22 on the input-budget tree (#288 PR 4: an over-budget prompt
+drops the conversation's oldest exchanges; `late_game_tool_composition` gains
+its 4,800-token per-call ceiling): 50 passed in a single run, 12 m 29 s, infra
+0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except
+`pgn_is_handed_over_not_recited` 4/5 ABOVE_FLOOR (the miss the narrator
+reciting the PGN, 88 output tokens against 9–11 — the same miss the morning's
+baseline records, on a turn nowhere near the budget), `long_capture` 5/5 ×3,
+`judgment_question` 11.6 s, costs unmoved.** All 228 samples `completed`. The
+late-game prompts are byte-for-byte the PR 2 baseline's (`call_in` max 3,838
+seeded, 3,622 control), so the guard trimmed nothing on any real prompt — as a
+32k safety net should — and the new ceiling passed on its first run.
 
 **Run 2026-09-22 on the turn-budgets tree (#288 PR 3: per-turn caps on tool
 calls (8), Stockfish-backed calls (3) and planning wall time (60 s); a budget

@@ -4105,6 +4105,13 @@ def test_eval_freeform_confirmation_answers(
 # reproducible condition, not a claim about how humans play.
 _LATE_GAME_PGN = Path(__file__).parent / "late_game_84_plies.pgn"
 
+# The late-game prompt ceiling (#288): the largest prompt any one call of the
+# save+describe turn may send, in the provider's own token count. Set from the
+# baseline it waited for — 3,838 at most, `seeded`, in the 2026-09-22 gate
+# (#288 PR 2; `control` 3,622) — plus a quarter, so ordinary drift passes and a
+# state block or transcript that starts growing with the game does not.
+_LATE_GAME_PROMPT_CEILING = 4_800
+
 
 def _replay_late_game(app: EvalApp) -> list[str]:
     """Put the fixture on the board through the session's own legality gate.
@@ -4144,11 +4151,11 @@ def test_eval_late_game_tool_composition(
     of them moves, the finding is about history; if both do, it is about the
     position. One variable at a time, or the number says nothing.
 
-    **Prompt tokens are recorded, not capped.** They are already on the
-    per-sample report line and in the JSONL record (`call_in`,
-    `prompt_tokens` — `evalstats.split_tokens`), and a ceiling set before
-    anyone has read a baseline is a guess with a number on it. The measurement
-    comes first; the ceiling, if it is worth having, comes after.
+    **Prompt tokens are capped per call** (`_LATE_GAME_PROMPT_CEILING`). They
+    were recorded, not capped, until a baseline existed to set a ceiling
+    against — a ceiling before that is a guess with a number on it — and the
+    #288 gate supplied it. They are also on the per-sample report line and in
+    the JSONL record (`call_in`, `prompt_tokens` — `evalstats.split_tokens`).
 
     A lock: there is no evidence yet of a late-game miss. What it buys is a
     condition nothing else in the suite can reach.
@@ -4207,6 +4214,11 @@ def test_eval_late_game_tool_composition(
         )
         assert all(call.thinking is False for call in app.provider.calls), (
             "a save and a description are not analysis — thinking stays OFF"
+        )
+        largest = max(call.prompt_tokens or 0 for call in app.provider.calls)
+        assert largest <= _LATE_GAME_PROMPT_CEILING, (
+            f"a {largest}-token prompt on the late-game turn, over the "
+            f"{_LATE_GAME_PROMPT_CEILING} ceiling"
         )
 
     floor = _FLOORS["late_game_tool_composition"]

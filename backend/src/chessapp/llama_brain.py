@@ -183,6 +183,15 @@ _DEFAULT_MAX_TOOL_CALLS = 8
 _DEFAULT_MAX_ANALYSIS_CALLS = 3
 _DEFAULT_PLANNING_DEADLINE_S = 60.0
 
+# The input budget: how large a prompt the brain will send (#288). A safety net,
+# not a tuning knob — llama-server runs a 131k context and the heaviest eval
+# prompt (the 84-ply game with twenty turns of history) is ~3.6k tokens, so
+# this sits nearly ten times above anything real and far below the window. Read
+# off an estimate, never a tokenizer round trip: `_CHARS_PER_TOKEN` is set low
+# (English and JSON run ~4 on Gemma's vocabulary) so the estimate errs large.
+_DEFAULT_INPUT_BUDGET_TOKENS = 32_000
+_CHARS_PER_TOKEN = 3
+
 # Hard ceilings on what one model call may generate (`max_tokens`; thinking
 # tokens count toward it on this server). Without one, llama-server runs
 # n_predict -1 and a degenerate thought loop generates until the provider's
@@ -331,6 +340,9 @@ class LlamaBrain:
     max_tool_calls: int = _DEFAULT_MAX_TOOL_CALLS
     max_analysis_calls: int = _DEFAULT_MAX_ANALYSIS_CALLS
     planning_deadline_s: float | None = _DEFAULT_PLANNING_DEADLINE_S
+    # The largest prompt one call may send, in estimated tokens (#288; see
+    # `_DEFAULT_INPUT_BUDGET_TOKENS`). `None` disables the guard.
+    input_budget_tokens: int | None = _DEFAULT_INPUT_BUDGET_TOKENS
     # Per-phase sampling: the planner runs cooler than the narrator, which
     # keeps the provider's default. The shipped number is `_PLANNER_TEMPERATURE`,
     # applied by `create_llama_brain`; here None still means "whatever the
@@ -403,7 +415,6 @@ class LlamaBrain:
         command: str,
         transcript: Sequence[dict[str, str]] = (),
     ) -> AgentResponse:
-        messages = self._messages(board_state, command, transcript)
         # One resolution per command: the offer and the schemas it is validated
         # against must be the same list for the whole run, even if the run's
         # own work (a move that makes a draw claimable) changes what the
@@ -411,6 +422,16 @@ class LlamaBrain:
         tools = _resolve(self.tool_definitions)
         schemas = _schemas_of(tools)
         run = _RunState()
+        # Admission (#288): the oldest conversation goes first when the opening
+        # prompt would not fit. Fitted once, here, because the loop only ever
+        # appends — trimming mid-run would rewrite the prefix the KV cache
+        # holds. The same trimmed conversation is what the narrator is handed.
+        transcript, run.input_trimmed = self._admit(
+            lambda kept: self._messages(board_state, command, kept),
+            transcript,
+            tools,
+        )
+        messages = self._messages(board_state, command, transcript)
         corrections = 0
         # Every exchange this turn has already had — a call and what it brought
         # back — so a turn that learns nothing new can be recognized as the
@@ -445,6 +466,14 @@ class LlamaBrain:
                 # has already run. This only declines to start another.
                 return self._budget_stop(
                     run, command, transcript, "budget", "wall_time", dispatched
+                )
+            if self._over_input_budget(messages, tools):
+                # The run's own results have grown the prompt past the budget
+                # (or the opening could not be fitted at all). No trim can
+                # help without rewriting what the planner already read, so the
+                # phase ends here — spoken from what ran, like any budget.
+                return self._budget_stop(
+                    run, command, transcript, "budget", "input", dispatched
                 )
             self._report(BRAIN_PLANNING)
             try:
@@ -640,6 +669,43 @@ class LlamaBrain:
             return run.response("", stop_reason)
         return self._close(run, command, _BUDGET_NOTE, transcript, stop_reason)
 
+    def _over_input_budget(
+        self,
+        messages: Sequence[dict[str, Any]],
+        tools: Sequence[dict[str, Any]] = (),
+    ) -> bool:
+        return (
+            self.input_budget_tokens is not None
+            and _estimate_tokens(messages, tools) > self.input_budget_tokens
+        )
+
+    def _admit(
+        self,
+        build: Callable[[Sequence[dict[str, str]]], list[dict[str, Any]]],
+        transcript: Sequence[dict[str, str]],
+        tools: Sequence[dict[str, Any]] = (),
+    ) -> tuple[list[dict[str, str]], int]:
+        """Fit a prompt to the input budget by dropping the conversation's
+        oldest exchanges; return what is kept and how many exchanges went.
+
+        Only the conversation is ever trimmed — the system prompt, the state
+        block (`legal_moves` among it) and the brief are what the call is
+        *for*. It goes a user/assistant pair at a time, oldest first (the
+        digest before any verbatim turn), so the alternation the chat template
+        expects holds, and the latest exchange is never dropped: it is what
+        "do the second one" refers to, and where an unanswered `ask_player`
+        clarification lives. When that is still too large the caller decides
+        what an over-budget prompt means for its phase.
+        """
+        kept = list(transcript)
+        trimmed = 0
+        while len(kept) > 2 and self._over_input_budget(build(kept), tools):
+            del kept[:2]
+            trimmed += 1
+        if trimmed:
+            logger.warning("input_budget_trimmed exchanges=%d", trimmed)
+        return kept, trimmed
+
     def narrate(
         self,
         board_state: dict[str, Any],
@@ -804,11 +870,23 @@ class LlamaBrain:
         `timeout` is the observe beat's alone (`_NARRATE_TIMEOUT`): the rewrite
         and the loop's closer are calls the pipeline waits for, so they send
         none and keep the client's."""
-        messages = [
-            {"role": "system", "content": self._resolve_system_prompt()},
-            *transcript,
-            {"role": "user", "content": brief},
-        ]
+        system = self._resolve_system_prompt()
+
+        def build(kept: Sequence[dict[str, str]]) -> list[dict[str, Any]]:
+            return [
+                {"role": "system", "content": system},
+                *kept,
+                {"role": "user", "content": brief},
+            ]
+
+        kept, _ = self._admit(build, transcript)
+        messages = build(kept)
+        if self._over_input_budget(messages):
+            # Even the conversation's latest exchange does not leave room for
+            # this brief: nothing is sent, and the empty reply is the one every
+            # caller already knows how to stand in for — a cut-off narration's.
+            logger.warning("narration_over_input_budget")
+            return Narration(text="")
         result = self.provider.chat(
             messages,
             tools=None,
@@ -947,6 +1025,24 @@ class LlamaBrain:
             *transcript,
             {"role": "user", "content": user},
         ]
+
+
+def _estimate_tokens(
+    messages: Sequence[dict[str, Any]], tools: Sequence[dict[str, Any]] = ()
+) -> int:
+    """A prompt's size in tokens, estimated from its characters — every
+    message's content and tool calls, plus the tool schemas the call offers,
+    which ride in the same prompt. Deliberately pessimistic (see
+    `_CHARS_PER_TOKEN`): this guards a ceiling, and an estimate that errs large
+    trims early rather than letting a prompt through that does not fit."""
+    chars = sum(len(message.get("content") or "") for message in messages)
+    chars += sum(
+        len(json.dumps(message["tool_calls"], default=str))
+        for message in messages
+        if message.get("tool_calls")
+    )
+    chars += len(json.dumps(list(tools))) if tools else 0
+    return chars // _CHARS_PER_TOKEN
 
 
 def _resolve[T](value: T | Callable[[], T]) -> T:

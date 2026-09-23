@@ -3068,6 +3068,7 @@ def create_app(
                     # Which per-turn budget ended the planning phase (#288),
                     # the same way: only this route has a loop to report one.
                     traced["budget"] = response.budget
+                    traced["input_trimmed"] = response.input_trimmed
                     # A budget stop with nothing done carries no commentary: no
                     # narrator ran (#288; one after real work is narrated). A provider
                     # stop is left empty here — what it should say depends on
