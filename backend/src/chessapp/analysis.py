@@ -146,6 +146,12 @@ def analyze_last_move(
 
 CLASSIFICATIONS = ("good", "inaccuracy", "mistake", "blunder")
 
+# How many of each color's worst moves the `review_game` tool hands the model
+# (#288). The whole table is one line per ply — ~3.4k tokens on the 84-ply eval
+# fixture, where 66 of 84 moves are mistakes or blunders — and a spoken review
+# names a handful; the per-move table is the UI's (`/api/game/review`).
+CRITICAL_PER_COLOR = 3
+
 
 @dataclass(frozen=True)
 class ReviewedMove:
@@ -160,6 +166,9 @@ class ReviewedMove:
     best_san: str
     best_uci: str
     accuracy: float
+    # The move number as a player says it ("my 12th move"), read off the board
+    # before the move — so a game resumed from a mid-game FEN counts from there.
+    move_number: int = 0
 
 
 @dataclass(frozen=True)
@@ -208,6 +217,7 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
         move = chess.Move.from_uci(uci)
         mover = "white" if board.turn == chess.WHITE else "black"
         san = board.san(move)
+        move_number = board.fullmove_number
         best_cp = pov_cp(best.score_cp, best.mate_in, mover)
         board.push(move)
         if board.is_game_over():
@@ -226,6 +236,7 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
                 best_san=best.san,
                 best_uci=best.uci,
                 accuracy=move_accuracy(win_percent(best_cp), win_percent(played_cp)),
+                move_number=move_number,
             )
         )
         if board.is_game_over():
@@ -246,3 +257,23 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
             for c in CLASSIFICATIONS
         }
     return GameReview(moves=tuple(reviewed), accuracy=accuracy, counts=counts)
+
+
+def critical_moves(
+    review: GameReview, per_color: int = CRITICAL_PER_COLOR
+) -> tuple[ReviewedMove, ...]:
+    """The moves a spoken review is about: each color's worst `per_color`
+    moves by centipawn loss, among those classified worse than `good`, worst
+    first across both colors.
+
+    Per color rather than overall, because a review is asked about from one
+    side ("what did I get wrong?") and a lopsided game's six worst moves can
+    all be the other player's. Ties keep game order. A clean game has none.
+    """
+    picked: list[ReviewedMove] = []
+    for color in ("white", "black"):
+        flawed = [
+            m for m in review.moves if m.color == color and m.classification != "good"
+        ]
+        picked.extend(sorted(flawed, key=lambda m: -m.cp_loss)[:per_color])
+    return tuple(sorted(picked, key=lambda m: -m.cp_loss))

@@ -12,11 +12,15 @@ import shutil
 import pytest
 
 from chessapp.analysis import (
+    CRITICAL_PER_COLOR,
     GameReview,
+    ReviewedMove,
+    critical_moves,
     move_accuracy,
     review_game,
     win_percent,
 )
+from chessapp.api import _analysis_numbers
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext, build_registry
@@ -165,13 +169,91 @@ def test_tool_reviews_the_game(engine):
     registry = build_registry(ToolContext(session=session, engine=engine))
     result = registry.dispatch("review_game", {})
     assert result["ok"] is True
-    assert len(result["moves"]) == len(SCHOLARS_MATE)
-    assert result["moves"][5]["classification"] == "blunder"
+    assert result["plies"] == len(SCHOLARS_MATE)
     assert set(result["accuracy"]) == {"white", "black"}
     assert set(result["counts"]) == {"white", "black"}
+    # 3...Nf6?? is the game's blunder, named as the player would say it.
+    assert {
+        "move_number": 3,
+        "color": "black",
+        "san": "Nf6",
+        "classification": "blunder",
+    }.items() <= result["critical"][0].items()
+    assert result["critical"][0]["best"]
+    # The per-ply table is the UI's, never the model's (#288).
+    assert "moves" not in result
+
+
+@requires_stockfish
+def test_tool_numbers_back_the_honesty_guard(engine):
+    # Every cp_loss the narrator is shown is a number the evaluation class
+    # accepts, so trimming the table did not strand a figure it may quote.
+    session = play(GameSession(), *SCHOLARS_MATE)
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    result = registry.dispatch("review_game", {})
+    numbers = _analysis_numbers([{"name": "review_game", "result": result}])
+    for move in result["critical"]:
+        assert str(move["cp_loss"]) in numbers
 
 
 @requires_stockfish
 def test_tool_with_no_moves_is_an_error(engine):
     registry = build_registry(ToolContext(session=GameSession(), engine=engine))
     assert registry.dispatch("review_game", {})["ok"] is False
+
+
+# --- critical moves (pure) --------------------------------------------------
+
+
+def _move(color, cp_loss, classification="mistake", number=1):
+    return ReviewedMove(
+        san=f"m{number}",
+        uci="a2a3",
+        color=color,
+        cp_loss=cp_loss,
+        classification=classification,
+        best_san="b",
+        best_uci="a2a4",
+        accuracy=50.0,
+        move_number=number,
+    )
+
+
+def _review(*moves):
+    return GameReview(moves=tuple(moves), accuracy={}, counts={})
+
+
+def test_critical_moves_are_each_sides_worst_worst_first():
+    white = [
+        _move("white", cp, number=n) for n, cp in enumerate((90, 400, 150, 60, 300))
+    ]
+    black = [_move("black", cp, number=n) for n, cp in enumerate((500, 80))]
+    picked = critical_moves(_review(*white, *black))
+    assert [(m.color, m.cp_loss) for m in picked] == [
+        ("black", 500),
+        ("white", 400),
+        ("white", 300),
+        ("white", 150),
+        ("black", 80),
+    ]
+
+
+def test_a_lopsided_game_still_names_both_sides():
+    # Six worse white moves than black's worst must not crowd black out: a
+    # review is asked about from one side.
+    white = [_move("white", 900 - n, number=n) for n in range(10)]
+    black = [_move("black", 50, number=1)]
+    picked = critical_moves(_review(*white, *black))
+    assert len(picked) == CRITICAL_PER_COLOR + 1
+    assert any(m.color == "black" for m in picked)
+
+
+def test_good_moves_are_never_critical():
+    picked = critical_moves(
+        _review(_move("white", 5, "good"), _move("black", 30, "inaccuracy"))
+    )
+    assert [m.classification for m in picked] == ["inaccuracy"]
+
+
+def test_a_clean_game_has_no_critical_moves():
+    assert critical_moves(_review(_move("white", 0, "good"))) == ()

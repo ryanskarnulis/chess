@@ -134,7 +134,7 @@
       "type": "function",
       "function": {
         "name": "review_game",
-        "description": "Review the whole game so far: every move classified\n(good/inaccuracy/mistake/blunder) with centipawn loss and the best\nalternative, plus per-color accuracy scores.",
+        "description": "Review the whole game so far: per-color accuracy scores, how\nmany moves each side played of each class\n(good/inaccuracy/mistake/blunder), and each side's worst moves with\nthe move number, centipawn loss and the best alternative. A move not\nlisted lost less than every listed move of its side.",
         "parameters": {
           "properties": {},
           "title": "review_gameArguments",
@@ -566,7 +566,7 @@
       "type": "function",
       "function": {
         "name": "review_game",
-        "description": "Review the whole game so far: every move classified\n(good/inaccuracy/mistake/blunder) with centipawn loss and the best\nalternative, plus per-color accuracy scores.",
+        "description": "Review the whole game so far: per-color accuracy scores, how\nmany moves each side played of each class\n(good/inaccuracy/mistake/blunder), and each side's worst moves with\nthe move number, centipawn loss and the best alternative. A move not\nlisted lost less than every listed move of its side.",
         "parameters": {
           "properties": {},
           "title": "review_gameArguments",
