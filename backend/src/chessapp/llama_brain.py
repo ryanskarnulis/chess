@@ -572,7 +572,18 @@ class LlamaBrain:
             schema_error = False
             progressed = False
             tripped = ""
+            asked = False
             for call in result.tool_calls:
+                if asked:
+                    # The player was asked to choose (#314): nothing after the
+                    # question may run — a later call could only pick one of
+                    # the candidates for them. Answered, never run, like a call
+                    # past a cap: the wire keeps its one answer per call. What
+                    # ran *before* the ask stands; nothing is rolled back.
+                    payload = self.dispatcher.refusal(_NOT_RUN, RETRY_NEVER)
+                    run.record(call.name, call.arguments, payload)
+                    messages.append(_tool_message(call.id, payload))
+                    continue
                 over = self._over_budget(call.name, dispatched, expensive)
                 if over:
                     # Past a per-turn cap: answered, never run (#288). The
@@ -597,6 +608,7 @@ class LlamaBrain:
                 seen.add(exchange)
                 run.record(call.name, call.arguments, payload)
                 messages.append(_tool_message(call.id, payload))
+                asked = call.name == _ASK_PLAYER and payload.get("ok") is True
             # What the next decision is actually about (#282). Once per
             # iteration and never per call: a refresh between two tool messages
             # would break the contiguous answer-per-call shape the wire expects,
@@ -608,14 +620,12 @@ class LlamaBrain:
             # Before the two branches below deliberately: the message is simply
             # never sent on a turn that returns, and the alternative is a second
             # copy of the condition.
-            if any(
-                r["name"] == _ASK_PLAYER and r["result"].get("ok") is True
-                for r in run.tool_results
-            ):
+            if asked:
                 # The planner asked the player to choose (#289): the question is
                 # the turn's answer, and no further iteration can bring the
-                # player's choice back. Terminal by construction, so a planner
-                # that asked cannot go on to play one of the candidates anyway.
+                # player's choice back. Terminal at the call itself (#314): the
+                # rest of the batch was answered unrun above, so a planner that
+                # asked cannot go on to play one of the candidates anyway.
                 return self._close(run, command, "", transcript)
             if tripped:
                 # A cap refused part of this batch, so the next iteration could

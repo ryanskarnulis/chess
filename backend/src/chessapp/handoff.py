@@ -155,8 +155,10 @@ def build(
     - `completed`: every call that was made landed. A turn that only looked
       things up is `completed` too — it did everything it set out to.
     - `clarify`: the planner asked the player to choose (`ask_player`
-      landed), whatever else the batch did. The candidates are the tool's,
-      validated against the board, never the note's.
+      landed). Calls made before the ask stand and are sorted as usual; the
+      loop answers every call after it unrun (#314), so they read as refused.
+      The candidates are the tool's, validated against the board, never the
+      note's.
     """
     performed: list[Entry] = []
     refused: list[Entry] = []
