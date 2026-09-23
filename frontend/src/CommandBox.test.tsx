@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CommandBox } from './CommandBox'
+import { CommandBox, MAX_COMMAND_LENGTH } from './CommandBox'
 import { unlockAudio } from './tts'
 
 // Mobile browsers only allow playback primed inside a user gesture, so the
@@ -31,6 +31,13 @@ function setup(overrides: Partial<React.ComponentProps<typeof CommandBox>> = {})
 }
 
 describe('CommandBox', () => {
+  it('caps the input at the backend command bound', () => {
+    setup()
+    const input = screen.getByLabelText(/command/i) as HTMLInputElement
+    expect(MAX_COMMAND_LENGTH).toBe(8_000)
+    expect(input.maxLength).toBe(MAX_COMMAND_LENGTH)
+  })
+
   it('submits the typed command and clears the input', () => {
     const props = setup()
     const input = screen.getByLabelText(/command/i) as HTMLInputElement

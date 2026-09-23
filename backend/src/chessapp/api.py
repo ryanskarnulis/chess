@@ -88,7 +88,11 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
-from chessapp.agent_api import ConversationStore, build_agent_router
+from chessapp.agent_api import (
+    MAX_AGENT_MESSAGE_LENGTH,
+    ConversationStore,
+    build_agent_router,
+)
 from chessapp.analysis import captured_piece, review_game
 from chessapp.brain import CANCEL, CONFIRM, Brain, Narration
 from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
@@ -172,7 +176,10 @@ class MoveRequest(VersionedRequest):
 
 
 class CommandRequest(VersionedRequest):
-    text: str
+    # The delegate's cap, on the panel's route too (#288): one command is what
+    # the planner and the narrator both carry into their prompts, so an
+    # unbounded one is an unbounded prompt. Refused 422 before any turn opens.
+    text: str = Field(max_length=MAX_AGENT_MESSAGE_LENGTH)
 
 
 class SpeakRequest(BaseModel):

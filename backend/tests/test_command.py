@@ -14,6 +14,7 @@ import threading
 
 from fastapi.testclient import TestClient
 
+from chessapp.agent_api import MAX_AGENT_MESSAGE_LENGTH
 from chessapp.api import (
     _DECLINED_REPLY,
     PROVIDER_LOST_RETRY,
@@ -54,6 +55,21 @@ def test_no_brain_is_503():
 def test_missing_text_is_422():
     client, _ = make_client(AgentResponse(text="hi"))
     assert client.post("/api/command", json={}).status_code == 422
+
+
+def test_command_text_is_bounded_like_the_delegates():
+    # #288: the panel's route carries the delegate's cap. At the cap the turn
+    # runs; one past it is refused before the brain or the board is touched.
+    client, brain = make_client(AgentResponse(text="hi"))
+    over = client.post(
+        "/api/command", json={"text": "x" * (MAX_AGENT_MESSAGE_LENGTH + 1)}
+    )
+    assert over.status_code == 422
+    assert brain.calls == []
+    assert client.get("/api/state").json()["fen"] == START_FEN
+    at_cap = client.post("/api/command", json={"text": "x" * MAX_AGENT_MESSAGE_LENGTH})
+    assert at_cap.status_code == 200
+    assert len(brain.calls) == 1
 
 
 def test_brain_receives_board_state_and_command():
