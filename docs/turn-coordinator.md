@@ -254,6 +254,10 @@ event loop (`api._offloop`) so events arrive live, not in a burst. Reporting
 is wrapped and swallowed — a lost label is never a lost turn. Direct mode and
 the control buttons report nothing (no interaction window).
 
+
+Latency across a whole voice interaction (speech end, transcript, board,
+reply audio, playback end) is measured by joining the turn record to the
+browser's own milestones by `interaction_id`: `docs/latency-measurement.md`.
 ## Known edges, deliberately left
 
 - A route that raises after the player's move landed leaves the turn open, and

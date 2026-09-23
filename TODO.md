@@ -50,6 +50,11 @@ op and the no left the game untouched. Nothing is open here.
 
 ## Evals / observability
 
+- [ ] **Propose latency targets from measured data** (#317 follow-up): after
+      the voice-latency tracing deploys, play a real hands-free session on an
+      idle GPU, run `scripts/latency_report.py` on the container's trace, and
+      write the warm, uncontended p95s (with n and `manifest_id`) into
+      `docs/latency-measurement.md` as proposed targets.
 - [ ] Re-run `play_as_black` alone (20 samples, idle GPU, then again placed
       after the long-transcript block) — the 2026-07-26 order-confound arm
       wasn't clean; compare the report lines.

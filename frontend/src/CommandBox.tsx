@@ -3,6 +3,7 @@ import { GatewayLink } from './GatewayLink'
 import { SpeakerOffIcon, SpeakerOnIcon } from './icons'
 import { MicButton } from './MicButton'
 import { unlockAudio } from './tts'
+import { beginInteraction } from './voiceTiming'
 
 /** The backend's cap on one command (`agent_api.MAX_AGENT_MESSAGE_LENGTH`):
  * longer is refused 422, so the box never lets one be typed. */
@@ -11,7 +12,7 @@ export const MAX_COMMAND_LENGTH = 8_000
 export interface CommandBoxProps {
   /** Send a (trimmed, non-empty) command to the agent. Hands-free voice
    * awaits the returned promise before listening again. */
-  onSubmit: (text: string) => void | Promise<void>
+  onSubmit: (text: string, interactionId?: string) => void | Promise<void>
   /** The agent's latest reply, shown below the input. */
   commentary: string | null
   /** A command is in flight — the input locks and a hint replaces the reply. */
@@ -78,7 +79,12 @@ export function CommandBox({
             regardless of how the input or commentary below reflows. */}
         {/* Voice in: the transcript goes down the exact same pipeline as a
             typed command. Renders nothing in unsupporting browsers. */}
-        <MicButton onTranscript={onSubmit} disabled={locked} />
+        <MicButton
+          onTranscript={onSubmit}
+          /* The player's wait starts when they stop speaking (#317). */
+          beginUtterance={() => beginInteraction('voice')}
+          disabled={locked}
+        />
         {/* Voice out: mute/unmute. Hidden until the setting has loaded so
             the toggle never shows a state it just guessed. */}
         {voiceOutput !== null && (

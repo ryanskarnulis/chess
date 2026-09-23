@@ -9,6 +9,8 @@
 // unhandled with no feedback at all (#231/#232 established the pattern for
 // moves, commands and transcription; the rest of the file follows it).
 
+import { finishInteraction, mark } from './voiceTiming'
+
 export interface Outcome {
   termination: string
   winner: 'white' | 'black' | null
@@ -393,6 +395,9 @@ export interface CommandResponse {
    * the tiers), so an agent-side set_difficulty reaches the selector.
    * Optional only for older backends that don't send it. */
   tier?: string | null
+  /** The turn's trace id, so this interaction's client milestones can name
+   * the turn record they belong to (#317). Optional for older backends. */
+  correlation_id?: string
 }
 
 /**
@@ -409,12 +414,16 @@ export interface CommandResponse {
 export async function sendCommand(
   text: string,
   version?: number,
+  interactionId?: string,
 ): Promise<CommandResponse | StaleStateResponse | null> {
+  // The interaction id joins this turn's trace record to the transcription
+  // before it and the speech after it (#317); omitted when there is none.
+  const body = interactionId ? { text, interaction_id: interactionId } : { text }
   let res: Response
   try {
     res = await fetch('/api/command', {
       ...JSON_POST,
-      body: JSON.stringify(versioned({ text }, version)),
+      body: JSON.stringify(versioned(body, version)),
     })
   } catch {
     return null
@@ -480,14 +489,36 @@ export async function setVoiceOutput(enabled: boolean): Promise<boolean | null> 
  * it already handles. The caller feeds the text into the same command pipeline
  * as typed input — voice never gets its own path.
  */
-export async function transcribe(audio: Blob, filename = 'clip.webm'): Promise<string | null> {
+export async function transcribe(
+  audio: Blob,
+  filename = 'clip.webm',
+  interactionId?: string,
+): Promise<string | null> {
+  const text = await requestTranscript(audio, filename, interactionId)
+  // The interaction's first milestone (#317) — and, when nothing usable came
+  // back, its last: an utterance that never becomes a command is still an
+  // interaction the player waited on.
+  mark(interactionId, 'stt_done')
+  if (text === null || !text.trim()) finishInteraction(interactionId, 'no_command')
+  return text
+}
+
+async function requestTranscript(
+  audio: Blob,
+  filename: string,
+  interactionId: string | undefined,
+): Promise<string | null> {
   const form = new FormData()
   // The filename extension tells the speech backend the container format
   // (webm from MediaRecorder push-to-talk, wav from the hands-free VAD).
   form.append('audio', audio, filename)
   let res: Response
   try {
-    res = await fetch('/api/voice/transcribe', { method: 'POST', body: form })
+    res = await fetch('/api/voice/transcribe', {
+      method: 'POST',
+      body: form,
+      ...(interactionId ? { headers: { 'X-Interaction-Id': interactionId } } : {}),
+    })
   } catch {
     return null
   }

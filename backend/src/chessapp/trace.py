@@ -40,6 +40,14 @@ TRACE_SCHEMA = 2
 # changes; the kind is on every record so a reader never mistakes one for the
 # other.
 KIND_TURN = "turn"
+# One speech-service round trip (#317): `op` `stt` or `tts`, its wall clock and
+# status, keyed by the browser's `interaction_id`. Never the audio, never the
+# words — sizes only.
+KIND_SPEECH = "speech"
+# The browser's own milestones for one interaction (#317), in its own clock:
+# offsets from the moment the player stopped speaking (or submitted), never
+# timestamps to subtract from the server's.
+KIND_VOICE = "voice"
 
 # The four roads an utterance can take through `_run_command`. Three of them are
 # deterministic; only `brain` involves the model in deciding what to do.
@@ -117,6 +125,7 @@ def turn_record(
     budget: str = "",
     input_trimmed: int = 0,
     game_id: str = "",
+    interaction_id: str = "",
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -302,6 +311,12 @@ def turn_record(
     input budget dropped to fit the prompt; any non-zero reading is a prompt
     ten times larger than anything measured, and worth a look.
 
+    `interaction_id` is the browser's id for the interaction this turn served
+    (#317) — minted when the player stopped speaking (or submitted), and sent
+    with the transcription, the command and the speech request alike, so one
+    voice interaction's `speech`, `turn` and `voice` records are one search
+    apart. Empty when the client sent none (the delegate wire, an older UI).
+
     `game_id` is the game the board held when the record was made (#291,
     `GameSession.game_id`): what ties a turn to one game across a new game, a
     resume or a restart, where the turn counter and the board version do not.
@@ -334,6 +349,7 @@ def turn_record(
         "rewrite_claims": list(rewrite_claims),
         "rewrite_suppressed": rewrite_suppressed,
         "game_id": game_id,
+        "interaction_id": interaction_id,
         "turn_id": turn_id,
         "correlation_id": correlation_id,
         "mutations": mutations,
