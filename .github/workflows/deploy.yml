@@ -25,7 +25,9 @@ jobs:
           git diff --quiet && git diff --cached --quiet || { echo "deploy clone is dirty"; exit 1; }
           before=$(git rev-parse HEAD)
           git pull --ff-only origin main
-          docker compose up -d --build
+          # The deployed commit, baked into the image so every trace record's
+          # serving manifest can name the code that served it (#317).
+          CHESSAPP_REVISION="$(git rev-parse HEAD)" docker compose up -d --build
           if ! git diff --quiet "$before" HEAD -- app.yaml; then
             cd "$HOME/deploy/gateway"
             python3 gen.py

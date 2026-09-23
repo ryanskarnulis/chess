@@ -404,3 +404,55 @@ def test_an_unclassified_provider_error_fails_toward_retry():
     mistake is the default."""
     unclassified = ProviderError("llama-server went away")
     assert unclassified.failure is ProviderFailure.UNREACHABLE
+
+
+# --- what the server says about itself (#317) --------------------------------
+
+
+def test_the_servers_own_account_of_a_call_is_kept():
+    body = {
+        **_completion_body({"role": "assistant", "content": "e4."}),
+        "system_fingerprint": "b9935-f2d1c2f39",
+        "timings": {
+            "cache_n": 900,
+            "prompt_n": 120,
+            "prompt_ms": 210.4,
+            "predicted_n": 5,
+            "predicted_ms": 60.2,
+        },
+    }
+    server = _provider_returning(body).chat(_USER).server
+
+    assert server is not None
+    assert server.fingerprint == "b9935-f2d1c2f39"
+    assert server.model == "gemma-4-12b"
+    assert server.server_ms == 271
+    assert (server.prompt_tokens, server.cached_tokens) == (120, 900)
+
+
+def test_a_server_that_says_nothing_about_itself_leaves_it_unknown():
+    body = _completion_body({"role": "assistant", "content": "e4."})
+    body.pop("model")
+    assert _provider_returning(body).chat(_USER).server is None
+
+
+def test_a_mis_shaped_self_report_costs_the_field_never_the_turn():
+    """Diagnostics are read leniently: a server build that shapes them
+    differently must not turn a good completion into a provider error."""
+    body = {
+        **_completion_body({"role": "assistant", "content": "e4."}),
+        "system_fingerprint": {"not": "a string"},
+        "timings": {"prompt_ms": "fast", "predicted_ms": 12.0, "cache_n": -1},
+    }
+    result = _provider_returning(body).chat(_USER)
+
+    assert result.content == "e4."
+    assert result.server is not None
+    assert result.server.fingerprint is None
+    assert result.server.server_ms is None
+    assert result.server.cached_tokens is None
+
+
+def test_the_provider_publishes_the_sampling_it_sends():
+    provider = _provider_returning(_completion_body({"content": "x"}))
+    assert provider.sampling == {"temperature": 1.0, "top_p": 0.95, "top_k": 64}

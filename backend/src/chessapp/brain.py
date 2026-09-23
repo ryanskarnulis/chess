@@ -63,6 +63,21 @@ CALL_LATE = "late"
 
 
 @dataclass(frozen=True)
+class ServerStamp:
+    """What the server said about the one call it served (#317), in plain
+    values so the seam stays model-agnostic (`provider.ServerMeta` is the
+    wire's reading of it). `fingerprint` is the server build that answered,
+    `server_ms` its own prompt plus generation time — the caller's wall clock
+    minus this is queueing, transport and any cold load — and `cached_tokens`
+    how much of the prompt the KV cache served. `None` when the server did not
+    say."""
+
+    fingerprint: str | None = None
+    server_ms: int | None = None
+    cached_tokens: int | None = None
+
+
+@dataclass(frozen=True)
 class ModelCall:
     """One model round trip, as the trace records it (#317).
 
@@ -86,6 +101,8 @@ class ModelCall:
     completion_tokens: int | None = None
     failure: str = ""
     budget_ms: int | None = None
+    # The server's own account of the call, when it gave one (#317).
+    server: ServerStamp | None = None
 
     @property
     def metered(self) -> bool:
@@ -104,6 +121,9 @@ class ModelCall:
             "completion_tokens": self.completion_tokens,
             "failure": self.failure,
             "budget_ms": self.budget_ms,
+            "fingerprint": self.server.fingerprint if self.server else None,
+            "server_ms": self.server.server_ms if self.server else None,
+            "cached_tokens": self.server.cached_tokens if self.server else None,
         }
 
 
@@ -263,6 +283,8 @@ class Narration:
     # cap cut it off and `text` is empty for that reason. Which phase it was
     # is the caller's to say — the same narrator serves three beats.
     status: str = CALL_OK
+    # What the server said about the call (#317), when it said anything.
+    server: ServerStamp | None = None
 
     @property
     def model_latencies_ms(self) -> tuple[int, ...]:
@@ -309,6 +331,7 @@ class Answer:
     # cut off. Either way the verdict is `unrelated`.
     status: str = CALL_OK
     failure: str = ""
+    server: ServerStamp | None = None
 
     @property
     def model_latencies_ms(self) -> tuple[int, ...]:

@@ -1647,6 +1647,7 @@ class _ModelCost:
                 (source.prompt_tokens if i == 0 else 0) if i < metered else None,
                 (source.completion_tokens if i == 0 else 0) if i < metered else None,
                 failure=failure,
+                server=getattr(source, "server", None) if count == 1 else None,
             )
             for i, ms in enumerate(readings[:count])
         )

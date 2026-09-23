@@ -124,6 +124,9 @@ def test_turn_record_tags_each_call_and_derives_every_total_from_them():
             "completion_tokens": 12,
             "failure": "",
             "budget_ms": None,
+            "fingerprint": None,
+            "server_ms": None,
+            "cached_tokens": None,
         },
         {
             "seq": 1,
@@ -134,6 +137,9 @@ def test_turn_record_tags_each_call_and_derives_every_total_from_them():
             "completion_tokens": None,
             "failure": "unreachable",
             "budget_ms": None,
+            "fingerprint": None,
+            "server_ms": None,
+            "cached_tokens": None,
         },
         {
             "seq": 2,
@@ -144,6 +150,9 @@ def test_turn_record_tags_each_call_and_derives_every_total_from_them():
             "completion_tokens": None,
             "failure": "",
             "budget_ms": 10000,
+            "fingerprint": None,
+            "server_ms": None,
+            "cached_tokens": None,
         },
     ]
     assert record["model_calls"] == 3

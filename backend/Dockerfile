@@ -52,7 +52,13 @@ COPY --from=frontend /ui/dist /opt/frontend
 # attaches the engine by default; still optional — unset it to run engine-off.
 # CHESSAPP_STATIC_DIR serves the baked-in UI at / (unset it for API-only).
 # Host 0.0.0.0 so the app is reachable across the home network.
+# The commit this image was built from (#317): the image carries no .git, so
+# the serving manifest can only name its revision if the build is told it.
+# deploy.yml passes `git rev-parse HEAD`; a bare `docker compose build` says
+# "unknown", which the manifest records as exactly that.
+ARG CHESSAPP_REVISION=unknown
 ENV PATH=/opt/venv/bin:$PATH \
+    CHESSAPP_REVISION=$CHESSAPP_REVISION \
     CHESSAPP_STOCKFISH=/usr/games/stockfish \
     CHESSAPP_STATIC_DIR=/opt/frontend \
     CHESSAPP_HOST=0.0.0.0 \

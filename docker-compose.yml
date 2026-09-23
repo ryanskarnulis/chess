@@ -32,6 +32,10 @@ services:
       # Root context: the image needs backend/ (wheel) AND frontend/ (UI build).
       context: .
       dockerfile: backend/Dockerfile
+      # The commit the image is built from, for the serving manifest (#317).
+      # deploy.yml sets it; unset, the image says "unknown" rather than guess.
+      args:
+        CHESSAPP_REVISION: ${CHESSAPP_REVISION:-unknown}
     # Host-only bind: LAN traffic comes in through the workspace gateway
     # (chess.$HOMELAB_DOMAIN → 127.0.0.1:8000). Port block 8000-8099 belongs to
     # chess — see ../gateway/README.md for the registry.
