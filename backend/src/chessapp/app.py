@@ -26,7 +26,12 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from chessapp.api import create_app, narrator_facts, planner_board_refresh
+from chessapp.api import (
+    _REACTION_BUDGET_S,
+    create_app,
+    narrator_facts,
+    planner_board_refresh,
+)
 from chessapp.brain import Brain
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import EnginePlayer
@@ -35,6 +40,7 @@ from chessapp.llama_brain import _PLANNER_TEMPERATURE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider
+from chessapp.serving import ServingManifest, ServingProbe, app_revision
 from chessapp.tools import (
     ToolContext,
     brain_tool_definitions,
@@ -147,6 +153,10 @@ def build_app(
     # What serves a turn, for the trace (#290). Only the brain built here can
     # say: an injected one brings no guarantee it knows its prompts or server.
     serving_identity = None
+    # The probe that learns what the server is running (#317), bound below
+    # once the manifest it writes to exists; the brain's listener reaches it
+    # through this name, so the two can be built in either order.
+    probe: ServingProbe | None = None
     if brain is None and agent_enabled:
         brain = create_llama_brain(
             base_url=llama_base_url,
@@ -177,10 +187,37 @@ def build_app(
             # The same two halves, for the phase that speaks (#289): the facts
             # the narrator may state, and whether the reply is still owed.
             narrator_facts=lambda: narrator_facts(ctx, coordinator),
+            # Each call's server stamp, to the probe once it exists (#317).
+            on_server=lambda stamp: probe.observe(stamp) if probe else None,
         )
         # Read off rather than assumed: a factory stubbed out in tests hands
         # back a brain with nothing to say about what serves it.
-        serving_identity = getattr(brain, "serving_identity", None)
+        identity = getattr(brain, "serving_identity", None)
+        settings = getattr(brain, "client_settings", None)
+        if identity is not None:
+            # The configuration this process serves under (#317): the app's
+            # own settings as fact, the server's as learned. Written to the
+            # trace now and whenever it changes, and named on every turn.
+            manifest = ServingManifest(
+                model=model,
+                base_url=llama_base_url,
+                client={
+                    **(settings() if settings is not None else {}),
+                    "reaction_budget_s": _REACTION_BUDGET_S,
+                },
+                revision=app_revision(),
+                experiment=os.environ.get("CHESSAPP_EXPERIMENT", ""),
+                on_change=tracer.record if tracer is not None else None,
+            )
+            if provider is None:
+                # Only a real server is asked what it runs: an injected
+                # provider has no server behind it to describe.
+                probe = ServingProbe(manifest, base_url=llama_base_url, model=model)
+            manifest.announce()
+
+            def serving_identity() -> dict[str, str]:
+                return {**identity(), **manifest.label()}
+
     return create_app(
         ctx,
         brain=brain,

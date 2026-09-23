@@ -156,6 +156,7 @@ from chessapp.brain import (
     Answer,
     ModelCall,
     Narration,
+    ServerStamp,
     ToolDispatcher,
     _RunState,
 )
@@ -453,6 +454,12 @@ class LlamaBrain:
     # provider is a protocol and keeps its own private). Empty for a brain
     # built around an injected provider with nothing to name.
     serving_labels: dict[str, str] = field(default_factory=dict)
+    # Told what the server said about every call that came back (#317) — its
+    # build fingerprint above all. The serving manifest listens here to notice
+    # a server that changed under the app and re-read what it is running. The
+    # brain reads nothing into it; a listener that raises is logged and
+    # ignored, because diagnostics must never cost a turn.
+    on_server: Callable[[ServerStamp], None] | None = None
 
     def serving_identity(self) -> dict[str, str]:
         """What would serve a turn right now, as the trace records it (#290):
@@ -469,6 +476,33 @@ class LlamaBrain:
             "narrator_prompt": _digest(self._resolve_system_prompt()),
             "tool_schemas": _digest(tools),
             **self.serving_labels,
+        }
+
+    def client_settings(self) -> dict[str, Any]:
+        """Everything this brain sends or enforces that can change a result
+        (#317): per-phase sampling and generation ceilings, the thinking
+        policy, and every turn budget. The half of a serving configuration the
+        app owns and so can state as fact; what the server was started with is
+        the manifest's other half (`serving.ServingManifest`), and never
+        inferred from here. A provider's own defaults are included when the
+        provider publishes them."""
+        sampling = getattr(self.provider, "sampling", None)
+        return {
+            "provider_sampling": dict(sampling) if isinstance(sampling, dict) else None,
+            "planner_temperature": self.planner_temperature,
+            "planner_max_tokens": self.planner_max_tokens,
+            "narrator_max_tokens": self.narrator_max_tokens,
+            "answer_max_tokens": _ANSWER_MAX_TOKENS,
+            "enable_thinking": self.enable_thinking,
+            "max_iterations": self.max_iterations,
+            "max_corrections": self.max_corrections,
+            "max_tool_calls": self.max_tool_calls,
+            "max_analysis_calls": self.max_analysis_calls,
+            "planning_deadline_s": self.planning_deadline_s,
+            "input_budget_tokens": self.input_budget_tokens,
+            "narrate_timeout_s": self.narrate_timeout,
+            "closing_budget_s": self.closing_budget_s,
+            "closing_ceiling_s": self.closing_ceiling_s,
         }
 
     def _resolve_system_prompt(self) -> str:
@@ -597,6 +631,7 @@ class LlamaBrain:
                 started,
                 CALL_TRUNCATED if result.finish_reason == "length" else CALL_OK,
                 usage=result.usage,
+                server=self._stamp(result),
             )
 
             if not result.tool_calls:
@@ -891,6 +926,7 @@ class LlamaBrain:
             )
         prompt_tokens, completion_tokens = _usage_ints(result.usage)
         unmetered = 0 if result.usage is not None else 1
+        server = self._stamp(result)
         if result.finish_reason == "length":
             # The cap cut this call off, so whatever came back is the start of
             # something rather than a verdict — and the one place in the app
@@ -907,6 +943,7 @@ class LlamaBrain:
                 latency_ms=self._elapsed_ms(started),
                 unmetered_calls=unmetered,
                 status=CALL_TRUNCATED,
+                server=server,
             )
         word = (result.content or "").strip().strip(".!,'\"").lower()
         return Answer(
@@ -916,6 +953,7 @@ class LlamaBrain:
             completion_tokens=completion_tokens,
             latency_ms=self._elapsed_ms(started),
             unmetered_calls=unmetered,
+            server=server,
         )
 
     def _close(
@@ -1017,6 +1055,7 @@ class LlamaBrain:
                     narration.prompt_tokens if metered else None,
                     narration.completion_tokens if metered else None,
                     budget_ms=_budget_ms(wait),
+                    server=narration.server,
                 )
             )
         return run.response(narration.text, stop_reason, handoff=handoff)
@@ -1078,6 +1117,7 @@ class LlamaBrain:
             completion_tokens=completion_tokens,
             unmetered_calls=0 if result.usage is not None else 1,
             status=CALL_TRUNCATED if truncated else CALL_OK,
+            server=self._stamp(result),
         )
 
     def _dispatch(
@@ -1167,6 +1207,26 @@ class LlamaBrain:
         """
         return max(0, round((self.clock() - started) * 1000))
 
+    def _stamp(self, result: ChatResult) -> ServerStamp | None:
+        """The server's account of one completed call, as the seam carries it
+        (#317), after telling `on_server` about it. Every completed round trip
+        passes through here, whichever phase made it, which is what lets one
+        listener notice the server changing under the app."""
+        meta = result.server
+        if meta is None:
+            return None
+        stamp = ServerStamp(
+            fingerprint=meta.fingerprint,
+            server_ms=meta.server_ms,
+            cached_tokens=meta.cached_tokens,
+        )
+        if self.on_server is not None:
+            try:
+                self.on_server(stamp)
+            except Exception:
+                logger.warning("server_stamp_listener_failed", exc_info=True)
+        return stamp
+
     def _count_planner(
         self,
         run: _RunState,
@@ -1176,6 +1236,7 @@ class LlamaBrain:
         *,
         usage: Usage | None = None,
         failure: str = "",
+        server: ServerStamp | None = None,
     ) -> None:
         """Count one planner round trip and re-read the phase's clock (#317).
 
@@ -1196,6 +1257,7 @@ class LlamaBrain:
                 prompt_tokens if metered else None,
                 completion_tokens if metered else None,
                 failure=failure,
+                server=server,
             )
         )
         elapsed_ms = max(0, round((ended - opened) * 1000))
@@ -1496,6 +1558,7 @@ def create_llama_brain(
     on_phase: Callable[[str], None] | None = None,
     board_refresh: Callable[[], dict[str, Any] | None] | None = None,
     narrator_facts: Callable[[], dict[str, Any] | None] | None = None,
+    on_server: Callable[[ServerStamp], None] | None = None,
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8200/v1).
 
@@ -1534,6 +1597,9 @@ def create_llama_brain(
     `narrator_facts` is the same kind of seam for the narrator (#289): read
     once as the planner hands off, it answers the side-free facts the narrator
     may state and whether the engine's reply is still owed.
+
+    `on_server` hears what the server said about each call that came back
+    (#317) — the serving manifest's way of noticing the server changed.
     """
     if provider is None:
         provider = LlamaCppProvider(base_url, model)
@@ -1561,4 +1627,5 @@ def create_llama_brain(
         board_refresh=board_refresh,
         narrator_facts=narrator_facts,
         serving_labels={"model": model, "server": base_url},
+        on_server=on_server,
     )

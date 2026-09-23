@@ -35,9 +35,10 @@ from chessapp.brain import ModelCall
 # the first whose model cost is a list of phase-tagged `calls`. A record with no
 # `schema` is version 1. Bump it on any change a reader must branch on.
 TRACE_SCHEMA = 2
-# What a record in the trace file is. Only turns so far; the kind is on every
-# record so another kind can share the file without a reader mistaking it for
-# a turn.
+# What a record in the trace file is. A turn, or a `serving` manifest
+# (`serving.KIND_SERVING`), written at startup and whenever what serves the app
+# changes; the kind is on every record so a reader never mistakes one for the
+# other.
 KIND_TURN = "turn"
 
 # The four roads an utterance can take through `_run_command`. Three of them are
@@ -245,8 +246,17 @@ def turn_record(
     `serving` is what served the turn, so two baselines can be tied to a
     configuration: short hashes of the planner prompt, the narrator prompt and
     the offered tool schemas, as they resolve when the record is written, beside
-    the model name and the server URL. `None` when the app was not assembled
+    the model name and the server URL — and, since #317, the `manifest_id` of
+    the `serving` record (`serving.ServingManifest`) that says what the server
+    actually runs, the process `session` and its `experiment`. The alias alone
+    proves nothing about the weights behind it; the manifest says what was
+    learned and marks the rest unknown. `None` when the app was not assembled
     with a model behind it (direct mode, an injected test brain).
+
+    Each `calls` entry also carries the server's own account of that call when
+    it gave one: its build `fingerprint`, `server_ms` (its prompt plus
+    generation time — `ms` minus this is queueing, transport and any cold
+    load) and `cached_tokens`, all `null` when the server did not say.
 
     `origin` is which surface the interaction came from — `tools.PANEL_ORIGIN`
     for the panel and its buttons, `tools.delegate_origin(id)` for one delegate

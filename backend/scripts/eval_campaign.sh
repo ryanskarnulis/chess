@@ -17,7 +17,10 @@
 # every path is absolute — a gate that cannot prove which tree it measured
 # measured nothing (docs/agent-evals.md). Before each arm-block the log records
 # the tree's HEAD, the sha of its personality.py, `chessapp.__file__` as Python
-# resolves it, and llama-swap /running. The arm order flips every block.
+# resolves it, and llama-swap /running. The arm order flips every block. Each
+# arm-block's report is tagged with CHESSAPP_EXPERIMENT=<campaign>/block-<n>-<arm>
+# (the prefix overridable from the environment), and its closing line carries
+# the serving manifest the run was probed under (#317).
 #
 # --fresh-per-block calls llama-swap /unload before each arm-block after the
 # probe's pre-flight (refuses while a slot is processing or another job holds
@@ -91,6 +94,7 @@ run_block() {  # $1 = block number, $2 = arm name, $3 = tree
   (cd "$BACKEND" && env "${extra[@]+"${extra[@]}"}" PYTHONPATH="$3/backend/src" CHESSAPP_AGENT_EVALS=1 \
      CHESSAPP_EVAL_RUNS="$RUNS" CHESSAPP_EVAL_MAX_RUNS="$RUNS" CHESSAPP_EVAL_REPORT="$report" \
      LLAMACPP_BASE_URL="$BASE_URL" LLAMACPP_MODEL="$MODEL" \
+     CHESSAPP_EXPERIMENT="${CHESSAPP_EXPERIMENT:-$(basename "$OUT")}/block-$1-$2" \
      "$PYTHON" -m pytest "$BACKEND/tests/test_agent_evals.py" -k "$K" -s 2>&1 | tee -a "$OUT/block-$1-$2.out" | grep -E '^\[eval\]|passed|failed' || true)
   log "block $1 arm $2 end $(date -u +%H:%M:%SZ)"
   SPECS+=("$2=$report")

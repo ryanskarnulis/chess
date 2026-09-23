@@ -154,6 +154,7 @@ from chessapp.game import GameSession
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.provider import LlamaCppProvider
+from chessapp.serving import ServingManifest, ServingProbe, app_revision
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
     Settings,
@@ -266,6 +267,12 @@ _MAX_RUNS = int(os.environ.get("CHESSAPP_EVAL_MAX_RUNS", "20"))
 _INFRA_RETRIES = int(os.environ.get("CHESSAPP_EVAL_INFRA_RETRIES", "5"))
 _INFRA_BUDGET = int(os.environ.get("CHESSAPP_EVAL_INFRA_BUDGET", "25"))
 _REPORT_PATH = os.environ.get("CHESSAPP_EVAL_REPORT")
+# What served the run (#317): built from the first eval app's brain, probed off
+# the call path as the model answers, and written on the suite's closing line —
+# by when the model is warm and the probe has had its chance. The header
+# carries the revision and experiment, which are known before any call.
+_EXPERIMENT = os.environ.get("CHESSAPP_EXPERIMENT", "")
+_SERVING: dict[str, Any] = {}
 
 # The floors, in one table instead of nine literals scattered through the file.
 # They are what the current build actually achieves (recorded in
@@ -394,6 +401,8 @@ def _report_session() -> Generator[None, None, None]:
             "kind": "header",
             "started": datetime.now(UTC).isoformat(),
             "git_sha": _git_sha(),
+            "revision": app_revision(),
+            "experiment": _EXPERIMENT,
             "model": LLAMACPP_MODEL,
             "planner_temperature": PLANNER_TEMPERATURE,
             "knobs": {
@@ -416,6 +425,7 @@ def _report_session() -> Generator[None, None, None]:
             "samples": _SUITE.samples,
             "infra_spent": _SUITE.infra_spent,
             "infra_budget": _SUITE.infra_budget,
+            "serving": _SERVING["manifest"].record() if _SERVING else None,
         }
     )
 
@@ -538,7 +548,21 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         board_refresh=lambda: planner_board_refresh(ctx, coordinator),
         # And the narrator's facts (#289), for the same reason one phase on.
         narrator_facts=lambda: narrator_facts(ctx, coordinator),
+        # Observation only (#317): the server stamps reach the run's probe.
+        on_server=lambda stamp: _SERVING["probe"].observe(stamp),
     )
+    if not _SERVING:
+        manifest = ServingManifest(
+            model=LLAMACPP_MODEL,
+            base_url=LLAMACPP_BASE_URL,
+            client=brain.client_settings(),
+            revision=app_revision(),
+            experiment=_EXPERIMENT,
+        )
+        _SERVING["manifest"] = manifest
+        _SERVING["probe"] = ServingProbe(
+            manifest, base_url=LLAMACPP_BASE_URL, model=LLAMACPP_MODEL
+        )
     # The second departure, and it is observation only: the app's existing
     # tracer seam is pointed at a list. Nothing the model sees changes — a
     # tracer is a diagnostic sink the pipeline already swallows failures from.

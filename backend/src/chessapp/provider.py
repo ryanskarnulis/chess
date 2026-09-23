@@ -186,6 +186,66 @@ class _WireChoice(BaseModel):
 class _WireCompletion(BaseModel):
     choices: list[_WireChoice] = Field(min_length=1)
     usage: Usage | None = None
+    # What llama-server says about itself on every completion, for the trace
+    # (#317). Deliberately untyped on the wire: these are diagnostics, and a
+    # server build that shapes them differently must cost the record a field,
+    # never the player a turn — so they are read leniently in `ServerMeta.read`
+    # rather than validated here, where a mismatch would fail the completion.
+    model: Any = None
+    system_fingerprint: Any = None
+    timings: Any = None
+
+
+class ServerMeta(BaseModel):
+    """What the server reported about the call it just served (#317).
+
+    `fingerprint` is llama-server's `system_fingerprint` — its build, e.g.
+    `b9935-1a2b3c4d` — which is the one free, per-call fact that says *which*
+    server answered, where the configured alias only says which was asked for.
+    `server_ms` is the server's own prompt-processing plus generation time;
+    the difference between it and the caller's wall clock is queueing,
+    transport and — on a cold start — the model load, which is how a report
+    tells a cold call from a slow one. `cached_tokens` is how much of the
+    prompt was served from the slot's KV cache. Every field is `None` when
+    the server did not say.
+    """
+
+    model: str | None = None
+    fingerprint: str | None = None
+    server_ms: int | None = None
+    prompt_tokens: int | None = None
+    cached_tokens: int | None = None
+
+    @classmethod
+    def read(cls, completion: _WireCompletion) -> ServerMeta | None:
+        timings = completion.timings if isinstance(completion.timings, dict) else {}
+        prompt_ms = _number(timings.get("prompt_ms"))
+        predicted_ms = _number(timings.get("predicted_ms"))
+        meta = cls(
+            model=_text(completion.model),
+            fingerprint=_text(completion.system_fingerprint),
+            server_ms=None
+            if prompt_ms is None or predicted_ms is None
+            else round(prompt_ms + predicted_ms),
+            prompt_tokens=_integer(timings.get("prompt_n")),
+            cached_tokens=_integer(timings.get("cache_n")),
+        )
+        return None if meta == cls() else meta
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if value >= 0 else None
+
+
+def _integer(value: Any) -> int | None:
+    number = _number(value)
+    return None if number is None else int(number)
 
 
 class ChatResult(BaseModel):
@@ -195,6 +255,9 @@ class ChatResult(BaseModel):
     tool_calls: list[ToolCall]
     finish_reason: str | None
     usage: Usage | None
+    # What the server said about itself while serving this turn (#317); `None`
+    # from a server (or a test double) that said nothing.
+    server: ServerMeta | None = None
 
     def to_message(self) -> dict[str, Any]:
         """This turn as an assistant message for the next request's history.
@@ -271,6 +334,12 @@ class LlamaCppProvider:
         self._client = client or httpx.Client(
             timeout=httpx.Timeout(timeout_seconds, connect=_CONNECT_TIMEOUT)
         )
+
+    @property
+    def sampling(self) -> dict[str, float | int]:
+        """The sampling every request sends unless a caller overrides it — the
+        client half of a serving configuration, for the manifest (#317)."""
+        return {"temperature": _TEMPERATURE, "top_p": _TOP_P, "top_k": _TOP_K}
 
     def close(self) -> None:
         self._client.close()
@@ -414,4 +483,5 @@ class LlamaCppProvider:
             tool_calls=calls,
             finish_reason=choice.finish_reason,
             usage=completion.usage,
+            server=ServerMeta.read(completion),
         )
