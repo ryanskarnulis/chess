@@ -1153,13 +1153,24 @@ def test_claim_draw_abandons_the_open_turn():
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
 
 
+def _resumed(registry, ctx: ToolContext, name: str) -> dict:
+    """`resume_game` over a game in progress: the gate asks (#291), and the
+    player's yes is what runs it."""
+    refused = registry.dispatch("resume_game", {"name": name})
+    assert refused["ok"] is False and "confirmation required" in refused["error"]
+    confirmed = confirm_pending(registry, ctx, PANEL_ORIGIN)
+    assert confirmed is not None
+    assert confirmed[0] == "resume_game"
+    return confirmed[1]
+
+
 def test_resume_game_abandons_the_open_turn(session, tmp_path):
     GameSession().save(tmp_path / "saved.json")
     ctx = ToolContext(session=session, engine=FakeEngine(), save_dir=tmp_path)
     registry, coordinator = _split_registry(ctx)
     registry.dispatch("make_move", {"move": "e4"})
 
-    assert registry.dispatch("resume_game", {"name": "saved"})["ok"] is True
+    assert _resumed(registry, ctx, "saved")["ok"] is True
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
 
 
@@ -1251,7 +1262,7 @@ def test_a_resumed_mid_exchange_save_finishes_the_exchange(tmp_path, atomic_exch
     for san in ("c5", "Nf3"):  # the live game moves on without it
         assert ctx.session.submit_move(san).legal
 
-    result = registry.dispatch("resume_game", {"name": "half"})
+    result = _resumed(registry, ctx, "half")
 
     assert result["ok"] is True
     assert result["engine_move"]["san"] == "e5"
@@ -1270,7 +1281,7 @@ def test_a_resumed_save_of_the_players_turn_settles_nothing(tmp_path, atomic_exc
     assert registry.dispatch("save_game", {"name": "whole"})["ok"] is True
     assert ctx.session.submit_move("Nf3").legal  # the live game moves on
 
-    result = registry.dispatch("resume_game", {"name": "whole"})
+    result = _resumed(registry, ctx, "whole")
 
     assert result["engine_move"] is None
     assert ctx.session.move_history() == ["e4", "c5"], "the save, and nothing added"
@@ -1480,14 +1491,18 @@ def test_export_pgn(registry):
 
 
 def test_save_and_resume_round_trip(tmp_path, session):
-    registry = build_registry(ToolContext(session=session, save_dir=tmp_path))
+    ctx = ToolContext(session=session, save_dir=tmp_path)
+    registry = build_registry(ctx)
     registry.dispatch("make_move", {"move": "e4"})
     registry.dispatch("make_move", {"move": "e5"})
     saved = registry.dispatch("save_game", {"name": "test-game"})
     assert saved["ok"] is True
+    assert saved["replaced"] is False
     assert (tmp_path / GAME_SAVE_DIRNAME / "test-game.json").exists()
 
     registry.dispatch("new_game", {})
+    assert confirm_pending(registry, ctx, PANEL_ORIGIN) is not None
+    # A fresh board has nothing to lose, so the resume runs without asking.
     resumed = registry.dispatch("resume_game", {"name": "test-game"})
     assert resumed["ok"] is True
     state = registry.dispatch("get_board_state", {})

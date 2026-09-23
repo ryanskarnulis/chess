@@ -307,6 +307,36 @@ async def test_a_gated_call_asks_the_human_the_apps_own_question_and_a_yes_runs_
     assert ctx.pending is None
 
 
+@pytest.mark.parametrize("op", ["resume_game", "save_game"])
+async def test_resume_and_overwrite_ask_the_human_the_apps_own_question(op, tmp_path):
+    """The two gates #291 added reach the MCP human the same way: the app's
+    question, one boolean form, and a ticked yes runs the op. This server's
+    own context has no save dir by default (it is not the HTTP app's), so the
+    test gives it one."""
+    ctx = _invested(
+        ToolContext(session=GameSession(), engine=FakeEngine(), save_dir=tmp_path)
+    )
+    saved = GameSession()
+    assert saved.submit_move("d4").legal
+    path = tmp_path / "games" / "scholars.json"
+    path.parent.mkdir(parents=True)
+    saved.save(path)
+    human = _Human("accept", {"confirm": True})
+
+    async with mcp_client(ctx, elicitation_callback=human) as client:
+        result = await _call(client, op, {"name": "scholars"})
+
+    [asked] = human.asked
+    assert asked.message == CONFIRM_QUESTIONS[op]
+    assert result["ok"] is True
+    assert result["confirmed"] is True
+    reloaded = GameSession.load(path).move_history()
+    if op == "resume_game":
+        assert ctx.session.move_history()[0] == "d4"
+    else:
+        assert reloaded == ["e4", "e5"], "the save now holds the live game"
+
+
 async def test_this_server_asks_and_answers_its_own_question():
     """The origin half of the gate, on this surface (#281): a gated call here
     arms the op for *MCP*, and the human's yes is answered as MCP. The whole

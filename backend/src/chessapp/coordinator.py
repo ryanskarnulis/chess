@@ -155,6 +155,8 @@ class TurnCoordinator:
         # state: the ops it budgets abandon the turn as part of running.
         self._command_open = False
         self._destructive_spent = False
+        # The save names this command has written itself (`record_save`).
+        self._saved_this_command: set[str] = set()
 
     @property
     def phase(self) -> TurnPhase:
@@ -360,6 +362,7 @@ class TurnCoordinator:
         """
         self._command_open = True
         self._destructive_spent = False
+        self._saved_this_command = set()
 
     def end_command(self) -> None:
         """Close the command window; outside one the budget is not enforced.
@@ -408,6 +411,23 @@ class TurnCoordinator:
         """
         if self._command_open:
             self._destructive_spent = True
+
+    def record_save(self, name: str) -> None:
+        """Remember that this command wrote save `name`. A no-op with no window.
+
+        Replacing a named save asks first (#291), but not when the save being
+        replaced was written moments ago by the same command: "save this as
+        checkpoint, undo, save it again, then play d4" is one ask, and the
+        second save throws away nothing the player had before they asked
+        (audit 2026-09-05, finding 8). Outside a window there is only ever one
+        call per interaction, so there is nothing to remember.
+        """
+        if self._command_open:
+            self._saved_this_command.add(name)
+
+    def saved_this_command(self, name: str) -> bool:
+        """Whether this command already wrote save `name` (`record_save`)."""
+        return self._command_open and name in self._saved_this_command
 
     def settle_engine_turn(self) -> MoveResult | None:
         """Move for the engine on a board that was left with the engine to play.

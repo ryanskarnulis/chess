@@ -1237,7 +1237,14 @@ def test_a_second_save_of_a_changed_board_is_progress(tmp_path):
     now says which board it was: the same `board_version` stamp every refusal
     carries.
     """
-    registry, session = real_registry(save_dir=tmp_path)
+    session = GameSession()
+    ctx = ToolContext(session=session, engine=FakeEngine(), save_dir=tmp_path)
+    coordinator = TurnCoordinator(ctx)
+    registry = build_registry(ctx, coordinator)
+    # One command, as the pipeline runs it: the second save writes over a name
+    # this same command wrote, which is not a save the player stands to lose,
+    # so the overwrite gate stays out of it (#291).
+    coordinator.begin_command()
     _exchanges(session, "d4", "d5", "Nf3", "Nc6")
     brain, provider = make_brain(
         tool_calls_turn(("save_game", {"name": "checkpoint"}), ("undo", {})),
