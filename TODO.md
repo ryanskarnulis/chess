@@ -50,14 +50,12 @@ op and the no left the game untouched. Nothing is open here.
 
 ## Evals / observability
 
-- [ ] **Frontier eval tier** (#318, PRs 3–5; PRs 1–2 in DONE.md). Plan
+- [ ] **Frontier eval tier** (#318, PRs 4–5; PRs 1–3 in DONE.md). Plan
       agreed 2026-09-23: three layers — deterministic trajectories in CI (must
       pass; shipped), the existing gate (unchanged), and a new opt-in
       **frontier** tier of deliberately hard live-model scenarios that is
-      scored, never failed, and tracked over time. PR 3: frontier harness
-      (`measure()` at fixed N, rubric checkpoints for partial credit, the
-      trajectory invariants on every sample, `"kind": "frontier"` report
-      records). PR 4: corpus v1 in three tiers with dev/held-out splits and a
+      scored, never failed, and tracked over time; the harness shipped (PR 3,
+      `docs/agent-frontier.md`). PR 4: corpus v1 in three tiers with dev/held-out splits and a
       first baseline. PR 5: `frontier_report.py` +
       `docs/frontier-history.jsonl`, graduation rules (≥0.8 held-out twice →
       gate floor) in `docs/agent-frontier.md`.

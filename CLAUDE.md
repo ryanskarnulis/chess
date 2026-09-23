@@ -27,6 +27,7 @@ ruff format .                                        # auto-format
 
 CHESSAPP_TRACE_PATH=/tmp/turns.jsonl chessapp        # trace every agent turn
 CHESSAPP_AGENT_EVALS=1 pytest tests/test_agent_evals.py -v -s   # live-model evals (needs GPU)
+CHESSAPP_AGENT_FRONTIER=1 pytest tests/test_agent_frontier.py -v -s   # frontier: scored, never gated (docs/agent-frontier.md)
 CHESSAPP_TRAJ_SEED=7 pytest tests/test_trajectories.py -k replay -s   # replay one composed walk
 ```
 
