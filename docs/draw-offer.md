@@ -110,7 +110,7 @@ accept.
 
 ## Gating decision: not gated, but budgeted
 
-`offer_draw` is **not** in `DESTRUCTIVE_TOOLS`: no `_gate`, no
+`offer_draw` is **not** in `GATED_TOOLS` (nor `DESTRUCTIVE_TOOLS`): no `_gate`, no
 `CONFIRM_QUESTIONS` entry, no 409-and-ask. A declined offer changes nothing,
 and an accepted one ends only a position the rule has already judged level and
 an endgame — the player asked for exactly that outcome in the same breath.

@@ -615,9 +615,10 @@ def _destructive_confirmation(
     at verbosity=low — the twin of `_move_confirmation`, keeping a confirmed
     destructive op a zero-LLM turn like a plain move is.
 
-    Only `new_game` leaves a game to play; every other op here ended one, and an
-    ending is reported by its outcome (a resignation's result, or the half point a
-    claimed draw produces) rather than by name.
+    `new_game`, `resume_game` and `save_game` leave a game to play and are
+    reported by what they did; every other op here ended one, and an ending is
+    reported by its outcome (a resignation's result, or the half point a claimed
+    draw produces) rather than by name.
 
     It says nothing about the engine's opening move on a game taken as black.
     That used to be spelled here, and is now one case of a rule with three: a
@@ -629,6 +630,12 @@ def _destructive_confirmation(
     """
     if name == "new_game":
         return "New game."
+    # The two gated ops that end no game (#291): each is reported by what it
+    # did, never by an outcome — a resumed game is very much still on.
+    if name == "resume_game":
+        return f"Loaded {result.get('name', 'the saved game')}."
+    if name == "save_game":
+        return f"Saved over {result.get('name', 'the old save')}."
     outcome = result.get("outcome") or _outcome_dict(session)
     if outcome:
         return f"Game over: {outcome['result']} ({outcome['termination']})."

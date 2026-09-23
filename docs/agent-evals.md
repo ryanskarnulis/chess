@@ -241,11 +241,13 @@ snapshot, plus the guard verdict wherever text reaches the player.
 | --- | --- | --- | --- |
 | `undo_twice_and_replace` | (strengthened, not new) | Adds exactly four plies, the player to move, nothing armed, `completed`, 3–5 calls — a history *prefix* used to accept a turn that landed the position and kept working | Was a recorded miss (5/20, then 7–9/20 on the old `undo` text); the description rewrite measured 34/40 against 16/40 and the xfail is off |
 | `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, is **not guarded**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | Was a **measured miss** — the planner played one of the two knights instead of asking, 26 of 50 samples on both sides of the guard fix — until the planner procedure's duplicated `captures` sentence was deleted (2026-09-05): 17/20 against the old text's 8/20 in alternating blocks on one server, xfail off |
-| `move_save_resume_finishes_exchange` | "play e4 and save this as checkpoint" → "load the game named checkpoint"; panel | Move *before* save, the file loads; then a resume leaving history `["e4", reply]`, White to move, no illegal attempt | **Reproduced** audit finding 2 — 0/5 on the pre-fix main, 5/5 on the settled restore (#266) |
+| `move_save_resume_finishes_exchange` | "play e4 and save this as checkpoint" → "load the game named checkpoint" (then "yes"); panel | Move *before* save, the file loads; then — the live game being under way — a resume the gate refuses and arms (#291), the board standing; the panel yes restores history `["e4", reply]`, White to move, no illegal attempt | **Reproduced** audit finding 2 — 0/5 on the pre-fix main, 5/5 on the settled restore (#266) |
 | `save_then_new_game` | "save this as checkpoint and start a new game" (then "yes"); delegate | Save *before* an attempted reset the gate refuses; the file holds the game; `new_game` armed; the yes resets at **0 model calls** (verbosity `low`) | Lock |
 | `voice_setting_and_move` | "turn voice output off and play e4" | `set_voice_output` and one legal move; the whole settings snapshot with one key changed; 3–4 calls, thinking off | Lock |
 | `move_and_judgment` | "play e4, and how am I doing?" | Move *before* a successful verdict tool (`evaluate_position` or `analyze_last_move`, as `judgment_question` already allows); every planner turn thinking-off, the narrator on | Lock |
-| `resume_and_describe` | "resume scholars and tell me where my pieces are"; panel, transcript seeded with a description of the game being replaced | Resume *before* describe; the description must equal what `describe_position` produces from a `GameSession` rebuilt out of the save file | Lock |
+| `resume_and_describe` | "resume scholars and tell me where my pieces are"; panel, transcript seeded with a description of the game being replaced (finished since #291, so the resume runs rather than asks) | Resume *before* describe; the description must equal what `describe_position` produces from a `GameSession` rebuilt out of the save file | Lock |
+| `resume_mid_game_asks` | "load up the game I saved as scholars" over a game in progress (then "yes"); delegate | `resume_game` attempted, refused and armed with the name; board, settings unchanged; 3–4 calls; the yes restores the save (#291) | Lock |
+| `save_over_existing_asks` | "save this as scholars" with a `scholars` save on disk (then "yes"); delegate | `save_game` attempted and armed, never succeeded under any name; the old file byte-identical; 3–4 calls; the yes writes the live game over it (#291) | Lock |
 | `best_move_then_play` | "ask Stockfish for its top move and play it for me" | `get_best_moves` before one legal move; the played UCI is that call's first candidate, read off the result *and* the board; 4–5 calls; narrator thinking-on. Which SAN Stockfish picks is not pinned, and `get_legal_moves` is not required (HTTP withholds it) | Lock |
 | `resign_never_pretends` | (strengthened, not new) | The audit's proposed `resign_intent_reaches_planner`: the gate's refusal is now the contract rather than one of two answers, and the armed op must carry the player's own color | Lock |
 | `freeform_confirmation_answers` | "actually, forget it" / "just do it" / "show me the position instead"; panel, a resignation armed deterministically | cancel: no tools, 1 call, route `confirmation`. confirm: one successful resign, 1 call at `low`. unrelated: pending dropped, `describe_position` runs, 4–5 calls, route `brain`. Literal "yes"/"no" stay zero-model unit tests in `test_command.py` | Locks |
@@ -273,6 +275,22 @@ Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Run 2026-09-22 on the gated resume/overwrite tree (#291 PR 1: `resume_game`
+asks over a game in progress, `save_game` asks before replacing a named save;
+two tool descriptions changed, two scenarios added, two rewritten to answer
+the gate): 52 passed in a single run, 12 m 47 s, infra 0; every pass-rate
+scenario 5/5 ABOVE_FLOOR STABLE — the new `resume_mid_game_asks` and
+`save_over_existing_asks` included — except `pgn_is_handed_over_not_recited`
+16/20 (escalated, at the floor: the narrator reciting the headers, the known
+miss). That scenario was then run in four alternating blocks of five against
+unchanged `main` on one server (`eval_campaign.sh`): `main` 15/20, this tree
+19/20, so the miss is the baseline's and not the change's — the narrator is
+never shown the tool descriptions this PR edits. `judgment_question` 10.9 s.
+Costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1,
+`plain_move` 3, `resign_literal_fast_path` 0).**
+
+Previously:
 
 **Run 2026-09-22 on the input-budget tree (#288 PR 4: an over-budget prompt
 drops the conversation's oldest exchanges; `late_game_tool_composition` gains

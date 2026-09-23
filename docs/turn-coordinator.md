@@ -146,9 +146,19 @@ verbosity=low, from a dead provider, and from a beat that never opened.
 
 - **One player move + one engine reply per turn** — structural; no transition
   admits a second.
+- **What the gate guards** (`tools.GATED_TOOLS`, #291): the three ops that end
+  or reset a game (`DESTRUCTIVE_TOOLS`), plus `resume_game` — which throws the
+  game on the board away as surely as a reset — and `save_game` over an
+  existing name, which throws an earlier save away. The first four ask only
+  when a game is at stake (the player has moved and it is not over); an
+  overwrite asks whenever the name exists, except `autosave` and a name the
+  same command already wrote. Save and resume have no button, so they are
+  answered on the spoken, delegate and MCP roads. Semantics and rationale:
+  `docs/persistence-and-identity.md`.
 - **One destructive op per command** — `begin_command`/`end_command` bracket
   an interaction; the budget is command-scoped because destructive ops
-  `abandon_turn` themselves. `offer_draw` holds the budget too without being
+  `abandon_turn` themselves. `resume_game` spends it too; an overwriting
+  `save_game` does not, since it leaves the board alone. `offer_draw` holds the budget too without being
   gated: it checks it before evaluating and spends it only on acceptance
   (which abandons the turn — the owed reply is dropped with the game), so a
   declined offer costs nothing and leaves an open turn, and its owed reply,

@@ -228,7 +228,7 @@
   },
   {
     "function": {
-      "description": "Save the current game under a name (default 'autosave').",
+      "description": "Save the current game under a name (default 'autosave'). Call this\nas soon as the player asks. If a save with that name already exists\nthe result comes back refusing and asking you to confirm replacing\nit; relay that to the player and stop, do not call again. The saves\nthat already exist are in the state you are given.",
       "name": "save_game",
       "parameters": {
         "additionalProperties": false,
@@ -245,7 +245,7 @@
   },
   {
     "function": {
-      "description": "Resume a previously saved game by name (default 'autosave').",
+      "description": "Resume a previously saved game by name (default 'autosave'). Call\nthis as soon as the player asks \u2014 do not ask them to confirm first. If\na game is in progress the result comes back refusing and asking you to\nconfirm; relay that to the player and stop, do not call again. When it\nreturns ok, the saved game really is on the board.",
       "name": "resume_game",
       "parameters": {
         "additionalProperties": false,

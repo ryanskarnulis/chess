@@ -311,6 +311,9 @@ _FLOORS: dict[str, float] = {
     "freeform_confirmation_answers": 0.8,
     "late_game_tool_composition": 0.8,
     "stt_knight_repair": 0.8,
+    # The two gates #291 added. New, so at the family's starting floor.
+    "resume_mid_game_asks": 0.8,
+    "save_over_existing_asks": 0.8,
 }
 
 # The loop's budget stops live in `evalstats.BUDGET_STOPS`, next to the other
@@ -3459,14 +3462,42 @@ def test_eval_move_save_resume_finishes_exchange(
         # the premise cannot be settled in `setup` the way a single-turn
         # scenario's is.
         _stays_a_model_eval(utterance, move["fen"])
-        # The resume.
-        assert _succeeded(assistant, "resume_game"), "expected the restore: " + (
-            _trajectory(assistant) or "no tool calls"
+        # The resume. The live game is under way (the player moved e4), so the
+        # load asks first (#291): the call is made, refused and armed, and the
+        # board stands until the player says yes.
+        assert _attempted(assistant, "resume_game"), (
+            "the load has to be *called* — that is what arms the gate: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert _succeeded(assistant, "resume_game") == [], (
+            "resume_game must wait for a confirmation over a game in progress"
         )
         assert _rejected_moves(assistant) == [], (
-            "a restored board must not be submitted an illegal move: "
-            + _trajectory(assistant)
+            "the ask must not be submitted a move: " + _trajectory(assistant)
         )
+        pending = app.ctx.live_pending()
+        assert pending is not None and pending.name == "resume_game", (
+            f"the load must be armed for the yes, and what is armed is {pending!r}"
+        )
+        assert _history(app.client) == move["history"], "the board must stand"
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the resume turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+
+        # The yes, on the panel that was asked — deterministic from here on.
+        answered = app.client.post(
+            "/api/command", json={"text": "yes"}, timeout=_REQUEST_TIMEOUT
+        )
+        assert answered.status_code == 200, answered.text
+        ran = [
+            r
+            for r in answered.json()["tool_results"]
+            if r["name"] == "resume_game" and r["result"].get("ok") is True
+        ]
+        assert len(ran) == 1, f"expected exactly one restore: {answered.json()}"
         history = _history(app.client)
         assert history[:1] == ["e4"], f"the wrong game came back: {history}"
         assert len(history) == 2, (
@@ -3478,12 +3509,6 @@ def test_eval_move_save_resume_finishes_exchange(
         )
         assert app.ctx.live_pending() is None
         assert app.ctx.settings.snapshot() == before["settings"]
-        _assert_not_guarded(app.tracer.last)
-        _assert_completed(app.tracer.last)
-        assert 3 <= len(app.provider.calls) <= 4, (
-            f"expected the resume turn, the note and the narrator, got "
-            f"{len(app.provider.calls)} model calls"
-        )
 
     floor = _FLOORS["move_save_resume_finishes_exchange"]
     result = _pass_rate(
@@ -3814,9 +3839,14 @@ def test_eval_resume_and_describe(engine: EnginePlayer, tmp_path: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         saved.save(path)
         before["save"] = json.loads(path.read_text())
-        # A different game is in progress, and the model has just described it.
+        # A different game is on the board, and the model has just described
+        # it. Finished (the player resigned it), so nothing is at stake and the
+        # resume runs inside the command rather than asking first (#291): the
+        # composition under test is restore-then-describe, and a game in
+        # progress would make it ask-then-stop (`resume_mid_game_asks`).
         for san in ("d4", "d5"):
             assert app.ctx.session.submit_move(san).legal
+        app.ctx.session.resign("white")
         app.ctx.transcript.record("what's the position?", _STALE_DESCRIPTION)
         _stays_a_model_eval(utterance, app.ctx.session.fen())
         before["settings"] = app.ctx.settings.snapshot()
@@ -3864,6 +3894,157 @@ def test_eval_resume_and_describe(engine: EnginePlayer, tmp_path: Any) -> None:
         setup=setup,
         runner=_run_panel,
         requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_resume_mid_game_asks(engine: EnginePlayer, tmp_path: Any) -> None:
+    """ "load up the game I saved as scholars" over a game in progress — the
+    load asks first, and the player's yes is what runs it (#291).
+
+    `resume_game` used to swap the game on the board out without a word: a
+    game the player had four moves into was simply gone. It is gated now, like
+    `new_game`, so the model's whole job is the one it has for every gated op:
+    call the tool as soon as asked, relay the refusal's question, and stop. The
+    yes is deterministic and costs the model nothing to get right.
+
+    Delegate seam, so the yes goes back to the thread that was asked — the
+    only place it is an answer (#281).
+    """
+    utterance = "load up the game I saved as scholars"
+    before: dict[str, Any] = {}
+    taken: list[Path] = []
+
+    def setup(app: EvalApp) -> None:
+        _fresh_save_dir(app, tmp_path, taken)
+        saved = GameSession()
+        for san in ("e4", "e5", "Nf3", "Nc6"):
+            assert saved.submit_move(san).legal
+        path = _save_path(app.ctx, "scholars")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        saved.save(path)
+        for san in ("d4", "d5", "c4", "e6"):
+            assert app.ctx.session.submit_move(san).legal
+        assert not app.ctx.session.is_game_over()  # a real game stands to be lost
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["history"] = app.ctx.session.move_history()
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _attempted(assistant, "resume_game"), (
+            "the load has to be *called* — that is what arms the gate: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert _succeeded(assistant, "resume_game") == [], (
+            "resume_game must wait for a confirmation, not fire on the first ask"
+        )
+        assert _history(app.client) == before["history"], "the board must stand"
+        pending = app.ctx.live_pending()
+        assert pending is not None and pending.name == "resume_game", (
+            f"the load must be armed for the yes, and what is armed is {pending!r}"
+        )
+        assert pending.args == {"name": "scholars"}, pending.args
+        assert app.ctx.settings.snapshot() == before["settings"]
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the resume turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+
+        answered = _answer_in_the_same_conversation(app, "yes")
+        assert answered.status_code == 200, answered.text
+        reply = answered.json()["assistant_message"]
+        assert len(_succeeded(reply, "resume_game")) == 1, _trajectory(reply)
+        assert _history(app.client) == ["e4", "e5", "Nf3", "Nc6"], (
+            "confirmed: the saved game comes back"
+        )
+        assert app.ctx.pending is None
+
+    floor = _FLOORS["resume_mid_game_asks"]
+    result = _pass_rate(
+        engine,
+        "resume_mid_game_asks",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_save_over_existing_asks(engine: EnginePlayer, tmp_path: Any) -> None:
+    """ "save this as scholars" when a save called scholars already exists —
+    the overwrite asks first, and the file is untouched until the yes (#291).
+
+    The stake is the save, not the board, and the refusal says so ("would
+    replace the existing save"). What the model must not do is retry under the
+    same name, pick a different name the player never said, or tell the player
+    the game was saved.
+    """
+    utterance = "save this as scholars"
+    before: dict[str, Any] = {}
+    taken: list[Path] = []
+
+    def setup(app: EvalApp) -> None:
+        _fresh_save_dir(app, tmp_path, taken)
+        saved = GameSession()
+        for san in ("e4", "e5", "Nf3", "Nc6"):
+            assert saved.submit_move(san).legal
+        path = _save_path(app.ctx, "scholars")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        saved.save(path)
+        before["file"] = path.read_text()
+        for san in ("d4", "d5", "c4", "e6"):
+            assert app.ctx.session.submit_move(san).legal
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["history"] = app.ctx.session.move_history()
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _attempted(assistant, "save_game"), (
+            "the save has to be *called* — that is what arms the gate: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert _succeeded(assistant, "save_game") == [], (
+            "save_game must not write over a named save before the player says so "
+            "(nor under a name they never gave): " + _trajectory(assistant)
+        )
+        path = _save_path(app.ctx, "scholars")
+        assert path.read_text() == before["file"], "the old save must stand"
+        assert saved_game_names(app.ctx) == ["scholars"], saved_game_names(app.ctx)
+        assert _history(app.client) == before["history"], "the board must stand"
+        pending = app.ctx.live_pending()
+        assert pending is not None and pending.name == "save_game", (
+            f"the overwrite must be armed for the yes, and what is armed is {pending!r}"
+        )
+        assert app.ctx.settings.snapshot() == before["settings"]
+        _assert_not_guarded(app.tracer.last)
+        _assert_completed(app.tracer.last)
+        assert 3 <= len(app.provider.calls) <= 4, (
+            f"expected the save turn, the note and the narrator, got "
+            f"{len(app.provider.calls)} model calls"
+        )
+
+        answered = _answer_in_the_same_conversation(app, "yes")
+        assert answered.status_code == 200, answered.text
+        reply = answered.json()["assistant_message"]
+        assert len(_succeeded(reply, "save_game")) == 1, _trajectory(reply)
+        assert _reloaded(path).move_history() == before["history"], (
+            "confirmed: the save now holds the game on the board"
+        )
+        assert app.ctx.pending is None
+
+    floor = _FLOORS["save_over_existing_asks"]
+    result = _pass_rate(
+        engine,
+        "save_over_existing_asks",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
     )
 
     _assert_floor(result, floor)

@@ -452,7 +452,8 @@ def test_a_resumed_mid_exchange_save_finishes_the_exchange(tmp_path):
         text_turn("moved and saved"),
         text_turn("Saved."),
         tool_calls_turn(("resume_game", {"name": "half"})),
-        text_turn("loaded it"),
+        text_turn("asked to confirm the load"),
+        text_turn("That ends this game. Load half?"),
         text_turn("Back where you left it."),
         ctx=ctx,
         coordinator=coordinator,
@@ -461,7 +462,12 @@ def test_a_resumed_mid_exchange_save_finishes_the_exchange(tmp_path):
     client.post("/api/command", json={"text": "play e4 and save this as half"})
     assert ctx.session.move_history() == ["e4", "e5"], "the live game settled"
 
-    body = client.post("/api/command", json={"text": "load half"}).json()
+    # The live game is under way, so the load asks first (#291) and the
+    # player's yes is what runs it.
+    asked = client.post("/api/command", json={"text": "load half"}).json()
+    assert asked["tool_results"][0]["result"]["ok"] is False
+    assert ctx.live_pending().name == "resume_game"
+    body = client.post("/api/command", json={"text": "yes"}).json()
 
     assert ctx.session.move_history() == ["e4", "e5"], "the save, plus a fresh reply"
     assert ctx.session.turn == ctx.session.player_color == "white"

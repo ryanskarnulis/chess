@@ -564,14 +564,20 @@ def test_a_resumed_game_is_planned_against_the_restored_board(tmp_path):
         text_turn("saved"),
         text_turn("Saved as checkpoint."),
     )
-    client = TestClient(
-        build_app(provider=provider, engine=FakeEngine(), save_dir=tmp_path)
-    )
+    engine = FakeEngine()
+    client = TestClient(build_app(provider=provider, engine=engine, save_dir=tmp_path))
     _seed(client, provider, "e4")
     client.post("/api/command", json={"text": "save this as checkpoint"})
-    # Diverge, so the board the resume restores is visibly a different one.
-    _seed(client, provider, "Nf3")
+    # Diverge, so the board the resume restores is visibly a different one: a
+    # new game as black, where the engine's opening move is on the board with
+    # Black to move. The player has not moved on it, so there is nothing for
+    # the resume's confirmation gate to protect and it runs inside the command
+    # (#291) — which is the path whose refresh block this pins.
+    engine.reply_uci = "d2d4"  # the engine opens, as White
+    assert client.post("/api/game/new", json={"color": "black"}).status_code == 409
+    assert client.post("/api/game/confirm", json={"confirm": True}).status_code == 200
     diverged = client.get("/api/state").json()["history"]
+    assert len(diverged) == 1
 
     provider.rescript(
         tool_calls_turn(("resume_game", {"name": "checkpoint"})),
@@ -586,7 +592,7 @@ def test_a_resumed_game_is_planned_against_the_restored_board(tmp_path):
     assert len(blocks) == 1
     # Read off the restored session, not the one the command started on: the
     # board the command started from had Black to move, the checkpoint has
-    # White — and Nf3, which the diverged board had already played.
+    # White — and Nf3, which only White can play.
     assert blocks[0]["turn"] == "white"
     assert "Nf3" in blocks[0]["legal_moves"]
 

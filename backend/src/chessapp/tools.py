@@ -526,8 +526,18 @@ class ToolContext:
 
 
 # The tools that throw a real game away: the reset, and the two ways a player
-# can end one deliberately.
+# can end one deliberately. What the honesty guard certifies as "the game
+# ended or restarted" and what the evals count as a game-ending call — so it is
+# deliberately *not* the list of gated tools below.
 DESTRUCTIVE_TOOLS = ("new_game", "resign", "claim_draw")
+
+# Every tool that can arm a confirmation (#291): the three above, plus the two
+# that cost the player something without ending a game. `resume_game` swaps the
+# game in progress out for a saved one — the game on the board is gone as surely
+# as a reset makes it — and `save_game` over an existing name replaces a save
+# the player made earlier. Neither ends a game, which is why neither is in
+# `DESTRUCTIVE_TOOLS`: a confirmed resume must never read as "game over".
+GATED_TOOLS = (*DESTRUCTIVE_TOOLS, "resume_game", "save_game")
 
 # The question every answering surface puts to the player for an armed op, in
 # the app's own words: the board dialog shows it, the free-text reader judges a
@@ -539,7 +549,22 @@ CONFIRM_QUESTIONS = {
     "new_game": "That ends the game in progress. Start a new one?",
     "resign": "That's the game if you mean it. Resign?",
     "claim_draw": "That ends the game in a draw. Claim it?",
+    "resume_game": "That ends the game in progress. Load the saved game?",
+    "save_game": "There's already a save with that name. Replace it?",
 }
+
+
+def _cost(op: PendingOp) -> str:
+    """What an armed op would cost the player, in the gate's refusal text.
+
+    Every op but one throws the game on the board away; `save_game` throws an
+    earlier save away instead, and a refusal that said "would end the current
+    game" about a save would be a lie the model then relays.
+    """
+    if op.name == "save_game":
+        return f"save_game would replace the existing save {op.args.get('name')!r}"
+    return f"{op.name} would end the current game"
+
 
 # Reads whose answers are strict subsets of the board state the brain is handed
 # in its prompt every single turn (`_agent_state_dict`). They stay registered —
@@ -1533,7 +1558,9 @@ def build_registry(
             "turn": ctx.session.turn,
         }
 
-    def _gate(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+    def _gate(
+        name: str, args: dict[str, Any], *, at_stake: bool | None = None
+    ) -> dict[str, Any] | None:
         """Refuse an unconfirmed destructive call; arm it for the player's yes.
 
         The prompt asks the agent to confirm before a `DESTRUCTIVE_TOOLS` call,
@@ -1575,10 +1602,17 @@ def build_registry(
         black the engine owns the first ply, so one move on the board is still
         no investment; engine-free, every move was played by the player's own
         hand.
+
+        That is the stake for every op that throws a *game* away. `at_stake`
+        overrides it for the one gated op whose stake is not the board:
+        `save_game` over an existing name risks the file, not the game, so its
+        caller decides (#291) and passes the answer in.
         """
         if ctx._confirming:
             return None
-        if ctx.session.is_game_over() or not _player_has_moved(ctx):
+        if at_stake is None:
+            at_stake = not ctx.session.is_game_over() and _player_has_moved(ctx)
+        if not at_stake:
             return None
         armed = ctx.pending
         if coordinator.command_open and armed is not None:
@@ -1588,8 +1622,8 @@ def build_registry(
             # make it stale — `restamp_pending` points it at the board the
             # player will actually be asked about when the command closes.
             return registry.refusal(
-                f"a confirmation is already pending: {armed.name} would end the "
-                "current game and runs when the player says yes. This call was "
+                f"a confirmation is already pending: {_cost(armed)} and runs "
+                "when the player says yes. This call was "
                 f"not armed and will not run on that yes — {name} is not what "
                 "the player is being asked about. Relay the pending question "
                 "and stop.",
@@ -1611,7 +1645,7 @@ def build_registry(
         # and calling again is the exact wrong move — the docstrings say "do not
         # call again" and the model obeyed that about half the time.
         return registry.refusal(
-            f"confirmation required: {name} would end the current game. "
+            f"confirmation required: {_cost(ctx.pending)}. "
             "Ask the player to confirm; it runs when they say yes.",
             RETRY_NEVER,
         )
@@ -1784,11 +1818,33 @@ def build_registry(
     def save_game(
         name: Annotated[str, Field(pattern=SAVE_NAME_PATTERN)] = "autosave",
     ) -> dict[str, Any]:
-        "Save the current game under a name (default 'autosave')."
+        """Save the current game under a name (default 'autosave'). Call this
+        as soon as the player asks. If a save with that name already exists
+        the result comes back refusing and asking you to confirm replacing
+        it; relay that to the player and stop, do not call again. The saves
+        that already exist are in the state you are given."""
+        path = _save_path(ctx, name)
+        # Replacing a save the player made is the one thing here they could
+        # lose, so it asks first (#291) — except `autosave`, the default slot
+        # every unnamed save writes over by design, and a name this very
+        # command wrote a moment ago, which holds nothing the player had
+        # before they asked. The stake is the file, not the board, so the
+        # gate is told it rather than judging a game's investment.
+        replaced = path.exists()
+        refusal = _gate(
+            "save_game",
+            {"name": name},
+            at_stake=(
+                replaced
+                and name != "autosave"
+                and not coordinator.saved_this_command(name)
+            ),
+        )
+        if refusal is not None:
+            return refusal
         # The transcript rides in the same file under a key GameSession
         # ignores, so game truth and conversation stay in one save and old
         # saves (no transcript key) remain loadable.
-        path = _save_path(ctx, name)
         data = ctx.session.to_dict()
         data["transcript"] = ctx.transcript.to_dict()
         try:
@@ -1816,13 +1872,23 @@ def build_registry(
         # already carries, on the success too — and deliberately a bare int:
         # `fen`/`turn` would name a side to move to whoever narrates from this
         # result, which is the one thing a result may not do (#193).
-        return {"ok": True, "name": name, "board_version": ctx.board_version}
+        coordinator.record_save(name)
+        return {
+            "ok": True,
+            "name": name,
+            "replaced": replaced,
+            "board_version": ctx.board_version,
+        }
 
     @registry.tool()
     def resume_game(
         name: Annotated[str, Field(pattern=SAVE_NAME_PATTERN)] = "autosave",
     ) -> dict[str, Any]:
-        "Resume a previously saved game by name (default 'autosave')."
+        """Resume a previously saved game by name (default 'autosave'). Call
+        this as soon as the player asks — do not ask them to confirm first. If
+        a game is in progress the result comes back refusing and asking you to
+        confirm; relay that to the player and stop, do not call again. When it
+        returns ok, the saved game really is on the board."""
         path = _save_path(ctx, name)
         if not path.exists():
             # The saves that do exist ride along: the request was for a real
@@ -1840,10 +1906,20 @@ def build_registry(
         # can't leave a restored board with someone else's conversation.
         session = GameSession.from_dict(data)
         transcript = Transcript.from_dict(data.get("transcript", []))
+        # The game on the board is thrown away by this, exactly as by a reset,
+        # so it takes the same budget and the same gate (#291) — checked only
+        # now, after the save proved loadable, for the reason `claim_draw`
+        # checks claimability first: a missing or corrupt save must not arm a
+        # question whose yes would then fail.
+        coordinator.require_destructive_budget()
+        refusal = _gate("resume_game", {"name": name})
+        if refusal is not None:
+            return refusal
         # A different game replaces the position entirely, so the open turn (and
         # anything being computed for the *old* session) is abandoned first.
         coordinator.abandon_turn()
         ctx.replace_session(session, transcript)
+        coordinator.record_destructive_op()
         # A save can be taken mid-exchange — "play e4 and save this" writes the
         # board between the player's move and the reply — so the game that comes
         # back can be the engine's to move. Nothing was open to collect it: the
