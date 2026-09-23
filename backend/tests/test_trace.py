@@ -114,6 +114,11 @@ def test_turn_record_names_the_budget_that_ended_the_turn():
     assert _record_fields(budget="analysis_calls")["budget"] == "analysis_calls"
 
 
+def test_turn_record_counts_the_exchanges_the_input_budget_dropped():
+    assert _record_fields()["input_trimmed"] == 0
+    assert _record_fields(input_trimmed=3)["input_trimmed"] == 3
+
+
 def test_turn_record_state_refreshes_default_to_none_shown():
     """A route with no loop to refresh — and a mutating turn whose board was
     left mid-exchange — both record the empty list rather than a gap."""

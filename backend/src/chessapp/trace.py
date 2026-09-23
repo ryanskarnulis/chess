@@ -101,6 +101,7 @@ def turn_record(
     state_refreshes: Sequence[int] = (),
     handoff: dict[str, Any] | None = None,
     budget: str = "",
+    input_trimmed: int = 0,
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -221,9 +222,12 @@ def turn_record(
 
     `budget` names the per-turn budget that ended the brain route's planning
     phase (#288) — `iterations`, `corrections`, `tool_calls`,
-    `analysis_calls` or `wall_time` — and is empty on every turn none did,
-    which is every route but that one. `stop_reason` says the phase ended
+    `analysis_calls`, `wall_time` or `input` — and is empty on every turn none
+    did, which is every route but that one. `stop_reason` says the phase ended
     early; this says on what, which is the number worth tuning when it fires.
+    `input_trimmed` beside it counts the conversation's oldest exchanges the
+    input budget dropped to fit the prompt; any non-zero reading is a prompt
+    ten times larger than anything measured, and worth a look.
 
     `handoff` is what the brain route's narrator was told the turn did (#289,
     `handoff.Handoff.trace`): the kind, the tools that were done, refused and
@@ -255,6 +259,7 @@ def turn_record(
         "state_refreshes": list(state_refreshes),
         "handoff": handoff,
         "budget": budget,
+        "input_trimmed": input_trimmed,
         "model_calls": model_calls,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,

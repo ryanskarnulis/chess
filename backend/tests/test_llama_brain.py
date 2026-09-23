@@ -34,11 +34,13 @@ from chessapp.game import GameSession
 from chessapp.llama_brain import (
     _ANSWER_MAX_TOKENS,
     _BUDGET_NOTE,
+    _CHARS_PER_TOKEN,
     _NO_PROGRESS_NOTE,
     _NOT_RUN,
     _PLANNER_TEMPERATURE,
     _REFRESH_LABEL,
     LlamaBrain,
+    _estimate_tokens,
     _fast_path_brief,
     create_llama_brain,
 )
@@ -682,6 +684,104 @@ def test_no_deadline_when_it_is_disabled():
     )
     resp = brain.get_agent_response(board_state={}, command="e4")
     assert resp.stop_reason == "completed"
+
+
+# --- the input budget (#288) -------------------------------------------------
+
+
+def _long_conversation(turns: int = 20, chars: int = 8_000) -> list[dict[str, str]]:
+    """`turns` exchanges at the command cap, each tagged so a test can see
+    which survived."""
+    return [
+        message
+        for n in range(turns)
+        for message in (
+            {"role": "user", "content": f"<ask {n}>" + "x" * chars},
+            {"role": "assistant", "content": f"<reply {n}>"},
+        )
+    ]
+
+
+def test_an_over_budget_prompt_drops_the_oldest_exchanges_first():
+    # A 300-ply game in the state block and twenty exchanges at the command cap
+    # (~55k estimated tokens) against a 10k budget: whole exchanges go, oldest
+    # first, until it fits. The system prompt, the state block and the latest
+    # exchange are never touched.
+    history = ["e4", "e5", "Nf3", "Nc6"] * 75
+    board = {"fen": "x", "history": history, "legal_moves": ["a3", "h3"]}
+    brain, provider = make_brain(
+        text_turn("done"), text_turn("Sure."), input_budget_tokens=10_000
+    )
+    resp = brain.get_agent_response(board, "and now?", _long_conversation())
+
+    planner = provider.calls[0]["messages"]
+    assert planner[0]["content"] == PLANNER
+    assert '"legal_moves": ["a3", "h3"]' in planner[-1]["content"]
+    assert planner[-1]["content"].endswith("Command: and now?")
+    kept = [m["content"][:9] for m in planner[1:-1] if m["role"] == "user"]
+    assert kept and kept[-1] == "<ask 19>x"
+    assert "<ask 0>xx" not in kept
+    # Pairs, so the conversation still alternates and opens on the player.
+    assert [m["role"] for m in planner[1:-1]] == ["user", "assistant"] * len(kept)
+    assert resp.input_trimmed == 20 - len(kept)
+    assert _estimate_tokens(planner, TOOLS) <= 10_000
+    # The narrator is handed a conversation that fits as well.
+    narrator = provider.calls[-1]["messages"]
+    assert narrator[0]["content"] == PERSONA
+    assert _estimate_tokens(narrator) <= 10_000
+    assert resp.stop_reason == "completed"
+
+
+def test_a_prompt_that_fits_is_sent_whole():
+    brain, provider = make_brain(text_turn("done"), text_turn("Sure."))
+    resp = brain.get_agent_response({}, "and now?", _long_conversation(turns=3))
+    assert len(provider.calls[0]["messages"]) == 1 + 6 + 1
+    assert resp.input_trimmed == 0
+
+
+def test_a_prompt_that_cannot_fit_is_never_sent():
+    # Nothing to trim can make room: the latest exchange alone is over. The
+    # phase ends before any call, silent, under the input budget.
+    brain, provider = make_brain(text_turn("never sent"), input_budget_tokens=100)
+    resp = brain.get_agent_response({}, "hm", _long_conversation(turns=1))
+    assert provider.calls == []
+    assert resp.stop_reason == "budget"
+    assert resp.budget == "input"
+    assert resp.text == ""
+
+
+def test_results_that_outgrow_the_budget_end_the_planning_phase():
+    # The opening fits; the first tool's answer does not leave room for a
+    # second planner turn. The phase ends rather than send it.
+    dispatcher = FakeDispatcher({"review_game": {"ok": True, "blob": "y" * 60_000}})
+    brain, provider = make_brain(
+        tool_calls_turn(("review_game", {})),
+        text_turn("never asked"),
+        dispatcher=dispatcher,
+        tool_definitions=[
+            *TOOLS,
+            _fn("review_game", "Review.", {"type": "object", "properties": {}}),
+        ],
+        input_budget_tokens=10_000,
+    )
+    resp = brain.get_agent_response({}, "review it")
+    assert resp.stop_reason == "budget"
+    assert resp.budget == "input"
+    # One planner call; the narrator's brief would carry the same result, so
+    # it is not sent either and the pipeline's stand-in covers the turn.
+    assert system_prompts(provider) == [PLANNER]
+    assert resp.text == ""
+
+
+def test_the_estimate_counts_contents_tool_calls_and_schemas():
+    messages = [
+        {"role": "user", "content": "a" * 300},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c" * 30}]},
+    ]
+    base = _estimate_tokens(messages[:1])
+    assert base == 300 // _CHARS_PER_TOKEN
+    assert _estimate_tokens(messages) > base
+    assert _estimate_tokens(messages, TOOLS) > _estimate_tokens(messages)
 
 
 # --- one batch, one failing call: what runs, what is answered, what it costs --

@@ -45,6 +45,19 @@ whatever the record does not show as done was not done — so the player hears
 what happened and that the rest did not, in Glitch's words. When nothing ran
 there is nothing verified to speak from: the turn ends silent and the pipeline
 says its stuck reply.
+
+Prompt size has a budget too (`input_budget_tokens`, 32k estimated at three
+characters a token against llama-server's 131k window — about ten times the
+heaviest measured prompt, so it is a safety net, never a knob). Before the
+planner's opening call and every narrator call, an over-budget prompt drops the
+conversation's oldest exchanges a user/assistant pair at a time; the system
+prompt, the state block and the brief are never trimmed, and neither is the
+latest exchange (what "do the second one" points at, and where an unanswered
+`ask_player` question lives). The loop never trims mid-run — it only appends,
+so the KV prefix holds — and a run whose own results outgrow the budget ends
+under `budget: input`. A narrator prompt that still cannot fit is not sent; its
+empty reply is the one the pipeline already stands in for. The trace's
+`input_trimmed` counts the exchanges dropped.
 A `no_progress` stop (a planner turn whose every call repeats one this turn
 already made *and is answered as it was then*) *does* reach the narrator: real
 results came back, and the loop just refuses iterations that can only repeat.
