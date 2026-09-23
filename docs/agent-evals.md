@@ -274,6 +274,17 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-22 on the compact-review tree (#288 PR 2: `review_game` returns
+accuracy, counts and each side's three worst moves instead of the per-ply
+table): 50 passed in a single run, 12 m 12 s, infra 0; every pass-rate scenario
+5/5 ABOVE_FLOOR STABLE, `long_capture` 5/5 ×3, `judgment_question` 8.7 s, costs
+unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3,
+`resign_literal_fast_path` 0).** No scenario calls `review_game`; the gate is
+here because its description is part of the offered schema. The payload on the
+84-ply fixture fell from 11,946 characters (~3.4k tokens) to 927.
+`late_game_tool_composition` prompt tokens: `call_in` max 3,838 seeded, 3,622
+control.
+
 **Run 2026-09-22 on the placement-and-draw-shape guard tree (#289 follow-up:
 the move class knows where the pieces stand, the draw class reads result
 shapes only): 50 passed in a single run, 12 m 41 s, infra 0; every pass-rate

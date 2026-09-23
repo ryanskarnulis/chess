@@ -1068,7 +1068,7 @@ def _analysis_numbers(tool_results: Sequence[dict[str, Any]]) -> set[str]:
         elif r["name"] == "analyze_last_move":
             record(result.get("cp_loss"), None)
         elif r["name"] == "review_game":
-            for move in result.get("moves", ()):
+            for move in result.get("critical", ()):
                 record(move.get("cp_loss"), None)
             numbers.update(str(value) for value in result.get("accuracy", {}).values())
             numbers.update(str(value) for value in result.get("counts", {}).values())

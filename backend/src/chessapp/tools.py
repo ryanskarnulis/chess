@@ -45,6 +45,7 @@ from mcp.server.fastmcp.utilities.func_metadata import func_metadata
 from pydantic import Field
 
 from chessapp.analysis import analyze_last_move as _analyze_last_move
+from chessapp.analysis import critical_moves as _critical_moves
 from chessapp.analysis import review_game as _review_game
 
 # The `retry` vocabulary is the dispatcher protocol's, not this layer's — it is
@@ -1353,26 +1354,31 @@ def build_registry(
 
     @registry.tool()
     def review_game() -> dict[str, Any]:
-        """Review the whole game so far: every move classified
-        (good/inaccuracy/mistake/blunder) with centipawn loss and the best
-        alternative, plus per-color accuracy scores."""
+        """Review the whole game so far: per-color accuracy scores, how
+        many moves each side played of each class
+        (good/inaccuracy/mistake/blunder), and each side's worst moves with
+        the move number, centipawn loss and the best alternative. A move not
+        listed lost less than every listed move of its side."""
         review = _review_game(_require_engine(ctx), ctx.session)
+        # A summary and the moves worth talking about, never the per-ply table
+        # (#288): that is one line per move into the planner's context, and the
+        # UI reads it whole from `/api/game/review`.
         return {
             "ok": True,
-            "moves": [
-                {
-                    "san": m.san,
-                    "uci": m.uci,
-                    "color": m.color,
-                    "cp_loss": m.cp_loss,
-                    "classification": m.classification,
-                    "best": m.best_san,
-                    "accuracy": m.accuracy,
-                }
-                for m in review.moves
-            ],
+            "plies": len(review.moves),
             "accuracy": review.accuracy,
             "counts": review.counts,
+            "critical": [
+                {
+                    "move_number": m.move_number,
+                    "color": m.color,
+                    "san": m.san,
+                    "classification": m.classification,
+                    "cp_loss": m.cp_loss,
+                    "best": m.best_san,
+                }
+                for m in _critical_moves(review)
+            ],
         }
 
     def make_move(
