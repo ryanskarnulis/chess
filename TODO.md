@@ -50,19 +50,23 @@ op and the no left the game untouched. Nothing is open here.
 
 ## Evals / observability
 
-- [ ] **Composed trajectories and a frontier eval tier** (#318, PRs 2–5;
-      PR 1 in DONE.md). Plan agreed 2026-09-23: three layers — deterministic
-      trajectories in CI (must pass), the existing gate (unchanged), and a new
-      opt-in **frontier** tier of deliberately hard live-model scenarios that
-      is scored, never failed, and tracked over time. PR 2: trajectory
-      breadth (delegate seam + foreign-conversation answers, `Idempotency-Key`
-      retries, provider/engine death, a stalled closer for #316, budget stops,
-      84-ply starts). PR 3: frontier harness (`measure()` at fixed N, rubric
-      checkpoints for partial credit, the trajectory invariants on every
-      sample, `"kind": "frontier"` report records). PR 4: corpus v1 in three
-      tiers with dev/held-out splits and a first baseline. PR 5:
-      `frontier_report.py` + `docs/frontier-history.jsonl`, graduation rules
-      (≥0.8 held-out twice → gate floor) in `docs/agent-frontier.md`.
+- [ ] **Frontier eval tier** (#318, PRs 3–5; PRs 1–2 in DONE.md). Plan
+      agreed 2026-09-23: three layers — deterministic trajectories in CI (must
+      pass; shipped), the existing gate (unchanged), and a new opt-in
+      **frontier** tier of deliberately hard live-model scenarios that is
+      scored, never failed, and tracked over time. PR 3: frontier harness
+      (`measure()` at fixed N, rubric checkpoints for partial credit, the
+      trajectory invariants on every sample, `"kind": "frontier"` report
+      records). PR 4: corpus v1 in three tiers with dev/held-out splits and a
+      first baseline. PR 5: `frontier_report.py` +
+      `docs/frontier-history.jsonl`, graduation rules (≥0.8 held-out twice →
+      gate floor) in `docs/agent-frontier.md`.
+- [ ] **Engine death inside a planner tool** (#329, found by the #318 walks):
+      `evaluate_position`/`get_best_moves` 500 the command; a settle whose
+      engine died (undo, resume, new game as black, startup) leaves the phase
+      awaiting the player with the engine to move, and the player's next move
+      is played for the engine's colour. Fix, then drop the three strict
+      xfails in `test_trajectories.py` and `_ENGINE_DEATH_UNSAFE`.
 - [ ] **Propose latency targets from measured data** (#317 follow-up): after
       the voice-latency tracing deploys, play a real hands-free session on an
       idle GPU, run `scripts/latency_report.py` on the container's trace, and
