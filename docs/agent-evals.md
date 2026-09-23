@@ -274,6 +274,15 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-22 on the turn-budgets tree (#288 PR 3: per-turn caps on tool
+calls (8), Stockfish-backed calls (3) and planning wall time (60 s); a budget
+stop after real work is narrated): 50 passed in a single run, 11 m 39 s, infra
+0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE, `long_capture` 5/5 ×3,
+`judgment_question` 11.4 s, costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).** All 228
+samples stopped `completed`: no budget tripped on any scenario, which is the
+sizing's intent (the multi-step asks run 3–4 calls against a cap of 8).
+
 **Run 2026-09-22 on the compact-review tree (#288 PR 2: `review_game` returns
 accuracy, counts and each side's three worst moves instead of the per-ply
 table): 50 passed in a single run, 12 m 12 s, infra 0; every pass-rate scenario
