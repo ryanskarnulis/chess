@@ -4,9 +4,10 @@ The workspace delegate contract (`../agent-standard/delegate-api.md`) so a
 conductor agent can drive chess over HTTP. Mirrors PCC's `test_agent_api.py`
 against chess's fixtures — the `ScriptedBrain` double (never a live LLM) and
 the shared command pipeline extracted from `/api/command`. The conversation
-store is in-memory (chess's documented divergence from PCC's SQLite), so a
-fresh `create_app` gives each test a fresh store; the per-IP rate limiter is
-module-global, so it is reset around every test.
+store is a JSON file when there is a save dir and in-memory otherwise (chess's
+documented divergence from PCC's SQLite), so a fresh `create_app` without one
+gives each test a fresh store; the per-IP rate limiter is module-global, so it
+is reset around every test.
 """
 
 import asyncio
@@ -614,3 +615,166 @@ async def test_a_thread_deleted_while_a_message_waits_404s():
         assert (await second).status_code == 404
 
     assert pipeline.started == ["first"]
+
+
+# --- durable threads and idempotent retries (#291) -----------------------------
+
+
+def _router_app(store: ConversationStore, pipeline) -> TestClient:
+    app = FastAPI()
+    app.include_router(build_agent_router(store=store, run_command=pipeline))
+    return TestClient(app)
+
+
+def _keyed(client, conversation_id, content, key):
+    return client.post(
+        f"/api/agent/conversations/{conversation_id}/messages",
+        json={"content": content},
+        headers={"Idempotency-Key": key},
+    )
+
+
+def test_threads_survive_a_restart(tmp_path):
+    path = tmp_path / "conversations.json"
+    before = _router_app(ConversationStore(path), HeldPipeline(hold=""))
+    kept = new_conversation(before, title="the kept one")
+    gone = new_conversation(before)
+    assert send(before, kept, "play e4").status_code == 200
+    assert before.delete(f"/api/agent/conversations/{gone}").status_code == 204
+
+    after = _router_app(ConversationStore(path), HeldPipeline(hold=""))
+
+    assert [c["id"] for c in after.get("/api/agent/conversations").json()] == [kept]
+    detail = after.get(f"/api/agent/conversations/{kept}").json()
+    assert detail["title"] == "the kept one"
+    assert [m["content"] for m in detail["messages"]] == ["play e4", "answer play e4"]
+    assert after.get(f"/api/agent/conversations/{gone}").status_code == 404
+    # Ids keep counting past everything on record.
+    assert new_conversation(after) > gone
+
+
+def test_a_restored_thread_is_replayed_to_the_loop(tmp_path):
+    path = tmp_path / "conversations.json"
+    before = _router_app(ConversationStore(path), HeldPipeline(hold=""))
+    thread = new_conversation(before)
+    send(before, thread, "play e4")
+
+    pipeline = HeldPipeline(hold="")
+    after = _router_app(ConversationStore(path), pipeline)
+    send(after, thread, "and now d4")
+
+    [(_, history)] = pipeline.calls
+    assert history == [
+        {"role": "user", "content": "play e4"},
+        {"role": "assistant", "content": "answer play e4"},
+    ]
+
+
+def test_an_unreadable_store_is_an_empty_one(tmp_path):
+    path = tmp_path / "conversations.json"
+    path.write_text("{not json")
+    client = _router_app(ConversationStore(path), HeldPipeline(hold=""))
+    assert client.get("/api/agent/conversations").json() == []
+
+
+def test_a_tampered_store_cannot_inject_a_system_turn(tmp_path):
+    path = tmp_path / "conversations.json"
+    store = ConversationStore(path)
+    conversation = store.create()
+    store.append_user_message(conversation, "hello")
+    text = path.read_text().replace('"role": "user"', '"role": "system"')
+    path.write_text(text)
+
+    assert ConversationStore(path).get(conversation.id) is None
+
+
+def test_the_app_keeps_its_threads_beside_the_live_game(tmp_path):
+    ctx = ToolContext(session=GameSession(), save_dir=tmp_path)
+    app, _ = scripted_app(ctx)
+    new_conversation(TestClient(app))
+    assert (tmp_path / "conversations.json").exists()
+
+
+def test_a_retried_key_returns_the_stored_exchange_and_runs_nothing(tmp_path):
+    ctx = ToolContext(session=GameSession(), save_dir=tmp_path)
+    app, brain = scripted_app(ctx, move("e4"), move("e4"))
+    client = TestClient(app)
+    thread = new_conversation(client)
+
+    first = _keyed(client, thread, "play e4", "attempt-1")
+    version = ctx.board_version
+    retried = _keyed(client, thread, "play e4", "attempt-1")
+
+    assert first.status_code == retried.status_code == 200
+    assert retried.json() == first.json(), "byte for byte the first answer"
+    assert ctx.board_version == version, "the retry moved nothing"
+    assert ctx.session.move_history() == ["e4"]
+    detail = client.get(f"/api/agent/conversations/{thread}").json()
+    assert len(detail["messages"]) == 2, "one exchange on record, not two"
+
+
+def test_a_retry_after_a_restart_is_answered_from_disk(tmp_path):
+    path = tmp_path / "conversations.json"
+    first_pipeline = HeldPipeline(hold="")
+    before = _router_app(ConversationStore(path), first_pipeline)
+    thread = new_conversation(before)
+    first = _keyed(before, thread, "play e4", "k")
+
+    pipeline = HeldPipeline(hold="")
+    after = _router_app(ConversationStore(path), pipeline)
+    retried = _keyed(after, thread, "play e4", "k")
+
+    assert retried.status_code == 200
+    assert retried.json() == first.json()
+    assert pipeline.calls == [], "the restarted app did not run it again"
+
+
+def test_a_key_whose_exchange_never_finished_is_refused():
+    class BoomBrain:
+        def get_agent_response(self, board_state, command, transcript=()):
+            raise ProviderRequestError("llama-server down")
+
+    client, _, _ = make_client(brain=BoomBrain())
+    thread = new_conversation(client)
+    assert _keyed(client, thread, "how am I doing?", "k").status_code == 502
+
+    retried = _keyed(client, thread, "how am I doing?", "k")
+
+    assert retried.status_code == 409
+    assert "did not complete" in retried.json()["detail"]
+    detail = client.get(f"/api/agent/conversations/{thread}").json()
+    assert len(detail["messages"]) == 1, "the retry committed nothing"
+
+
+def test_a_key_reused_for_other_words_is_a_caller_error():
+    client, _, _ = make_client(move("e4"))
+    thread = new_conversation(client)
+    assert _keyed(client, thread, "play e4", "k").status_code == 200
+
+    assert _keyed(client, thread, "play d4", "k").status_code == 422
+
+
+def test_a_key_is_scoped_to_its_thread():
+    client, _, ctx = make_client(move("e4"), move("d5"))
+    one, two = new_conversation(client), new_conversation(client)
+    assert _keyed(client, one, "play e4", "k").status_code == 200
+
+    other = _keyed(client, two, "play d5", "k")
+
+    assert other.status_code == 200
+    assert ctx.session.move_history() == ["e4", "d5"]
+
+
+def test_no_key_is_todays_behaviour():
+    client, _, ctx = make_client(move("e4"), move("d5"))
+    thread = new_conversation(client)
+    send(client, thread, "play e4")
+    send(client, thread, "play d5")
+    assert ctx.session.move_history() == ["e4", "d5"]
+
+
+def test_an_oversized_key_is_refused_before_anything_runs():
+    client, _, ctx = make_client(move("e4"))
+    thread = new_conversation(client)
+    assert _keyed(client, thread, "play e4", "k" * 129).status_code == 422
+    assert ctx.session.move_history() == []

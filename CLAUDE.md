@@ -65,4 +65,7 @@ Set `CHESSAPP_TRACE_PATH` and every interaction appends one JSONL record:
 utterance, route, tool trajectory, stop reason, FENs, guard decision, and
 cost. It is the first thing to reach for when a turn misbehaves, and a traced
 misfire is a ready-made eval scenario. `docs/turn-coordinator.md` and
-`docs/planner-narrator.md` explain the turn architecture.
+`docs/planner-narrator.md` explain the turn architecture;
+`docs/persistence-and-identity.md` says what survives a restart
+(`live.json`, `conversations.json`), which tools ask before they run, and what
+a delegate can bind to (`version`, `game_id`, `Idempotency-Key`).
