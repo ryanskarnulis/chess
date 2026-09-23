@@ -20,6 +20,7 @@ engine_calculating → engine_move_applied → completed → awaiting_player
 abandon_turn: from anywhere back to awaiting_player (turn_id + 1)
 settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
                     (same turn_id: no turn was open, and none is consumed)
+                    engine raises → player_move_applied (the reply is owed)
 ```
 
 - `turn_id` counts turns; a healthy move turn is exactly 2 mutations, so a
@@ -46,6 +47,14 @@ settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
   player's. `new_game`, `undo` and `resume_game` call it after abandoning, and
   so does `/api/game/undo`, whose client may send its own `plies`. It is not a
   reply, so it consumes no turn and there is no observation beat around it.
+  An engine that raises here leaves `player_move_applied`, exactly as
+  `collect_engine_reply` does (#329): back at `awaiting_player` the board would
+  sit with the engine to move and nothing would ever collect it.
+- `apply_player_move` refuses when an engine is attached and the side to move
+  is not the player's, whatever the phase says (#329). The legality gate alone
+  cannot tell whose piece a legal move belongs to, and a board left with the
+  engine to move under an awaiting phase once let the player move the engine's
+  pieces.
 
 ## Ownership rules
 
@@ -281,6 +290,17 @@ browser's own milestones by `interaction_id`: `docs/latency-measurement.md`.
   and in the trace. The trace itself is written from a `finally`-owned envelope
   now, so any exception escaping a turn still leaves exactly one record, with
   an `error` field naming it.
+- **Stockfish is relaunched once, and a death inside a tool is a result**
+  (#329, 2026-09-23). `EnginePlayer` routes every call through `_run`: on
+  `EngineTerminatedError` it starts the process again, re-applies the strength
+  options it had set, and repeats the call once — the player never hears about
+  a crash the app recovered from, and nothing above it retries. A second death
+  (or a process that will not start) reaches the callers: `ToolRegistry.dispatch`
+  answers it as `ok: false, retry: never`, saying whether the call changed the
+  board first, so Glitch voices it from the result; a settle leaves the reply
+  owed, and `undo`/`new_game`/`resume_game` report `engine_reply_owed` beside
+  the work that did happen; the hint, review and difficulty endpoints answer 503.
+  Found by the #318 trajectory walks, whose engine dies for one step anywhere.
 - `/api/game/confirm` returns only state (the dialog already asked) but is
   traced (route `control`). Undo and direct-mode drags stay untraced — neither
   can be an agent failure.

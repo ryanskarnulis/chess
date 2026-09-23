@@ -6,14 +6,23 @@ every move still enters the game through `GameSession.submit_move`, and
 touch session truth.
 """
 
+import logging
 import math
 import random
+import threading
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
+from typing import Any, TypeVar
 
 import chess
 import chess.engine
 
 from chessapp.game import GameSession, MoveResult
+
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 SKILL_MIN, SKILL_MAX = 0, 20
 # Stockfish's own UCI_Elo bounds.
@@ -167,8 +176,18 @@ class EnginePlayer:
         path: str = "stockfish",
         move_time: float = DEFAULT_MOVE_TIME,
         rng: random.Random | None = None,
+        open_engine: Callable[[str], Any] = chess.engine.SimpleEngine.popen_uci,
     ):
-        self._engine = chess.engine.SimpleEngine.popen_uci(path)
+        self._path = path
+        # Injectable so the relaunch can be tested without killing a process.
+        self._open_engine = open_engine
+        self._engine = open_engine(path)
+        # Every UCI option this player has set, merged, so a relaunched process
+        # plays at the strength the old one was playing at (#329).
+        self._options: dict[str, Any] = {}
+        self._relaunch_lock = threading.Lock()
+        # Set by `close`: an engine the app shut down on purpose stays down.
+        self._closed = False
         self._limit = chess.engine.Limit(time=move_time)
         # Move-sampling randomness for the weak tiers; injectable so tests can
         # drive the weighted pick deterministically.
@@ -178,6 +197,54 @@ class EnginePlayer:
         self._sample_temperature: float | None = None
         self._sample_depth = 0
 
+    def _run(self, work: Callable[[Any], _T]) -> _T:
+        """Run one call against the engine, relaunching Stockfish once if its
+        process has died (#329).
+
+        Stockfish is a subprocess, and nothing else in the app brings one back:
+        before this, a single crash left every later move and analysis failing
+        until the whole app restarted, so no retry anywhere above could ever
+        succeed. The retry is the code's, not the model's — the player should
+        never hear about a crash the app recovered from. One relaunch and one
+        repeat, no more: an engine that dies again, or will not start, raises
+        `EngineTerminatedError` to the callers, which each keep the game safe
+        and say so (a tool reports it; a reply stays owed).
+
+        Only a dead process is retried. Any other engine error is about the
+        call, and repeating it would get the same answer.
+        """
+        engine = self._engine
+        try:
+            return work(engine)
+        except chess.engine.EngineTerminatedError:
+            if self._closed:
+                raise
+            logger.warning("engine_died_relaunching path=%s", self._path, exc_info=True)
+            with self._relaunch_lock:
+                # A concurrent call (the background reply) may have relaunched
+                # already; then this one only has to repeat on the new process.
+                if self._engine is engine:
+                    self._relaunch()
+            return work(self._engine)
+
+    def _relaunch(self) -> None:
+        with suppress(Exception):
+            self._engine.close()
+        try:
+            self._engine = self._open_engine(self._path)
+            if self._options:
+                self._engine.configure(dict(self._options))
+        except Exception as exc:
+            # Named as the death it is, whatever starting it again raised, so
+            # every caller keeps one failure to recover from.
+            raise chess.engine.EngineTerminatedError(
+                f"engine could not be relaunched: {exc}"
+            ) from exc
+
+    def _configure(self, options: dict[str, Any]) -> None:
+        self._run(lambda engine: engine.configure(options))
+        self._options.update(options)
+
     def __enter__(self) -> "EnginePlayer":
         return self
 
@@ -185,6 +252,7 @@ class EnginePlayer:
         self.close()
 
     def close(self) -> None:
+        self._closed = True
         self._engine.quit()
 
     def _clear_sampler(self) -> None:
@@ -196,12 +264,12 @@ class EnginePlayer:
         # Raw knobs mean exactly the UCI strength asked for — no leftover
         # tier weakening on top.
         self._clear_sampler()
-        self._engine.configure({"UCI_LimitStrength": False, "Skill Level": level})
+        self._configure({"UCI_LimitStrength": False, "Skill Level": level})
 
     def set_elo(self, elo: int) -> None:
         validate_elo(elo)
         self._clear_sampler()
-        self._engine.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
+        self._configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
 
     def set_tier(self, name: str) -> None:
         """Play at a named difficulty tier (see `DIFFICULTY_TIERS`)."""
@@ -209,16 +277,14 @@ class EnginePlayer:
         if profile.temperature is not None:
             # The sampler does its own weakening, so the engine underneath
             # analyses at full strength for accurate move scores.
-            self._engine.configure(
-                {"UCI_LimitStrength": False, "Skill Level": SKILL_MAX}
-            )
+            self._configure({"UCI_LimitStrength": False, "Skill Level": SKILL_MAX})
             self._sample_temperature = profile.temperature
             self._sample_depth = profile.sample_depth
         elif profile.elo is not None:
-            self._engine.configure({"UCI_LimitStrength": True, "UCI_Elo": profile.elo})
+            self._configure({"UCI_LimitStrength": True, "UCI_Elo": profile.elo})
             self._clear_sampler()
         else:
-            self._engine.configure(
+            self._configure(
                 {"UCI_LimitStrength": False, "Skill Level": profile.skill_level}
             )
             self._clear_sampler()
@@ -230,7 +296,7 @@ class EnginePlayer:
         board = chess.Board(session.fen())
         if self._sample_temperature is not None:
             return self._sample_move(board)
-        result = self._engine.play(board, self._limit)
+        result = self._run(lambda engine: engine.play(board, self._limit))
         if result.move is None:
             raise ValueError("engine returned no move")
         return result.move.uci()
@@ -243,10 +309,12 @@ class EnginePlayer:
         """
         turn = "white" if board.turn == chess.WHITE else "black"
         legal_count = board.legal_moves.count()
-        infos = self._engine.analyse(
-            board,
-            chess.engine.Limit(depth=self._sample_depth),
-            multipv=legal_count,
+        infos = self._run(
+            lambda engine: engine.analyse(
+                board,
+                chess.engine.Limit(depth=self._sample_depth),
+                multipv=legal_count,
+            )
         )
         moves: list[str] = []
         pov_scores: list[int] = []
@@ -273,7 +341,9 @@ class EnginePlayer:
         if session.is_game_over():
             raise ValueError("cannot evaluate: game is over")
         board = chess.Board(session.fen())
-        info = self._engine.analyse(board, chess.engine.Limit(depth=depth))
+        info = self._run(
+            lambda engine: engine.analyse(board, chess.engine.Limit(depth=depth))
+        )
         score_cp, mate_in = _score_fields(info["score"])
         return Evaluation(score_cp=score_cp, mate_in=mate_in)
 
@@ -287,7 +357,11 @@ class EnginePlayer:
         if session.is_game_over():
             raise ValueError("cannot suggest moves: game is over")
         board = chess.Board(session.fen())
-        infos = self._engine.analyse(board, chess.engine.Limit(depth=depth), multipv=n)
+        infos = self._run(
+            lambda engine: engine.analyse(
+                board, chess.engine.Limit(depth=depth), multipv=n
+            )
+        )
         candidates = []
         for info in infos:
             pv = info.get("pv")

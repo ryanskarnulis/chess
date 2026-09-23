@@ -13,12 +13,13 @@ pinned here too: what the background may never do is touch the session.
 
 import threading
 
+import chess.engine
 import pytest
 
 from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext, build_registry
-from fakes import FakeEngine
+from fakes import DyingEngine, FakeEngine
 
 # White to move, Qxf7# available (scholar's mate pattern).
 WHITE_MATE_IN_1 = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"
@@ -394,8 +395,11 @@ def test_abandon_turn_resets_the_machine_and_bumps_the_turn_id(coordinator, sess
     assert coordinator.turn_id == 2, "the abandoned turn is still a boundary"
     # The player's move stands on the board — abandoning a turn is not an undo.
     assert session.move_history() == ["e4"]
-    # And the machine is open for business: a move is accepted straight away.
-    assert coordinator.apply_player_move("e5").legal is True
+    # And the machine is open for business: the engine's move is settled
+    # straight away, and then the player's. (Not the player playing black's
+    # e5 over the engine's head — that is the side swap #329 closed.)
+    assert coordinator.settle_engine_turn() is not None
+    assert coordinator.apply_player_move("Nf3").legal is True
 
 
 def test_abandon_turn_discards_the_pending_computation(session):
@@ -754,3 +758,39 @@ def test_mark_observation_after_a_game_ending_move_does_nothing(session):
     coordinator = TurnCoordinator(ctx)
     coordinator.apply_player_move("Qxf7#")
     assert coordinator.mark_observation() is False
+
+
+# --- an engine that dies on a settle (#329) --------------------------------
+
+
+def test_a_settle_the_engine_died_on_leaves_the_reply_owed(session):
+    ctx = ToolContext(session=session, engine=DyingEngine())
+    coordinator = TurnCoordinator(ctx)
+    session.submit_move("e4")  # a restored board: the engine is to move
+
+    with pytest.raises(chess.engine.EngineTerminatedError):
+        coordinator.settle_engine_turn()
+
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
+    ctx.engine = FakeEngine("e7e5")
+    assert coordinator.collect_engine_reply().san == "e5"
+    assert session.move_history() == ["e4", "e5"]
+
+
+def test_the_player_never_moves_the_engines_side(ctx, session):
+    """Whatever left the board with the engine to move under an awaiting phase,
+    the player's move is refused rather than played for the other colour."""
+    session.submit_move("e4")
+    coordinator = TurnCoordinator(ctx)
+
+    with pytest.raises(TurnStateError, match="black's move"):
+        coordinator.apply_player_move("e5")
+
+    assert session.move_history() == ["e4"]
+
+
+def test_without_an_engine_the_player_moves_both_sides(session):
+    coordinator = TurnCoordinator(ToolContext(session=session, engine=None))
+    session.submit_move("e4")
+
+    assert coordinator.apply_player_move("e5").legal

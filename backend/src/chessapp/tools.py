@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import chess
+import chess.engine
 import jsonschema
 from mcp.server.fastmcp.utilities.func_metadata import func_metadata
 from pydantic import Field
@@ -907,6 +908,27 @@ class ToolRegistry:
             return tool.handler(**args)
         except ToolError as exc:
             return self.refusal(str(exc), exc.retry, **exc.details)
+        except chess.engine.EngineError:
+            # Stockfish died under the call, and the engine player's one
+            # relaunch did not bring it back (#329). Not this batch's failure
+            # to raise: a 500 would lose everything the batch already did. A
+            # result the planner reads, `never` because calling again cannot
+            # start a process, and honest about the board — a handler that
+            # changed it before the engine died leaves that change standing.
+            logger.warning("tool_engine_failed name=%s", name, exc_info=True)
+            changed = (
+                self.context is not None
+                and self.context.board_version != version_before
+            )
+            return self.refusal(
+                f"the chess engine stopped responding during {name}; "
+                + (
+                    "what this call changed on the board stands"
+                    if changed
+                    else "nothing was changed"
+                ),
+                RETRY_NEVER,
+            )
         except ValueError as exc:
             return self.refusal(str(exc), RETRY_NEVER)
         except TypeError as exc:
@@ -1137,6 +1159,23 @@ def _position_summary(
     if history:
         sentences.append(f"Last move: {history[-1]}.")
     return " ".join(sentences)
+
+
+def _settled(coordinator: TurnCoordinator) -> dict[str, Any]:
+    """Settle a board left with the engine to move, as a result's fields.
+
+    `engine_move` when the engine played (or None when nothing was owed), and
+    `engine_reply_owed` when Stockfish died on the way — even after the engine
+    player's own relaunch (#329). The tool's own work stands either way: the
+    takeback happened, the new game began, the save came back. The coordinator
+    has left the reply owed, so the next interaction collects it; the result
+    only has to say so truthfully, and never as a failure of the call.
+    """
+    try:
+        return {"engine_move": _engine_move_dict(coordinator.settle_engine_turn())}
+    except chess.engine.EngineError:
+        logger.warning("engine_settle_failed", exc_info=True)
+        return {"engine_move": None, "engine_reply_owed": True}
 
 
 def _engine_move_dict(reply: MoveResult | None) -> dict[str, Any] | None:
@@ -1631,11 +1670,10 @@ def build_registry(
         # coordinator settles it, exactly as it does the opening move of a game
         # taken as black; the default paired takeback leaves the player to move
         # and this reports `None` (audit 2026-09-05, finding 2).
-        reply = coordinator.settle_engine_turn()
         return {
             "ok": True,
             "undone": list(result.undone),
-            "engine_move": _engine_move_dict(reply),
+            **_settled(coordinator),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }
@@ -1769,7 +1807,7 @@ def build_registry(
         # one place.
         return {
             "ok": True,
-            "engine_move": _engine_move_dict(coordinator.settle_engine_turn()),
+            **_settled(coordinator),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }
@@ -2012,11 +2050,10 @@ def build_registry(
         # the restored board instead, which is what makes a resumed exchange
         # finish rather than park (audit 2026-09-05, finding 2). `None` when the
         # save was the player's move to make, which is most of them.
-        reply = coordinator.settle_engine_turn()
         return {
             "ok": True,
             "name": name,
-            "engine_move": _engine_move_dict(reply),
+            **_settled(coordinator),
             "fen": ctx.session.fen(),
             "turn": ctx.session.turn,
         }

@@ -250,3 +250,116 @@ def test_the_delegate_endpoint_answers_with_the_turn():
     assert ENGINE_LOST_REPLY_OWED in assistant["content"]
     assert assistant["stop_reason"] == "completed", "the loop itself finished"
     assert ctx.session.move_history() == ["e4"]
+
+
+# --- the engine dies inside a tool the planner called (#329) -----------------
+#
+# #284 covered the reply. These are the other places a planner batch reaches
+# Stockfish: a search it asked for, and the settle after a takeback. The engine
+# player relaunches a dead process once before any of this is seen, so what is
+# pinned here is the second failure: the one the player has to hear about.
+
+
+def calls(*pairs: tuple[str, dict]) -> AgentResponse:
+    return AgentResponse(
+        text="on it",
+        tool_calls=tuple(ToolCall(name=name, args=args) for name, args in pairs),
+    )
+
+
+def played_e4_e5(*responses: AgentResponse):
+    """A healthy game one exchange in, whose engine is about to die."""
+    client, ctx = make_client(*responses)
+    ctx.engine = FakeEngine("e7e5")
+    client.post("/api/command", json={"text": "e4"})
+    assert ctx.session.move_history() == ["e4", "e5"]
+    ctx.engine = DyingEngine()
+    return client, ctx
+
+
+def result(body: dict, name: str) -> dict:
+    (entry,) = [r for r in body["tool_results"] if r["name"] == name]
+    return entry["result"]
+
+
+@pytest.mark.parametrize(
+    "search", [("evaluate_position", {}), ("get_best_moves", {"n": 2})]
+)
+def test_a_search_the_engine_died_on_is_a_result_not_a_500(search):
+    client, ctx = make_client(calls(("make_move", {"move": "e4"}), search))
+
+    response = client.post("/api/command", json={"text": "e4, and how is it?"})
+
+    assert response.status_code == 200
+    failed = result(response.json(), search[0])
+    assert failed["ok"] is False
+    assert failed["retry"] == "never", "calling again cannot start a process"
+    assert "engine stopped responding" in failed["error"]
+    assert ctx.session.move_history() == ["e4"], "the move before it stands"
+
+
+def test_a_search_alone_says_nothing_was_changed():
+    client, ctx = played_e4_e5(calls(("evaluate_position", {})))
+
+    body = client.post("/api/command", json={"text": "how am I doing?"}).json()
+
+    assert "nothing was changed" in result(body, "evaluate_position")["error"]
+    assert ctx.session.move_history() == ["e4", "e5"]
+
+
+def test_a_takeback_whose_settle_died_stands_with_the_reply_owed():
+    client, ctx = played_e4_e5(calls(("undo", {"plies": 1})))
+
+    response = client.post("/api/command", json={"text": "take back your move"})
+
+    assert response.status_code == 200
+    undone = result(response.json(), "undo")
+    assert undone["ok"] is True, "the takeback happened"
+    assert undone["engine_move"] is None
+    assert undone["engine_reply_owed"] is True
+    state = client.get("/api/state").json()
+    assert state["history"] == ["e4"] and state["turn"] == "black"
+
+
+def test_the_owed_reply_is_collected_once_and_the_player_never_moves_black():
+    """The side swap #329 was filed over: after the dead settle, a black move
+    typed or dragged was played for the white player. Now the next interaction
+    collects the engine's reply first, exactly once."""
+    client, ctx = played_e4_e5(calls(("undo", {"plies": 1})))
+    client.post("/api/command", json={"text": "take back your move"})
+    ctx.engine = FakeEngine("e7e5")  # Stockfish is back
+
+    client.post("/api/game/move", json={"move": "d7d5"})
+
+    history = ctx.session.move_history()
+    assert history[:2] == ["e4", "e5"], "the engine's reply, not the player's d5"
+    assert "d5" not in history[1::2][:1]
+
+
+def test_the_undo_button_whose_settle_died_answers_with_the_board():
+    client, ctx = played_e4_e5()
+
+    response = client.post("/api/game/undo", json={"plies": 1})
+
+    assert response.status_code == 200
+    assert response.json()["state"]["history"] == ["e4"]
+    ctx.engine = FakeEngine("e7e5")
+    client.post("/api/game/move", json={"move": "d2d4"})
+    assert ctx.session.move_history()[:2] == ["e4", "e5"]
+
+
+@pytest.mark.parametrize("path", ["/api/game/hint", "/api/game/review"])
+def test_an_analysis_button_on_a_dead_engine_is_a_503(path):
+    client, _ = played_e4_e5()
+
+    assert client.get(path).status_code == 503
+
+
+def test_a_difficulty_change_on_a_dead_engine_changes_nothing():
+    client, ctx = played_e4_e5()
+    before = ctx.settings.tier
+
+    response = client.post("/api/game/difficulty", json={"tier": "beginner"})
+
+    assert response.status_code == 503
+    assert ctx.settings.tier == before

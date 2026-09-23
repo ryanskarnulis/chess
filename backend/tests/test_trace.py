@@ -768,9 +768,11 @@ def test_a_zero_llm_turn_records_no_latencies(trace_path):
 
 
 def _in_progress(trace_path, **kwargs):
-    """A client on a game with moves on it — the state where the gate asks."""
+    """A client on a game with moves on it — the state where the gate asks.
+    One whole exchange, so it is the player's (white's) move, as it is at rest
+    in a game against the engine."""
     client, ctx = make_client(trace_path, **kwargs)
-    for san in ("e4", "e5", "Nf3"):
+    for san in ("e4", "e5"):
         ctx.session.submit_move(san)
     return client, ctx
 
@@ -837,7 +839,7 @@ def test_the_players_own_surfaces_record_one_origin(trace_path):
     panel (a delegate conversation) worth reading (#281). The delegate half is
     in `test_confirmation_origin.py`, where the router is already wired up."""
     client, _ = _in_progress(trace_path, engine=FakeEngine("e7e5"))
-    client.post("/api/command", json={"text": "Nc6"})
+    client.post("/api/command", json={"text": "Nf3"})
     client.post("/api/game/resign", json={})
     spoken, clicked = read_records(trace_path)
     assert spoken["origin"] == "panel"
@@ -846,7 +848,7 @@ def test_the_players_own_surfaces_record_one_origin(trace_path):
 
 def test_a_control_record_carries_the_turn_it_answered_in(trace_path):
     client, _ = _in_progress(trace_path, engine=FakeEngine("e7e5"))
-    client.post("/api/command", json={"text": "Nc6"})  # turn 1, then turn 2 opens
+    client.post("/api/command", json={"text": "Nf3"})  # turn 1, then turn 2 opens
     client.post("/api/game/resign", json={})
     _, asked = read_records(trace_path)
     assert asked["turn_id"] == 2

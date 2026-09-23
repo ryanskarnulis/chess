@@ -207,7 +207,22 @@ class TurnCoordinator:
         possibly be started so the observation beat costs nothing in wall clock.
         """
         self._require("apply a player move", TurnPhase.AWAITING_PLAYER)
-        result = self._ctx.session.submit_move(move)
+        session = self._ctx.session
+        if (
+            self._ctx.engine is not None
+            and not session.is_game_over()
+            and session.turn != session.player_color
+        ):
+            # Against the engine the player owns one colour. A board left with
+            # the engine to move under an awaiting phase is a bug somewhere
+            # else, but it must never become the player moving the engine's
+            # pieces (#329) — the legality gate alone cannot say whose piece a
+            # legal move belongs to.
+            raise TurnStateError(
+                f"cannot apply a player move: it is {session.turn}'s move and "
+                f"the player has {session.player_color}"
+            )
+        result = session.submit_move(move)
         if not result.legal:
             return result
         self._enter(TurnPhase.PLAYER_MOVE_APPLIED)
@@ -449,7 +464,8 @@ class TurnCoordinator:
 
         It does not consume a turn: the settle is not an answer to a player
         move, so nothing was open and the player's next turn is still to come.
-        The turn id stands and the phase comes back to awaiting the player.
+        The turn id stands and the phase comes back to awaiting the player —
+        unless the engine died, when it raises with the reply left owed.
         """
         self._require("settle the engine's turn", TurnPhase.AWAITING_PLAYER)
         engine = self._ctx.engine
@@ -460,9 +476,20 @@ class TurnCoordinator:
             return None
         self._enter(TurnPhase.ENGINE_CALCULATING)
         try:
-            return engine.play_move(session)
-        finally:
-            self._enter(TurnPhase.AWAITING_PLAYER)
+            reply = engine.play_move(session)
+        except Exception:
+            # The engine died with the board waiting on it (#329). Back to
+            # awaiting the player would be a lie the whole app acts on: nothing
+            # collects a reply from there, and the player's next move would be
+            # played for the engine's side. The reply is owed, so the phase is
+            # the one that says so — the one `collect_engine_reply` leaves on
+            # the same failure — and the healing branches that collect from it
+            # (the command convergence, the fast path's close beat, a drag's)
+            # settle it on the next interaction, exactly once.
+            self._enter(TurnPhase.PLAYER_MOVE_APPLIED)
+            raise
+        self._enter(TurnPhase.AWAITING_PLAYER)
+        return reply
 
     def complete_turn(self) -> None:
         """Close the turn and roll straight into the next one.

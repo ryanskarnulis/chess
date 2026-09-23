@@ -102,6 +102,28 @@ class DyingEngine(FakeEngine):
     def choose_move(self, session):
         raise chess.engine.EngineTerminatedError("engine process died")
 
+    # Every other call a dead process could be asked for dies the same way —
+    # the settle's `play_move` and the analysis tools' searches (#329), which
+    # the reply-only double used to let through as if Stockfish were fine.
+    def play_move(self, session):
+        return self.choose_move(session)
+
+    def get_best_moves(self, session, n=3):
+        return self.choose_move(session)
+
+    def evaluate_position(self, session):
+        return self.choose_move(session)
+
+    # And a strength change is a `configure` on the dead process.
+    def set_skill_level(self, level):
+        self.choose_move(None)
+
+    def set_elo(self, elo):
+        self.choose_move(None)
+
+    def set_tier(self, tier):
+        self.choose_move(None)
+
 
 class ScriptedBrain:
     """Scripted brain: a *finished* agent loop, canned.

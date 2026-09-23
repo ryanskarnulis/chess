@@ -8,6 +8,7 @@ tested.
 import random
 import shutil
 
+import chess.engine
 import pytest
 
 from chessapp.engine import (
@@ -270,3 +271,117 @@ def chess_engine_closed_errors():
     import chess.engine
 
     return (chess.engine.EngineError, BrokenPipeError, ValueError)
+
+
+# --- a dead Stockfish is relaunched once (#329) -------------------------------
+
+
+class FakeUci:
+    """A `SimpleEngine` stand-in that dies on its first `dies` calls."""
+
+    def __init__(self, dies: int = 0, error: Exception | None = None):
+        self.dies = dies
+        self.error = error
+        self.configured: list[dict] = []
+        self.played = 0
+        self.closed = False
+
+    def _call(self) -> None:
+        if self.error is not None:
+            raise self.error
+        if self.dies:
+            self.dies -= 1
+            raise chess.engine.EngineTerminatedError("engine process died")
+
+    def configure(self, options):
+        self._call()
+        self.configured.append(dict(options))
+
+    def play(self, board, limit):
+        self._call()
+        self.played += 1
+        return chess.engine.PlayResult(next(iter(board.legal_moves)), None)
+
+    def close(self):
+        self.closed = True
+
+    def quit(self):
+        self.closed = True
+
+
+def launcher(*engines):
+    """An `open_engine` that hands out `engines` in order (an Exception is
+    raised instead), recording each launch."""
+    queue = list(engines)
+    launched: list = []
+
+    def open_engine(path):
+        engine = queue.pop(0)
+        if isinstance(engine, Exception):
+            raise engine
+        launched.append(engine)
+        return engine
+
+    return open_engine, launched
+
+
+def test_a_dead_engine_is_relaunched_at_the_same_strength_and_the_call_repeated():
+    first, second = FakeUci(), FakeUci()
+    open_engine, launched = launcher(first, second)
+    player = EnginePlayer(open_engine=open_engine)
+    player.set_skill_level(5)
+    first.dies = 1
+
+    uci = player.choose_move(GameSession())
+
+    assert GameSession().submit_move(uci).legal
+    assert launched == [first, second]
+    assert first.closed
+    assert second.configured == [{"UCI_LimitStrength": False, "Skill Level": 5}]
+    assert second.played == 1
+
+
+def test_an_engine_that_dies_again_is_reported_not_relaunched_forever():
+    open_engine, launched = launcher(FakeUci(dies=1), FakeUci(dies=1), FakeUci())
+    player = EnginePlayer(open_engine=open_engine)
+
+    with pytest.raises(chess.engine.EngineTerminatedError):
+        player.choose_move(GameSession())
+
+    assert len(launched) == 2, "one relaunch, one repeat"
+
+
+def test_an_engine_that_will_not_start_again_is_reported_as_the_death():
+    open_engine, _ = launcher(FakeUci(dies=1), FileNotFoundError("no stockfish"))
+    player = EnginePlayer(open_engine=open_engine)
+
+    with pytest.raises(chess.engine.EngineTerminatedError, match="relaunched"):
+        player.choose_move(GameSession())
+
+
+def test_an_error_about_the_call_is_not_retried():
+    engine = FakeUci(error=chess.engine.EngineError("bad option"))
+    open_engine, launched = launcher(engine, FakeUci())
+    player = EnginePlayer(open_engine=open_engine)
+
+    with pytest.raises(chess.engine.EngineError):
+        player.choose_move(GameSession())
+
+    assert launched == [engine]
+
+
+@requires_stockfish
+def test_a_killed_stockfish_is_relaunched_and_keeps_its_strength():
+    import os
+    import signal
+
+    with EnginePlayer(move_time=0.05) as player:
+        player.set_skill_level(3)
+        dead = player._engine
+        os.kill(dead.protocol.transport.get_pid(), signal.SIGKILL)
+
+        uci = player.choose_move(GameSession())
+
+        assert GameSession().submit_move(uci).legal
+        assert player._engine is not dead
+        assert player._options == {"UCI_LimitStrength": False, "Skill Level": 3}

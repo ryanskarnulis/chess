@@ -75,6 +75,7 @@ from typing import Annotated, Any, Literal
 
 import anyio.to_thread
 import chess
+import chess.engine
 from fastapi import (
     FastAPI,
     Header,
@@ -2833,7 +2834,13 @@ def create_app(
             # engine to move on a board no turn is open over. The coordinator
             # settles it before anyone is shown the position — the same rule the
             # tool follows, because it is the same board either way.
-            coordinator.settle_engine_turn()
+            try:
+                coordinator.settle_engine_turn()
+            except chess.engine.EngineError:
+                # The takeback stands and the reply is left owed (#329): the
+                # next move request or command collects it, as after any
+                # engine death with the engine to move.
+                logger.warning("engine_settle_failed", exc_info=True)
             _publish_state()
             return {
                 "undone": list(result.undone),
@@ -2959,6 +2966,12 @@ def create_app(
                 ctx.settings.skill_level = None
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except chess.engine.EngineError as exc:
+            # The engine is called before the setting is recorded, so a dead
+            # one leaves both where they were (#329).
+            raise HTTPException(
+                status_code=503, detail="engine unavailable: difficulty not changed"
+            ) from exc
         return {
             "tier": ctx.settings.tier,
             "skill_level": ctx.settings.skill_level,
@@ -3964,6 +3977,10 @@ def create_app(
             candidates = ctx.engine.get_best_moves(snapshot, n=1)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except chess.engine.EngineError as exc:
+            raise HTTPException(
+                status_code=503, detail="hint unavailable: the engine stopped"
+            ) from exc
         if not candidates:
             raise HTTPException(status_code=409, detail="no candidate moves")
         best = candidates[0]
@@ -3996,6 +4013,10 @@ def create_app(
             review = review_game(ctx.engine, snapshot)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except chess.engine.EngineError as exc:
+            raise HTTPException(
+                status_code=503, detail="review unavailable: the engine stopped"
+            ) from exc
         return {
             "moves": [
                 {
