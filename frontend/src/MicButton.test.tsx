@@ -115,6 +115,23 @@ afterEach(() => {
 })
 
 describe('MicButton (hands-free conversation mode)', () => {
+  it('opens an interaction at the end of speech and threads its id through (#317)', async () => {
+    stubTranscribeResponse({ ok: true, text: 'pawn to e4' })
+    const onTranscript = vi.fn(async () => {})
+    const beginUtterance = vi.fn(() => 'a1b2c3d4e5f6')
+    render(
+      <MicButton onTranscript={onTranscript} beginUtterance={beginUtterance} disabled={false} />,
+    )
+    await enterConversation()
+    expect(beginUtterance).not.toHaveBeenCalled()
+
+    speak()
+    expect(beginUtterance).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('pawn to e4', 'a1b2c3d4e5f6'))
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(init.headers).toMatchObject({ 'X-Interaction-Id': 'a1b2c3d4e5f6' })
+  })
+
   it('draws the mic as a monochrome inline icon, never a color emoji', () => {
     render(<MicButton onTranscript={vi.fn()} disabled={false} />)
     expect(document.body.textContent).not.toMatch(/\p{Extended_Pictographic}/u)
@@ -138,7 +155,7 @@ describe('MicButton (hands-free conversation mode)', () => {
     speak()
     // Half-duplex: the mic pauses the moment the utterance is captured.
     expect(fakeVad.pause).toHaveBeenCalled()
-    await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('pawn to e4'))
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('pawn to e4', undefined))
 
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(url).toBe('/api/voice/transcribe')
@@ -374,7 +391,7 @@ describe('MicButton (push-to-talk fallback)', () => {
     expect(FakeMediaRecorder.instances[0].started).toBe(true)
 
     fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
-    await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('pawn to e4'))
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('pawn to e4', undefined))
     // The mic is released once the clip is captured.
     expect(fakeTrack.stop).toHaveBeenCalled()
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]

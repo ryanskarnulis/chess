@@ -9,8 +9,14 @@ import { encodeWav } from './wav'
 export interface MicButtonProps {
   /** Receives the recognized text — the caller sends it down the same
    * pipeline as a typed command. Hands-free mode awaits the returned promise
-   * (the agent turn) before listening again. */
-  onTranscript: (text: string) => void | Promise<void>
+   * (the agent turn) before listening again. `interactionId` is whatever
+   * `beginUtterance` returned for this utterance, if anything. */
+  onTranscript: (text: string, interactionId?: string) => void | Promise<void>
+  /** Optional: called the moment an utterance ends (the VAD's end of speech,
+   * or the push-to-talk stop) — the start of the player's wait. Whatever id it
+   * returns rides the transcription request as `X-Interaction-Id` and comes
+   * back through `onTranscript`, so a host can join its latency records. */
+  beginUtterance?: () => string | undefined
   /** Starting a conversation is pointless while the agent is busy — lock the
    * button. An already-running conversation stays escapable. */
   disabled: boolean
@@ -63,7 +69,7 @@ const ICONS: Record<MicState, React.ReactNode> = {
  * tap to send). Renders nothing in browsers without MediaRecorder /
  * getUserMedia — voice is an enhancement, the text box always works.
  */
-export function MicButton({ onTranscript, disabled }: MicButtonProps) {
+export function MicButton({ onTranscript, beginUtterance, disabled }: MicButtonProps) {
   const [micState, setMicState] = useState<MicState>('idle')
   const [error, setError] = useState<string | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -119,10 +125,11 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
   async function handleUtterance(audio: Float32Array, session: number) {
     if (busyRef.current) return
     busyRef.current = true
+    const interactionId = beginUtterance?.()
     try {
       vadRef.current?.pause()
       setMicState('working')
-      const text = await transcribe(encodeWav(audio), 'clip.wav')
+      const text = await transcribe(encodeWav(audio), 'clip.wav', interactionId)
       if (sessionRef.current !== session) return
       if (text === null) {
         // The speech service is down; auto-resuming would hammer it forever.
@@ -133,7 +140,7 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
       if (text.trim()) {
         // The agent turn, then its spoken reply — only when both are done is
         // it safe to listen again (half-duplex).
-        await onTranscript(text.trim())
+        await onTranscript(text.trim(), interactionId)
         await audioIdle()
         if (sessionRef.current !== session) return
       }
@@ -211,6 +218,7 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
       if (e.data.size > 0) chunks.push(e.data)
     }
     recorder.onstop = async () => {
+      const interactionId = beginUtterance?.()
       // Release the mic as soon as the clip is captured; transcription is
       // backend work.
       stream.getTracks().forEach((t) => t.stop())
@@ -218,13 +226,13 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
       streamRef.current = null
       setMicState('transcribing')
       const clip = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-      const text = await transcribe(clip)
+      const text = await transcribe(clip, undefined, interactionId)
       if (sessionRef.current !== session) return
       setMicState('idle')
       if (text === null) {
         setError('Voice input is unavailable.')
       } else if (text.trim()) {
-        void onTranscript(text.trim())
+        void onTranscript(text.trim(), interactionId)
       } else {
         setError("Didn't catch that — try again.")
       }

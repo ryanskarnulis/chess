@@ -64,7 +64,11 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 Set `CHESSAPP_TRACE_PATH` and every interaction appends one JSONL record:
 utterance, route, tool trajectory, stop reason, FENs, guard decision, and
 cost. It is the first thing to reach for when a turn misbehaves, and a traced
-misfire is a ready-made eval scenario. `docs/turn-coordinator.md` and
+misfire is a ready-made eval scenario. The same file also holds `serving`
+manifests (the weights, build and settings actually serving the app) and the
+`speech`/`voice` records that follow one voice interaction end to end.
+`docs/latency-measurement.md` has the record kinds, the clock rules and
+`scripts/latency_report.py`. `docs/turn-coordinator.md` and
 `docs/planner-narrator.md` explain the turn architecture;
 `docs/persistence-and-identity.md` says what survives a restart
 (`live.json`, `conversations.json`), which tools ask before they run, and what

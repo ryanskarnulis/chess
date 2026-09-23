@@ -5,7 +5,7 @@ import type { GameState, MoveResponse } from './api'
 
 // Playback is a side effect owned by tts.ts (tested there); here we only
 // assert the hook asks for it when — and only when — the backend says so.
-vi.mock('./tts', () => ({ playText: vi.fn() }))
+vi.mock('./tts', () => ({ playText: vi.fn(async () => 'ended' as const) }))
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 const AFTER_E4_FEN = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1'
@@ -533,7 +533,11 @@ describe('useGame', () => {
       const call = fetchMock.mock.calls.find(([url]) => String(url).includes(path))
       return JSON.parse(String(call?.[1]?.body))
     }
-    expect(bodyFor('/api/command')).toEqual({ text: 'play e4', version: 1 })
+    expect(bodyFor('/api/command')).toEqual({
+      text: 'play e4',
+      version: 1,
+      interaction_id: expect.stringMatching(/^[0-9a-f]{12}$/),
+    })
     expect(bodyFor('/api/game/undo')).toEqual({ version: 1 })
     expect(bodyFor('/api/game/new')).toEqual({ color: 'black', version: 1 })
     expect(bodyFor('/api/game/resign')).toEqual({ version: 1 })
@@ -1097,6 +1101,130 @@ describe('useGame', () => {
     expect(result.current.revision).toBe(revisionBefore)
   })
 
+  it('reports the interaction: board frames before the reply, then the voiced end (#317)', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    act(() => FakeWebSocket.instances[0].emitOpen())
+    let answer: (body: unknown) => void = () => {}
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return new Promise((resolve) => {
+          answer = (body) => resolve({ ok: true, json: () => Promise.resolve(body) })
+        })
+      return jsonResponse(state())
+    })
+    const { beginInteraction } = await import('./voiceTiming')
+    const id = beginInteraction('voice')
+    let pending: Promise<void> = Promise.resolve()
+    act(() => {
+      pending = result.current.sendCommand('play e4', id)
+    })
+    // The player's move, then the engine's answer, land over the socket while
+    // the command's own response is still on its way.
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 2, fen: AFTER_E4_FEN, turn: 'black' }),
+      })
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 3, fen: AFTER_E4_E5_FEN, turn: 'white' }),
+      })
+    })
+    await act(async () => {
+      answer({
+        commentary: 'Bold.',
+        tool_results: [],
+        state: state({ version: 3, fen: AFTER_E4_E5_FEN, turn: 'white' }),
+        speak: true,
+        correlation_id: 'c0ffee000001',
+      })
+      await pending
+    })
+
+    const sent = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/command'))
+    expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ interaction_id: id })
+    const { playText } = await import('./tts')
+    expect(playText).toHaveBeenCalledWith('Bold.', expect.objectContaining({ id }))
+    // One report, sent once playback settled (the mock says it ended), with
+    // the utterance's own id and the board marks the socket frames earned.
+    const reports = () =>
+      fetchMock.mock.calls
+        .filter(([url]) => String(url).includes('/api/telemetry/voice'))
+        .map(([, init]) => JSON.parse(String(init.body)))
+    await waitFor(() => expect(reports()).toHaveLength(1))
+    expect(reports()[0]).toMatchObject({
+      interaction_id: id,
+      origin: 'voice',
+      start: 'speech_end',
+      correlation_id: 'c0ffee000001',
+      outcome: 'ended',
+    })
+    expect(Object.keys(reports()[0].marks).sort()).toEqual([
+      'command_done',
+      'command_sent',
+      'engine_reply',
+      'first_board_update',
+      'playback_ended',
+      'tts_requested',
+    ])
+  })
+
+  it('reports a typed command it opened itself, with its board milestones', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    let answer: (body: unknown) => void = () => {}
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/command'))
+        return new Promise((resolve) => {
+          answer = (body) => resolve({ ok: true, json: () => Promise.resolve(body) })
+        })
+      return jsonResponse(state())
+    })
+    let pending: Promise<void> = Promise.resolve()
+    act(() => {
+      pending = result.current.sendCommand('play e4')
+    })
+    act(() => {
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 2, fen: AFTER_E4_FEN, turn: 'black' }),
+      })
+      FakeWebSocket.instances[0].emit({
+        type: 'state',
+        state: state({ version: 3, fen: AFTER_E4_E5_FEN, turn: 'white' }),
+      })
+    })
+    await act(async () => {
+      answer({
+        commentary: 'Bold.',
+        tool_results: [],
+        state: state({ version: 3, fen: AFTER_E4_E5_FEN, turn: 'white' }),
+        speak: false,
+        correlation_id: 'c0ffee000001',
+      })
+      await pending
+    })
+
+    const reports = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/api/telemetry/voice'))
+      .map(([, init]) => JSON.parse(String(init.body)))
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatchObject({
+      origin: 'typed',
+      start: 'submit',
+      correlation_id: 'c0ffee000001',
+      outcome: 'silent',
+      censored: false,
+    })
+    expect(Object.keys(reports[0].marks).sort()).toEqual([
+      'command_done',
+      'command_sent',
+      'engine_reply',
+      'first_board_update',
+    ])
+  })
+
   it('sends a command, applies the returned state, and surfaces the commentary', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
@@ -1114,11 +1242,10 @@ describe('useGame', () => {
     })
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/command',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ text: 'play e4', version: 1 }),
-      }),
+      expect.objectContaining({ method: 'POST' }),
     )
+    const sent = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/command'))
+    expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ text: 'play e4', version: 1 })
     expect(result.current.commentary).toBe('A classic king-pawn opening.')
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
     expect(result.current.agentThinking).toBe(false)
@@ -1337,7 +1464,7 @@ describe('useGame', () => {
     await act(async () => {
       await result.current.sendCommand('any threats?')
     })
-    expect(playText).toHaveBeenCalledWith('Check!')
+    expect(playText).toHaveBeenCalledWith('Check!', expect.objectContaining({ id: expect.any(String) }))
   })
 
   it('stays silent when the backend does not ask to speak', async () => {

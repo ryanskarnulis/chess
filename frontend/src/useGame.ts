@@ -26,6 +26,15 @@ import { drawAnswer } from './draw'
 import { NO_PROGRESS, applyProgress, type TurnProgress } from './progress'
 import { isPromotion, type PromotionPiece } from './promotion'
 import { playText } from './tts'
+import {
+  beginInteraction,
+  correlate,
+  finishInteraction,
+  mark,
+  observeBoard,
+  unwatchBoard,
+  watchBoard,
+} from './voiceTiming'
 
 // A brief outage should heal quickly without hammering a restarting backend.
 // Successful opens reset the sequence; repeated connection failures climb to
@@ -138,8 +147,9 @@ export interface UseGame {
    * client started, neither of which `agentThinking` knows about.
    */
   agentProgress: string | null
-  /** Send a free-form command to the agent. */
-  sendCommand: (text: string) => Promise<void>
+  /** Send a free-form command to the agent. `interactionId` is the
+   * utterance's, for a spoken command (#317); a typed one opens its own. */
+  sendCommand: (text: string, interactionId?: string) => Promise<void>
   /**
    * The PGN the latest reply exported, or null when it exported none. It
    * belongs to the reply it arrived with: the next command (or a new game)
@@ -234,6 +244,9 @@ export function useGame(): UseGame {
     stateRef.current = next
     setState(next)
     setRevision((r) => r + 1)
+    // The in-flight command's board milestones (#317), off the one chokepoint
+    // every state source — socket frame or response — passes through.
+    observeBoard(next)
     // Any authoritative state ends a history review and invalidates the
     // hint arrow — both were drawn for a position that may no longer exist.
     viewPlyRef.current = null
@@ -532,29 +545,53 @@ export function useGame(): UseGame {
   }, [])
 
   const sendCommand = useCallback(
-    async (text: string) => {
+    async (text: string, interactionId?: string) => {
+      // A spoken command arrives with the interaction its utterance opened; a
+      // typed one opens its own, starting now (#317).
+      const interaction = interactionId ?? beginInteraction('typed')
       setAgentThinking(true)
       // Dropped before the turn, not after it: the chip belongs to the reply
       // it came with, and it must not sit under the *next* answer while that
       // one is still being thought about — nor survive a turn that comes back
       // stale, unavailable, or exporting nothing.
       setPgn(null)
+      // How the interaction ends when it does not end in speech — settled in
+      // the `finally` below: `no_command` until a turn has come back and been
+      // shown, `silent` after, and nothing at all once playback owns it.
+      let unvoiced: 'no_command' | 'silent' | null = 'no_command'
       try {
-        const response = await apiSendCommand(text, stateRef.current?.version)
+        watchBoard(interaction, stateRef.current)
+        mark(interaction, 'command_sent')
+        const response = await apiSendCommand(text, stateRef.current?.version, interaction)
         if (response) {
           if (isStaleStateResponse(response)) {
             apply(response.state)
             return
           }
+          correlate(interaction, response.correlation_id)
           // A state frame may have won the race while the agent was thinking.
           // If so, none of this older response (including commentary/settings)
           // belongs to the board now being rendered.
           if (!apply(response.state)) return
+          mark(interaction, 'command_done')
+          unwatchBoard(interaction)
+          unvoiced = 'silent'
           setCommentary(response.commentary)
           setPgn(exportedPgn(response.tool_results))
           // Voice out is fire-and-forget: the reply is already on screen,
           // and a playback failure must never block the game.
-          if (response.speak && response.commentary) void playText(response.commentary)
+          if (response.speak && response.commentary) {
+            unvoiced = null
+            mark(interaction, 'tts_requested')
+            void playText(response.commentary, {
+              id: interaction,
+              onReady: () => mark(interaction, 'tts_ready'),
+              onStart: () => mark(interaction, 'playback_started'),
+            }).then((outcome) => {
+              mark(interaction, 'playback_ended')
+              finishInteraction(interaction, outcome)
+            })
+          }
           // speak mirrors the server-side voice_output setting, so an
           // agent-side toggle ("turn on voice") keeps the UI switch in sync.
           if (typeof response.speak === 'boolean') setVoiceOutputState(response.speak)
@@ -569,6 +606,10 @@ export function useGame(): UseGame {
         }
       } finally {
         setAgentThinking(false)
+        unwatchBoard(interaction)
+        // The turn came back and nothing was voiced, or no turn came back at
+        // all (unavailable, stale, superseded by a newer board).
+        if (unvoiced !== null) finishInteraction(interaction, unvoiced)
       }
     },
     [apply],

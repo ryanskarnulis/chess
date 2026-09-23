@@ -56,6 +56,7 @@ import logging
 import math
 import mimetypes
 import random
+import re
 import time
 from collections.abc import (
     AsyncIterator,
@@ -70,12 +71,13 @@ from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import anyio.to_thread
 import chess
 from fastapi import (
     FastAPI,
+    Header,
     HTTPException,
     Request,
     UploadFile,
@@ -84,7 +86,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from chessapp.agent_api import (
     CONVERSATIONS_FILENAME,
@@ -136,6 +138,8 @@ from chessapp.tools import (
     saved_game_names,
     write_live_checkpoint,
 )
+from chessapp.trace import KIND_SPEECH as TRACE_SPEECH
+from chessapp.trace import KIND_VOICE as TRACE_VOICE
 from chessapp.trace import (
     ROUTE_BOARD,
     ROUTE_BRAIN,
@@ -143,6 +147,7 @@ from chessapp.trace import (
     ROUTE_CONTROL,
     ROUTE_FAST_PATH,
     ROUTE_RESIGN,
+    TRACE_SCHEMA,
     Tracer,
     new_correlation_id,
     turn_record,
@@ -209,15 +214,85 @@ class MoveRequest(VersionedRequest):
     move: str
 
 
+# What an interaction id may look like: short and inert, because it is echoed
+# into a trace file a person reads. Anything else is refused (422) on a body
+# and ignored on a header, where refusing would cost the player their speech.
+_ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+_ID_MAX = 64
+
+
+def _header_id(value: str | None) -> str:
+    """An interaction id off a header, or "" when absent or not id-shaped."""
+    return value if value is not None and re.fullmatch(_ID_PATTERN, value) else ""
+
+
 class CommandRequest(VersionedRequest):
     # The delegate's cap, on the panel's route too (#288): one command is what
     # the planner and the narrator both carry into their prompts, so an
     # unbounded one is an unbounded prompt. Refused 422 before any turn opens.
     text: str = Field(max_length=MAX_AGENT_MESSAGE_LENGTH)
+    # The browser's id for the interaction this command belongs to (#317): the
+    # same id rides the transcription before it and the speech request after,
+    # so the three records join. Optional — a typed client that sends none
+    # loses nothing but the join.
+    interaction_id: str | None = Field(
+        default=None, max_length=_ID_MAX, pattern=_ID_PATTERN
+    )
 
 
 class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, pattern=r"\S")
+
+
+# The browser's milestones for one interaction (#317). Offsets in its own
+# monotonic clock from the interaction's start — the moment the VAD heard the
+# player stop (`speech_end`) or the command was submitted (`submit`) — and
+# never compared with a server time: the two clocks share no origin.
+VoiceMark = Literal[
+    "stt_done",
+    "command_sent",
+    "first_board_update",
+    "engine_reply",
+    "command_done",
+    "tts_requested",
+    "tts_ready",
+    "playback_started",
+    "playback_ended",
+]
+# A reading past an hour is no interaction this report is about.
+_MARK_CEILING_MS = 3_600_000.0
+
+
+class VoiceTelemetry(BaseModel):
+    """One interaction's client-side milestones, as the browser reports them.
+
+    Bounded on every axis — known mark names only, numeric offsets inside an
+    hour, a closed outcome vocabulary, no extra fields — because it is written
+    verbatim to a file on the server and nothing about it is trusted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    interaction_id: str = Field(max_length=_ID_MAX, pattern=_ID_PATTERN)
+    correlation_id: str | None = Field(
+        default=None, max_length=_ID_MAX, pattern=_ID_PATTERN
+    )
+    origin: Literal["voice", "typed"]
+    clock: Literal["client_monotonic_ms"]
+    start: Literal["speech_end", "submit"]
+    marks: dict[VoiceMark, Annotated[float, Field(ge=0, le=_MARK_CEILING_MS)]]
+    outcome: Literal[
+        "ended",
+        "error",
+        "interrupted",
+        "blocked",
+        "no_audio",
+        "timeout",
+        "silent",
+        "no_command",
+    ]
+    # True when the interaction was given up on before it settled (the
+    # client's ceiling): its last mark is a lower bound, not a finish.
+    censored: bool = False
 
 
 class VoiceOutputRequest(BaseModel):
@@ -1737,6 +1812,9 @@ class CommandOutcome:
     stop_reason: str
     memory: str = ""
     engine_failure: str = ""
+    # This interaction's trace id (`trace.new_correlation_id`), handed back so
+    # the browser can name the turn its own milestones belong to (#317).
+    correlation_id: str = ""
 
 
 class StateBroadcaster:
@@ -2985,7 +3063,11 @@ def create_app(
             return await _command_turn(text, transcript, origin=origin)
 
     async def _command_turn(
-        text: str, transcript: Sequence[dict[str, str]], *, origin: str
+        text: str,
+        transcript: Sequence[dict[str, str]],
+        *,
+        origin: str,
+        interaction_id: str = "",
     ) -> CommandOutcome:
         """The single pipeline: user string → brain's tool loop → new state.
         Shared by `/api/command` and the delegate messages endpoint against the
@@ -3134,6 +3216,7 @@ def create_app(
                 "changed": False,
                 "turn_id": turn_id,
                 "correlation_id": correlation_id,
+                "interaction_id": interaction_id,
                 "fen_before": before["fen"],
             }
             try:
@@ -3617,6 +3700,7 @@ def create_app(
                     memory=memory
                     or _remembered_facts(tool_results, engine_reply, ctx.session),
                     engine_failure=engine_failure,
+                    correlation_id=correlation_id,
                 )
             except BaseException as exc:
                 # Nothing is handled here — the caller still gets its exception,
@@ -3686,7 +3770,12 @@ def create_app(
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
         async with _mutation(request.version, request.game_id):
             transcript = ctx.transcript.memory()
-            outcome = await _command_turn(request.text, transcript, origin=PANEL_ORIGIN)
+            outcome = await _command_turn(
+                request.text,
+                transcript,
+                origin=PANEL_ORIGIN,
+                interaction_id=request.interaction_id or "",
+            )
             # Record on the context, not a captured reference: resume_game may
             # have just swapped in the saved game's transcript, and this turn
             # belongs to that thread.
@@ -3704,6 +3793,9 @@ def create_app(
             # and an agent-side set_difficulty otherwise stays invisible until
             # a reload. Null when strength was set outside the tiers.
             "tier": ctx.settings.tier,
+            # The turn's trace id, so the browser's milestones for this
+            # interaction can name the turn record they belong to (#317).
+            "correlation_id": outcome.correlation_id,
         }
 
     app.include_router(
@@ -3741,8 +3833,37 @@ def create_app(
         ctx.settings.voice_output = request.enabled
         return {"voice_output": ctx.settings.voice_output}
 
+    def _trace_event(kind: str, fields: dict[str, Any]) -> None:
+        """Append a non-turn record (#317), best-effort like every trace write:
+        a diagnostic that fails is logged and dropped, never a failed request."""
+        if tracer is None:
+            return
+        try:
+            tracer.record({"schema": TRACE_SCHEMA, "kind": kind, **fields})
+        except Exception:
+            logger.warning("trace_failed", exc_info=True)
+
+    def _speech_record(
+        op: str, interaction_id: str | None, started: float, status: str, **sizes: int
+    ) -> None:
+        """One speech round trip, for the latency report: which interaction,
+        how long, how it ended, and sizes — never the audio or the words."""
+        _trace_event(
+            TRACE_SPEECH,
+            {
+                "op": op,
+                "interaction_id": _header_id(interaction_id),
+                "ms": _ms_since(started),
+                "status": status,
+                **sizes,
+            },
+        )
+
     @app.post("/api/voice/transcribe")
-    async def transcribe(audio: UploadFile) -> dict[str, Any]:
+    async def transcribe(
+        audio: UploadFile,
+        interaction_id: Annotated[str | None, Header(alias="X-Interaction-Id")] = None,
+    ) -> dict[str, Any]:
         """STT proxy: browser audio in, plain text out. The text goes back to
         the client, which feeds it into the same /api/command pipeline as
         typed input — voice never gets its own path to the game. Board state
@@ -3754,18 +3875,26 @@ def create_app(
                 status_code=503, detail="voice unavailable: no speech service"
             )
         data = await audio.read()
+        started = time.monotonic()
         try:
             text = await _offloop(
                 speech.transcribe, data, audio.filename or "audio.webm"
             )
         except Exception as exc:
+            _speech_record("stt", interaction_id, started, "failed", bytes=len(data))
             raise HTTPException(
                 status_code=502, detail=f"speech service error: {exc}"
             ) from exc
+        _speech_record(
+            "stt", interaction_id, started, "ok", bytes=len(data), chars=len(text)
+        )
         return {"text": text}
 
     @app.post("/api/voice/speak")
-    def speak_text(request: SpeakRequest) -> Response:
+    def speak_text(
+        request: SpeakRequest,
+        interaction_id: Annotated[str | None, Header(alias="X-Interaction-Id")] = None,
+    ) -> Response:
         """TTS proxy: text in, mp3 out — the audio for whatever commentary
         the client decided to voice. Same optionality contract as
         /api/voice/transcribe: 503 without a speech service, 502 when the
@@ -3774,13 +3903,32 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail="voice unavailable: no speech service"
             )
+        started = time.monotonic()
+        chars = len(request.text)
         try:
             audio = speech.speak(request.text)
         except Exception as exc:
+            _speech_record("tts", interaction_id, started, "failed", chars=chars)
             raise HTTPException(
                 status_code=502, detail=f"speech service error: {exc}"
             ) from exc
+        _speech_record(
+            "tts", interaction_id, started, "ok", chars=chars, bytes=len(audio)
+        )
         return Response(content=audio, media_type="audio/mpeg")
+
+    @app.post("/api/telemetry/voice", status_code=204)
+    def voice_telemetry(report: VoiceTelemetry) -> Response:
+        """The browser's milestones for one interaction (#317): speech end,
+        transcript, board, reply, first audio, playback end — in its own clock.
+
+        Appended to the trace beside the turn and speech records it joins by
+        id, and nothing else: it touches no session, takes no lock, and answers
+        204 whether or not anything is tracing, so a client never has to know.
+        The server stamps its own receipt time (`ts`) and never reconciles it
+        with the client's offsets — the two clocks have no common origin."""
+        _trace_event(TRACE_VOICE, report.model_dump())
+        return Response(status_code=204)
 
     @app.get("/api/game/hint")
     def get_hint() -> dict[str, Any]:

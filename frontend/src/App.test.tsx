@@ -118,9 +118,10 @@ describe('conductor handoff (?intent=)', () => {
     window.history.replaceState({}, '', '/?intent=play%20e4')
     render(<App />)
     await waitFor(() => expect(commandCalls()).toHaveLength(1))
-    expect(commandCalls()[0][1]).toMatchObject({
-      method: 'POST',
-      body: JSON.stringify({ text: 'play e4' }),
+    expect(commandCalls()[0][1]).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(String(commandCalls()[0][1].body))).toMatchObject({
+      text: 'play e4',
+      interaction_id: expect.stringMatching(/^[0-9a-f]{12}$/),
     })
     // Scrubbed, so a reload doesn't replay the command.
     expect(window.location.search).toBe('')

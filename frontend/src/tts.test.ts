@@ -150,7 +150,7 @@ describe('playText', () => {
     // DNS, aborted connection) must settle exactly like a 503 does.
     const { playText } = await loadTts()
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))))
-    await expect(playText('Check!')).resolves.toBeUndefined()
+    await expect(playText('Check!')).resolves.toBe('no_audio')
     expect(audioInstances).toHaveLength(0)
     expect(URL.createObjectURL).not.toHaveBeenCalled()
   })
@@ -164,7 +164,7 @@ describe('playText', () => {
         blob: () => Promise.reject(new Error('body stream errored')),
       })),
     )
-    await expect(playText('Check!')).resolves.toBeUndefined()
+    await expect(playText('Check!')).resolves.toBe('no_audio')
     expect(audioInstances).toHaveLength(0)
   })
 
@@ -307,5 +307,84 @@ describe('unlockAudio', () => {
     await Promise.resolve()
     unlockAudio()
     expect(play).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('playText observer (#317)', () => {
+  it('names the interaction on the speak request when given one', async () => {
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const done = playText('Check!', { id: 'a1b2c3d4e5f6' })
+    await playbackStarted()
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(init.headers).toMatchObject({ 'X-Interaction-Id': 'a1b2c3d4e5f6' })
+    audioInstances[0].onended?.()
+    await expect(done).resolves.toBe('ended')
+  })
+
+  it('sends no interaction header without one', async () => {
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const done = playText('Check!')
+    await playbackStarted()
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(init.headers).not.toHaveProperty('X-Interaction-Id')
+    audioInstances[0].onended?.()
+    await done
+  })
+
+  it('reports the clip loaded, then audio actually starting — once', async () => {
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const onReady = vi.fn()
+    const onStart = vi.fn()
+    const done = playText('Check!', { onReady, onStart })
+    await playbackStarted()
+    expect(onReady).toHaveBeenCalledTimes(1)
+    // `play()` resolving is not sound: only the element's `playing` event is.
+    expect(onStart).not.toHaveBeenCalled()
+    const el = audioInstances[0] as FakeAudio & { onplaying?: () => void }
+    el.onplaying?.()
+    el.onplaying?.() // a resume after a stall is not a second start
+    expect(onStart).toHaveBeenCalledTimes(1)
+    audioInstances[0].onended?.()
+    await done
+  })
+
+  it('says how playback ended', async () => {
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+
+    const failed = playText('one')
+    await playbackStarted()
+    audioInstances[0].onerror?.()
+    await expect(failed).resolves.toBe('error')
+
+    play.mockReset().mockRejectedValue(new Error('NotAllowedError'))
+    await expect(playText('two')).resolves.toBe('blocked')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 503 })))
+    await expect(playText('three')).resolves.toBe('no_audio')
+  })
+
+  it('reports a clip cut off by a newer one as interrupted', async () => {
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(), { status: 200 })))
+    const first = playText('one')
+    await playbackStarted()
+    const second = playText('two')
+    await expect(first).resolves.toBe('interrupted')
+    await vi.waitFor(() => expect(play).toHaveBeenCalledTimes(2))
+    audioInstances[0].onended?.()
+    await expect(second).resolves.toBe('ended')
+  })
+
+  it('reports a request that never answers as a timeout', async () => {
+    vi.useFakeTimers()
+    const { playText } = await loadTts()
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})))
+    const done = playText('Check!')
+    await vi.advanceTimersByTimeAsync(90_000)
+    await expect(done).resolves.toBe('timeout')
   })
 })
