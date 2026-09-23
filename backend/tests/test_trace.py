@@ -102,6 +102,12 @@ def test_turn_record_carries_the_boards_the_planner_was_reshown():
     assert record["state_refreshes"] == [4, 6]
 
 
+def test_turn_record_carries_the_handoff_or_none():
+    handoff = {"kind": "reply", "performed": [], "refused": [], "consulted": []}
+    assert _record_fields()["handoff"] is None
+    assert _record_fields(handoff=handoff)["handoff"] == handoff
+
+
 def test_turn_record_state_refreshes_default_to_none_shown():
     """A route with no loop to refresh — and a mutating turn whose board was
     left mid-exchange — both record the empty list rather than a gap."""

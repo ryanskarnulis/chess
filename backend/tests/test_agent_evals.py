@@ -139,7 +139,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.agent_api import reset_rate_limit
-from chessapp.api import STUCK_REPLY, create_app, planner_board_refresh
+from chessapp.api import (
+    STUCK_REPLY,
+    create_app,
+    narrator_facts,
+    planner_board_refresh,
+)
 from chessapp.app import _planner_temperature_from_env
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
@@ -528,6 +533,8 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         # when the shipped one is not (or the reverse) measures a different
         # agent. `test_eval_harness.py` pins that these two stay in step.
         board_refresh=lambda: planner_board_refresh(ctx, coordinator),
+        # And the narrator's facts (#289), for the same reason one phase on.
+        narrator_facts=lambda: narrator_facts(ctx, coordinator),
     )
     # The second departure, and it is observation only: the app's existing
     # tracer seam is pointed at a list. Nothing the model sees changes — a

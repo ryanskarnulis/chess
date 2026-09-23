@@ -99,6 +99,9 @@ def make_client(
         tool_definitions=registry.definitions(exclude=BOARD_STATE_TOOLS),
         system_prompt=PERSONA,
         planner_prompt=PLANNER,
+        # Wired as app assembly wires it (#289): the narrator's facts, and
+        # whether the reply is still owed, read as the planner hands off.
+        narrator_facts=lambda: api.narrator_facts(ctx, coordinator),
     )
     app = create_app(
         ctx,
@@ -703,9 +706,9 @@ def test_the_command_trail_holds_the_board_after_each_mutating_call(monkeypatch)
     observed: list[list[str]] = []
     real = api._verified_facts
 
-    def spy(ctx, tool_results, engine_reply, fen_before, fens_observed=()):
+    def spy(ctx, tool_results, engine_reply, fen_before, fens_observed=(), *rest):
         observed.append(list(fens_observed))
-        return real(ctx, tool_results, engine_reply, fen_before, fens_observed)
+        return real(ctx, tool_results, engine_reply, fen_before, fens_observed, *rest)
 
     monkeypatch.setattr(api, "_verified_facts", spy)
     client, _, ctx = make_client(
@@ -734,9 +737,9 @@ def test_a_read_only_command_leaves_the_trail_empty(monkeypatch):
     observed: list[list[str]] = []
     real = api._verified_facts
 
-    def spy(ctx, tool_results, engine_reply, fen_before, fens_observed=()):
+    def spy(ctx, tool_results, engine_reply, fen_before, fens_observed=(), *rest):
         observed.append(list(fens_observed))
-        return real(ctx, tool_results, engine_reply, fen_before, fens_observed)
+        return real(ctx, tool_results, engine_reply, fen_before, fens_observed, *rest)
 
     monkeypatch.setattr(api, "_verified_facts", spy)
     client, _, ctx = make_client(
@@ -819,3 +822,183 @@ def test_a_move_named_with_no_engine_in_the_turn_is_not_the_guards_business(trac
 
     assert response["commentary"] == "Nf3 is the move."
     assert last_turn(trace_path)["guarded"] is False
+
+
+# --- the typed handoff (#289): what the narrator is told was done is the
+# --- harness's reading of the results, never the planner's note
+
+
+def narrator_briefs(provider: ScriptedProvider) -> list[str]:
+    """The brief of every tool-free call that was not the confirmation
+    reader — every narration, rewrite and reaction the turn asked for."""
+    return [
+        call["messages"][-1]["content"]
+        for call in provider.calls
+        if call["tools"] is None and call["messages"][0]["content"] == PERSONA
+    ]
+
+
+def test_a_false_planner_note_cannot_make_the_narrator_announce_an_undo(trace_path):
+    """Acceptance 1. The planner called nothing and says it undid the move;
+    the brief says nothing was done, and a narrator that repeats the note
+    anyway is guarded and asked again with the truth."""
+    ctx = developed(ToolContext(session=GameSession(), engine=FakeEngine()))
+    client, provider, ctx = make_client(
+        text_turn("I undid your last move."),  # the planner's (false) note
+        text_turn("Done, taken back."),  # the narrator believing it
+        text_turn("Nothing's been taken back yet. Want me to?"),  # the rewrite
+        ctx=ctx,
+        tracer=JsonlTracer(trace_path),
+    )
+
+    body = client.post("/api/command", json={"text": "undo that"}).json()
+
+    closing = narrator_briefs(provider)[0]
+    assert "No tool was called this turn." in closing
+    assert "Done this turn: nothing." in closing
+    assert "not a record of what happened" in closing
+    assert body["commentary"] == "Nothing's been taken back yet. Want me to?"
+    assert ctx.session.move_history() == ["e4", "e5", "Nf3", "Nc6"]
+    record = last_turn(trace_path)
+    assert record["guarded_claims"] == ["takeback"]
+    assert record["handoff"] == {
+        "kind": "reply",
+        "performed": [],
+        "refused": [],
+        "consulted": [],
+        "reply_owed": False,
+    }
+
+
+def test_an_undo_that_ran_may_be_announced(trace_path):
+    ctx = developed(ToolContext(session=GameSession(), engine=FakeEngine()))
+    client, provider, ctx = make_client(
+        tool_calls_turn(("undo", {})),
+        text_turn("undid it"),
+        text_turn("Done, taken back."),
+        ctx=ctx,
+        tracer=JsonlTracer(trace_path),
+    )
+
+    body = client.post("/api/command", json={"text": "undo that"}).json()
+
+    assert body["commentary"] == "Done, taken back."
+    assert "Done this turn: #1 undo." in narrator_briefs(provider)[0]
+    record = last_turn(trace_path)
+    assert record["guarded"] is False
+    assert record["handoff"]["kind"] == "completed"
+    assert record["handoff"]["performed"] == ["undo"]
+
+
+@pytest.mark.parametrize("reply_uci", ["g8f6", "b8c6"])
+def test_the_brain_route_never_announces_the_engines_reply_early(reply_uci, trace_path):
+    """Acceptance 3. The narrator closes a `make_move` turn before the
+    pipeline collects the reply, so "...Nf6" is a guess — and it is cut
+    whether the guess was right (the engine plays Nf6) or wrong (Nc6)."""
+    client, provider, ctx = make_client(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("King's pawn. My turn. Nf6."),
+        text_turn("King's pawn. Bold."),  # the rewrite
+        ctx=ToolContext(session=GameSession(), engine=FakeEngine(reply_uci)),
+        tracer=JsonlTracer(trace_path),
+    )
+
+    body = client.post("/api/command", json={"text": "e4 please, then think"}).json()
+
+    closing = narrator_briefs(provider)[0]
+    assert "has not played its reply" in closing
+    record = last_turn(trace_path)
+    assert record["guarded_claims"] == ["unplayed_reply"]
+    assert record["handoff"]["reply_owed"] is True
+    assert body["commentary"].startswith("King's pawn. Bold.\n\n")
+    assert ctx.session.move_history()[0] == "e4"
+
+
+def test_a_threatened_reply_is_still_glitchs_to_make(trace_path):
+    """The future hedges still exempt a threat: "I'll hit you with Nf6" is
+    trash talk about a move he might play, not an announcement."""
+    client, _, _ = make_client(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("King's pawn. I'll hit you with Nf6."),
+        ctx=ToolContext(session=GameSession(), engine=FakeEngine("g8f6")),
+        tracer=JsonlTracer(trace_path),
+    )
+
+    client.post("/api/command", json={"text": "e4 please, then think"})
+
+    assert last_turn(trace_path)["guarded"] is False
+
+
+def _no_side_to_move(brief: str) -> None:
+    for key in ('"fen"', '"turn"', '"legal_moves"', '"captures"'):
+        assert key not in brief, f"{key} reached the narrator"
+
+
+def test_no_closing_brief_carries_a_side_to_move_after_an_undo_or_new_game():
+    ctx = developed(ToolContext(session=GameSession(), engine=FakeEngine()))
+    client, provider, _ = make_client(
+        tool_calls_turn(("undo", {})),
+        text_turn("undid it"),
+        text_turn("Taken back."),
+        ctx=ctx,
+    )
+    client.post("/api/command", json={"text": "undo"})
+
+    ctx = finished(ToolContext(session=GameSession(), engine=FakeEngine("e2e4")))
+    client, provider_b, _ = make_client(
+        tool_calls_turn(("new_game", {"player_color": "black"})),
+        text_turn("new game as black"),
+        text_turn("Fresh board. I opened e4."),
+        ctx=ctx,
+    )
+    client.post("/api/command", json={"text": "new game, I'll be black"})
+
+    briefs = narrator_briefs(provider) + narrator_briefs(provider_b)
+    assert len(briefs) == 2
+    for brief in briefs:
+        _no_side_to_move(brief)
+
+
+def test_no_closing_brief_carries_a_side_to_move_after_a_resume(tmp_path):
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(), save_dir=tmp_path)
+    client, provider, _ = make_client(
+        tool_calls_turn(("save_game", {"name": "slot"})),
+        text_turn("saved"),
+        text_turn("Saved."),
+        tool_calls_turn(("resume_game", {"name": "slot"})),
+        text_turn("loaded"),
+        text_turn("Back where you left it."),
+        ctx=ctx,
+    )
+    client.post("/api/command", json={"text": "save this as slot"})
+    client.post("/api/command", json={"text": "load slot"})
+
+    briefs = narrator_briefs(provider)
+    assert len(briefs) == 2
+    for brief in briefs:
+        _no_side_to_move(brief)
+
+
+def test_a_confirmed_destructive_op_narrates_without_a_side_to_move():
+    """The fast path's confirmed op passes its tool results to `narrate` as
+    the changes — a `new_game` result carries `fen`/`turn` — and the brief
+    now projects them the way the closing brief does."""
+    ctx = developed(ToolContext(session=GameSession(), engine=FakeEngine()))
+    client, provider, ctx = make_client(
+        tool_calls_turn(("new_game", {})),
+        text_turn("asked about the reset"),
+        text_turn("That ends this one. Start over?"),
+        text_turn("Fresh board."),  # the narration after the confirmed reset
+        ctx=ctx,
+    )
+    client.post("/api/command", json={"text": "start over"})
+    confirmed = client.post("/api/command", json={"text": "yes"}).json()
+
+    assert confirmed["tool_results"][0]["result"]["ok"] is True
+    assert "fen" in confirmed["tool_results"][0]["result"], "the record keeps it"
+    briefs = narrator_briefs(provider)
+    assert len(briefs) == 2
+    for brief in briefs:
+        _no_side_to_move(brief)

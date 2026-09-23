@@ -17,6 +17,16 @@ Nothing open (2026-09-17). Findings recorded, not filed: a bare "castle" with bo
 castlings legal is played as O-O (`docs/knight-ask-campaign.md`, "Measurement
 record") — a design decision for whoever picks it up.
 
+- [ ] The move guard reads a piece-placement list as moves (found 2026-09-22 in
+  #289's gate, pre-existing): asked to show the position, the narrator
+  sometimes lists placement in piece-letter notation ("White: Ke1, Qd1, Ra1 …")
+  and the move class cuts `Ke1` as an unplayable move — 1/20 on both `main`
+  and the #289 tree in `freeform_confirmation_answers[unrelated]`, interleaved.
+  A correct answer the guard fires on, so the guard loosens (a token naming a
+  piece on the square it occupies is placement, not a move), measured on a
+  corpus first.
+- [ ] #289 PR 2: typed clarifications (`ask_player`), measured separately.
+
 ## Agent audit follow-ups (2026-09-05)
 
 Record: `docs/agent-audit-2026-09-05.md` (external audit of the loop, tools

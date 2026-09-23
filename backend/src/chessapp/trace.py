@@ -99,6 +99,7 @@ def turn_record(
     completion_tokens: int = 0,
     model_latencies_ms: Sequence[int] = (),
     state_refreshes: Sequence[int] = (),
+    handoff: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -216,6 +217,13 @@ def turn_record(
       what tells those two apart. `mutations: 2, state_refreshes: []` is a
       healthy move turn, and a mutating turn that goes on to decide again with
       nothing here is the bug this field exists to make visible.
+
+    `handoff` is what the brain route's narrator was told the turn did (#289,
+    `handoff.Handoff.trace`): the kind, the tools that were done, refused and
+    looked up, and whether the engine's reply was still owed as it spoke.
+    `None` on every other route, and on a brain turn no narrator closed. A
+    narration that announced something is re-judged against this, not against
+    the planner's note: "took it back" under `performed: []` is the miss.
     """
     return {
         "utterance": utterance,
@@ -238,6 +246,7 @@ def turn_record(
         "correlation_id": correlation_id,
         "mutations": mutations,
         "state_refreshes": list(state_refreshes),
+        "handoff": handoff,
         "model_calls": model_calls,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,

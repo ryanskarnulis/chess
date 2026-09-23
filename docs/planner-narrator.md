@@ -21,8 +21,10 @@ not asking one call to do both jobs. The split cured the release-blocking
   tool-free turn ends the loop and is an internal handoff note — the planner
   never speaks to the player. Thinking stays off: picking a tool is a parse.
 - **The narrator** is one further call on the full Glitch prompt
-  (+ verbosity layer), offered **no tools**, given the utterance, the turn's
-  tool results, and the handoff note. Its text is the commentary. It is the
+  (+ verbosity layer), offered **no tools**, given the utterance and the
+  typed handoff below — the turn's results sorted by the harness, the fresh
+  facts it may state, and the planner's note labelled as a reading. Its text
+  is the commentary. It is the
   one phase that may think (when analysis landed). Being structurally unable
   to act is the enforcement of "react from results, never the raw utterance";
   `tests/test_closing_pass.py` pins it route by route. `Brain.narrate` (the
@@ -135,16 +137,87 @@ hint asks to the engine (`advice_is_engine_backed` measures it). Before the
 inversion the guard ate a correct London answer and a refused move's own
 list of alternatives (live, 2026-09-04 and 2026-09-06).
 
+## The handoff (#289, 2026-09-22)
+
+The narrator used to close from the raw results and the planner's free-form
+note, told to reply "based only on those results and that note". The note is
+not a record: on a turn with no tool calls it was the only thing the narrator
+had, nothing said that nothing had been done, and a note reading "undid your
+last move" could come back as "Done, taken back." (astra audit F9).
+
+So the harness now says what happened (`handoff.py`). `build` sorts the
+results into **done** (an `ok` result from any tool that is not a read),
+**refused** (`ok` not true, or a move the board rejected) and **looked up**
+(`READ_TOOLS`; a test pins every registered tool to one side), and derives the
+turn's **kind** from those and the stop reason alone — `reply` (no tool
+called), `declined` (only refusals), `partial` (something done, and something
+refused or the loop ended the phase itself), `completed`. The brief lists the
+results with ids (`#1`, `#2`) that the sorted lines point at, says **"Done this
+turn: nothing."** when nothing was, and demotes the note to "The planner's
+reading of what the player wants (not a record of what happened)". It is kept
+because a `reply` turn has nothing else to answer from. Telling an answer from
+a clarification is language, so the harness does not try: both are `reply`,
+and a typed clarification is the planner's to declare (PR 2 of the issue's
+plan, measured separately).
+
+**Fresh facts through a seam.** `LlamaBrain.narrator_facts`, wired from
+`api.narrator_facts` by `build_app` and the eval harness alike (a test pins
+the two), is read once as the planner hands off: `player_color`, `in_check`,
+`game_over`, the player-relative `outcome` the guard certifies (#287),
+`captured` — and `reply_owed`, which the brain lifts into the handoff as "the
+engine has not played its reply to the player's move yet; the app announces it
+after you speak." No `history` (the refresh block's measured reason, one phase
+on) and no side to move.
+
+**One projection.** `narrator_result_view` drops `fen`, `turn`, `legal_moves`
+and `captures` from every result a narrator reads, on both briefs — `undo`,
+`new_game` and `resume_game` answer with `fen`/`turn`, and they reached the
+narrator through the closing brief and through the fast path's confirmed-op
+and resign beats while the state view beside them withheld the same keys. The
+trace keeps the full results; a test pins that the projection and
+`_narrator_state_dict` delete the same four keys.
+
+**Backstops in the guard** (`honesty.py`), measured before they shipped (the
+#287 rule; corpus in `test_honesty.py`, deployed sweep in
+`docs/agent-evals.md`):
+
+- `takeback` and `restart` — an action no board fact backs, checked against
+  the turn's own `undo` / `new_game`. Past forms with a move or piece as the
+  object, plus Glitch's own register from the deployed trace ("back to where
+  we were"); never "new game" itself, which stays the ending class's.
+- `unplayed_reply` — a SAN the engine could play on the board the narrator
+  spoke over, while its reply was still being computed, that the turn accounts
+  for no other way. Every route narrates before the reply exists (the observe
+  beat by construction; the brain route because its narrator closes inside
+  `get_agent_response` and the pipeline collects afterwards), so "My turn.
+  Nf6." read as true whenever Nf6 was playable or happened to be the reply.
+  The future hedges still exempt a threat ("I'll hit you with Nf6").
+
+The narrator's `_BASE` is a speaking contract now: not the referee, a move
+made at the player's request is the player's, say only what the record shows
+done, and ask with the options named when the player has to choose. "You
+change the game only through your tools" and "never claim to have done
+something you did not do with a tool" were one-prompt text from before the
+split, read by a phase that holds no tools.
+
+`AgentResponse.handoff` and the trace's `handoff` field record what the
+narrator was told (kind, the tools done / refused / looked up, `reply_owed`),
+so a narration is re-judged against that and not against the note.
+
 ## What the narrator is not given
 
-- **The board.** Tool results are the record of what changed; the fast path
-  hands a freshly read post-move board because it has one.
+- **A stale board.** The brain route's facts are read as the planner hands
+  off (above), after every tool of the turn has run; the fast path hands a
+  freshly read post-move board because it has one. Neither carries history.
 - **A side to play for** (#188/#193): the observe beat runs while the reply is
   still computing, so `turn`, `legal_moves`, and the FEN are withheld
-  (`api._narrator_state_dict`), the split `make_move` result carries no
-  mid-exchange `fen`/`turn`, and a move turn is remembered by the reaction
-  alone (`docs/turn-memory.md`) — every leak of "it is your move" produced
-  narrators announcing moves of their own.
+  (`api._narrator_state_dict`, and `handoff.narrator_result_view` on every
+  result), the split `make_move` result carries no mid-exchange `fen`/`turn`,
+  and a move turn is remembered by the reaction alone (`docs/turn-memory.md`)
+  — every leak of "it is your move" produced narrators announcing moves of
+  their own.
+- **The planner's note as a record.** It arrives labelled as the planner's
+  reading of the ask; what was done is the harness's line above it.
 
 ## Cost
 

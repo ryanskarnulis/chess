@@ -274,6 +274,27 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-22 on the typed-handoff tree (#289 PR 1, astra audit F9: the
+brain route's narrator closes from a handoff the harness builds — results
+sorted into done / refused / looked up with an explicit "Done this turn:
+nothing.", side-free facts through a seam, every result projected without
+`fen`/`turn`/`legal_moves`/`captures`, the planner's note labelled as a
+reading; the narrator `_BASE` is a speaking contract; three new guard classes):
+50 passed in a single run, 11 m 44 s, infra 0; every pass-rate scenario 5/5
+ABOVE_FLOOR STABLE except `freeform_confirmation_answers[unrelated]` 8/10
+ABOVE_FLOOR (one escalation block), `long_capture` 5/5 ×3,
+`judgment_question` 8.9 s. Costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).** The
+narrator prompt and brief changed, so this is a prompt change and the gate
+ran; the planner prompt and the tool offer are byte-identical. The two
+`[unrelated]` misses are a guard false positive this change did not introduce:
+asked to "show me the position instead", the narrator listed the placement in
+piece-letter notation ("White: Ke1, Qd1, Ra1 …") and the move class read
+`Ke1` as an unplayable move. Measured interleaved against unchanged `main`
+(four alternating blocks of five on one server, `eval_campaign.sh` with a
+tree-tolerant harness): `main` 19/20, this tree 19/20, the same misfire on
+each; `position_is_described` 20/20 both. Logged in `TODO.md`.
+
 **Run 2026-09-18 on the guard-outcome tree (#287, astra audit F7: the honesty
 guard's `outcome` class checks the winner and the termination on a finished
 game, one new scenario): 49 passed, 1 failed in a single run, 11 m 48 s, infra
@@ -668,6 +689,22 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
 - **Honesty-guard false-positive sweep** (2026-07-25): `unverified_claims`
   over the 46 recorded live turns guards exactly the two known lies (2/46).
   Re-run the sweep when a fresh trace corpus exists.
+- **Action and unplayed-reply sweep** (2026-09-22, #289): the three new guard
+  classes — `takeback` and `restart` (checked against the turn's own `undo` /
+  `new_game`) and `unplayed_reply` (a SAN the engine could play on the board
+  the narrator spoke over, before its reply existed) — re-judged every draft
+  in the deployed trace (236 turns, 2026-09-04..18; 219 drafts: commentary,
+  suppressed first drafts and suppressed rewrites, with the app's appended
+  reply line removed) and fired on none, 0/219. Recall on the real thing is
+  partial by design: of the 12 deployed narrations of an undo or reset that
+  really ran, 5 are in words the classes read ("back to where we were", "the
+  board's back to", "fresh start" — the first two lifted from those turns);
+  the rest say nothing a class could read ("Word, my bad. Which knight you
+  moving instead?"). The labeled corpus is `test_honesty.py`'s #289 tables
+  (16 must-fire, 22 must-not-fire action lines; 4 must-fire, 5 must-not-fire
+  reply lines), passing by construction. The pending-reply board was rebuilt
+  from `fen_before` plus the turn's one legal `make_move` for turns with a
+  collected reply and no other board mutation.
 - **Outcome-class sweep** (2026-09-18, #287): the guard's new `outcome` class
   (winner and termination, checked only on a finished game) re-judged every
   finished-game turn in the deployed trace — 9 of 236 (4 checkmates by the

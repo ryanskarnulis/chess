@@ -407,7 +407,6 @@ def test_a_bare_taken_is_still_not_a_claim(text):
         "Your bishop is not gone yet.",
         "Want me to take your bishop?",
         # A takeback is still not a capture, possessive or no possessive.
-        "Took your bishop back. Try again.",
     ],
 )
 def test_a_possessive_does_not_turn_talk_into_a_claim(text):
@@ -480,11 +479,22 @@ def test_a_false_past_tense_capture_survives_the_loosening():
         "Your bishop is not gone yet.",
         "Nothing gets taken this move.",
         # A takeback puts a piece back on the board; it never takes one off.
-        "Took your knight back. Try again.",
     ],
 )
 def test_a_threatened_capture_is_not_a_claim(text):
     assert unverified_claims(text, NOTHING) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Took your knight back. Try again.", "Took your bishop back. Try again."],
+)
+def test_takeback_talk_is_the_takeback_class_and_never_a_capture(text):
+    """The capture class exempts "back" because a takeback puts the piece back
+    *on* the board. Since #289 the sentence is still read — by the class that
+    owns it, against the turn's own `undo`."""
+    assert unverified_claims(text, NOTHING) == ("takeback",)
+    assert unverified_claims(text, VerifiedFacts(undone=True)) == ()
 
 
 # --- check, and the draw the ending class does not cover ------------------------
@@ -1010,7 +1020,8 @@ PLAYER_RESIGNED = VerifiedFacts(
 )
 GLITCH_RESIGNED = VerifiedFacts(ended=True, winner="player", termination="resignation")
 AGREED_DRAW = VerifiedFacts(ended=True, drawn=True, termination="agreement")
-FRESH_BOARD = VerifiedFacts(ended=True)  # a `new_game` ran: ended, no outcome behind it
+# A `new_game` ran: ended, no outcome behind it, and the reset itself backed.
+FRESH_BOARD = VerifiedFacts(ended=True, restarted=True)
 
 
 @pytest.mark.parametrize(
@@ -1256,3 +1267,132 @@ def test_unverified_claims_is_the_same_reading_by_class_name():
     text = "Word. Game over. Snagged your bishop. Rxe5 wins."
     assert unverified_claims(text, LEVEL) == ("ending", "capture", "move")
     assert unverified_claims("Nf3. Your move.", LEVEL) == ()
+
+
+# --- the actions no board fact backs, and the reply that has not happened (#289)
+#
+# The labeled corpus the three classes are measured against, per the #287 rule:
+# false positives measured before the regex ships. Must-fire lines are the
+# false reports a narrator repeating a false planner note would make; must-not
+# lines are banter, offers, clarifications, idioms that share the words, and
+# the deployed trace's real takeback and reset narrations (2026-09-04..18),
+# which pass once the turn's own `undo` / `new_game` backs them. The deployed
+# sweep over all 219 recorded drafts is in docs/agent-evals.md.
+
+UNDONE = VerifiedFacts(undone=True)
+RESTARTED = VerifiedFacts(restarted=True)
+
+
+@pytest.mark.parametrize(
+    ("text", "claim"),
+    [
+        ("Done, taken back.", "takeback"),
+        ("Took it back.", "takeback"),
+        ("Undid your last move.", "takeback"),
+        ("Took your knight back for you.", "takeback"),
+        ("Took back your bishop move.", "takeback"),
+        ("Move undone.", "takeback"),
+        ("That's undone. Go again.", "takeback"),
+        ("Rolled it back.", "takeback"),
+        ("Takeback done.", "takeback"),
+        ("bet. back to where we were.", "takeback"),
+        ("The board's back to what it was a few turns ago.", "takeback"),
+        ("Fresh board. Your move.", "restart"),
+        ("yo, fresh start. your move, man.", "restart"),
+        ("Starting over.", "restart"),
+        ("Board's reset.", "restart"),
+        ("I reset the board.", "restart"),
+    ],
+)
+def test_an_action_nothing_did_is_a_claim(text, claim):
+    assert claim in unverified_claims(text, NOTHING)
+
+
+@pytest.mark.parametrize(
+    ("text", "facts"),
+    [
+        # Offers, questions and threats: the hedges' territory.
+        ("Want me to undo that?", NOTHING),
+        ("Undo it and try again?", NOTHING),
+        ("I'll take it back if you ask.", NOTHING),
+        ("Let me take that back.", NOTHING),
+        ("Say the word and I'll roll it back.", NOTHING),
+        ("Take it back?", NOTHING),
+        ("You can start over any time.", NOTHING),
+        ("No takebacks.", NOTHING),
+        # Idioms and chess talk that share the words.
+        ("You undid all your good work.", NOTHING),
+        ("You took the lead back there.", NOTHING),
+        ("You took back control of the center.", NOTHING),
+        ("Your position's coming undone.", NOTHING),
+        ("Your defence came undone.", NOTHING),
+        ("You got taken back to school.", NOTHING),
+        ("Fresh ideas, same blunders.", NOTHING),
+        ("Back to the drawing board. Your turn, man.", NOTHING),
+        ("Back where you left it.", NOTHING),  # a resumed save, not a takeback
+        # The deployed trace's real reports, with the evidence that backs them.
+        ("Word. The board's back to what it was a few turns ago.", UNDONE),
+        ("bet. back to where we were.", UNDONE),
+        ("Done, taken back.", UNDONE),
+        ("yo, fresh start. your move, man.", RESTARTED),
+        ("Fresh board. Your move.", RESTARTED),
+    ],
+)
+def test_talk_and_true_reports_are_not_action_claims(text, facts):
+    claims = unverified_claims(text, facts)
+    assert "takeback" not in claims and "restart" not in claims
+
+
+PENDING = VerifiedFacts(
+    moves=frozenset({"Nf6", "Nc6", "e4"}),
+    moves_by_player=frozenset({"e4"}),
+    moves_by_opponent=frozenset({"Nf6"}),
+    unplayed_replies=frozenset({"Nf6", "Nc6"}),
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "My turn. Nf6.",
+        "King's pawn. ...Nf6.",
+        "I played Nf6.",
+        "Nc6, obviously.",
+    ],
+)
+def test_naming_the_reply_before_it_exists_is_a_claim(text):
+    assert "unplayed_reply" in unverified_claims(text, PENDING)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I'll hit you with Nf6.",  # a threat
+        "Nf6 is coming.",
+        "Should I go Nf6?",
+        "e4, classic.",  # the player's own move
+        "Bold.",
+    ],
+)
+def test_threats_and_the_players_move_are_not_the_reply(text):
+    assert "unplayed_reply" not in unverified_claims(text, PENDING)
+
+
+def test_the_reply_class_is_silent_when_no_reply_was_pending():
+    facts = VerifiedFacts(
+        moves=frozenset({"Nf6"}), moves_by_opponent=frozenset({"Nf6"})
+    )
+    assert unverified_claims("I played Nf6.", facts) == ()
+
+
+@pytest.mark.parametrize("claim", ["takeback", "restart", "unplayed_reply"])
+def test_every_new_class_has_a_fact_for_the_rewrite(claim):
+    text = {
+        "takeback": "Took it back.",
+        "restart": "Fresh board.",
+        "unplayed_reply": "My turn. Nf6.",
+    }[claim]
+    found = [item for item in unverified(text, PENDING) if item.claim == claim]
+    (line,) = corrections(found, PENDING)
+    assert line.startswith('You wrote: "')
+    assert "not" in line.split('"')[-1].lower(), "a fact, stated"

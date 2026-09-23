@@ -257,6 +257,20 @@ class VerifiedFacts:
     and on a finished game an unknown termination fails closed like every other
     missing fact: a `new_game` that really ran sets `ended` with no outcome
     behind it, and "checkmate" said over a fresh board is a lie.
+
+    `undone` and `restarted` are the two actions a narrator can announce that
+    no board fact backs on its own (#289): a takeback leaves a legal position
+    and so does a fresh game, so only the turn's own `undo` / `new_game`
+    results can say either happened. They exist for the false planner note —
+    "undid your last move" on a turn with no tool calls, repeated by the
+    narrator as "Done, taken back."
+
+    `unplayed_replies` is the engine's reply that has not happened yet: the
+    moves the engine could play on the board the narrator spoke over, while
+    the reply was still being computed, minus every one the turn accounts for
+    some other way (`api._verified_facts`). Empty unless a reply was owed as
+    the narrator spoke. `moves` still holds them — they were legal — which is
+    exactly why they need a class of their own.
     """
 
     ended: bool = False
@@ -275,6 +289,9 @@ class VerifiedFacts:
     captures_by_move: Mapping[str, str] = field(default_factory=dict)
     numbers: frozenset[str] = frozenset()
     material: tuple[int, ...] = ()
+    undone: bool = False
+    restarted: bool = False
+    unplayed_replies: frozenset[str] = frozenset()
 
 
 _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
@@ -755,6 +772,59 @@ _CAPTURE_HEDGES = re.compile(
 )
 
 
+# A takeback, reported as done (#289). The last two branches are Glitch's own
+# register, lifted from the deployed trace's real takebacks ("bet. back to where
+# we were.", "The board's back to what it was") — and not "back where you left
+# it", which is how he announces a *resumed* save. Otherwise only past forms,
+# and each wants an object that makes it a move being taken back: "you undid all
+# your good work" and "took the lead back" are trash talk and chess talk, and
+# neither names a move or a piece. The bare stems are out for the capture
+# class's reason — a bare "undo" or "take it back" is an offer or an imperative.
+# Its sentences are exactly the ones the capture class exempts ("took your
+# knight back" is undo talk, `_CAPTURE_HEDGES`), so the two classes never read
+# the same sentence.
+_TAKEN_OBJECT = rf"""
+    (?: it | that | this | them | those | both
+      | (?: your | the | my ) (?: \s+ [\w-]+ ){{0,2}}? \s+
+        (?: moves? | {_PIECE_WORDS} s? | takebacks? | exchange ) )
+"""
+
+_TAKEBACK = re.compile(
+    rf"""
+    \b undid \s+ {_TAKEN_OBJECT} \b
+    | \b (?: took | taken ) \s+ {_TAKEN_OBJECT} \s+ back \b
+    | \b (?: took | taken ) \s+ back \s+ {_TAKEN_OBJECT} \b
+    | \b (?: moves? | it | that ) (?: \s+ (?: is | was ) | 's )? \s+ undone \b
+    | \b taken \s+ back \b (?! \s+ to \b )
+    | \b (?: rolled | wound ) \s+ (?: it | that | the \s+ board | things ) \s+ back \b
+    | \b rewound \b
+    | \b takeback \s+ (?: done | granted | complete ) \b
+    | \b back \s+ to \s+ where \s+ (?: we | you | i | it ) \s+ (?: were | was ) \b
+    | \b board (?: 's | \s+ is ) \s+ back \s+ to \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# A fresh game, reported as begun, in the words the ending class does not
+# read. "New game" itself stays the ending class's (`_CLAIMS`): on a live board
+# it is already caught there, and reading it twice would hand the narrator two
+# corrections for one fact. What that class cannot see is the board reset
+# spoken any other way, over a game that did not end.
+_RESTART = re.compile(
+    r"""
+    \b fresh \s+ (?: board | game | start ) \b
+    | \b (?: started | starting ) \s+ (?: over | fresh | afresh ) \b
+    | \b board (?: 's | \s+ is | \s+ was ) \s+ (?: reset | cleared ) \b
+    | \b (?: reset | cleared ) \s+ the \s+ board \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _reply_not_named(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    return not _names(match.group(0), facts.unplayed_replies)
+
+
 @dataclass(frozen=True)
 class _ClaimClass:
     """One kind of operational claim: how to spot it, and what makes it true.
@@ -845,6 +915,13 @@ _CLAIM_CLASSES = (
     _ClaimClass("check", _CHECK, lambda match, facts: facts.check),
     _ClaimClass("move", _SAN_CLAIM, _move_happened),
     _ClaimClass("owned_move", _OWNED_MOVE, _owned_move_happened),
+    # The reply the app has not played yet (#289). The move class passes it —
+    # it is legal — so it needs its own. The future hedges stay: "I'll hit you
+    # with Nf6" is a threat, which is Glitch's to make; "My turn. Nf6." is an
+    # announcement of a move Stockfish has not chosen.
+    _ClaimClass("unplayed_reply", _SAN_CLAIM, _reply_not_named),
+    _ClaimClass("takeback", _TAKEBACK, lambda match, facts: facts.undone),
+    _ClaimClass("restart", _RESTART, lambda match, facts: facts.restarted),
     _ClaimClass("save", _SAVE, lambda match, facts: facts.saved),
     _ClaimClass("voice", _VOICE, _setting_is("voice")),
     _ClaimClass("difficulty", _DIFFICULTY, _setting_is("difficulty")),
@@ -1044,6 +1121,17 @@ _FACTS: dict[str, Callable[[Unverified, VerifiedFacts], str]] = {
     "capture": _capture_fact,
     "move": _move_fact,
     "owned_move": _owned_move_fact,
+    "unplayed_reply": lambda item, facts: (
+        f"{item.said.rstrip('+#')} has not been played. Your reply to the "
+        "player's move is not on the board yet; the app announces it after you "
+        "speak, so do not name it."
+    ),
+    "takeback": lambda item, facts: (
+        "Nothing was taken back this turn; every move is still on the board."
+    ),
+    "restart": lambda item, facts: (
+        "No new game was started this turn; the board was not reset."
+    ),
     "save": lambda item, facts: "Nothing was saved or loaded this turn.",
     "voice": _setting_fact("voice", "voice output"),
     "difficulty": _setting_fact("difficulty", "difficulty"),

@@ -31,6 +31,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from chessapp.handoff import Handoff
+
 
 @dataclass(frozen=True)
 class ToolCall:
@@ -127,6 +129,11 @@ class AgentResponse:
     # it in the trace is what tells those two apart. Plain ints, like the token
     # counts, so the seam stays model-agnostic.
     state_refreshes: tuple[int, ...] = ()
+    # What the narrator was told the turn did (#289): the results sorted into
+    # done / refused / looked up, the kind derived from them, and whether the
+    # engine's reply was still owed as it spoke. `None` on a turn no narrator
+    # closed — a budget stop, or a provider that died before the plan finished.
+    handoff: Handoff | None = None
 
 
 @dataclass(frozen=True)
@@ -223,7 +230,11 @@ class _RunState:
         self.latencies_ms.append(latency_ms)
 
     def response(
-        self, text: str, stop_reason: str, provider_failure: str = ""
+        self,
+        text: str,
+        stop_reason: str,
+        provider_failure: str = "",
+        handoff: Handoff | None = None,
     ) -> AgentResponse:
         return AgentResponse(
             text=text,
@@ -236,6 +247,7 @@ class _RunState:
             completion_tokens=self.completion_tokens,
             model_latencies_ms=tuple(self.latencies_ms),
             state_refreshes=tuple(self.boards_shown),
+            handoff=handoff,
         )
 
 

@@ -1074,3 +1074,30 @@ def test_the_harness_gives_the_planner_the_same_board_refresh_assembly_does(
         assert wiring["board_refresh"] is not None, "a planner that is never told"
         view = wiring["board_refresh"]()
         assert view is not None and "legal_moves" in view
+
+
+def test_the_harness_gives_the_narrator_the_same_facts_assembly_does(
+    monkeypatch,
+) -> None:
+    """The narrator's facts and its owed-reply line (#289) are part of what the
+    gate measures — a narrator told the game's state speaks differently from
+    one that is not — so the harness and assembly wire the same seam."""
+    import chessapp.app
+    import test_agent_evals
+
+    shipped = _brain_kwargs(
+        monkeypatch,
+        chessapp.app,
+        lambda: chessapp.app.build_app(engine=FakeEngine()),
+    )
+    measured = _brain_kwargs(
+        monkeypatch,
+        test_agent_evals,
+        lambda: test_agent_evals._build_eval_app(FakeEngine()),
+    )
+
+    for wiring in (shipped, measured):
+        assert wiring["narrator_facts"] is not None, "a narrator that is never told"
+        facts = wiring["narrator_facts"]()
+        assert set(facts) == set(shipped["narrator_facts"]())
+        assert facts["reply_owed"] is False

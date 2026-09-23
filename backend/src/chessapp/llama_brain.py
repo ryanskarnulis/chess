@@ -15,8 +15,11 @@ One turn is **two phases** (`docs/planner-narrator.md`, audit item 15):
   loop, and that turn's text is an internal handoff note, not commentary: the
   planner never speaks to the player.
 - The **narrator** is one further call on `system_prompt` — the full Glitch
-  personality — offered **no tools**, given the utterance, the turn's tool
-  results and the planner's note. Its text is the reply. `narrate()`, the fast
+  personality — offered **no tools**, given the utterance and a handoff the
+  harness builds from the turn's results (`handoff.py`, #289): what was done,
+  refused and looked up, the fresh facts it may state, and the planner's note
+  labelled as the planner's reading rather than a record. Its text is the
+  reply. `narrate()`, the fast
   path's commentary turn, is the same call with a different brief; both run
   through `_speak`. Because the phase that talks holds no tools, the closing
   pass is tool-free by construction rather than by the model declining.
@@ -132,6 +135,9 @@ from chessapp.brain import (
     ToolDispatcher,
     _RunState,
 )
+from chessapp.handoff import build as build_handoff
+from chessapp.handoff import narrator_result_view
+from chessapp.handoff import render as render_handoff
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING, BRAIN_REWRITING
 from chessapp.provider import (
@@ -316,6 +322,14 @@ class LlamaBrain:
     # (the offer must not change under a run), and this is read once per
     # iteration, which is the point.
     board_refresh: Callable[[], dict[str, Any] | None] | None = None
+    # The game as the narrator may state it, read once as the planner hands
+    # off (#289): a small, side-free view (`api.narrator_facts`) plus
+    # `reply_owed`, whether the player's move is still waiting on the engine's
+    # answer. The planner's opening board is stale by the time the narrator
+    # speaks, and the brain holds no session to re-read — the same reason
+    # `board_refresh` exists, one phase later. `None` (unwired, or a closure
+    # that raised) closes the turn from the results alone, as it did before.
+    narrator_facts: Callable[[], dict[str, Any] | None] | None = None
 
     def _resolve_system_prompt(self) -> str:
         """The narrator's system prompt for this request. A callable is
@@ -580,21 +594,32 @@ class LlamaBrain:
     ) -> AgentResponse:
         """The narrator phase: speak as Glitch from what the turn actually did.
 
-        The board is not re-read here — the brain has no session, by design —
-        so the tool results are the record of what changed, exactly as they are
-        for `narrate`. The round trip is counted on the turn, so the split's
-        extra call shows up in the trace and the eval baseline.
+        What it did is the harness's reading, not the planner's (#289): the
+        results are sorted into done, refused and looked up (`handoff.build`),
+        and the note is passed on labelled as the planner's reading of the ask.
+        The facts the narrator may state come through the `narrator_facts`
+        seam — the brain has no session, by design. The round trip is counted
+        on the turn, so the split's extra call shows up in the trace and the
+        eval baseline.
 
         `stop_reason` is how the planning phase ended: `completed` when the
         planner declared itself done, `no_progress` when it repeated itself to
         no effect and the loop ended the phase for it. Both reach the narrator —
         the distinction is what the trace and the eval report read.
         """
+        facts = dict(self._narrator_facts() or {})
+        handoff = build_handoff(
+            run.tool_results,
+            stop_reason,
+            note=note,
+            reply_owed=bool(facts.pop("reply_owed", False)),
+            facts=facts,
+        )
         self._report(BRAIN_NARRATING)
         started = self.clock()
         try:
             narration = self._speak(
-                _closing_brief(command, run.tool_results, note),
+                render_handoff(handoff, command, run.tool_results),
                 transcript,
                 thinking=self._thinking(run),
             )
@@ -605,13 +630,13 @@ class LlamaBrain:
             # context overrun reaches first — the narrator carries the whole
             # conversation, so it is the longest prompt of the turn.
             run.count_call(latency_ms=self._elapsed_ms(started))
-            return run.response("", "provider_error", str(exc.failure))
+            return run.response("", "provider_error", str(exc.failure), handoff)
         run.count_call(
             narration.prompt_tokens,
             narration.completion_tokens,
             self._elapsed_ms(started),
         )
-        return run.response(narration.text, stop_reason)
+        return run.response(narration.text, stop_reason, handoff=handoff)
 
     def _speak(
         self,
@@ -693,6 +718,18 @@ class LlamaBrain:
             return self.board_refresh()
         except Exception:
             logger.warning("board_refresh_failed", exc_info=True)
+            return None
+
+    def _narrator_facts(self) -> dict[str, Any] | None:
+        """The facts seam's answer, degrading to none — `_current_board`'s rule:
+        this runs after the turn's work has landed, and a closure that raises
+        must cost the narrator its facts, never the turn its words."""
+        if self.narrator_facts is None:
+            return None
+        try:
+            return self.narrator_facts()
+        except Exception:
+            logger.warning("narrator_facts_failed", exc_info=True)
             return None
 
     def _report(self, phase: str) -> None:
@@ -815,36 +852,20 @@ _ATTRIBUTION = (
 
 def _fast_path_brief(board_state: dict[str, Any], changes: list[dict[str, Any]]) -> str:
     """The narrator's brief for a move the loop never saw (the fast path). The
-    board here *is* fresh — the caller read it after the move landed."""
+    board here *is* fresh — the caller read it after the move landed.
+
+    The changes go through the same projection the closing brief's results do
+    (`handoff.narrator_result_view`): a confirmed `new_game` or a resign beat
+    narrates from results that carry `fen`/`turn`, and the state view beside
+    them withholding those keys was no use while the results handed them over.
+    """
+    shown = [narrator_result_view(change) for change in changes]
     return (
         f"{_ATTRIBUTION}\n\nHere is what happened "
-        f"(each entry is a tool call and its result):\n{json.dumps(changes)}"
+        f"(each entry is a tool call and its result):\n{json.dumps(shown)}"
         f"\n\nNew board state:\n{json.dumps(board_state)}\n\n"
         "React with a short, in-character comment for the player, based "
         "only on these results and the new board. Do not call any tools."
-    )
-
-
-def _closing_brief(command: str, changes: list[dict[str, Any]], note: str) -> str:
-    """The narrator's brief for a turn the planner just finished.
-
-    No board state: the one the loop opened with is stale the moment a tool
-    mutates anything, and the brain has no session to re-read (that is the
-    point of the seam). The tool results are the record of what changed, and
-    the planner's note says what it believes it did or what needs answering.
-
-    A turn the loop ended itself (`no_progress`) has no note, and the brief says
-    so by leaving the section out — an empty heading reads as a note that said
-    nothing, which is a different claim.
-    """
-    return (
-        f"The player said:\n{command}\n\n"
-        "Here is what was done about it (each entry is a tool call and its "
-        f"result):\n{json.dumps(changes)}\n\n"
-        + (f"Note from the layer that did it:\n{note}\n\n" if note else "")
-        + "Reply to the player in character, based only on those results"
-        + (" and that note." if note else ".")
-        + " Do not call any tools."
     )
 
 
@@ -988,6 +1009,7 @@ def create_llama_brain(
     provider: ChatProvider | None = None,
     on_phase: Callable[[str], None] | None = None,
     board_refresh: Callable[[], dict[str, Any] | None] | None = None,
+    narrator_facts: Callable[[], dict[str, Any] | None] | None = None,
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8200/v1).
 
@@ -1022,6 +1044,10 @@ def create_llama_brain(
     (#282) — a zero-arg callable read once per planner iteration, answering
     `None` when nobody can say. A caller with no state injection omits it and
     gets exactly the loop that shipped before it existed.
+
+    `narrator_facts` is the same kind of seam for the narrator (#289): read
+    once as the planner hands off, it answers the side-free facts the narrator
+    may state and whether the engine's reply is still owed.
     """
     if provider is None:
         provider = LlamaCppProvider(base_url, model)
@@ -1047,4 +1073,5 @@ def create_llama_brain(
         planner_temperature=planner_temperature,
         on_phase=on_phase,
         board_refresh=board_refresh,
+        narrator_facts=narrator_facts,
     )

@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from chessapp.api import create_app, planner_board_refresh
+from chessapp.api import create_app, narrator_facts, planner_board_refresh
 from chessapp.brain import Brain
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import EnginePlayer
@@ -149,6 +149,9 @@ def build_app(
             # here and nowhere else — the shared context, and the one
             # coordinator that knows whether a reply is still owed.
             board_refresh=lambda: planner_board_refresh(ctx, coordinator),
+            # The same two halves, for the phase that speaks (#289): the facts
+            # the narrator may state, and whether the reply is still owed.
+            narrator_facts=lambda: narrator_facts(ctx, coordinator),
         )
     return create_app(
         ctx,

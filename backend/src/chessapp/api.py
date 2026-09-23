@@ -528,6 +528,39 @@ def planner_board_refresh(
     }
 
 
+def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, Any]:
+    """The game as the brain route's narrator may state it (#289).
+
+    Read once, as the planner hands off — after every tool of the turn has
+    run and before the engine's reply is collected — so it is the board the
+    narrator's words will be spoken over. Until this existed the brain route's
+    narrator had no board at all, only whatever the tool results carried.
+
+    A subset of `_narrator_state_dict`, and deliberately a small one. No side
+    to move, for #193's reason. No `history`, for the refresh block's reason
+    one phase earlier: a history the turn's own undo has just shortened reads
+    to a 12B as the ask being finished, and every move this turn made is in
+    its own result. No saves or settings: the tools that change them report
+    their new values, and the prompt's verbosity layer is already there. The
+    outcome is the player-relative one the guard certifies (`_relative_outcome`,
+    #287), so the narrator is told who won in the same words it is checked in.
+
+    `reply_owed` is the coordinator's: the player's move landed and the
+    engine's answer has not. The brain lifts it out of the facts into the
+    handoff, where it becomes the line telling the narrator the reply is the
+    app's to announce.
+    """
+    return {
+        "player_color": ctx.session.player_color,
+        "in_check": ctx.session.is_check(),
+        "game_over": ctx.session.is_game_over(),
+        "outcome": _relative_outcome(ctx.session),
+        "captured": ctx.session.captured_pieces(),
+        "reply_owed": coordinator.phase
+        in (TurnPhase.PLAYER_MOVE_APPLIED, TurnPhase.AGENT_OBSERVING),
+    }
+
+
 def _move_dict(result: MoveResult) -> dict[str, Any]:
     return {"legal": result.legal, "san": result.san, "uci": result.uci}
 
@@ -1037,6 +1070,7 @@ def _verified_facts(
     engine_reply: MoveResult | None,
     fen_before: str,
     fens_observed: Sequence[str] = (),
+    pending_reply_fen: str | None = None,
 ) -> VerifiedFacts:
     """What this turn may honestly say, assembled from the record of it.
 
@@ -1076,6 +1110,19 @@ def _verified_facts(
     `describe_position()` counts a pawn the engine's Qxd5 has taken back by the
     time the guard looks, and the count was true when it was made. Empty for a
     route that held only the two ends.
+
+    `pending_reply_fen` is the board the narrator spoke over when it spoke
+    before the engine's reply existed — the fast path's observe beat, or a
+    brain-route narrator closing a turn whose move is still owed its answer —
+    and `None` when no reply was pending as it spoke. Every other piece of
+    evidence here is written *after* the reply is collected, so the reply is
+    in the history and among the engine's legal moves, and "My turn. Nf6."
+    read as true whenever Nf6 was playable or happened to be what Stockfish
+    chose. From that board come `unplayed_replies` (#289): the engine's
+    options there, and its actual reply, less every move the turn accounts for
+    otherwise — the game's history before the reply, what a tool reported, and
+    what the *player* could play at either end of the turn, because a SAN both
+    sides can spell is not evidence of anything.
     """
     outcome = ctx.session.outcome()
     captured = ctx.session.captured_pieces()
@@ -1140,6 +1187,7 @@ def _verified_facts(
         # back would be the code inventing the fact instead of the model.
         settings["difficulty"] = ctx.settings.tier
     ending = _relative_outcome(ctx.session)
+    succeeded = {r["name"] for r in tool_results if r["result"].get("ok") is True}
     return VerifiedFacts(
         ended=ctx.session.is_game_over() or _destructive_succeeded(tool_results),
         drawn=outcome is not None and outcome.winner is None,
@@ -1167,7 +1215,41 @@ def _verified_facts(
         # is ahead is a piece count, so it is always available on every board
         # the turn held — including the one the reaction was written from.
         material=tuple(dict.fromkeys(board.material_balance() for board in boards)),
+        undone="undo" in succeeded,
+        restarted="new_game" in succeeded,
+        unplayed_replies=_unplayed_replies(
+            ctx, engine_reply, fen_before, reported, pending_reply_fen
+        ),
     )
+
+
+def _unplayed_replies(
+    ctx: ToolContext,
+    engine_reply: MoveResult | None,
+    fen_before: str,
+    reported: set[str],
+    pending_reply_fen: str | None,
+) -> frozenset[str]:
+    """The engine replies a narration spoken before the reply cannot have
+    known about (`_verified_facts`'s `pending_reply_fen`)."""
+    if pending_reply_fen is None:
+        return frozenset()
+    player = ctx.session.player_color
+    spoken_over = GameSession(fen=pending_reply_fen, player_color=player)
+    if spoken_over.turn == player:
+        return frozenset()  # nothing was pending on this board after all
+    options = set(spoken_over.legal_moves())
+    history = ctx.session.move_history()
+    if engine_reply is not None and engine_reply.san:
+        options.add(engine_reply.san)
+        if history and history[-1] == engine_reply.san:
+            history = history[:-1]
+    accounted = set(history) | reported
+    accounted.update(GameSession(fen=fen_before, player_color=player).legal_moves())
+    if ctx.session.turn == player:
+        accounted.update(ctx.session.legal_moves())
+    bare = {san.rstrip("+#") for san in accounted}
+    return frozenset(san for san in options if san.rstrip("+#") not in bare)
 
 
 def _captures_by_move(
@@ -2048,6 +2130,8 @@ def create_app(
                         # to read: one dispatch, and the beats already know
                         # which board they narrated from.
                         [beats.observed_fen] if beats.observed_fen is not None else [],
+                        # The reaction was spoken before the reply existed.
+                        beats.observed_fen if beats.owed_reply else None,
                     ),
                     None,
                     transcript,
@@ -2746,6 +2830,9 @@ def create_app(
             # the move and the engine's reply become one canned confirmation. None on
             # every other route — those close their own turn further down.
             move_beats: _MoveBeats | None = None
+            # The board a narration was spoken over while the engine's reply
+            # was still owed, on whichever route spoke one (#289) — or None.
+            narrated_before_reply: str | None = None
             # The turn's cost at the provider boundary, summed across whatever model
             # calls the chosen route made. The deterministic branches (a canned
             # confirmation, a declined op) leave this at zero — a real, readable
@@ -2947,6 +3034,19 @@ def create_app(
                     # commentary: the loop never reached a text turn. A provider
                     # stop is left empty here — what it should say depends on
                     # whether anything changed, which the close beat below settles.
+                    traced["handoff"] = (
+                        response.handoff.trace()
+                        if response.handoff is not None
+                        else None
+                    )
+                    # The board the narrator just spoke over, when it spoke
+                    # before the engine's reply existed — read here, before
+                    # the close beat below collects that reply (#289).
+                    if coordinator.phase in (
+                        TurnPhase.PLAYER_MOVE_APPLIED,
+                        TurnPhase.AGENT_OBSERVING,
+                    ):
+                        narrated_before_reply = ctx.session.fen()
                     commentary = response.text
                     if not commentary and stop_reason != "provider_error":
                         commentary = STUCK_REPLY
@@ -3039,6 +3139,10 @@ def create_app(
                 observed = list(command_boards or ())
                 if move_beats is not None and move_beats.observed_fen is not None:
                     observed.append(move_beats.observed_fen)
+                    if move_beats.owed_reply:
+                        # The observe beat is, by construction, a narration
+                        # spoken before the reply exists.
+                        narrated_before_reply = move_beats.observed_fen
                 # The advice guard rides along, at the same point (audit item 11's
                 # second half): a currently-playable move in the commentary is a
                 # hint whatever prose carries it. It applies on a turn that left
@@ -3077,7 +3181,12 @@ def create_app(
                     _offloop,
                     commentary,
                     _verified_facts(
-                        ctx, tool_results, engine_reply, before["fen"], observed
+                        ctx,
+                        tool_results,
+                        engine_reply,
+                        before["fen"],
+                        observed,
+                        narrated_before_reply,
                     ),
                     advice,
                     transcript,

@@ -1087,7 +1087,7 @@ def test_an_empty_planner_note_leaves_the_heading_out_of_the_brief():
     brain.get_agent_response(board_state={}, command="how's it looking?")
 
     brief = provider.calls[-1]["messages"][-1]["content"]
-    assert "Note from the layer that did it" not in brief
+    assert "planner's reading" not in brief
 
 
 # --- cost accounting: model calls and tokens per turn ----------------------
@@ -2506,3 +2506,95 @@ def test_a_run_with_no_refresh_reports_none():
     resp = brain.get_agent_response(board_state={"fen": "x"}, command="best move?")
 
     assert resp.state_refreshes == ()
+
+
+# --- the typed handoff and the narrator's facts (#289) ----------------------
+
+
+def test_the_closing_brief_is_the_handoff_and_the_note_is_only_a_reading():
+    brain, provider = make_brain(
+        text_turn("Undid your last move."),  # a note, with nothing behind it
+        text_turn("reply"),
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="undo that")
+
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert "Done this turn: nothing." in brief
+    assert "not a record of what happened):\nUndid your last move." in brief
+    assert resp.handoff is not None and resp.handoff.kind == "reply"
+    assert resp.handoff.note == "Undid your last move."
+
+
+def test_the_narrator_facts_are_read_once_and_the_owed_reply_is_lifted_out():
+    reads: list[int] = []
+
+    def facts():
+        reads.append(1)
+        return {"player_color": "black", "reply_owed": True}
+
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e5"})),
+        text_turn("played e5"),
+        text_turn("reply"),
+        narrator_facts=facts,
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="e5")
+
+    assert reads == [1], "read once, as the planner hands off"
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert 'The game now:\n{"player_color": "black"}' in brief
+    assert "reply_owed" not in brief
+    assert "has not played its reply" in brief
+    assert resp.handoff.reply_owed is True
+    assert resp.handoff.facts == {"player_color": "black"}
+
+
+def test_a_facts_seam_that_raises_costs_the_facts_and_not_the_turn():
+    def broken():
+        raise RuntimeError("session gone")
+
+    brain, provider = make_brain(
+        text_turn("note"), text_turn("reply"), narrator_facts=broken
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="hi")
+
+    assert resp.text == "reply"
+    assert "The game now" not in provider.calls[-1]["messages"][-1]["content"]
+
+
+def test_a_budget_stop_carries_no_handoff():
+    brain, _ = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        tool_calls_turn(("get_best_moves", {})),
+        max_iterations=2,
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="hmm")
+
+    assert resp.stop_reason == "max_iterations"
+    assert resp.handoff is None
+
+
+def test_the_fast_path_brief_projects_its_changes():
+    changes = [
+        {"name": "new_game", "result": {"ok": True, "fen": "x w", "turn": "white"}}
+    ]
+    brief = _fast_path_brief({"player_color": "white"}, changes)
+    assert '"fen"' not in brief and '"turn"' not in brief
+    assert '"new_game"' in brief
+
+
+def test_the_factory_wires_the_narrator_facts():
+    seam = dict
+    brain = create_llama_brain(
+        base_url="http://unused",
+        model="m",
+        dispatcher=FakeDispatcher(),
+        tool_definitions=TOOLS,
+        provider=ScriptedProvider(text_turn("x")),
+        narrator_facts=seam,
+    )
+    assert brain.narrator_facts is seam
