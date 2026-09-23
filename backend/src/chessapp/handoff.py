@@ -65,9 +65,12 @@ READ_TOOLS = frozenset(
     }
 )
 
-# How the loop ending on its own (`no_progress`) reads here: the planner never
-# declared itself done, so a turn that also changed something is `partial`.
-_UNFINISHED_STOPS = frozenset({"no_progress", "length"})
+# How the loop ending on its own reads here — a stall (`no_progress`) or a
+# budget (#288): the planner never declared itself done, so a turn that also
+# changed something is `partial`.
+_UNFINISHED_STOPS = frozenset(
+    {"no_progress", "length", "budget", "max_iterations", "correction_limit"}
+)
 
 Kind = Literal["completed", "partial", "declined", "reply", "clarify"]
 

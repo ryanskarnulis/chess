@@ -3065,8 +3065,11 @@ def create_app(
                     # than carried through `_ModelCost`: it is not a cost, and
                     # this is the only route that has a loop to report one.
                     traced["state_refreshes"] = response.state_refreshes
-                    # A budget stop (max_iterations / correction_limit) carries no
-                    # commentary: the loop never reached a text turn. A provider
+                    # Which per-turn budget ended the planning phase (#288),
+                    # the same way: only this route has a loop to report one.
+                    traced["budget"] = response.budget
+                    # A budget stop with nothing done carries no commentary: no
+                    # narrator ran (#288; one after real work is narrated). A provider
                     # stop is left empty here — what it should say depends on
                     # whether anything changed, which the close beat below settles.
                     traced["handoff"] = (

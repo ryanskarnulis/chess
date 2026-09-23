@@ -100,6 +100,7 @@ def turn_record(
     model_latencies_ms: Sequence[int] = (),
     state_refreshes: Sequence[int] = (),
     handoff: dict[str, Any] | None = None,
+    budget: str = "",
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -218,6 +219,12 @@ def turn_record(
       healthy move turn, and a mutating turn that goes on to decide again with
       nothing here is the bug this field exists to make visible.
 
+    `budget` names the per-turn budget that ended the brain route's planning
+    phase (#288) — `iterations`, `corrections`, `tool_calls`,
+    `analysis_calls` or `wall_time` — and is empty on every turn none did,
+    which is every route but that one. `stop_reason` says the phase ended
+    early; this says on what, which is the number worth tuning when it fires.
+
     `handoff` is what the brain route's narrator was told the turn did (#289,
     `handoff.Handoff.trace`): the kind, the tools that were done, refused and
     looked up, and whether the engine's reply was still owed as it spoke.
@@ -247,6 +254,7 @@ def turn_record(
         "mutations": mutations,
         "state_refreshes": list(state_refreshes),
         "handoff": handoff,
+        "budget": budget,
         "model_calls": model_calls,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,

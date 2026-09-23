@@ -24,10 +24,21 @@ One turn is **two phases** (`docs/planner-narrator.md`, audit item 15):
   through `_speak`. Because the phase that talks holds no tools, the closing
   pass is tool-free by construction rather than by the model declining.
 
-A budget stop (`max_iterations` / `correction_limit`) reaches no narrator: with
-nothing verified to speak from, the turn ends silent and the pipeline answers
-with its canned stuck reply. A provider death anywhere in the turn — mid-loop
-or in the narrator itself — ends it the same silent way under
+**A budget stop speaks from what ran** (#288). The planning phase is bounded
+five ways — model turns (`max_iterations`), malformed calls
+(`max_corrections`), dispatched tool calls (`max_tool_calls`), expensive
+analysis calls (`max_analysis_calls`, the Stockfish-backed reads) and wall
+clock (`planning_deadline_s`, checked between planner round trips; the
+per-call `max_tokens` caps bound each trip) — and whichever trips first ends
+the phase, named on the response as `budget`. A call past a per-turn cap is
+never dispatched: it is answered with a refusal, so the wire keeps one answer
+per call and the narrator's record shows it as not done. When some tool did
+real work first, the narrator closes the turn from it under the loop's own
+note — the player hears what was done and that the rest was not, in Glitch's
+words, instead of a canned line. When nothing did (every call malformed, or
+none made), there is nothing verified to speak from: the turn ends silent and
+the pipeline answers with its stuck reply. A provider death anywhere in the
+turn — mid-loop or in the narrator itself — ends it silent too, under
 `stop_reason="provider_error"`, with everything that verifiably ran still in
 the response (audit item 20: the pipeline, not an exception path, decides what
 happens to a turn whose move already landed).
@@ -160,6 +171,18 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_ITERATIONS = 4
 _DEFAULT_MAX_CORRECTIONS = 2
 
+# The per-turn budgets the iteration cap does not give (#288): four iterations
+# bound the round trips, not what each one asks for. Sized from the deployed
+# trace (2026-09-04 → 09-18, 236 turns: at most 2 tool calls and 2 analysis
+# calls in any turn, planning p99 8.7 s) and the eval suite's multi-step asks
+# (3–4 calls), generous side up — a budget that cuts a legitimate turn is the
+# worse failure. The deadline is checked between planner round trips and never
+# interrupts one; with `_PLANNER_MAX_TOKENS` bounding a runaway call to ~30 s,
+# the planning phase ends within about 90 s whatever the model does.
+_DEFAULT_MAX_TOOL_CALLS = 8
+_DEFAULT_MAX_ANALYSIS_CALLS = 3
+_DEFAULT_PLANNING_DEADLINE_S = 60.0
+
 # Hard ceilings on what one model call may generate (`max_tokens`; thinking
 # tokens count toward it on this server). Without one, llama-server runs
 # n_predict -1 and a degenerate thought loop generates until the provider's
@@ -238,6 +261,17 @@ _ANALYSIS_TOOLS = frozenset(
     {"evaluate_position", "get_best_moves", "analyze_last_move"}
 )
 
+# What `max_analysis_calls` counts: every tool that runs a Stockfish search.
+# `review_game` is one search per ply of the game, so it is the dearest call
+# on the menu — but it does not flip thinking, which is `_ANALYSIS_TOOLS`'s
+# separate question.
+_EXPENSIVE_TOOLS = _ANALYSIS_TOOLS | {"review_game"}
+
+# What a call past a per-turn cap is answered with instead of being run. Worded
+# for the narrator, who reads it as the call's refusal reason: a fact about the
+# work ("not run"), never about the machinery.
+_NOT_RUN = "not run this turn"
+
 # The planner's clarification (`tools.ASK_PLAYER`): the one call that ends the
 # planning phase by itself, because what it asks for only the player can answer.
 _ASK_PLAYER = "ask_player"
@@ -252,6 +286,16 @@ _ASK_PLAYER = "ask_player"
 # mentioned repeated calls would invite commentary about the loop.
 _NO_PROGRESS_NOTE = (
     "Nothing further was done — the results above are everything this turn has."
+)
+
+# The handoff note for a turn a budget ended (#288), in the same spirit: about
+# the work, never the machinery. Unlike a stall, a budget can end a turn with
+# part of the ask still undone, so the note says that whatever the record does
+# not show as done was not done — the one fact the narrator needs to tell the
+# player the turn stopped part-way without being handed the words for it.
+_BUDGET_NOTE = (
+    "This turn ended before everything the player asked for was done. "
+    "Whatever the record above does not show as done was not done."
 )
 
 
@@ -282,6 +326,11 @@ class LlamaBrain:
     enable_thinking: bool = False
     max_iterations: int = _DEFAULT_MAX_ITERATIONS
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS
+    # The per-turn tool-work and wall-clock budgets (#288; see the module
+    # constants for the sizing). `planning_deadline_s=None` disables the clock.
+    max_tool_calls: int = _DEFAULT_MAX_TOOL_CALLS
+    max_analysis_calls: int = _DEFAULT_MAX_ANALYSIS_CALLS
+    planning_deadline_s: float | None = _DEFAULT_PLANNING_DEADLINE_S
     # Per-phase sampling: the planner runs cooler than the narrator, which
     # keeps the provider's default. The shipped number is `_PLANNER_TEMPERATURE`,
     # applied by `create_llama_brain`; here None still means "whatever the
@@ -374,10 +423,30 @@ class LlamaBrain:
         # also carries facts a tool can move without touching the position (a
         # setting, a save), and those the tool's own result already reports.
         shown = _board_version_of(self._current_board())
+        # The per-turn work budgets (#288): what has been dispatched, and when
+        # the planning phase must stop asking for more.
+        dispatched = 0
+        expensive = 0
+        # When the phase opened, read off the first round trip's own start
+        # rather than a clock read of its own, so the per-call latencies the
+        # trace records stay one reading each.
+        opened: float | None = None
 
         for _ in range(self.max_iterations):
-            self._report(BRAIN_PLANNING)
             started = self.clock()
+            if opened is None:
+                opened = started
+            elif (
+                self.planning_deadline_s is not None
+                and started - opened >= self.planning_deadline_s
+            ):
+                # Checked between round trips, never during one: the call in
+                # flight is bounded by its `max_tokens`, and what it asked for
+                # has already run. This only declines to start another.
+                return self._budget_stop(
+                    run, command, transcript, "budget", "wall_time", dispatched
+                )
+            self._report(BRAIN_PLANNING)
             try:
                 # Planner turns never think: picking (or declining) a tool is a
                 # parse, even when an analysis result is in context — the phase
@@ -393,7 +462,14 @@ class LlamaBrain:
                 # correct with a user-role message and drop the unusable turn.
                 corrections += 1
                 if corrections > self.max_corrections:
-                    return run.response("", "correction_limit")
+                    return self._budget_stop(
+                        run,
+                        command,
+                        transcript,
+                        "correction_limit",
+                        "corrections",
+                        dispatched,
+                    )
                 _append_user(
                     messages, {"role": "user", "content": _wire_correction(exc)}
                 )
@@ -441,9 +517,24 @@ class LlamaBrain:
             messages.append(result.to_message())
             schema_error = False
             progressed = False
+            tripped = ""
             for call in result.tool_calls:
+                over = self._over_budget(call.name, dispatched, expensive)
+                if over:
+                    # Past a per-turn cap: answered, never run (#288). The
+                    # refusal keeps the wire's one answer per call and puts the
+                    # call on the narrator's record as not done; it is neither
+                    # progress nor a stall, so the rule below never sees it.
+                    tripped = tripped or over
+                    payload = self.dispatcher.refusal(_NOT_RUN, RETRY_NEVER)
+                    run.record(call.name, call.arguments, payload)
+                    messages.append(_tool_message(call.id, payload))
+                    continue
                 payload, bad_schema = self._dispatch(call, schemas)
                 schema_error = schema_error or bad_schema
+                if not bad_schema:
+                    dispatched += 1
+                    expensive += call.name in _EXPENSIVE_TOOLS
                 # Judged after the dispatch, on what came back: a repeated call
                 # is a stall only when it is answered as it already was this
                 # turn. A second `undo` pops a different exchange and says so.
@@ -472,6 +563,12 @@ class LlamaBrain:
                 # player's choice back. Terminal by construction, so a planner
                 # that asked cannot go on to play one of the candidates anyway.
                 return self._close(run, command, "", transcript)
+            if tripped:
+                # A cap refused part of this batch, so the next iteration could
+                # only be refused more of the same: the phase ends here.
+                return self._budget_stop(
+                    run, command, transcript, "budget", tripped, dispatched
+                )
             current = self._current_board()
             version = _board_version_of(current)
             if current is not None and version != shown:
@@ -481,7 +578,14 @@ class LlamaBrain:
             if schema_error:
                 corrections += 1
                 if corrections > self.max_corrections:
-                    return run.response("", "correction_limit")
+                    return self._budget_stop(
+                        run,
+                        command,
+                        transcript,
+                        "correction_limit",
+                        "corrections",
+                        dispatched,
+                    )
                 # A malformed call never dispatched, so repeating it is not the
                 # stall below — it is what the correction budget exists for, and
                 # that budget (smaller than the iteration one) already ends the
@@ -500,7 +604,41 @@ class LlamaBrain:
                     run, command, _NO_PROGRESS_NOTE, transcript, "no_progress"
                 )
 
-        return run.response("", "max_iterations")
+        return self._budget_stop(
+            run, command, transcript, "max_iterations", "iterations", dispatched
+        )
+
+    def _over_budget(self, name: str, dispatched: int, expensive: int) -> str:
+        """Which per-turn cap a call named `name` would exceed, or "" when it
+        may run. The total comes first: a call over both is over the total."""
+        if dispatched >= self.max_tool_calls:
+            return "tool_calls"
+        if name in _EXPENSIVE_TOOLS and expensive >= self.max_analysis_calls:
+            return "analysis_calls"
+        return ""
+
+    def _budget_stop(
+        self,
+        run: _RunState,
+        command: str,
+        transcript: Sequence[dict[str, str]],
+        stop_reason: str,
+        budget: str,
+        dispatched: int,
+    ) -> AgentResponse:
+        """End the planning phase on a budget (#288) — spoken when there is
+        something to speak from, silent when there is not.
+
+        `dispatched` counts the calls that actually ran. Zero means every call
+        was malformed or refused, or none was made: nothing verified happened,
+        and the pipeline's stuck reply is the honest answer. Otherwise the
+        narrator closes from the record under `_BUDGET_NOTE`, so the player
+        hears what was done and that the rest was not.
+        """
+        run.budget = budget
+        if not dispatched:
+            return run.response("", stop_reason)
+        return self._close(run, command, _BUDGET_NOTE, transcript, stop_reason)
 
     def narrate(
         self,

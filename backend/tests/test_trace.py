@@ -108,6 +108,12 @@ def test_turn_record_carries_the_handoff_or_none():
     assert _record_fields(handoff=handoff)["handoff"] == handoff
 
 
+def test_turn_record_names_the_budget_that_ended_the_turn():
+    """#288: which budget tripped, beside the stop reason; empty otherwise."""
+    assert _record_fields()["budget"] == ""
+    assert _record_fields(budget="analysis_calls")["budget"] == "analysis_calls"
+
+
 def test_turn_record_state_refreshes_default_to_none_shown():
     """A route with no loop to refresh — and a mutating turn whose board was
     left mid-exchange — both record the empty list rather than a gap."""
@@ -799,3 +805,22 @@ def test_a_brain_turn_records_the_boards_it_was_reshown(trace_path):
 
     (record,) = read_records(trace_path)
     assert record["state_refreshes"] == [3]
+
+
+def test_a_brain_turn_records_the_budget_that_ended_it(trace_path):
+    """End to end (#288): a narrated budget stop reaches the player as the
+    narrator's words, and the record names the budget beside the stop."""
+    client, _ = make_client(
+        trace_path,
+        AgentResponse(
+            text="Did the first bit, not the rest.",
+            stop_reason="budget",
+            budget="tool_calls",
+        ),
+    )
+    body = client.post("/api/command", json={"text": "do all the things"}).json()
+
+    assert body["commentary"] == "Did the first bit, not the rest."
+    (record,) = read_records(trace_path)
+    assert record["stop_reason"] == "budget"
+    assert record["budget"] == "tool_calls"
