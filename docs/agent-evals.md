@@ -276,6 +276,18 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-23 on the terminal-ask tree (#314: a landed `ask_player` stops
+the batch at the call — every later call is answered "not run this turn" and
+never dispatched; no prompt, schema or model change): 52 passed in a single
+run, 12 m 08 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE —
+`ambiguous_move` and `ambiguous_knight_then_selection` included — except
+`pgn_is_handed_over_not_recited` 4/5 ABOVE_FLOOR (the known narrator
+recitation miss, a turn with no ask in it). `long_capture` 5/5 ×3,
+`judgment_question` 7.9 s. Costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).**
+
+Previously:
+
 **Run 2026-09-22 on the gated resume/overwrite tree (#291 PR 1: `resume_game`
 asks over a game in progress, `save_game` asks before replacing a named save;
 two tool descriptions changed, two scenarios added, two rewritten to answer
