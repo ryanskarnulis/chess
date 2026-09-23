@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from chessapp.api import planner_board_refresh
 from chessapp.brain import (
     CANCEL,
     CONFIRM,
@@ -52,7 +53,7 @@ from chessapp.provider import (
     ToolCallArgumentsError,
     Usage,
 )
-from chessapp.tools import ToolContext, build_registry
+from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
 from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
 
 # --- tool definitions the brain validates against --------------------------
@@ -3041,3 +3042,249 @@ def test_an_ask_off_the_enum_does_not_stop_the_batch():
 
     assert [name for name, _ in dispatcher.calls] == ["make_move"]
     assert resp.handoff.kind != "clarify"
+
+
+# --- the offer follows the board the planner is shown (#315) ----------------
+
+# White to move with 18 moves; after `Ra4 Qd1+` White has exactly one (Kh2).
+ONE_REPLY_FEN = "3q2k1/5ppp/8/8/8/R6P/6P1/7K w - - 0 1"
+
+
+def _offered_brain(ctx, *turns):
+    """A real `LlamaBrain` over the app's own wiring — split registry, one
+    coordinator, the offer and the refresh resolved through the seams app
+    assembly hands it — with a scripted provider. The shape the #315 repro
+    was found in, and the only one where the offer can go stale: the enum
+    comes from `brain_tool_definitions`, the board from `planner_board_refresh`.
+    """
+    coordinator = TurnCoordinator(ctx)
+    registry = build_registry(ctx, coordinator, atomic_exchange=False)
+    return make_brain(
+        *turns,
+        dispatcher=registry,
+        tool_definitions=lambda: brain_tool_definitions(registry, ctx),
+        board_refresh=lambda: planner_board_refresh(ctx, coordinator),
+    )
+
+
+def _ask_enum(call) -> list[str] | None:
+    """The `ask_player` candidate enum one recorded call offered, or None when
+    the tool was not offered at all."""
+    for tool in call["tools"] or ():
+        if tool["function"]["name"] == "ask_player":
+            return tool["function"]["parameters"]["properties"]["candidates"]["items"][
+                "enum"
+            ]
+    return None
+
+
+def _after_e4_e5() -> ToolContext:
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    ctx.session.submit_move("e4")
+    ctx.session.submit_move("e5")
+    return ctx
+
+
+def test_after_an_undo_the_restored_boards_moves_can_be_asked_about():
+    """The issue's repro: the refresh showed the starting board, and the ask
+    about it was refused against the pre-undo enum."""
+    ctx = _after_e4_e5()
+    brain, provider = _offered_brain(
+        ctx,
+        tool_calls_turn(("undo", {})),
+        tool_calls_turn(("ask_player", {"candidates": ["e3", "e4"]})),
+        text_turn("e3 or e4?"),
+    )
+
+    resp = brain.get_agent_response(
+        board_state={"fen": "x"}, command="undo and move my king pawn"
+    )
+
+    assert resp.tool_results[1]["result"] == {"ok": True, "candidates": ["e3", "e4"]}
+    assert resp.handoff.kind == "clarify"
+    assert resp.handoff.candidates == ("e3", "e4")
+    assert resp.state_refreshes == resp.offer_refreshes == (ctx.board_version,)
+    assert "e4" not in _ask_enum(provider.calls[0])
+    assert _ask_enum(provider.calls[1]) == ctx.session.legal_moves()
+
+
+def test_after_an_undo_a_move_the_undo_took_away_is_a_correction():
+    ctx = _after_e4_e5()
+    brain, _ = _offered_brain(
+        ctx,
+        tool_calls_turn(("undo", {})),
+        # Bc4 was legal before the takeback and is not on the starting board.
+        tool_calls_turn(("ask_player", {"candidates": ["Bc4", "Nf3"]})),
+        text_turn("note"),
+        text_turn("reply"),
+    )
+
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="undo, bishop")
+
+    assert resp.tool_results[1]["result"]["ok"] is False
+    assert "is not one of" in resp.tool_results[1]["result"]["error"]
+    assert resp.handoff.kind != "clarify"
+
+
+def _save_then_start_over(ctx: ToolContext, name: str) -> None:
+    """Write the board on `ctx` as save `name`, then leave an untouched
+    starting board, so resuming it is ungated (nothing of the player's at
+    stake) and a genuinely different position."""
+    registry = build_registry(ctx, TurnCoordinator(ctx), atomic_exchange=False)
+    assert registry.dispatch("save_game", {"name": name})["ok"] is True
+    ctx.session = GameSession()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["undo", "new_game", "resume_game"],
+)
+def test_every_planner_request_is_offered_the_menu_it_was_last_shown(
+    mutation, tmp_path
+):
+    """Offer, board view and validation name one position on every request.
+    `new_game` and `resume_game` run ungated here: before the player has
+    moved there is nothing to confirm, which is the only way either lands
+    inside a single command."""
+    if mutation == "undo":
+        ctx, call = _after_e4_e5(), ("undo", {})
+    elif mutation == "new_game":
+        # As Black, with only the engine's opening move on the board: nothing
+        # of the player's is at stake, so the reset runs rather than asks.
+        ctx = ToolContext(
+            session=GameSession(player_color="black"), engine=FakeEngine()
+        )
+        ctx.session.submit_move("e4")
+        call = ("new_game", {"player_color": "white"})
+    else:
+        ctx = ToolContext(
+            session=_after_e4_e5().session, engine=FakeEngine(), save_dir=tmp_path
+        )
+        _save_then_start_over(ctx, "later")
+        call = ("resume_game", {"name": "later"})
+    before = ctx.session.legal_moves()
+    brain, provider = _offered_brain(
+        ctx,
+        tool_calls_turn(call),
+        tool_calls_turn(("describe_position", {})),
+        text_turn("done"),
+        text_turn("Done."),
+    )
+
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command=mutation)
+
+    assert resp.tool_results[0]["result"]["ok"] is True, resp.tool_results[0]
+    after = ctx.session.legal_moves()
+    assert before != after
+    assert _ask_enum(provider.calls[0]) == before
+    shown = _refreshes(provider.calls[1])
+    assert [b["legal_moves"] for b in shown] == [after]
+    assert _ask_enum(provider.calls[1]) == after
+    assert resp.offer_refreshes == (ctx.board_version,)
+
+
+def test_a_board_with_one_move_left_withdraws_the_ask_and_a_takeback_restores_it():
+    """Under two legal moves there is nothing to choose between and the tool is
+    withheld; the takeback that brings the choices back brings it back."""
+    ctx = ToolContext(session=GameSession(fen=ONE_REPLY_FEN), engine=FakeEngine())
+    ctx.session.submit_move("Ra4")
+    ctx.session.submit_move("Qd1+")
+    brain, provider = _offered_brain(
+        ctx,
+        tool_calls_turn(("undo", {})),
+        tool_calls_turn(("ask_player", {"candidates": ["Ra4", "Ra5"]})),
+        text_turn("Ra4 or Ra5?"),
+    )
+
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="undo, rook")
+
+    assert _ask_enum(provider.calls[0]) is None
+    assert "Ra4" in _ask_enum(provider.calls[1])
+    assert resp.handoff.kind == "clarify"
+
+
+def test_a_takeback_to_a_single_move_withdraws_the_ask():
+    ctx = ToolContext(session=GameSession(fen=ONE_REPLY_FEN), engine=FakeEngine())
+    for san in ("Ra4", "Qd1+", "Kh2", "h6"):
+        ctx.session.submit_move(san)
+    brain, provider = _offered_brain(
+        ctx,
+        tool_calls_turn(("undo", {})),
+        tool_calls_turn(("ask_player", {"candidates": ["Kh2", "Kg1"]})),
+        text_turn("note"),
+        text_turn("reply"),
+    )
+
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="undo, king")
+
+    assert _ask_enum(provider.calls[0]) is not None
+    assert _ask_enum(provider.calls[1]) is None
+    # Withheld means unknown to the loop, the way `claim_draw` is.
+    assert resp.tool_results[1]["result"]["ok"] is False
+    assert resp.handoff.kind != "clarify"
+
+
+def test_while_a_reply_is_owed_the_offer_stays_on_the_players_board():
+    """No refresh mid-exchange, so no re-resolve: an enum narrowed then would
+    be the engine's menu. The handler is what says there is nothing to ask."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    brain, provider = _offered_brain(
+        ctx,
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("ask_player", {"candidates": ["d4", "c4"]})),
+        text_turn("note"),
+        text_turn("reply"),
+    )
+    opening = ctx.session.legal_moves()
+
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="e4 then ask")
+
+    assert _ask_enum(provider.calls[0]) == _ask_enum(provider.calls[1]) == opening
+    assert resp.state_refreshes == resp.offer_refreshes == ()
+    refused = resp.tool_results[1]["result"]
+    assert refused["ok"] is False
+    assert "engine is to move" in refused["error"]
+    assert refused["retry"] == RETRY_NEVER
+
+
+def test_a_refresh_that_leaves_the_offer_as_it_was_swaps_nothing():
+    """A re-shown board whose menu matches what is offered keeps the very same
+    tool list, so the planner's prompt prefix is untouched."""
+    offer = [*TOOLS, ASK_TOOL]
+    brain, provider = make_brain(
+        tool_calls_turn(("new_game", {})),
+        text_turn("done"),
+        text_turn("Done."),
+        tool_definitions=lambda: offer,
+        board_refresh=_boards(_BOARD_A, _BOARD_B),
+    )
+
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="reset")
+
+    assert resp.state_refreshes == (2,)
+    assert resp.offer_refreshes == ()
+    assert provider.calls[0]["tools"] == provider.calls[1]["tools"] == offer
+
+
+def test_an_offer_that_raises_mid_run_keeps_the_previous_one():
+    offers = iter([[*TOOLS, ASK_TOOL]])
+
+    def offer():
+        try:
+            return next(offers)
+        except StopIteration:
+            raise RuntimeError("no offer today") from None
+
+    brain, provider = make_brain(
+        tool_calls_turn(("new_game", {})),
+        text_turn("done"),
+        text_turn("Done."),
+        tool_definitions=offer,
+        board_refresh=_boards(_BOARD_A, _BOARD_B),
+    )
+
+    resp = brain.get_agent_response(board_state={"fen": "x"}, command="reset")
+
+    assert resp.stop_reason == "completed"
+    assert resp.offer_refreshes == ()
+    assert provider.calls[1]["tools"] == [*TOOLS, ASK_TOOL]

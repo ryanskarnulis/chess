@@ -2643,3 +2643,38 @@ def test_ask_player_refuses_what_the_board_does_not_offer(candidates):
 
     assert result["ok"] is False
     assert result["retry"] == "different_args"
+
+
+def test_ask_player_refuses_while_the_engine_is_to_move():
+    """Mid-exchange the offer stays on the player's last board (#315), so its
+    candidates can pass the schema; the handler is what knows the menu is the
+    engine's, and that no other candidates would help."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    ctx.session.submit_move("e4")
+
+    result = _split(ctx).dispatch("ask_player", {"candidates": ["d4", "c4"]})
+
+    assert result["ok"] is False
+    assert "engine is to move" in result["error"]
+    assert result["retry"] == "never"
+
+
+def test_engine_free_either_side_to_move_can_be_asked_about():
+    ctx = ToolContext(session=GameSession())
+    ctx.session.submit_move("e4")
+
+    result = _split(ctx).dispatch("ask_player", {"candidates": ["e5", "e6"]})
+
+    assert result == {"ok": True, "candidates": ["e5", "e6"]}
+
+
+def test_ask_player_refuses_on_a_finished_game():
+    ctx = ToolContext(session=GameSession())
+    for san in ("f3", "e5", "g4", "Qh4"):
+        ctx.session.submit_move(san)
+
+    result = _split(ctx).dispatch("ask_player", {"candidates": ["e3", "e4"]})
+
+    assert result["ok"] is False
+    assert "game is over" in result["error"]
+    assert result["retry"] == "never"

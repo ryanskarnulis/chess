@@ -3289,6 +3289,7 @@ def create_app(
                     # than carried through `_ModelCost`: it is not a cost, and
                     # this is the only route that has a loop to report one.
                     traced["state_refreshes"] = response.state_refreshes
+                    traced["offer_refreshes"] = response.offer_refreshes
                     # Which per-turn budget ended the planning phase (#288),
                     # the same way: only this route has a loop to report one.
                     traced["budget"] = response.budget

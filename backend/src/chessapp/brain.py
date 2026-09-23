@@ -135,6 +135,12 @@ class AgentResponse:
     # it in the trace is what tells those two apart. Plain ints, like the token
     # counts, so the seam stays model-agnostic.
     state_refreshes: tuple[int, ...] = ()
+    # The board versions at which the planner's *offer* changed with that
+    # refresh (#315) — `ask_player`'s candidates re-narrowed, or a tool that
+    # appeared or went. A subset of `state_refreshes`: a refresh whose menu
+    # left the offer as it was swaps nothing, and a swap is what costs the
+    # planner a re-read of its prompt.
+    offer_refreshes: tuple[int, ...] = ()
     # What the narrator was told the turn did (#289): the results sorted into
     # done / refused / looked up, the kind derived from them, and whether the
     # engine's reply was still owed as it spoke. `None` on a turn no narrator
@@ -224,6 +230,7 @@ class _RunState:
     unmetered_calls: int = 0
     latencies_ms: list[int] = field(default_factory=list)
     boards_shown: list[int] = field(default_factory=list)
+    offers_refreshed: list[int] = field(default_factory=list)
     # Which turn budget ended the planning phase (#288), or "" when none did.
     budget: str = ""
     # How many of the conversation's oldest exchanges the input budget dropped
@@ -238,6 +245,10 @@ class _RunState:
         """Note that the planner was handed the board as of `version` — one
         reading per mid-command state refresh, in the order they were sent."""
         self.boards_shown.append(version)
+
+    def refresh_offer(self, version: int) -> None:
+        """Note that the planner's offer was re-resolved for `version`."""
+        self.offers_refreshed.append(version)
 
     def count_call(
         self,
@@ -277,6 +288,7 @@ class _RunState:
             unmetered_calls=self.unmetered_calls,
             model_latencies_ms=tuple(self.latencies_ms),
             state_refreshes=tuple(self.boards_shown),
+            offer_refreshes=tuple(self.offers_refreshed),
             handoff=handoff,
             budget=self.budget,
             input_trimmed=self.input_trimmed,

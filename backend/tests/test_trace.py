@@ -102,6 +102,12 @@ def test_turn_record_carries_the_boards_the_planner_was_reshown():
     assert record["state_refreshes"] == [4, 6]
 
 
+def test_turn_record_carries_the_boards_the_offer_followed():
+    """#315: the refreshes at which the planner's tool offer changed too."""
+    assert _record_fields()["offer_refreshes"] == []
+    assert _record_fields(offer_refreshes=(4,))["offer_refreshes"] == [4]
+
+
 def test_turn_record_carries_the_handoff_or_none():
     handoff = {"kind": "reply", "performed": [], "refused": [], "consulted": []}
     assert _record_fields()["handoff"] is None
@@ -804,12 +810,14 @@ def test_a_brain_turn_records_the_boards_it_was_reshown(trace_path):
     record carries them. A mutating turn with nothing here is the #282 bug, and
     this record is where a reviewer would see it."""
     client, _ = make_client(
-        trace_path, AgentResponse(text="Taken back.", state_refreshes=(3,))
+        trace_path,
+        AgentResponse(text="Taken back.", state_refreshes=(3,), offer_refreshes=(3,)),
     )
     client.post("/api/command", json={"text": "undo that and play d4"})
 
     (record,) = read_records(trace_path)
     assert record["state_refreshes"] == [3]
+    assert record["offer_refreshes"] == [3]
 
 
 def test_a_brain_turn_records_the_budget_that_ended_it(trace_path):

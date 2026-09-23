@@ -408,7 +408,9 @@ class LlamaBrain:
         tool schemas, resolved through the same seams a command reads them by,
         beside `serving_labels`. Hashes rather than the texts because the point
         is telling two baselines' configurations apart, and a 12-character
-        digest does that in a record read by eye."""
+        digest does that in a record read by eye. The tool hash is one reading
+        of the offer; a command whose own work re-narrowed it mid-run says so
+        in `offer_refreshes` (#315)."""
         tools = json.dumps(_resolve(self.tool_definitions), sort_keys=True)
         return {
             "planner_prompt": _digest(self._resolve_planner_prompt()),
@@ -436,10 +438,11 @@ class LlamaBrain:
         command: str,
         transcript: Sequence[dict[str, str]] = (),
     ) -> AgentResponse:
-        # One resolution per command: the offer and the schemas it is validated
-        # against must be the same list for the whole run, even if the run's
-        # own work (a move that makes a draw claimable) changes what the
-        # *next* command gets.
+        # The offer and the schemas it is validated against are one list,
+        # resolved here and again only where the planner is re-shown a board
+        # (#315): `ask_player`'s candidates are the live menu, so an offer that
+        # outlived the board it was built on would refuse what the refreshed
+        # block says is legal. Never between two boards, so the two stay one.
         tools = _resolve(self.tool_definitions)
         schemas = _schemas_of(tools)
         run = _RunState()
@@ -639,6 +642,16 @@ class LlamaBrain:
                 _append_user(messages, _board_refresh_message(current))
                 run.show_board(version)
                 shown = version
+                # The offer follows the board it was just shown (#315), at this
+                # boundary and no other: while a reply is owed there is no
+                # refresh, and re-resolving then would narrow `ask_player` to
+                # the engine's menu. Swapped only when it differs, because the
+                # tools render ahead of the conversation and a new list costs
+                # the planner a re-read of its whole prompt.
+                fresh = self._fresh_offer(tools)
+                if fresh is not None:
+                    tools, schemas = fresh, _schemas_of(fresh)
+                    run.refresh_offer(version)
             if schema_error:
                 corrections += 1
                 if corrections > self.max_corrections:
@@ -995,6 +1008,22 @@ class LlamaBrain:
         except Exception:
             logger.warning("board_refresh_failed", exc_info=True)
             return None
+
+    def _fresh_offer(
+        self, offered: list[dict[str, Any]]
+    ) -> list[dict[str, Any]] | None:
+        """The offer re-resolved for the board just shown, or None when it is
+        the one already `offered` — or when resolving it raised, which keeps
+        the previous offer: `_current_board`'s rule, since this too runs after
+        the turn's work has landed."""
+        try:
+            fresh = _resolve(self.tool_definitions)
+        except Exception:
+            logger.warning("offer_refresh_failed", exc_info=True)
+            return None
+        if json.dumps(fresh, sort_keys=True) == json.dumps(offered, sort_keys=True):
+            return None
+        return fresh
 
     def _narrator_facts(self) -> dict[str, Any] | None:
         """The facts seam's answer, degrading to none — `_current_board`'s rule:
