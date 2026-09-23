@@ -575,6 +575,10 @@ def test_the_game_actually_ending_in_a_draw_is_still_a_report():
     "text",
     [
         "Yo, the engine says it's too early to call it a draw. Keep going.",
+        # `main`'s three misses in the 2026-09-22 campaign, verbatim.
+        "Word, the engine says it's way too early to call it a draw.",
+        "Word, but the engine says it's too early for a draw. Keep going.",
+        "yo, the engine says it's way too early to call it a draw. keep going.",
         "I turned down the draw.",
         "You offered a draw, I said nah.",
         "The draw offer got bounced.",
@@ -680,7 +684,7 @@ AFTER_NF3_D5 = VerifiedFacts(
     moves=frozenset({"Nf3", "d5", "g3", "c4", "Nc3", "e3"}),
     placements=frozenset(
         {"Ke1", "Qd1", "Ra1", "Rh1", "Bc1", "Bf1", "Nb1", "Nf3"}
-        | {"Ke8", "Qd8", "Ra8", "Rh8", "Bc8", "Bf8", "Nb8", "Ng8"}
+        | {"Ke8", "Qd8", "Ra8", "Rh8", "Bc8", "Bf8", "Nb8", "Nc6", "Ng8"}
     ),
 )
 
@@ -688,8 +692,11 @@ AFTER_NF3_D5 = VerifiedFacts(
 @pytest.mark.parametrize(
     "text",
     [
-        # The gate's misfire, rebuilt in full from its elided record
-        # ("White: Ke1, Qd1, Ra1, … Nf3; Black: Ke8, … Ng8").
+        # The misfire verbatim, from `main`'s arm of the 2026-09-22 campaign
+        # (3/20 there; the position after 1.e4 e5 2.Nf3 Nc6).
+        "White: Ke1, Qd1, Ra1, Rh1, Bc1, Bf1, Nb1, Nf3, Pawns a2, b2, c2, d2, "
+        "e4, f2, g2, h2.\nBlack: Ke8, Qd8, Ra8, Rh8, Bc8, Bf8, Nc6, Ng8, Pawns "
+        "a7, b7, c7, d7, e5, f7, g7, h7.",
         "Here's where everything's at. White: Ke1, Qd1, Ra1, Rh1, Bc1, Bf1, "
         "Nb1, Nf3, pawns on a2 through h2 except the ones that moved; Black: "
         "Ke8, Qd8, Ra8, Rh8, Bc8, Bf8, Nb8, Ng8.",
