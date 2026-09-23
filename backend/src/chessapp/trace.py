@@ -98,6 +98,7 @@ def turn_record(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     model_latencies_ms: Sequence[int] = (),
+    unmetered_calls: int = 0,
     state_refreshes: Sequence[int] = (),
     handoff: dict[str, Any] | None = None,
     budget: str = "",
@@ -183,6 +184,12 @@ def turn_record(
     summed across those calls. They default to 0 so a deterministic route (a
     canned confirmation, a declined op) records a real, readable zero rather than
     a gap. This is the number every context-shrinking cut is measured against.
+    Every round trip the turn made is in `model_calls`, whichever phase made it
+    and whether or not it raised (#290) — a reader that died, a reaction the
+    budget cut, a lost rewrite. `unmetered_calls` is how many of them reported
+    no token usage (they raised, or the server sent none): the token totals are
+    what was measured, so a non-zero count marks them as a lower bound rather
+    than a measured total.
 
     `model_latencies_ms` is one reading per model call, in call order, and
     `model_ms` is their sum — derived here rather than passed, so the total and
@@ -261,6 +268,7 @@ def turn_record(
         "budget": budget,
         "input_trimmed": input_trimmed,
         "model_calls": model_calls,
+        "unmetered_calls": unmetered_calls,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "model_ms": sum(model_latencies_ms),

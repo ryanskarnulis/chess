@@ -118,6 +118,10 @@ class AgentResponse:
     model_calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # How many of those calls reported no token usage — they raised, or the
+    # server sent none (#290). The token totals are what *was* measured, so a
+    # non-zero count here says they are a lower bound, never a measured zero.
+    unmetered_calls: int = 0
     # One wall-clock reading per model call, in call order — parallel to
     # `model_calls` by construction, including the calls that raised (a round
     # trip that died still spent the time). Empty from a brain that doesn't
@@ -160,6 +164,8 @@ class Narration:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latency_ms: int = 0
+    # 1 when the call returned no usage, so its token counts are unknown.
+    unmetered_calls: int = 0
 
     @property
     def model_latencies_ms(self) -> tuple[int, ...]:
@@ -199,6 +205,7 @@ class Answer:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latency_ms: int = 0
+    unmetered_calls: int = 0
 
     @property
     def model_latencies_ms(self) -> tuple[int, ...]:
@@ -214,6 +221,7 @@ class _RunState:
     model_calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    unmetered_calls: int = 0
     latencies_ms: list[int] = field(default_factory=list)
     boards_shown: list[int] = field(default_factory=list)
     # Which turn budget ended the planning phase (#288), or "" when none did.
@@ -236,12 +244,16 @@ class _RunState:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         latency_ms: int = 0,
+        *,
+        metered: bool = True,
     ) -> None:
         """Tally one model round trip, its tokens and its wall clock. Called for
         every trip — including one that raised before returning a result (it
-        still cost a call, and usually the most time), which lands here with no
-        tokens but a real latency."""
+        still cost a call, and usually the most time), which lands here with
+        `metered=False`: no tokens, a real latency, and a count that says the
+        tokens are unknown rather than zero."""
         self.model_calls += 1
+        self.unmetered_calls += 0 if metered else 1
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.latencies_ms.append(latency_ms)
@@ -262,6 +274,7 @@ class _RunState:
             model_calls=self.model_calls,
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
+            unmetered_calls=self.unmetered_calls,
             model_latencies_ms=tuple(self.latencies_ms),
             state_refreshes=tuple(self.boards_shown),
             handoff=handoff,

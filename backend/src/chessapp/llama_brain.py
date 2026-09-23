@@ -486,7 +486,7 @@ class LlamaBrain:
             except ToolCallArgumentsError as exc:
                 # The model was still called and the loop pays for it, so the
                 # round trip counts (with no tokens — nothing came back to read).
-                run.count_call(latency_ms=self._elapsed_ms(started))
+                run.count_call(latency_ms=self._elapsed_ms(started), metered=False)
                 # Nothing to attach a tool result to (see module docstring):
                 # correct with a user-role message and drop the unusable turn.
                 corrections += 1
@@ -511,9 +511,13 @@ class LlamaBrain:
                 # changed. The round trip is counted like any raised call.
                 # `exc.failure` rides along: the stop says the turn died, the
                 # kind says whether asking again is worth anything.
-                run.count_call(latency_ms=self._elapsed_ms(started))
+                run.count_call(latency_ms=self._elapsed_ms(started), metered=False)
                 return run.response("", "provider_error", str(exc.failure))
-            run.count_call(*_usage_ints(result.usage), self._elapsed_ms(started))
+            run.count_call(
+                *_usage_ints(result.usage),
+                self._elapsed_ms(started),
+                metered=result.usage is not None,
+            )
 
             if not result.tool_calls:
                 if result.finish_reason == "length":
@@ -775,8 +779,16 @@ class LlamaBrain:
             )
         except ProviderError:
             logger.warning("answer_reading_failed", exc_info=True)
-            return Answer(latency_ms=self._elapsed_ms(started))
+            # Still `unrelated`, which changes nothing — but the round trip was
+            # made and the turn waited on it, so it is counted like any raised
+            # call: one call, a real latency, tokens unknown (#290).
+            return Answer(
+                model_calls=1,
+                unmetered_calls=1,
+                latency_ms=self._elapsed_ms(started),
+            )
         prompt_tokens, completion_tokens = _usage_ints(result.usage)
+        unmetered = 0 if result.usage is not None else 1
         if result.finish_reason == "length":
             # The cap cut this call off, so whatever came back is the start of
             # something rather than a verdict — and the one place in the app
@@ -791,6 +803,7 @@ class LlamaBrain:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 latency_ms=self._elapsed_ms(started),
+                unmetered_calls=unmetered,
             )
         word = (result.content or "").strip().strip(".!,'\"").lower()
         return Answer(
@@ -799,6 +812,7 @@ class LlamaBrain:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             latency_ms=self._elapsed_ms(started),
+            unmetered_calls=unmetered,
         )
 
     def _close(
@@ -846,12 +860,13 @@ class LlamaBrain:
             # and the kind of death comes back with them. This is the call a
             # context overrun reaches first — the narrator carries the whole
             # conversation, so it is the longest prompt of the turn.
-            run.count_call(latency_ms=self._elapsed_ms(started))
+            run.count_call(latency_ms=self._elapsed_ms(started), metered=False)
             return run.response("", "provider_error", str(exc.failure), handoff)
         run.count_call(
             narration.prompt_tokens,
             narration.completion_tokens,
             self._elapsed_ms(started),
+            metered=not narration.unmetered_calls,
         )
         return run.response(narration.text, stop_reason, handoff=handoff)
 
@@ -907,6 +922,7 @@ class LlamaBrain:
             model_calls=1,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            unmetered_calls=0 if result.usage is not None else 1,
         )
 
     def _dispatch(
@@ -1140,7 +1156,8 @@ def _rewrite_brief(commentary: str, corrections: Sequence[str]) -> str:
 def _usage_ints(usage: Usage | None) -> tuple[int, int]:
     """`(prompt_tokens, completion_tokens)` from a completion's usage, or
     `(0, 0)` when llama-server omitted it — a missing count is not a failure,
-    it just adds nothing to the turn's total."""
+    it adds nothing to the turn's totals, and the caller counts the call as
+    unmetered so the record says the totals are a lower bound (#290)."""
     if usage is None:
         return 0, 0
     return usage.prompt_tokens, usage.completion_tokens

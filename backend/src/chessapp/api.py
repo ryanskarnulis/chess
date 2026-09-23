@@ -59,6 +59,7 @@ import mimetypes
 import queue
 import random
 import threading
+import time
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -930,6 +931,10 @@ class _MoveBeats:
     on a beat that spoke, on one a provider failure killed, and on one that
     never ran — the player hears the same deterministic line on three of those
     four, so this is the only place the difference survives.
+
+    `cost` is the observe beat's round trip — the narration's own, or one call
+    and the time waited when the provider died or the budget cut it (#290).
+    Zero on a beat that never ran.
     """
 
     changes: list[dict[str, Any]]
@@ -939,6 +944,7 @@ class _MoveBeats:
     observed_fen: str | None = None
     engine_failure: str = ""
     reaction_late: bool = False
+    cost: "_ModelCost" = dc_field(default_factory=lambda: _ModelCost())
 
     @property
     def result(self) -> dict[str, Any]:
@@ -1412,8 +1418,8 @@ class _Guarded:
     first draft asserted without backing (empty on a clean turn), `suppressed`
     keeps that draft, and `rewrite` / `rewrite_claims` / `rewrite_suppressed`
     say what became of the second try, in the trace's vocabulary
-    (`trace.turn_record`). `cost` is the rewrite's round trip, to be added to
-    the turn's.
+    (`trace.turn_record`). `cost` is the rewrite's round trip — the one that
+    died too — to be added to the turn's.
     """
 
     text: str
@@ -1502,13 +1508,17 @@ async def _honest_words(
         said,
         extra={**logged, "claims": list(claims)},
     )
+    started = time.monotonic()
     try:
         narration = await offloop(brain.rewrite, commentary, lines, transcript)
     except ProviderError:
         # The turn is settled; the words are the only thing a dead provider can
         # cost here, and the fallback is what a turn with no words already says.
+        # The round trip is still the turn's, and is counted as one (#290).
         logger.warning("rewrite_failed", exc_info=True, extra=logged)
-        return _Guarded("", claims, commentary, rewrite="lost")
+        return _Guarded(
+            "", claims, commentary, rewrite="lost", cost=_ModelCost.failed(started)
+        )
     cost = _ModelCost.of(narration)
     second = narration.text
     again, _ = _unbacked(second, facts, advice) if second else ((), ())
@@ -1535,17 +1545,26 @@ async def _honest_words(
 class _ModelCost:
     """What one turn spent at the provider boundary, whichever route spent it.
 
-    The five routes each pay for their own model calls — a narrated
-    confirmation, a fast-path reaction, a resignation's words, the brain's whole
-    loop, or nothing at all — and every one of them owes the trace the same four
-    numbers. Reading them off the `AgentResponse`/`Narration` in one place is
-    what keeps a route from quietly recording three of the four.
+    A turn's model calls come in phases — reading an answer to a pending
+    question, a narrated confirmation, a fast-path reaction, a resignation's
+    words, the brain's whole loop, a rewrite — and a turn can pass through more
+    than one: a reply the reader calls `unrelated` goes on down whichever road
+    the words take. So a turn's cost is always *summed* with `plus`, never
+    assigned, and every phase owes the trace the same numbers. Reading them off
+    the `AgentResponse`/`Narration`/`Answer` in one place is what keeps a route
+    from quietly recording three of the four.
+
+    A call that raised is still a call (#290): the turn waited on it, so it is
+    counted with its latency and no tokens (`failed`), and `unmetered` says how
+    many calls reported no usage — the token totals are then a lower bound, not
+    a measured zero.
     """
 
     calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latencies_ms: tuple[int, ...] = ()
+    unmetered: int = 0
 
     @classmethod
     def of(cls, source: Any | None) -> "_ModelCost":
@@ -1558,7 +1577,16 @@ class _ModelCost:
             prompt_tokens=source.prompt_tokens,
             completion_tokens=source.completion_tokens,
             latencies_ms=tuple(source.model_latencies_ms),
+            unmetered=source.unmetered_calls,
         )
+
+    @classmethod
+    def failed(cls, started: float) -> "_ModelCost":
+        """One round trip that raised out of the brain — a dead provider or a
+        reaction the app stopped waiting for — timed from `started`
+        (`time.monotonic()`) by the caller, the only one still around to."""
+        elapsed = max(0, round((time.monotonic() - started) * 1000))
+        return cls(calls=1, latencies_ms=(elapsed,), unmetered=1)
 
     def plus(self, other: "_ModelCost") -> "_ModelCost":
         """Two phases of one turn, added. The confirmation route can now spend
@@ -1570,6 +1598,7 @@ class _ModelCost:
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
             latencies_ms=self.latencies_ms + other.latencies_ms,
+            unmetered=self.unmetered + other.unmetered,
         )
 
     def as_trace(self) -> dict[str, Any]:
@@ -1579,6 +1608,7 @@ class _ModelCost:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "model_latencies_ms": self.latencies_ms,
+            "unmetered_calls": self.unmetered,
         }
 
 
@@ -2029,6 +2059,7 @@ def create_app(
         narration: Narration | None = None
         observed_fen: str | None = None
         reaction_late = False
+        cost = _ModelCost()
         if result.get("legal") is True and ctx.settings.verbosity != "low":
             # This is the observe beat, so the machine is told so — the phase
             # the coordinator has always had a slot for, finally entered
@@ -2037,10 +2068,12 @@ def create_app(
             # collect below accepts either phase, so nothing else changes.
             coordinator.mark_observation()
             fen_at_observation = ctx.session.fen()
+            started = time.monotonic()
             try:
                 narration = _narrate(
                     _narrator_state_dict(ctx), changes, transcript, correlation_id
                 )
+                cost = _ModelCost.of(narration)
                 # Kept only once something was actually said from it: this is
                 # "the board the reaction was written from", and a beat the
                 # provider killed wrote no reaction. Read off the session,
@@ -2055,7 +2088,9 @@ def create_app(
                 # records it so the trace can tell a late reaction from a lost
                 # one or a skipped one.
                 reaction_late = True
+                cost = _ModelCost.failed(started)
             except ProviderError:
+                cost = _ModelCost.failed(started)
                 logger.warning(
                     "observe_narration_failed",
                     exc_info=True,
@@ -2107,6 +2142,7 @@ def create_app(
             observed_fen=observed_fen,
             engine_failure=engine_failure,
             reaction_late=reaction_late,
+            cost=cost,
         )
 
     async def _agent_move(move: str) -> dict[str, Any]:
@@ -2223,7 +2259,7 @@ def create_app(
                 rewrite_suppressed=verdict.rewrite_suppressed,
                 engine_failure=beats.engine_failure,
                 reaction_late=beats.reaction_late,
-                **_ModelCost.of(narration).plus(verdict.cost).as_trace(),
+                **beats.cost.plus(verdict.cost).as_trace(),
             )
             return {
                 "legal": beats.legal,
@@ -2934,7 +2970,10 @@ def create_app(
                     read = await _offloop(
                         brain.read_answer, _confirm_question(armed.name), text
                     )
-                    cost = _ModelCost.of(read) if read.model_calls else cost
+                    # Summed, never assigned: an `unrelated` reading goes on
+                    # down another road, which adds its own calls to this one
+                    # (#290). A reader that died still made a round trip.
+                    cost = cost.plus(_ModelCost.of(read))
                     if read.verdict == CONFIRM:
                         answer = True
                     elif read.verdict == CANCEL:
@@ -2958,6 +2997,7 @@ def create_app(
                             # board that changed, so a provider failure costs the
                             # words and degrades to the canned line — never a 500
                             # after the mutation, before the broadcast.
+                            started = time.monotonic()
                             try:
                                 narration = await _offloop(
                                     _narrate,
@@ -2972,6 +3012,7 @@ def create_app(
                                 # what the record says happened. A late one is
                                 # already logged by `_narrate`.
                                 reaction_late = isinstance(exc, LateReaction)
+                                cost = cost.plus(_ModelCost.failed(started))
                                 if not reaction_late:
                                     logger.warning(
                                         "close_narration_failed", exc_info=True
@@ -2994,6 +3035,8 @@ def create_app(
                     )
                     tool_results.extend(move_beats.changes)
                     tool_args.append({"move": fast_san})
+                    # The beat's round trip, spoken, lost or late alike (#290).
+                    cost = cost.plus(move_beats.cost)
                     if not move_beats.legal:
                         # `parse_move` already matched the move against this board, so a
                         # refusal here is a turn-state rejection (a previous turn left
@@ -3004,7 +3047,6 @@ def create_app(
                         memory = ""
                     elif move_beats.narration is not None:
                         commentary = move_beats.narration.text
-                        cost = _ModelCost.of(move_beats.narration)
                 elif parse_resign(text):
                     # An explicit resignation is deterministic text, so the model
                     # gets no vote on whether it happened: live, it took one and
@@ -3029,6 +3071,7 @@ def create_app(
                         # Same degradation as the confirmed-op narration above: the
                         # resignation is already on the record, so the words are
                         # the only thing a dead provider may cost.
+                        started = time.monotonic()
                         try:
                             narration = await _offloop(
                                 _narrate,
@@ -3042,6 +3085,7 @@ def create_app(
                             # resignation is on the record either way, and only
                             # the record tells late from lost.
                             reaction_late = isinstance(exc, LateReaction)
+                            cost = cost.plus(_ModelCost.failed(started))
                             if not reaction_late:
                                 logger.warning("close_narration_failed", exc_info=True)
                             commentary = _destructive_confirmation(
@@ -3049,7 +3093,7 @@ def create_app(
                             )
                         else:
                             commentary = narration.text
-                            cost = _ModelCost.of(narration)
+                            cost = cost.plus(_ModelCost.of(narration))
                 else:
                     route = ROUTE_BRAIN
                     response = await _offloop(
@@ -3059,7 +3103,7 @@ def create_app(
                     tool_args = [call.args for call in response.tool_calls]
                     stop_reason = response.stop_reason
                     provider_failure = response.provider_failure
-                    cost = _ModelCost.of(response)
+                    cost = cost.plus(_ModelCost.of(response))
                     # Which boards the planner was re-shown as its own tools
                     # moved them (#282). Stamped on `traced` directly rather
                     # than carried through `_ModelCost`: it is not a cost, and
@@ -3312,7 +3356,6 @@ def create_app(
                     rewrite_suppressed=verdict.rewrite_suppressed,
                     provider_failure=provider_failure,
                     engine_failure=engine_failure,
-                    **cost.as_trace(),
                 )
                 return CommandOutcome(
                     commentary=commentary,
@@ -3352,6 +3395,10 @@ def create_app(
                 traced["route"] = route
                 traced["stop_reason"] = stop_reason
                 traced["reaction_late"] = reaction_late
+                # The calls the turn had paid for by the time it ended — all of
+                # them on a finished turn, and on one that died, the ones before
+                # it did (#290): a dead turn's round trips were still made.
+                traced.update(cost.as_trace())
                 traced["mutations"] = ctx.board_version - version_before
                 traced["fen_after"] = ctx.session.fen()
                 # `turn_record` zips the call args and the results strictly, and
