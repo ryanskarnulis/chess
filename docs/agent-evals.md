@@ -276,6 +276,36 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-23 on the offer-follows-the-board tree (#315: the planner's tool
+offer and validation schemas are re-resolved when the loop re-shows it a
+board, so `ask_player`'s enum is the refreshed menu; kept while a reply is
+owed; no prompt or model change, command-entry schemas byte-identical): 52
+passed in a single run, 13 m 13 s, infra 0; every pass-rate scenario 5/5
+ABOVE_FLOOR STABLE — `undo_and_replace`, `undo_twice_and_replace`,
+`ambiguous_move` and `ambiguous_knight_then_selection` included — except
+`pgn_is_handed_over_not_recited` 4/5 ABOVE_FLOOR (the known narrator
+recitation miss). `long_capture` 5/5 ×3, `judgment_question` 12.7 s, all 238
+samples `completed`. Costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).**
+
+The cost is latency, measured and accepted (Ryan, 2026-09-23): a swapped
+offer changes the tools that render ahead of the conversation, so the planner
+re-reads its prompt. The two undo scenarios run back to back on `main` and on
+this tree, one server, warm, five samples each (post-first-sample medians):
+
+| Planner call | `main` | #315 |
+| --- | --- | --- |
+| `undo_and_replace`, call after the undo | 662 ms | 1,197 ms |
+| `undo_twice_and_replace`, calls after each undo | 560 + 670 ms | 1,105 + 1,525 ms |
+
+About +0.5 s per swap. The opening call also read slower on this tree
+(~1.35 s against ~0.2 s), but that is the harness repeating one command: the
+previous sample ended on the swapped offer. In the app the offer already
+differs between commands on every move (the enum is the live menu), so the
+opening call pays that re-read on `main` too.
+
+Previously:
+
 **Run 2026-09-23 on the terminal-ask tree (#314: a landed `ask_player` stops
 the batch at the call — every later call is answered "not run this turn" and
 never dispatched; no prompt, schema or model change): 52 passed in a single
