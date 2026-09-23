@@ -105,6 +105,7 @@ def turn_record(
     handoff: dict[str, Any] | None = None,
     budget: str = "",
     input_trimmed: int = 0,
+    game_id: str = "",
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -255,6 +256,10 @@ def turn_record(
     input budget dropped to fit the prompt; any non-zero reading is a prompt
     ten times larger than anything measured, and worth a look.
 
+    `game_id` is the game the board held when the record was made (#291,
+    `GameSession.game_id`): what ties a turn to one game across a new game, a
+    resume or a restart, where the turn counter and the board version do not.
+
     `handoff` is what the brain route's narrator was told the turn did (#289,
     `handoff.Handoff.trace`): the kind, the tools that were done, refused and
     looked up, and whether the engine's reply was still owed as it spoke.
@@ -279,6 +284,7 @@ def turn_record(
         "rewrite": rewrite,
         "rewrite_claims": list(rewrite_claims),
         "rewrite_suppressed": rewrite_suppressed,
+        "game_id": game_id,
         "turn_id": turn_id,
         "correlation_id": correlation_id,
         "mutations": mutations,

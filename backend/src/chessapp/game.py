@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import chess
 import chess.pgn
@@ -134,6 +135,13 @@ def _validate_started(value: Any) -> str | None:
     return value
 
 
+_GAME_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _new_game_id() -> str:
+    return uuid4().hex
+
+
 class GameSession:
     """One chess game. Moves come in as SAN or UCI strings; the board decides."""
 
@@ -149,6 +157,7 @@ class GameSession:
         self._player_color = _validate_player_color(player_color)
         self._started: str | None = date.today().isoformat()
         self._revision = 0
+        self._game_id = _new_game_id()
 
     @property
     def started(self) -> str | None:
@@ -163,6 +172,29 @@ class GameSession:
         overnight.
         """
         return self._started
+
+    @property
+    def game_id(self) -> str:
+        """Which game this is: minted with the session, again by `new_game`,
+        and again by `renew_game_id` when a save is resumed (#291).
+
+        The board version says *which board*; this says *which game*, and the
+        two answer different questions for a client acting on the board. A
+        version is only comparable within one run of the app and is bumped by
+        every move, so a delegate that wants "act on the game I was playing,
+        or not at all" — across a new game, a resume, or a restart that
+        restored the board — holds this instead. Survives serialization, so a
+        restored checkpoint is the same game it was before the restart.
+        """
+        return self._game_id
+
+    def renew_game_id(self) -> None:
+        """Make this a new game as far as identity goes, board untouched.
+
+        For a session rebuilt from a *named save*: resuming one twice gives two
+        games that diverge from the same position, and a client holding the
+        first one's id must not be able to act on the second."""
+        self._game_id = _new_game_id()
 
     @property
     def revision(self) -> int:
@@ -223,6 +255,7 @@ class GameSession:
         self._started = date.today().isoformat()
         if player_color is not None:
             self._player_color = player_color
+        self._game_id = _new_game_id()
         self._revision += 1
 
     def resign(self, color: str | None = None) -> Outcome:
@@ -354,7 +387,7 @@ class GameSession:
     def to_dict(self) -> dict[str, Any]:
         """Serialized form: root FEN + UCI moves + the two session-level endings
         (resignation, a claimed draw), plus the player's color and the date the
-        game began. `player_color`, `draw_claimed` and `started` are additive —
+        game began and its `game_id`. Everything past the first three is additive —
         older readers ignore them, and older saves that lack them load at the
         defaults those games were played under."""
         resigned = self._resigned
@@ -367,6 +400,7 @@ class GameSession:
             "draw_claimed": self._draw_claimed,
             "draw_agreed": self._draw_agreed,
             "started": self._started,
+            "game_id": self._game_id,
         }
 
     @classmethod
@@ -404,6 +438,11 @@ class GameSession:
             raise ValueError(f"invalid resigned color: {resigned!r}")
         _validate_player_color(player_color)
         started = _validate_started(data.get("started"))
+        game_id = data.get("game_id")
+        if game_id is not None and not (
+            isinstance(game_id, str) and _GAME_ID.fullmatch(game_id)
+        ):
+            raise ValueError(f"invalid game_id: {game_id!r}")
 
         # Saves that predate the player-color field default to white — the
         # implicit assignment those games were played under.
@@ -412,6 +451,10 @@ class GameSession:
         # reopened; one saved before games recorded a date has none, and the
         # PGN says so rather than claiming today.
         session._started = started
+        # A save written before games had an identity keeps the fresh one the
+        # constructor minted.
+        if game_id is not None:
+            session._game_id = game_id
         for uci in moves:
             result = session.submit_move(uci)
             if not result.legal:

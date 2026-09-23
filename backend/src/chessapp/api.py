@@ -118,8 +118,10 @@ from chessapp.tools import (
     ToolRegistry,
     build_registry,
     confirm_pending,
+    live_checkpoint,
     pgn_headers,
     saved_game_names,
+    write_live_checkpoint,
 )
 from chessapp.trace import (
     ROUTE_BOARD,
@@ -154,6 +156,19 @@ class StaleVersionError(Exception):
         self.state = state
 
 
+class WrongGameError(StaleVersionError):
+    """A mutating request about a game that is no longer on the board.
+
+    A `StaleVersionError` — a new game or a resume bumps the version too, so
+    this is the same refusal with a truer message — for a client that sent the
+    `game_id` it was playing rather than (or as well as) a version.
+    """
+
+    def __init__(self, expected_game: str, state: dict[str, Any]) -> None:
+        super().__init__(-1, state["version"], state)
+        self.expected_game = expected_game
+
+
 class VersionedRequest(BaseModel):
     """The optional board-version precondition every mutating request carries.
 
@@ -170,6 +185,11 @@ class VersionedRequest(BaseModel):
     """
 
     version: int | None = None
+    # The same opt-in, one level up (#291): the `state.game_id` the client is
+    # playing. A version is bumped by every move; this changes only when the
+    # game does — a new game, a resume — so it is the precondition for "this
+    # game, whatever has happened on it since". A mismatch is the same 409.
+    game_id: str | None = None
 
 
 class MoveRequest(VersionedRequest):
@@ -299,6 +319,9 @@ def _state_dict_unlocked(ctx: ToolContext) -> dict[str, Any]:
     session = ctx.session
     return {
         "version": ctx.board_version,
+        # Which game this board is (#291): a client that wants to act only on
+        # the game it was playing sends it back as `game_id`.
+        "game_id": session.game_id,
         "fen": session.fen(),
         "turn": session.turn,
         "player_color": session.player_color,
@@ -1880,6 +1903,34 @@ def create_app(
                 ctx.mutation_lock.release()
         return deepcopy(state)
 
+    # What the live checkpoint last recorded, so an unchanged game is not
+    # rewritten on every request that happened to take the lock.
+    last_checkpoint: tuple[int, int, int] | None = None
+
+    def _checkpoint() -> None:
+        """Write the live game to disk if it changed (#291, `live.json`).
+
+        Called with the mutation lock held — from the mutation guard's exit and
+        from the broadcast — so the board, its version and the transcript are
+        one coherent snapshot. What counts as a change is the board version and
+        the transcript's identity and length: every move, takeback, reset and
+        resume bumps the first, and every exchange the panel records grows the
+        last. Best-effort (`tools.write_live_checkpoint`): a full disk costs a
+        warning, never a move.
+        """
+        nonlocal last_checkpoint
+        if ctx.save_dir is None:
+            return
+        signature = (
+            ctx.board_version,
+            id(ctx.transcript),
+            len(ctx.transcript.to_dict()),
+        )
+        if signature == last_checkpoint:
+            return
+        write_live_checkpoint(ctx, live_checkpoint(ctx))
+        last_checkpoint = signature
+
     def _publish_state() -> None:
         """Send the board document, once per board.
 
@@ -1900,6 +1951,7 @@ def create_app(
         state = _state_dict_unlocked(ctx)
         published_state = state
         last_broadcast_version = state["version"]
+        _checkpoint()
         broadcaster.broadcast(state)
 
     # The boards the open command's mutating tool calls have left behind, in
@@ -2029,22 +2081,37 @@ def create_app(
         # recovery document different from the version the rejection names.
         state = deepcopy(exc.state)
         current = state["version"]
-        logger.info("stale_version expected=%s current=%s", exc.expected, current)
+        if isinstance(exc, WrongGameError):
+            logger.info(
+                "wrong_game expected=%s current=%s",
+                exc.expected_game,
+                state["game_id"],
+            )
+            detail = (
+                f"that game is no longer on the board — you sent game "
+                f"{exc.expected_game}, the board is game {state['game_id']}"
+            )
+        else:
+            logger.info("stale_version expected=%s current=%s", exc.expected, current)
+            detail = (
+                "the board changed since you last saw it — "
+                f"you sent version {exc.expected}, it is now {current}"
+            )
         return JSONResponse(
             status_code=409,
             content={
-                "detail": (
-                    "the board changed since you last saw it — "
-                    f"you sent version {exc.expected}, it is now {current}"
-                ),
+                "detail": detail,
                 "stale": True,
                 "version": current,
+                "game_id": state["game_id"],
                 "state": state,
             },
         )
 
     @asynccontextmanager
-    async def _mutation(expected: int | None) -> AsyncIterator[None]:
+    async def _mutation(
+        expected: int | None, game_id: str | None = None
+    ) -> AsyncIterator[None]:
         """Hold the mutation lock across one request's check *and* its mutation.
 
         The two halves are inseparable or the precondition is theatre: between a
@@ -2070,12 +2137,18 @@ def create_app(
         current_spans = _Spans(started=requested)
         current_spans.add("queue", _ms_since(requested))
         try:
+            if game_id is not None and game_id != ctx.session.game_id:
+                raise WrongGameError(game_id, _state_dict_unlocked(ctx))
             if expected is not None and expected != ctx.board_version:
                 current = ctx.board_version
                 raise StaleVersionError(expected, current, _state_dict_unlocked(ctx))
             yield
         finally:
             current_spans = None
+            # Every road onto the board ends here, still holding the lock: the
+            # one place a checkpoint is both complete (the transcript a command
+            # records lands inside the guard too) and coherent.
+            _checkpoint()
             ctx.mutation_lock.release()
 
     @app.get("/api/state")
@@ -2401,7 +2474,7 @@ def create_app(
         the app's own line, the same one the agent path composes onto Glitch's
         reaction — no model is consulted in either mode.
         """
-        async with _mutation(request.version):
+        async with _mutation(request.version, request.game_id):
             if brain is not None:
                 return await _agent_move(request.move)
             # The coordinator runs the exchange: player move, then the engine's
@@ -2552,7 +2625,10 @@ def create_app(
         color = request.color if request is not None else "random"
         if color == "random":
             color = random.choice(["white", "black"])
-        async with _mutation(request.version if request is not None else None):
+        async with _mutation(
+            request.version if request is not None else None,
+            request.game_id if request is not None else None,
+        ):
             outcome = _run_destructive("new_game", {"player_color": color})
             if isinstance(outcome, JSONResponse):
                 return outcome
@@ -2580,7 +2656,7 @@ def create_app(
         someone else, and the button neither answers it nor disarms it, because
         a click with nothing of its own to confirm is not a new command.
         """
-        async with _mutation(request.version):
+        async with _mutation(request.version, request.game_id):
             armed = ctx.live_pending(PANEL_ORIGIN)
             if armed is None:
                 raise HTTPException(status_code=409, detail="nothing to confirm")
@@ -2626,7 +2702,7 @@ def create_app(
 
     @app.post("/api/game/undo")
     async def undo(request: UndoRequest) -> dict[str, Any]:
-        async with _mutation(request.version):
+        async with _mutation(request.version, request.game_id):
             plies = request.plies
             if plies is None:
                 # The player's takeback: vs the engine it is always the player's
@@ -2668,7 +2744,7 @@ def create_app(
         player's own side, and the side to move is only coincidentally that
         (trace review, finding 8).
         """
-        async with _mutation(request.version):
+        async with _mutation(request.version, request.game_id):
             outcome = _run_destructive(
                 "resign", {"color": request.color or ctx.session.player_color}
             )
@@ -2693,7 +2769,7 @@ def create_app(
         gate — nothing to claim is a plain 409 with nothing armed, so a yes can
         never be an answer to a question about a draw the rules do not allow.
         """
-        async with _mutation(request.version):
+        async with _mutation(request.version, request.game_id):
             outcome = _run_destructive("claim_draw", {})
             if isinstance(outcome, JSONResponse):
                 return outcome
@@ -2717,7 +2793,7 @@ def create_app(
         Traced as a control interaction like the other buttons, and windowless,
         so the tool's budget check is a no-op here as it is for every button.
         """
-        async with _mutation(request.version):
+        async with _mutation(request.version, request.game_id):
             turn_id = coordinator.turn_id
             version_before = ctx.board_version
             fen_before = ctx.session.fen()
@@ -2802,6 +2878,7 @@ def create_app(
             # route's record says how the game stood when the turn was over,
             # so a finished game's commentary can be re-judged from the trace.
             fields.setdefault("outcome", _relative_outcome(ctx.session))
+            fields.setdefault("game_id", ctx.session.game_id)
             # Written from under the lock on every route, so the spans are
             # this request's; `total` is read now, as the record is made.
             fields.setdefault(
@@ -2860,6 +2937,7 @@ def create_app(
         version: int | None = None,
         *,
         origin: str,
+        game_id: str | None = None,
     ) -> CommandOutcome:
         """The command pipeline, under the mutation guard — the delegate route's
         entry (the panel opens the guard itself; see `command`).
@@ -2875,7 +2953,7 @@ def create_app(
         delegate router) and is keyword-only and required: a confirmation may be
         armed or answered here, and both halves belong to one conversation.
         """
-        async with _mutation(version):
+        async with _mutation(version, game_id):
             return await _command_turn(text, transcript, origin=origin)
 
     async def _command_turn(
@@ -3542,7 +3620,7 @@ def create_app(
         """
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
-        async with _mutation(request.version):
+        async with _mutation(request.version, request.game_id):
             transcript = ctx.transcript.memory()
             outcome = await _command_turn(request.text, transcript, origin=PANEL_ORIGIN)
             # Record on the context, not a captured reference: resume_game may

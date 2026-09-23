@@ -19,6 +19,9 @@ export interface GameState {
   /** Monotonic board revision. Optional only for compatibility with an older
    * backend; once observed, it prevents older responses replacing newer state. */
   version?: number
+  /** Which game this board is; changes on a new game or a resume, survives a
+   * restart. Unused by the UI — carried for clients that bind to one game. */
+  game_id?: string
   fen: string
   turn: 'white' | 'black'
   /** Which side the human plays; the engine owns the other. Drives board

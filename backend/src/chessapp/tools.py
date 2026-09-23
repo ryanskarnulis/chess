@@ -97,6 +97,13 @@ class ToolError(ValueError):
 
 SETTINGS_FILENAME = "settings.json"
 GAME_SAVE_DIRNAME = "games"
+# The live game, checkpointed on every change (#291). At the save dir's root
+# and not under `games/`, so `saved_game_names` never offers it as a save; and
+# nested (`session` is a key, not the document), so the legacy-save migration
+# below — which promotes any root-level JSON that loads as a game — can never
+# mistake it for one.
+LIVE_CHECKPOINT_FILENAME = "live.json"
+_CHECKPOINT_FORMAT = 1
 
 
 def _migrate_legacy_game_saves(save_dir: Path) -> None:
@@ -252,6 +259,79 @@ def _write_settings_file(path: Path, data: dict[str, Any]) -> None:
         _write_json_atomic(path, data)
     except OSError:
         logger.warning("could not persist settings to %s", path)
+
+
+def live_checkpoint(ctx: "ToolContext") -> dict[str, Any]:
+    """The live game as the checkpoint records it: the session, the panel
+    transcript, and the board version it stood at.
+
+    The pending confirmation is deliberately not in it. A question is asked in
+    a conversation, of a board on a screen, and a restart ends both: the
+    player asks again rather than a "yes" meeting a question nobody on the
+    other side of the restart remembers asking.
+    """
+    return {
+        "checkpoint": _CHECKPOINT_FORMAT,
+        "board_version": ctx.board_version,
+        "session": ctx.session.to_dict(),
+        "transcript": ctx.transcript.to_dict(),
+    }
+
+
+def write_live_checkpoint(ctx: "ToolContext", data: dict[str, Any]) -> None:
+    """Best-effort atomic write of `data` (a `live_checkpoint`), the settings
+    file's contract: a disk that will not take it costs a warning, never the
+    mutation that prompted it. A no-op without a save dir."""
+    if ctx.save_dir is None:
+        return
+    path = ctx.save_dir / LIVE_CHECKPOINT_FILENAME
+    try:
+        _write_json_atomic(path, data)
+    except OSError:
+        logger.warning("could not write the live checkpoint %s", path)
+
+
+def restore_live_checkpoint(ctx: "ToolContext") -> bool:
+    """Put the checkpointed game back on the board; True if one was restored.
+
+    Startup's half of #291: a restart used to lose the game in progress. Best
+    effort like the settings restore — a missing, unreadable or invalid file
+    means a fresh board and a warning, never a failed start — and validated
+    through `GameSession.from_dict`, which replays every move through the
+    legality gate, so a tampered checkpoint cannot produce a board the rules
+    never allowed.
+
+    The board version resumes *past* the checkpointed one, exactly as
+    `ToolContext.replace_session` bumps it: a client that held a version
+    before the restart is stale after it — it has to re-read the board — and
+    can never find its old number meaning a different position. The game
+    keeps its `game_id`: it is the same game, restored.
+    """
+    if ctx.save_dir is None:
+        return False
+    path = ctx.save_dir / LIVE_CHECKPOINT_FILENAME
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        logger.warning("ignoring unreadable live checkpoint %s", path)
+        return False
+    try:
+        if not isinstance(data, dict) or data.get("checkpoint") != _CHECKPOINT_FORMAT:
+            raise ValueError("not a live checkpoint")
+        version = data.get("board_version")
+        if type(version) is not int or version < 0:
+            raise ValueError(f"invalid board_version: {version!r}")
+        session = GameSession.from_dict(data.get("session"))
+        transcript = Transcript.from_dict(data.get("transcript", []))
+    except (AttributeError, KeyError, TypeError, ValueError):
+        logger.warning("ignoring invalid live checkpoint %s", path, exc_info=True)
+        return False
+    ctx._version_base = version + 1 - session.revision
+    ctx.session = session
+    ctx.transcript = transcript
+    return True
 
 
 @dataclass(frozen=True)
@@ -1905,6 +1985,9 @@ def build_registry(
         # Validate both parts before touching the context, so a corrupt file
         # can't leave a restored board with someone else's conversation.
         session = GameSession.from_dict(data)
+        # A resumed save is a new game on the board, not the one that was
+        # saved: resuming it twice gives two games (`GameSession.renew_game_id`).
+        session.renew_game_id()
         transcript = Transcript.from_dict(data.get("transcript", []))
         # The game on the board is thrown away by this, exactly as by a reset,
         # so it takes the same budget and the same gate (#291) — checked only

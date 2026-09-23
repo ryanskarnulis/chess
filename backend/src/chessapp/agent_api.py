@@ -116,6 +116,10 @@ class MessageCreate(BaseModel):
     # behavior — the field is additive, and PCC's schema has no counterpart, so
     # a caller that never sends it stays byte-compatible.
     version: int | None = None
+    # The same opt-in for *which game* (#291): the `state.game_id` the
+    # conductor is playing. A turn sent after the board moved on to another
+    # game — a new game, a resume — is refused 409 rather than played there.
+    game_id: str | None = None
 
 
 class ToolCallRead(BaseModel):
@@ -432,6 +436,7 @@ class RunCommand(Protocol):
         version: int | None = None,
         *,
         origin: str,
+        game_id: str | None = None,
     ) -> Awaitable[CommandOutcome]: ...
 
 
@@ -578,6 +583,7 @@ def build_agent_router(
                     # *here* can answer it (#281). A "yes" posted to another
                     # thread, or typed into the web panel, used to run it.
                     origin=delegate_origin(conversation_id),
+                    game_id=data.game_id,
                 )
             except ProviderError as exc:
                 logger.error(

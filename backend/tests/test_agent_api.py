@@ -446,7 +446,7 @@ class HeldPipeline:
         self.origins: list[str] = []
 
     async def __call__(
-        self, text, transcript, version=None, *, origin
+        self, text, transcript, version=None, *, origin, game_id=None
     ) -> CommandOutcome:
         self.calls.append((text, list(transcript)))
         self.origins.append(origin)

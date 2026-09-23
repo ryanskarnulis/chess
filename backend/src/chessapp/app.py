@@ -18,6 +18,7 @@ Basic gameplay works with the LLM off (no brain / no `/api/command`) and with
 Stockfish off (no engine); both are optional here.
 """
 
+import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -34,7 +35,12 @@ from chessapp.llama_brain import _PLANNER_TEMPERATURE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider
-from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
+from chessapp.tools import (
+    ToolContext,
+    brain_tool_definitions,
+    build_registry,
+    restore_live_checkpoint,
+)
 from chessapp.trace import JsonlTracer, Tracer
 from chessapp.voice import (
     DEFAULT_STT_MODEL,
@@ -43,6 +49,8 @@ from chessapp.voice import (
     SpeechClient,
     create_speech_client,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_LLAMA_BASE_URL = "http://127.0.0.1:8200/v1"
 DEFAULT_MODEL = "gemma-4-12b"
@@ -82,6 +90,10 @@ def build_app(
     if brain is not None and not agent_enabled:
         raise ValueError("agent_enabled=False cannot be combined with a brain")
     ctx = ToolContext(session=GameSession(), engine=engine, save_dir=save_dir)
+    # The game that was on the board when the app last stopped (#291). Before
+    # anything reads the session, so the first state document a client gets is
+    # the restored one.
+    restored = restore_live_checkpoint(ctx)
     if engine is not None:
         # Stockfish's own default is full strength; make the engine play at
         # the settings default so strength and reported settings agree.
@@ -96,6 +108,16 @@ def build_app(
     # one machine's, so a dragged move and a typed move cannot disagree about
     # which turn the game is on.
     coordinator = TurnCoordinator(ctx)
+    if restored:
+        # A checkpoint can be taken between the player's move and the reply —
+        # the process stopped while the engine was thinking. Nothing is open to
+        # collect that reply after a restart, so the restored board is settled
+        # the way a resumed save is. An engine that cannot answer right now
+        # leaves the board as it was rather than the app unable to start.
+        try:
+            coordinator.settle_engine_turn()
+        except Exception:
+            logger.warning("could not settle the restored game", exc_info=True)
     # Live progress (audit item 19). Built here, before the things that report
     # through it, because the *brain* is one of them and only assembly can reach
     # it: the coordinator and the registry are wired by `create_app`, but a
