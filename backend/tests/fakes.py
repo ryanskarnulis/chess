@@ -437,10 +437,16 @@ class CountingProvider:
     def __init__(self, inner: Any) -> None:
         self.inner = inner
         self.calls: list[ModelCall] = []
+        # What each round trip *sent* — the messages and the tools offered —
+        # beside what it cost. The frontier tier runs the trajectory
+        # invariants on live samples (#318), and the offer invariant (#315)
+        # reads the board a request showed against the enum it offered.
+        self.requests: list[dict[str, Any]] = []
 
     def reset(self) -> None:
         """Drop the record — one eval scenario measures one utterance."""
         self.calls.clear()
+        self.requests.clear()
 
     def chat(
         self,
@@ -452,6 +458,12 @@ class CountingProvider:
         temperature: float | None = None,
         timeout: float | None = None,
     ) -> ChatResult:
+        self.requests.append(
+            {
+                "messages": list(messages),
+                "tools": list(tools) if tools is not None else None,
+            }
+        )
         started = time.monotonic()
         # Bound before the call so the `finally` can read it after a raise, where
         # it stays None: a round trip that died reported no usage, and the loop

@@ -62,6 +62,10 @@ investment test on a real game. It is synthetic legal play, not a recorded
 human one. And `_LIVE_TRANSCRIPT` is the real 20-turn thread the 2026-07-13
 failures happened in, used by the long-transcript family below.
 
+Scenarios the model is not yet expected to pass do not belong here — a floor
+is a tripwire, not an aspiration. They live in the **frontier tier**
+(`docs/agent-frontier.md`), which measures them over time and never gates.
+
 ## Running it
 
 Opt-in — skipped unless `CHESSAPP_AGENT_EVALS=1`, so CI and default `pytest`

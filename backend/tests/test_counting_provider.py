@@ -124,3 +124,20 @@ def test_reset_clears_the_record():
     provider.reset()
 
     assert provider.calls == []
+
+
+def test_it_records_what_each_round_trip_sent_and_forgets_it_on_reset():
+    """The frontier tier reads the board a request showed against the offer it
+    carried (#315) — so what went over is kept per call, raising ones included."""
+    tools = [{"type": "function", "function": {"name": "undo"}}]
+    provider = CountingProvider(ScriptedProvider(text_turn("a")))
+
+    provider.chat(_USER, tools=tools)
+    provider.chat(_USER)
+
+    assert provider.requests == [
+        {"messages": _USER, "tools": tools},
+        {"messages": _USER, "tools": None},
+    ]
+    provider.reset()
+    assert provider.requests == []
