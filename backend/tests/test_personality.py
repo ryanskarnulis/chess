@@ -44,6 +44,15 @@ def test_composed_prompt_contains_the_app_base_layer():
     assert "You are not the referee" in SYSTEM_PROMPT
 
 
+def test_the_narrators_base_is_a_speaking_contract():
+    """The narrator holds no tools (#289): its base says what it may say, and
+    no longer tells it how to act."""
+    base = SYSTEM_PROMPT[: SYSTEM_PROMPT.index("Whatever app you're working in")]
+    assert "Describe only what the record shows" in base
+    assert "options you were given" in base
+    assert "tool" not in base.lower()
+
+
 def test_composed_prompt_contains_the_global_personality_layer():
     # Distinctive line from the canonical agent-standard/personality-global.md
     # (generic house-wide Glitch tone, not chess-specific).

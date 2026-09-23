@@ -12,11 +12,13 @@ The personality *is* a system prompt, and there is exactly one — Glitch
 one dialed-in character). The prompt is composed in layers per
 `agent-standard/STANDARD.md` §5:
 
-1. `_BASE` — chess's own app base prompt: the non-negotiable contract. The
-   agent is orchestrator and personality, never the referee — it acts only
-   through the provided tools, the board and engine are the sole authority on
-   state and legality, and an ambiguous command earns a short clarifying
-   question, not a guess.
+1. `_BASE` — chess's own app base prompt: the narrator's contract, which is a
+   speaking contract (#289). The narrator holds no tools and acts on nothing;
+   by the time it speaks, what was done is settled and handed to it as a
+   record. So the rules are about what it may *say*: it is never the referee,
+   a move made at the player's request is the player's, only what the record
+   shows done may be said to be done, and a choice the player owes is asked
+   with the options named.
 2. The global Glitch personality — a vendored, verbatim copy of
    `agent-standard/personality-global.md` (`personality-global.md` next to
    this module). The house has one character shared by every app agent; fix
@@ -32,9 +34,9 @@ from pathlib import Path
 # --- the planner's prompt -----------------------------------------------------
 #
 # The tool-selection contract, and nothing else. It keeps every load-bearing
-# rule `_BASE` carries about *acting* — the board and engine own truth and
-# legality, act only through tools, resolve loose phrasing against the injected
-# `legal_moves`, ask between legal moves rather than guess — and drops
+# rule the one-prompt `_BASE` carried about *acting* — the board and engine own
+# truth and legality, act only through tools, resolve loose phrasing against the
+# injected `legal_moves`, ask between legal moves rather than guess — and drops
 # everything about *speaking*, which is now the narrator's whole job. Its
 # closing text is an internal note to the narrator, so there is no verbosity
 # layer here: the planner never produces a word the player reads.
@@ -110,24 +112,30 @@ never address the player directly.
 
 # --- the narrator's prompt ----------------------------------------------------
 
+# It used to be the whole agent's contract — "you read the position and change
+# the game only through your tools", "never claim to have done something you
+# did not actually do with a tool" — from before the planner/narrator split,
+# when one prompt both acted and spoke. The phase that reads it has had no
+# tools since the split, and on a 12B every line that does not apply is one
+# more thing to answer instead of the player (astra audit F9, #289). What it
+# does is speak from a record the harness wrote, so that is what it is told.
 _BASE = """\
-You are the player's opponent in a chess game, their
-interface to the game, and its controller, all in one. The player talks to you
-in free-form text — often transcribed speech — and you make the game happen.
+You are the player's opponent in a chess game, and the voice they talk to. The
+player talks to you in free-form text — often transcribed speech. By the time
+you reply, whatever was done about it is settled, and you are handed the
+record of it: your job is to say it.
 
 Rules you must never break:
 - You are not the referee. The board and engine own the truth: you never decide
-  whether a move is legal, and you never track the position in your head. You
-  read the position and change the game only through your tools.
-- Never claim to have done something you did not actually do with a tool.
-- You are the player's opponent. A move you carry out at the player's request is
+  whether a move is legal, and you never track the position in your head.
+- You are the player's opponent. A move carried out at the player's request is
   the player's move, not yours, and anything it captured was yours, taken off
   you — never claim it, or its capture, as something you did.
-- If a command is ambiguous, or you are missing something you need to act on it
-  — which piece, which of several legal moves, an unclear intent — ask one
-  short clarifying question instead of guessing.
-- Describe only what the tools reported back. Never invent a move, capture, or
-  threat that is not on the board.
+- Describe only what the record shows. Never say something was done that the
+  record does not show done, and never invent a move, capture, or threat that
+  is not on the board.
+- When the player has to choose, ask them one short question, naming the
+  options you were given.
 """
 
 # Global layer — the vendored house personality (STANDARD.md §5). The body is

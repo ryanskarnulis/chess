@@ -21,9 +21,11 @@ from fastapi.testclient import TestClient
 from chessapp.api import (
     _REFRESH_KEYS,
     _agent_state_dict,
+    _narrator_state_dict,
     _relative_outcome,
     _verified_facts,
     create_app,
+    narrator_facts,
     planner_board_refresh,
 )
 from chessapp.coordinator import TurnCoordinator, TurnPhase
@@ -817,6 +819,93 @@ def test_the_refresh_view_follows_a_takeback_to_the_board_it_left():
     coordinator.abandon_turn()
 
     assert "e4" in planner_board_refresh(ctx, coordinator)["legal_moves"]
+
+
+# --- the narrator's facts (#289) -----------------------------------------------
+
+
+def test_the_narrator_facts_hold_no_side_to_move_and_no_history():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    coordinator = TurnCoordinator(ctx)
+
+    facts = narrator_facts(ctx, coordinator)
+
+    assert facts == {
+        "player_color": "white",
+        "in_check": False,
+        "game_over": False,
+        "outcome": None,
+        "captured": ctx.session.captured_pieces(),
+        "reply_owed": False,
+    }
+    assert set(facts) - {"reply_owed", "outcome"} <= set(_narrator_state_dict(ctx))
+
+
+def test_the_narrator_facts_say_when_a_reply_is_owed():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    coordinator = TurnCoordinator(ctx)
+
+    coordinator.apply_player_move("e4")
+    assert narrator_facts(ctx, coordinator)["reply_owed"] is True
+    coordinator.collect_engine_reply()
+    coordinator.complete_turn()
+    assert narrator_facts(ctx, coordinator)["reply_owed"] is False
+
+
+def test_the_narrator_facts_name_the_winner_from_the_players_side():
+    ctx = _mated("black")
+
+    outcome = narrator_facts(ctx, TurnCoordinator(ctx))["outcome"]
+
+    assert outcome == {"winner": "opponent", "termination": "checkmate"}
+
+
+def _replied(pending: bool):
+    """e4, then the engine's Nf6: the facts as the close beat builds them, with
+    the reaction spoken over the board between the two — or not."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    moved = ctx.session.submit_move("e4")
+    between = ctx.session.fen()
+    reply = ctx.session.submit_move("Nf6")
+    result = {"name": "make_move", "result": {"ok": True, "legal": True, "san": "e4"}}
+    assert moved.legal and reply.legal
+    return _verified_facts(
+        ctx, [result], reply, START_FEN, [between], between if pending else None
+    )
+
+
+def test_a_reply_owed_as_the_narrator_spoke_is_evidence_of_nothing():
+    """#289: the engine's options on the board the narrator spoke over, and its
+    actual reply, are what a narration spoken before the reply cannot know."""
+    facts = _replied(pending=True)
+
+    assert {"Nf6", "Nc6", "Nh6"} <= facts.unplayed_replies
+    assert "e4" not in facts.unplayed_replies, "the player's own move is history"
+    assert "Nf3" not in facts.unplayed_replies, "the player's options are not"
+    assert "Nf6" in facts.moves, "still a legal move, which is why it needs a class"
+
+
+def test_no_reply_pending_means_nothing_is_unplayed():
+    assert _replied(pending=False).unplayed_replies == frozenset()
+
+
+def test_the_turns_undo_and_new_game_are_the_takeback_and_restart_evidence():
+    ctx = ToolContext(session=GameSession())
+    ok = {"ok": True}
+    refused = {"ok": False, "error": "nothing to undo"}
+
+    ran = _verified_facts(
+        ctx,
+        [{"name": "undo", "result": ok}, {"name": "new_game", "result": ok}],
+        None,
+        START_FEN,
+    )
+    not_ran = _verified_facts(
+        ctx, [{"name": "undo", "result": refused}], None, START_FEN
+    )
+
+    assert ran.undone and ran.restarted
+    assert not not_ran.undone and not not_ran.restarted
 
 
 # --- the ending, from the player's side (astra audit F7, #287) ------------------

@@ -1356,17 +1356,21 @@ def test_a_count_from_the_board_the_narrator_saw_survives_the_guard():
     assert body["commentary"] == "Word, you're up a piece.\n\ndxc6."
 
 
-def test_a_move_only_the_observed_position_makes_legal_survives_the_guard():
-    """A move playable on a board the turn really held is a fact however the
-    narrator came to name it: Bb4 is Black's, playable only on the board the
-    reaction was written from. (That board's move list is no longer *handed* to
-    the narrator — #193 — but the guard's width stays: it exists to catch
-    invention, not tense, and the position was real.)"""
-    client, _ = traded_client("Bb4 and you're fine, dude.")
+def test_a_move_only_the_engine_could_play_mid_reply_is_guarded():
+    """Bb4 is Black's, playable only on the board the reaction was written
+    from — the board where the engine's reply was still being computed. That
+    used to survive: the guard is wide on purpose (it catches invention, not
+    tense), and the position was real. But a reaction naming a move only the
+    engine could play there is announcing a reply that does not exist yet, the
+    #193 shape, and since #289 that is its own class. The rewrite is asked
+    with the fact, and a rewrite that drops the move is spoken."""
+    client, _ = traded_client(
+        "Bb4 and you're fine, dude.", rewrites=("You're fine, dude.",)
+    )
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"].startswith("Bb4 and you're fine, dude.")
+    assert body["commentary"] == "You're fine, dude.\n\ndxc6."
 
 
 def test_the_direction_no_board_this_turn_backs_is_still_guarded():
@@ -1966,11 +1970,13 @@ def test_the_credit_follows_the_players_color():
 
 
 def test_the_engine_reply_is_credited_to_the_opponent():
-    """The reply lands in the turn's record as Glitch's move, so he may say he
-    played it — and the player may not be told they did."""
+    """The reply lands in the turn's record as Glitch's move — but a reaction
+    is spoken *before* the reply exists, so claiming it there is announcing a
+    move Stockfish had not chosen, true only when the guess matched (#289).
+    And the player may never be told they played it."""
     client, _ = traded_client("Word. I played dxc6.")
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
-    assert body["commentary"].startswith("Word. I played dxc6.")
+    assert body["commentary"] == "Bxc6. dxc6."
 
     client, _ = traded_client("Word. You played dxc6.")
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
