@@ -724,6 +724,33 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
 - **Honesty-guard false-positive sweep** (2026-07-25): `unverified_claims`
   over the 46 recorded live turns guards exactly the two known lies (2/46).
   Re-run the sweep when a fresh trace corpus exists.
+- **Placement and draw-shape sweep** (2026-09-22, #289 follow-up): the move
+  class learned where the pieces stand (a piece named on its own square is
+  placement) and the draw class reads result shapes only. Evidence taken
+  before either changed, on the deployed trace (236 turns, 2026-09-04..18,
+  230 drafts):
+  - every live guard firing was on a correct reply, 6/6, all since fixed:
+    rows 38–40 capture on a hint (#250), 15 and 122 advice (the 2026-09-06
+    inversion), 136 ending on "checkmate's looking real close" (the
+    `close`/`looking` hedges);
+  - re-judged by the current guard, the drafts fire only on the two real lies
+    (rows 50 and 54, "talk more" narrated with no `set_verbosity` call), the
+    same before and after this change; the draw pattern matches nothing in
+    the trace on either side of it;
+  - no draw lie appears anywhere in the record (2026-07-13 review, both audits,
+    the walkthrough), while a probe of the old class fired on most ways of
+    narrating a *declined* offer ("I turned down the draw", "Engine declined
+    the draw") and missed "Draw agreed." — the lie on a decline, which the new
+    shapes catch.
+  The labeled corpus is `test_honesty.py`'s placement and draw tables (both
+  gate misfires — the draw line verbatim, the placement list rebuilt from its
+  elided record; 6 must-not-fire placement lines and 5 must-fire move lines
+  beside them, 8 draw mentions that must not fire, 11 draw reports that fire
+  live and pass on a drawn game, 2 over a checkmate), plus an end-to-end
+  `test_api.py` test of the placements `_verified_facts` builds, passing by
+  construction. The trade: a draw report in a shape
+  outside the list, and a bare SAN naming a piece on the square it already
+  holds, now go through.
 - **Action and unplayed-reply sweep** (2026-09-22, #289): the three new guard
   classes — `takeback` and `restart` (checked against the turn's own `undo` /
   `new_game`) and `unplayed_reply` (a SAN the engine could play on the board

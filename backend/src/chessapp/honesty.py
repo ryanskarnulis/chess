@@ -271,6 +271,14 @@ class VerifiedFacts:
     some other way (`api._verified_facts`). Empty unless a reply was owed as
     the narrator spoke. `moves` still holds them — they were legal — which is
     exactly why they need a class of their own.
+
+    `placements` is where the pieces stand: `"Ke1"`, `"Nf3"` for every piece
+    but a pawn, either colour, on any board the turn held. A piece named on
+    its own square is placement and not a move — no move list holds `Ke1`
+    for a king on e1, because a king cannot move to the square it stands on,
+    so a position read out in piece-letter notation was a string of invented
+    moves to the move class (#289's gates, 2026-09-22). Empty for a caller
+    that supplies none, which leaves the move class exactly as it was.
     """
 
     ended: bool = False
@@ -292,6 +300,7 @@ class VerifiedFacts:
     undone: bool = False
     restarted: bool = False
     unplayed_replies: frozenset[str] = frozenset()
+    placements: frozenset[str] = frozenset()
 
 
 _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
@@ -365,11 +374,28 @@ _CHECK = re.compile(
 # exactly the symmetrical positions that earn the word, so it is now read only
 # with the game as its subject. The other spellings are unambiguous reports
 # already: nobody says "we drew" about a position.
+#
+# The noun is the same wrinkle one word over (#303's gate, 2026-09-22). A draw
+# is something offered, declined, called too early — "the engine says it's too
+# early to call it a draw" explained a declined offer correctly and was cut,
+# because `(a|the) draw` read every mention as the result. So the class reads
+# only the shapes that say the game *came to* one: a verdict with a subject
+# ("that's a draw", "the game is drawn"), an ending ("ended in a draw", "we
+# called it a draw", "draw by repetition"), and the handshake ("draw agreed",
+# "a draw it is") — which the noun reading, for all its width, never caught,
+# and which is exactly the lie on a declined offer. A draw report in some other
+# shape now goes through; a real draw carries the app's own ending line anyway.
 _DRAW = re.compile(
     r"""
     \b(?: stalemate
-        | (?: a | the ) \s+ draw
-        | (?: game | match ) \s* (?: is | 's | was ) \s+ drawn
+        | (?: it | that | this ) (?: 's | \s+ is | \s+ was ) \s+ a \s+ draw
+        | (?: game | match ) \s* (?: is | 's | was ) \s+ (?: drawn | a \s+ draw )
+        | end (?: s | ed )? \s+ in \s+ a \s+ draw
+        | called \s+ (?: it | the \s+ game ) \s+ a \s+ draw
+        | draw \s+ by \s+ (?: agreement | repetition | stalemate | insufficient
+                            | the \s+ fifty | fifty )
+        | draw \s+ (?: agreed | accepted )
+        | a \s+ draw \s+ it \s+ is
         | (?: we | it ) \s+ (?: drew | tied )
         | split (?: ting )? \s+ (?: it | the \s+ point )
     )\b
@@ -670,8 +696,19 @@ def _names(claimed: str, sans: Iterable[str]) -> bool:
     return any(san.rstrip("+#") == bare for san in sans)
 
 
+# A piece letter and a square, and nothing else: the only SAN shape that is
+# also how a piece's position is written down. A capture, a disambiguator, a
+# promotion or a check mark names an event, never where something stands.
+_PLACEMENT = re.compile(r"[KQRBN][a-h][1-8]")
+
+
 def _move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
-    return _names(match.group(0), facts.moves)
+    """Whether the move named is one the turn accounts for — or no move at all,
+    but a piece named on the square it stands on (`VerifiedFacts.placements`)."""
+    claimed = match.group(0)
+    if _PLACEMENT.fullmatch(claimed) and claimed in facts.placements:
+        return True
+    return _names(claimed, facts.moves)
 
 
 def _owned_move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:

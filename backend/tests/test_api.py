@@ -31,6 +31,7 @@ from chessapp.api import (
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.engine import DEFAULT_TIER, CandidateMove, EnginePlayer
 from chessapp.game import GameSession
+from chessapp.honesty import unverified_claims
 from chessapp.tools import ToolContext, build_registry
 from fakes import FakeEngine
 
@@ -887,6 +888,22 @@ def test_a_reply_owed_as_the_narrator_spoke_is_evidence_of_nothing():
 
 def test_no_reply_pending_means_nothing_is_unplayed():
     assert _replied(pending=False).unplayed_replies == frozenset()
+
+
+def test_placements_name_every_non_pawn_piece_on_every_board_the_turn_held():
+    """The move class's placement evidence: a piece named on its own square
+    is where it stands, not a move — on the board now, or one the turn held."""
+    ctx = ToolContext(session=GameSession())
+    assert ctx.session.submit_move("Nf3").legal
+    before = ctx.session.fen()
+    assert ctx.session.submit_move("Nc6").legal
+
+    facts = _verified_facts(ctx, [], None, before)
+
+    assert {"Ke1", "Qd1", "Nf3", "Ke8", "Nc6", "Nb8"} <= facts.placements
+    assert all(p[0] in "KQRBN" for p in facts.placements), "no pawns"
+    assert "Ng1" not in facts.placements, "g1 emptied before this turn"
+    assert unverified_claims("White: Ke1, Qd1, Nf3. Black: Ke8, Nc6.", facts) == ()
 
 
 def test_the_turns_undo_and_new_game_are_the_takeback_and_restart_evidence():

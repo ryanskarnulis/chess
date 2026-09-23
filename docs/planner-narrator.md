@@ -137,6 +137,16 @@ hint asks to the engine (`advice_is_engine_backed` measures it). Before the
 inversion the guard ate a correct London answer and a refused move's own
 list of alternatives (live, 2026-09-04 and 2026-09-06).
 
+Two more classes were narrowed on 2026-09-22, after #289's gates caught them
+cutting correct answers. The move class knows where the pieces stand
+(`VerifiedFacts.placements`): a piece named on its own square — "White: Ke1,
+Qd1, …", asked to show the position — is placement, not a move nobody could
+play. The draw class reads only the shapes that report a result ("that's a
+draw", "ended in a draw", "draw agreed"), not the noun somebody offered,
+declined or called too early for. Every live guard firing in the deployed
+trace had been on a correct reply (6/6, all fixed earlier), so the guard errs
+toward letting a reply through when it cannot tell a report from talk.
+
 ## The handoff (#289, 2026-09-22)
 
 The narrator used to close from the raw results and the planner's free-form
