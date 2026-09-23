@@ -125,6 +125,7 @@ Model-specific quirks, split across the two layers:
   turn needs (#283).
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -395,6 +396,26 @@ class LlamaBrain:
     # `board_refresh` exists, one phase later. `None` (unwired, or a closure
     # that raised) closes the turn from the results alone, as it did before.
     narrator_facts: Callable[[], dict[str, Any] | None] | None = None
+    # What this brain talks to, by name — `{"model", "server"}`, filled in by
+    # `create_llama_brain`, which is the one place that knows them (the
+    # provider is a protocol and keeps its own private). Empty for a brain
+    # built around an injected provider with nothing to name.
+    serving_labels: dict[str, str] = field(default_factory=dict)
+
+    def serving_identity(self) -> dict[str, str]:
+        """What would serve a turn right now, as the trace records it (#290):
+        short hashes of the planner prompt, the narrator prompt and the offered
+        tool schemas, resolved through the same seams a command reads them by,
+        beside `serving_labels`. Hashes rather than the texts because the point
+        is telling two baselines' configurations apart, and a 12-character
+        digest does that in a record read by eye."""
+        tools = json.dumps(_resolve(self.tool_definitions), sort_keys=True)
+        return {
+            "planner_prompt": _digest(self._resolve_planner_prompt()),
+            "narrator_prompt": _digest(self._resolve_system_prompt()),
+            "tool_schemas": _digest(tools),
+            **self.serving_labels,
+        }
 
     def _resolve_system_prompt(self) -> str:
         """The narrator's system prompt for this request. A callable is
@@ -1043,6 +1064,11 @@ class LlamaBrain:
         ]
 
 
+def _digest(text: str) -> str:
+    """A short, stable fingerprint of one piece of configuration."""
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
 def _estimate_tokens(
     messages: Sequence[dict[str, Any]], tools: Sequence[dict[str, Any]] = ()
 ) -> int:
@@ -1338,4 +1364,5 @@ def create_llama_brain(
         on_phase=on_phase,
         board_refresh=board_refresh,
         narrator_facts=narrator_facts,
+        serving_labels={"model": model, "server": base_url},
     )

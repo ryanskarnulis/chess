@@ -32,6 +32,7 @@ import inspect
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -681,12 +682,18 @@ class ToolRegistry:
     dispatch for the same reason: this is the one road every model-initiated
     mutation takes, so a board document published from here is one the game
     really reached. A handler that moved the board and then refused still
-    moved it, so the report is owed either way."""
+    moved it, so the report is owed either way.
+
+    `on_tool_done` is told each call that ran and how long its handler took,
+    in whole milliseconds (#290): the trace's `tool` span. The handler's time
+    and nothing else — a call refused before it reached one did no work worth
+    timing, which is `on_tool`'s rule too."""
 
     _tools: dict[str, Tool] = field(default_factory=dict)
     context: "ToolContext | None" = None
     on_tool: "Callable[[str], None] | None" = None
     on_mutation: "Callable[[], None] | None" = None
+    on_tool_done: "Callable[[str, int], None] | None" = None
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -788,6 +795,7 @@ class ToolRegistry:
         # work nobody did is worse than none.
         self._report(name)
         version_before = None if self.context is None else self.context.board_version
+        started = time.monotonic()
         try:
             return tool.handler(**args)
         except ToolError as exc:
@@ -819,6 +827,7 @@ class ToolRegistry:
                 and self.context.board_version != version_before
             ):
                 self._report_mutation()
+            self._report_done(name, round((time.monotonic() - started) * 1000))
 
     def _report(self, name: str) -> None:
         """Tell the observer, and never let that cost the call. Same rule the
@@ -829,6 +838,15 @@ class ToolRegistry:
             self.on_tool(name)
         except Exception:
             logger.warning("tool_observer_failed", exc_info=True)
+
+    def _report_done(self, name: str, elapsed_ms: int) -> None:
+        """Same rule as `_report`: a lost timing is not a lost tool call."""
+        if self.on_tool_done is None:
+            return
+        try:
+            self.on_tool_done(name, elapsed_ms)
+        except Exception:
+            logger.warning("tool_timing_observer_failed", exc_info=True)
 
     def _report_mutation(self) -> None:
         """Same rule as `_report`: a lost board frame is not a lost move."""

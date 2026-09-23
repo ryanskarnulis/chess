@@ -1541,6 +1541,38 @@ async def _honest_words(
     )
 
 
+def _ms_since(started: float) -> int:
+    """Whole milliseconds since `started` (`time.monotonic()`), never negative —
+    the resolution and type the trace reads every duration in."""
+    return max(0, round((time.monotonic() - started) * 1000))
+
+
+@dataclass
+class _Spans:
+    """Where one request's wall clock went outside the model (#290).
+
+    Opened by `_mutation` the moment a request asks for the lock, so `queue`
+    — the wait behind another turn — is measured by the one piece of code that
+    waits, and `total` runs from the player's side of that wait. The other
+    phases are added as the turn reaches them (`tool` by the registry's timing
+    observer, `engine` around the reply's collect, `guard` around the honesty
+    check) and summed, because a turn can pass through one more than once.
+
+    Model time is not a span here: the trace already has it per call
+    (`model_latencies_ms`), and a second copy summed another way is a second
+    number that can disagree.
+    """
+
+    started: float
+    ms: dict[str, int] = dc_field(default_factory=dict)
+
+    def add(self, phase: str, elapsed_ms: int) -> None:
+        self.ms[phase] = self.ms.get(phase, 0) + max(0, elapsed_ms)
+
+    def as_trace(self) -> dict[str, int]:
+        return {**self.ms, "total": _ms_since(self.started)}
+
+
 @dataclass(frozen=True)
 class _ModelCost:
     """What one turn spent at the provider boundary, whichever route spent it.
@@ -1585,8 +1617,7 @@ class _ModelCost:
         """One round trip that raised out of the brain — a dead provider or a
         reaction the app stopped waiting for — timed from `started`
         (`time.monotonic()`) by the caller, the only one still around to."""
-        elapsed = max(0, round((time.monotonic() - started) * 1000))
-        return cls(calls=1, latencies_ms=(elapsed,), unmetered=1)
+        return cls(calls=1, latencies_ms=(_ms_since(started),), unmetered=1)
 
     def plus(self, other: "_ModelCost") -> "_ModelCost":
         """Two phases of one turn, added. The confirmation route can now spend
@@ -1761,6 +1792,7 @@ def create_app(
     coordinator: TurnCoordinator | None = None,
     progress: ProgressReporter | None = None,
     reaction_budget: float = _REACTION_BUDGET_S,
+    serving_identity: Callable[[], dict[str, str]] | None = None,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
     does), so what the agent is offered is exactly what the app runs; omit it
@@ -1784,7 +1816,12 @@ def create_app(
     `reaction_budget` is how many seconds Glitch's optional words get before the
     turn goes on without them (`_REACTION_BUDGET_S`, and see `_narrate`). A
     parameter so a test can hand it a fraction of a second instead of sleeping
-    through the real one."""
+    through the real one.
+
+    `serving_identity` answers what serves a turn — prompt and tool-schema
+    hashes, model and server (`LlamaBrain.serving_identity`) — and every trace
+    record carries it (#290). App assembly wires it to the brain it built;
+    omit it and records say `None`."""
     app = FastAPI(title="chessapp", lifespan=lambda _app: _lifespan())
     broadcaster = StateBroadcaster()
     if coordinator is None:
@@ -1864,6 +1901,24 @@ def create_app(
     # `_command_window` owns it at both ends; the honesty guard reads it (see
     # `_verified_facts`).
     command_boards: list[str] | None = None
+    # The request holding the mutation lock, timed (#290): opened by
+    # `_mutation` before it waits, closed when it lets go, so there is at most
+    # one and whatever runs under the lock — a tool, a collect, the guard —
+    # adds to the right request's spans. `None` outside the lock.
+    current_spans: _Spans | None = None
+
+    def _add_span(phase: str, elapsed_ms: int) -> None:
+        """Charge time to the request under the lock; nothing outside one."""
+        if current_spans is not None:
+            current_spans.add(phase, elapsed_ms)
+
+    @contextmanager
+    def _span(phase: str) -> Iterator[None]:
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            _add_span(phase, _ms_since(started))
 
     def _record_mutation() -> None:
         """Remember the board the call left, then publish it.
@@ -1887,6 +1942,8 @@ def create_app(
     # reaches the board when it is validated rather than when the turn ends —
     # while Glitch reacts and Stockfish thinks (`docs/turn-coordinator.md`).
     registry.on_mutation = _record_mutation
+    # Every tool handler's time, charged to the request running it (#290).
+    registry.on_tool_done = lambda _name, elapsed_ms: _add_span("tool", elapsed_ms)
     store = ConversationStore()
 
     @asynccontextmanager
@@ -1998,13 +2055,20 @@ def create_app(
         deadlock. Acquiring off-loop means a waiting request costs a parked
         thread and nothing else.
         """
+        nonlocal current_spans
+        requested = time.monotonic()
         await anyio.to_thread.run_sync(ctx.mutation_lock.acquire)
+        # Set only once the lock is held, so the one request that may write
+        # `current_spans` is the one holding it.
+        current_spans = _Spans(started=requested)
+        current_spans.add("queue", _ms_since(requested))
         try:
             if expected is not None and expected != ctx.board_version:
                 current = ctx.board_version
                 raise StaleVersionError(expected, current, _state_dict_unlocked(ctx))
             yield
         finally:
+            current_spans = None
             ctx.mutation_lock.release()
 
     @app.get("/api/state")
@@ -2108,7 +2172,8 @@ def create_app(
         engine_failure = ""
         if owed_reply:
             try:
-                engine_reply = coordinator.collect_engine_reply()
+                with _span("engine"):
+                    engine_reply = coordinator.collect_engine_reply()
             except Exception as exc:
                 # Stockfish died with the player's move already committed and
                 # broadcast, so the failure is not this request's to fail on
@@ -2188,6 +2253,7 @@ def create_app(
                 # is nothing in it to guard and everything to lose by taking it
                 # back with the reaction. No advice licence: the board moved,
                 # so a move named here is a reaction to it.
+                guard_started = time.monotonic()
                 verdict = await _honest_words(
                     brain,
                     _offloop,
@@ -2207,6 +2273,10 @@ def create_app(
                     None,
                     transcript,
                     {"move": move, "correlation_id": correlation_id},
+                )
+                # The guard's own time; its rewrite is model time (#290).
+                _add_span(
+                    "guard", _ms_since(guard_started) - sum(verdict.cost.latencies_ms)
                 )
                 commentary = _move_commentary(
                     verdict.text,
@@ -2725,9 +2795,28 @@ def create_app(
             # route's record says how the game stood when the turn was over,
             # so a finished game's commentary can be re-judged from the trace.
             fields.setdefault("outcome", _relative_outcome(ctx.session))
+            # Written from under the lock on every route, so the spans are
+            # this request's; `total` is read now, as the record is made.
+            fields.setdefault(
+                "spans_ms",
+                current_spans.as_trace() if current_spans is not None else None,
+            )
+            fields.setdefault("serving", _serving())
             tracer.record(turn_record(**fields))
         except Exception:
             logger.warning("trace_failed", exc_info=True)
+
+    def _serving() -> dict[str, str] | None:
+        """What served this turn, or None — and never let asking cost the
+        record: the identity resolves the live prompts and tool offer, and a
+        seam that raises there must lose one field, not the whole trace."""
+        if serving_identity is None:
+            return None
+        try:
+            return serving_identity()
+        except Exception:
+            logger.warning("serving_identity_failed", exc_info=True)
+            return None
 
     @contextmanager
     def _command_window(correlation_id: str, turn_id: int) -> Iterator[None]:
@@ -3166,7 +3255,10 @@ def create_app(
                 ):
                     owed_reply = True
                     try:
-                        engine_reply = await _offloop(coordinator.collect_engine_reply)
+                        with _span("engine"):
+                            engine_reply = await _offloop(
+                                coordinator.collect_engine_reply
+                            )
                     except Exception as exc:
                         # The player's move is committed and broadcast, so an
                         # engine that dies here is not this command's failure to
@@ -3259,6 +3351,7 @@ def create_app(
                         legal=legal,
                         evidence=frozenset(evidence),
                     )
+                guard_started = time.monotonic()
                 verdict = await _honest_words(
                     brain,
                     _offloop,
@@ -3274,6 +3367,10 @@ def create_app(
                     advice,
                     transcript,
                     {"text": text, "correlation_id": correlation_id},
+                )
+                # The guard's own time; its rewrite is model time (#290).
+                _add_span(
+                    "guard", _ms_since(guard_started) - sum(verdict.cost.latencies_ms)
                 )
                 commentary = verdict.text
                 cost = cost.plus(verdict.cost)

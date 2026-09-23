@@ -122,6 +122,9 @@ def build_app(
         """
         return brain_tool_definitions(registry, ctx)
 
+    # What serves a turn, for the trace (#290). Only the brain built here can
+    # say: an injected one brings no guarantee it knows its prompts or server.
+    serving_identity = None
     if brain is None and agent_enabled:
         brain = create_llama_brain(
             base_url=llama_base_url,
@@ -153,6 +156,9 @@ def build_app(
             # the narrator may state, and whether the reply is still owed.
             narrator_facts=lambda: narrator_facts(ctx, coordinator),
         )
+        # Read off rather than assumed: a factory stubbed out in tests hands
+        # back a brain with nothing to say about what serves it.
+        serving_identity = getattr(brain, "serving_identity", None)
     return create_app(
         ctx,
         brain=brain,
@@ -162,6 +168,7 @@ def build_app(
         tracer=tracer,
         coordinator=coordinator,
         progress=progress,
+        serving_identity=serving_identity,
     )
 
 

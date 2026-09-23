@@ -99,6 +99,8 @@ def turn_record(
     completion_tokens: int = 0,
     model_latencies_ms: Sequence[int] = (),
     unmetered_calls: int = 0,
+    spans_ms: dict[str, int] | None = None,
+    serving: dict[str, str] | None = None,
     state_refreshes: Sequence[int] = (),
     handoff: dict[str, Any] | None = None,
     budget: str = "",
@@ -197,6 +199,23 @@ def turn_record(
     a slow planner and a slow narrator are different problems, and the turn's
     total cannot tell them apart.
 
+    `spans_ms` is where the turn's wall clock went outside the model (#290),
+    whole milliseconds per phase, a key present only for a phase that ran:
+    `queue` (waiting for the mutation lock behind another request), `tool`
+    (tool handlers, analysis included — Stockfish asked *by a tool* is tool
+    time), `engine` (collecting the engine's reply to the player's move),
+    `guard` (the honesty guard, less its rewrite's model time, which is already
+    in `model_ms`), and `total` (from asking for the lock to writing this
+    record). Model time is `model_ms` and is not repeated here. Speech is not a
+    span: text-to-speech is its own request, after the turn. `None` on a record
+    built outside a request.
+
+    `serving` is what served the turn, so two baselines can be tied to a
+    configuration: short hashes of the planner prompt, the narrator prompt and
+    the offered tool schemas, as they resolve when the record is written, beside
+    the model name and the server URL. `None` when the app was not assembled
+    with a model behind it (direct mode, an injected test brain).
+
     `origin` is which surface the interaction came from — `tools.PANEL_ORIGIN`
     for the panel and its buttons, `tools.delegate_origin(id)` for one delegate
     conversation — empty only on a record built without one. It is the field a
@@ -273,6 +292,8 @@ def turn_record(
         "completion_tokens": completion_tokens,
         "model_ms": sum(model_latencies_ms),
         "model_latencies_ms": list(model_latencies_ms),
+        "spans_ms": spans_ms,
+        "serving": serving,
         "fen_before": fen_before,
         "fen_after": fen_after,
         "engine_reply": engine_reply,
