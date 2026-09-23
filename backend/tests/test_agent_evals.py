@@ -128,7 +128,7 @@ import os
 import re
 import subprocess
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -159,7 +159,7 @@ from chessapp.tools import (
     Settings,
     ToolContext,
     _save_path,
-    brain_tool_exclusions,
+    brain_tool_definitions,
     build_registry,
     saved_game_names,
 )
@@ -512,7 +512,7 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         # here would measure a different agent than the one that ships — and a
         # bigger tool list is itself a variable (the 2026-07-13 trace review
         # saw capture phrasings behave differently under the two lists).
-        return registry.definitions(exclude=brain_tool_exclusions(ctx))
+        return brain_tool_definitions(registry, ctx)
 
     brain = create_llama_brain(
         base_url=LLAMACPP_BASE_URL,
@@ -1212,14 +1212,29 @@ def test_eval_judgment_question_routes_through_analysis(eval_app: EvalApp) -> No
     assert run.duration < _ANALYSIS_CEILING_S
 
 
+def _assert_names_every_candidate(content: str, candidates: Sequence[str]) -> None:
+    """Acceptance 2 of #289: a clarification reaches the player with its
+    candidates intact. Each one counts as named by its SAN or by its
+    destination square — "f3 or h3?" asks the same question "Nf3 or Nh3?"
+    does — and a question that drops one ("which rook?") does not."""
+    missing = [
+        san
+        for san in candidates
+        if san not in content and san.rstrip("+#")[-2:] not in content
+    ]
+    assert not missing, f"the question dropped {missing}: {content!r}"
+
+
 def test_eval_ambiguous_move_asks_instead_of_guessing(engine: EnginePlayer) -> None:
     """ "move the rook" in a position with several mobile rooks is genuinely
     ambiguous — the agent must ask, not guess a move. (1. a4 a5 2. h4 h5 opens
     both White rook files; White to move, four rook moves available.)
 
-    The cheapest brain-routed turn there is: the planner declines to call
-    anything and says what to ask, then the narrator asks it — two calls, no
-    tools dispatched.
+    The cheapest brain-routed turn there is: the planner calls `ask_player`
+    with the moves that fit, which ends its phase, then the narrator asks —
+    two calls, nothing moved. Since #289 the question has to name every
+    candidate (by SAN or square): on the old planner, whose question lived in a
+    free-form note, it came back "which rook and which square?" 20/20.
 
     The question has to *reach the player* to be worth anything, which is why
     the guard verdict is asserted beside the board (audit 2026-09-05: this
@@ -1260,14 +1275,17 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(engine: EnginePlayer) -> N
             "a question turn must not change a setting the player owns"
         )
         assert assistant["content"], "expected a clarifying question"
+        _assert_names_every_candidate(
+            assistant["content"], ("Ra2", "Ra3", "Rh2", "Rh3")
+        )
         traced = app.tracer.last
         assert traced.get("guarded") is not True, (
             "the player got a correction, not a question "
             f"({','.join(traced.get('guarded_claims') or ())}): "
             f"{traced.get('suppressed')!r}"
         )
-        # The planner's decline plus the narrator's question, and the decline
-        # is a parse: thinking stays off on the first call.
+        # The planner's ask plus the narrator's question, and the ask is a
+        # parse: thinking stays off on the first call.
         assert len(app.provider.calls) == 2, (
             "expected the planner's decline plus the narrator's question, "
             f"got {len(app.provider.calls)} calls"
@@ -3344,6 +3362,7 @@ def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
             "expected the planner's decline plus the narrator's question, got "
             f"{ask['model_calls']} model calls"
         )
+        _assert_names_every_candidate(ask["assistant"]["content"], ("Nf3", "Nh3"))
         # The selection.
         assert len(_legal_moves(assistant)) == 1, (
             "expected exactly one accepted move: "

@@ -17,9 +17,10 @@ narrator reads the sorted record with an explicit "Done this turn: nothing."
 when nothing was, and the facts it may state arrive fresh from the app
 (`facts`), not reconstructed from whichever results happened to carry a board.
 
-Telling an answer from a clarification is language, so it is not attempted
-here: both are `reply`, a turn that called no tool. That distinction is the
-model's to declare (`docs/planner-narrator.md`, "The handoff").
+Telling an answer from a clarification is language, so the harness does not
+guess at it: the planner declares a clarification by calling `ask_player`
+with the legal moves the player's words fit, and that turn is `clarify` with
+those `candidates`. A turn that called nothing at all is `reply`.
 
 `narrator_result_view` is the second half: one projection of a tool result for
 every narrator brief. `undo`, `new_game` and `resume_game` answer with `fen`
@@ -68,7 +69,11 @@ READ_TOOLS = frozenset(
 # declared itself done, so a turn that also changed something is `partial`.
 _UNFINISHED_STOPS = frozenset({"no_progress", "length"})
 
-Kind = Literal["completed", "partial", "declined", "reply"]
+Kind = Literal["completed", "partial", "declined", "reply", "clarify"]
+
+# The planner's clarification (`tools.ASK_PLAYER`). Named here as a string, as
+# the reads are, because this module imports nothing from the tool layer.
+_ASK = "ask_player"
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,8 @@ class Handoff:
     reply_owed: bool = False
     facts: Mapping[str, Any] = field(default_factory=dict)
     note: str = ""
+    # The legal moves the player must choose between, on a `clarify` turn.
+    candidates: tuple[str, ...] = ()
 
     def trace(self) -> dict[str, Any]:
         """The handoff as the turn record keeps it: enough to re-judge a
@@ -112,6 +119,7 @@ class Handoff:
             "refused": [entry.tool for entry in self.refused],
             "consulted": [entry.tool for entry in self.consulted],
             "reply_owed": self.reply_owed,
+            "candidates": list(self.candidates),
         }
 
 
@@ -143,20 +151,28 @@ def build(
       finished.
     - `completed`: every call that was made landed. A turn that only looked
       things up is `completed` too — it did everything it set out to.
+    - `clarify`: the planner asked the player to choose (`ask_player`
+      landed), whatever else the batch did. The candidates are the tool's,
+      validated against the board, never the note's.
     """
     performed: list[Entry] = []
     refused: list[Entry] = []
     consulted: list[Entry] = []
+    candidates: list[str] = []
     for ref, entry in enumerate(tool_results, start=1):
         name, result = entry["name"], entry["result"]
-        if _refused(result):
+        if name == _ASK and not _refused(result):
+            candidates.extend(result.get("candidates", ()))
+        elif _refused(result):
             refused.append(Entry(ref, name, _refusal_reason(result)))
         elif name in READ_TOOLS:
             consulted.append(Entry(ref, name))
         else:
             performed.append(Entry(ref, name))
     kind: Kind
-    if not tool_results:
+    if candidates:
+        kind = "clarify"
+    elif not tool_results:
         kind = "reply"
     elif not performed:
         kind = "declined" if refused else "completed"
@@ -172,6 +188,7 @@ def build(
         reply_owed=reply_owed,
         facts=dict(facts or {}),
         note=note,
+        candidates=tuple(dict.fromkeys(candidates)),
     )
 
 
@@ -227,6 +244,12 @@ def render(
         )
     if handoff.consulted:
         record.append(f"Looked up: {_refs(handoff.consulted)}.")
+    if handoff.candidates:
+        record.append(
+            "The player has to choose between: "
+            + ", ".join(handoff.candidates)
+            + ". Ask them which one they mean, naming each."
+        )
     if handoff.reply_owed:
         record.append(
             "The engine has not played its reply to the player's move yet; "

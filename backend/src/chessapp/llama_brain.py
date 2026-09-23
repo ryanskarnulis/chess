@@ -238,6 +238,10 @@ _ANALYSIS_TOOLS = frozenset(
     {"evaluate_position", "get_best_moves", "analyze_last_move"}
 )
 
+# The planner's clarification (`tools.ASK_PLAYER`): the one call that ends the
+# planning phase by itself, because what it asks for only the player can answer.
+_ASK_PLAYER = "ask_player"
+
 # The handoff note for a turn the *loop* ended (`no_progress`) rather than the
 # planner. The planner never reached the turn that writes one, and handing the
 # narrator a brief with no note at all was measured to cost real seconds: with
@@ -459,6 +463,15 @@ class LlamaBrain:
             # Before the two branches below deliberately: the message is simply
             # never sent on a turn that returns, and the alternative is a second
             # copy of the condition.
+            if any(
+                r["name"] == _ASK_PLAYER and r["result"].get("ok") is True
+                for r in run.tool_results
+            ):
+                # The planner asked the player to choose (#289): the question is
+                # the turn's answer, and no further iteration can bring the
+                # player's choice back. Terminal by construction, so a planner
+                # that asked cannot go on to play one of the candidates anyway.
+                return self._close(run, command, "", transcript)
             current = self._current_board()
             version = _board_version_of(current)
             if current is not None and version != shown:

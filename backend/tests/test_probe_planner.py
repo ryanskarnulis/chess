@@ -371,3 +371,23 @@ def test_block_reports_join_into_one_arm_table() -> None:
     text = campaign_report.format_table(table, ["a", "b"])
     assert "`knight` | 13/15 (5, 3, 5) | 7/10 (3, 4)" in text
     assert "`rook` | — | 5/5 (5)" in text
+
+
+def test_the_asks_rule_passes_a_question_either_way():
+    """#289: an ambiguous ask passes on no tool call or on `ask_player`, and on
+    nothing else — playing one of the candidates is still the miss."""
+    rule = ("asks",)
+    assert passes(rule, [])
+    assert passes(rule, [{"name": "ask_player", "args": {"candidates": ["a", "b"]}}])
+    assert not passes(rule, [{"name": "make_move", "args": {"move": "Nf3"}}])
+
+
+def test_a_drop_tool_arm_offers_everything_but_that_tool():
+    arm = parse_arm("noask:drop_tool=ask_player")
+    offer = [
+        {"type": "function", "function": {"name": "make_move"}},
+        {"type": "function", "function": {"name": "ask_player"}},
+    ]
+    assert [d["function"]["name"] for d in arm.offer(offer)] == ["make_move"]
+    with pytest.raises(SystemExit):
+        parse_arm("x:drop_tool=nope").offer(offer)

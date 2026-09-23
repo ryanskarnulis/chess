@@ -34,7 +34,7 @@ from chessapp.llama_brain import _PLANNER_TEMPERATURE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider
-from chessapp.tools import ToolContext, brain_tool_exclusions, build_registry
+from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
 from chessapp.trace import JsonlTracer, Tracer
 from chessapp.voice import (
     DEFAULT_STT_MODEL,
@@ -115,12 +115,12 @@ def build_app(
 
     def offered_tools() -> list[dict[str, Any]]:
         """What the brain may call this command, resolved live off the shared
-        context by `brain_tool_exclusions` — the pure reads always, plus
+        context by `brain_tool_definitions` — the pure reads always, plus
         whatever the app already knows the answer to (no claimable draw).
         Callers with no such injection (MCP, the delegate wire, /api/game/hint)
         keep the full registry.
         """
-        return registry.definitions(exclude=brain_tool_exclusions(ctx))
+        return brain_tool_definitions(registry, ctx)
 
     if brain is None and agent_enabled:
         brain = create_llama_brain(

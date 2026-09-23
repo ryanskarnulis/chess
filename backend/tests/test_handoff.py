@@ -169,4 +169,45 @@ def test_the_trace_names_tools_and_not_results():
         "refused": ["new_game"],
         "consulted": ["evaluate_position"],
         "reply_owed": True,
+        "candidates": [],
     }
+
+
+# --- the typed clarification (#289, PR 2) ------------------------------------
+
+ASKED = {"name": "ask_player", "result": {"ok": True, "candidates": ["Nf3", "Nh3"]}}
+ASK_REFUSED = {
+    "name": "ask_player",
+    "result": {"ok": False, "error": "not legal here: Qh5", "retry": "different_args"},
+}
+
+
+def test_an_ask_that_landed_is_a_clarification_with_its_candidates():
+    handoff = build([ASKED], note="asked which knight")
+
+    assert handoff.kind == "clarify"
+    assert handoff.candidates == ("Nf3", "Nh3")
+    assert handoff.performed == () and handoff.consulted == ()
+
+
+def test_a_refused_ask_is_a_refusal_and_not_a_clarification():
+    handoff = build([ASK_REFUSED])
+
+    assert handoff.kind == "declined"
+    assert handoff.candidates == ()
+
+
+def test_the_clarification_brief_names_every_candidate():
+    brief = render(build([ASKED]), "move my kings knight", [ASKED])
+
+    assert "Done this turn: nothing." in brief
+    assert "The player has to choose between: Nf3, Nh3." in brief
+    assert "naming each" in brief
+
+
+def test_the_split_registry_classifies_ask_player_apart():
+    registry = build_registry(
+        ToolContext(session=GameSession(), engine=FakeEngine()), atomic_exchange=False
+    )
+    names = {d["function"]["name"] for d in registry.definitions()}
+    assert "ask_player" in names and "ask_player" not in READ_TOOLS
