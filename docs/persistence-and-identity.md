@@ -15,6 +15,7 @@ Under `CHESSAPP_SAVE_DIR` (the `/data/saves` volume in the container):
 | `settings.json` | difficulty, verbosity, voice | on every settings change, best-effort |
 | `games/<name>.json` | a named save: the game plus the panel transcript | by `save_game`, atomically |
 | `live.json` | the live game: board, panel transcript, `game_id`, board version | on every change, atomically, best-effort |
+| `conversations.json` | every delegate thread: turns, soft deletes, id counters, idempotency keys | on every change, atomically, best-effort |
 
 **Restart** (#291). `live.json` is written whenever the board version or the
 panel transcript changes — from the mutation guard's exit and from the
@@ -33,7 +34,6 @@ What does **not** survive a restart:
 - **The pending question.** It was asked in a conversation about a board on
   a screen; after a restart nothing is armed, and the player asks again. A
   "yes" can never meet a question the restarted app did not ask.
-- **The delegate conversations** — process memory until #291 PR 3.
 - **An in-flight turn.** A command the process died inside has whatever
   outcome the checkpoint recorded; nothing re-runs it.
 
@@ -103,6 +103,30 @@ whatever board is live when its request lands. A client that wants "act on
 the board I saw, or not at all" must send it. A delegate message
 (`MessageCreate.version`) may carry it too.
 
+**Delegate threads** (#291). `agent_api.ConversationStore` rewrites
+`conversations.json` after every change and reloads it at startup, so a
+conductor's thread — and its replayed history — survives a restart like the
+board does. Stored roles are validated on load (only `user` and
+`assistant`), so a tampered file cannot inject a system turn into the
+model's context; an unreadable file is an empty store and a warning.
+
+## Retries: `Idempotency-Key`
+
+`POST /api/agent/conversations/{id}/messages` takes an optional
+`Idempotency-Key` header (1–128 characters), stored on the user turn and
+scoped to the thread. A retry under the same key never runs the pipeline:
+
+| The first attempt… | A retry gets |
+|---|---|
+| finished (its answer is stored) | 200, the stored exchange, byte for byte — after a timeout or a restart alike |
+| never finished (502, a stale 409, a crash mid-run) | 409 "did not complete": whatever it did is on the board, so read the state and send a **new** key |
+| used the key for different words | 422 |
+
+With a key and `game_id` (below) a conductor gets the acceptance #291 asked
+for: a retry recovers a known outcome without acting twice, and never lands
+on a game it was not playing. Without a key, a retry is a new exchange, as
+before.
+
 ## Game identity
 
 `state.game_id` names the game on the board (`GameSession.game_id`, 32 hex
@@ -118,8 +142,10 @@ carry it too, which is what ties turns to one game across restarts.
 
 `agent_api.resolve_actor` stamps a recognised delegate actor into the audit
 log and falls back to the loop's identity otherwise. It is **not**
-authentication: the app trusts its network, and any access claim beyond
-"someone on the home network" needs the external gateway verified first.
+authentication: any caller that reaches the port can send the header, the
+app trusts its network, and any access claim beyond "someone on the home
+network" needs the external gateway verified first — that it authenticates
+callers and strips a forged header on the way in.
 
 ## The standalone MCP server is its own game
 

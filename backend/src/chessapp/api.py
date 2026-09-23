@@ -90,6 +90,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from chessapp.agent_api import (
+    CONVERSATIONS_FILENAME,
     MAX_AGENT_MESSAGE_LENGTH,
     ConversationStore,
     build_agent_router,
@@ -2003,7 +2004,12 @@ def create_app(
     registry.on_mutation = _record_mutation
     # Every tool handler's time, charged to the request running it (#290).
     registry.on_tool_done = lambda _name, elapsed_ms: _add_span("tool", elapsed_ms)
-    store = ConversationStore()
+    # On disk beside the live game when there is a save dir (#291), so a
+    # restart keeps the delegate threads — and their idempotency keys — as it
+    # keeps the board.
+    store = ConversationStore(
+        ctx.save_dir / CONVERSATIONS_FILENAME if ctx.save_dir is not None else None
+    )
 
     @asynccontextmanager
     async def _lifespan() -> AsyncIterator[None]:

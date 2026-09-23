@@ -12,12 +12,17 @@ still broadcasts to the live board.
 
 Two deliberate divergences from PCC (chess is leaner and in-memory by design):
 
-- **In-memory store**, no DB and no files (:class:`ConversationStore`). The
-  contract's 404-then-recreate-once rule exists precisely for pruned/redeployed
-  apps, so process-lifetime persistence is compliant — and it matches chess's
-  architecture, where the game session itself is in-memory with explicit
-  save/resume. Soft delete is a `deleted_at` mark; a soft-deleted thread 404s
-  indistinguishably from one that never existed. Ids are monotonic ints.
+- **A JSON file, not a DB** (:class:`ConversationStore`). With a save dir the
+  store is rewritten atomically to ``conversations.json`` after every change
+  and reloaded at startup (#291), so a thread survives a restart the way the
+  live game does; without one it is process-lifetime, which the contract's
+  404-then-recreate-once rule already allows for. Soft delete is a
+  `deleted_at` mark; a soft-deleted thread 404s indistinguishably from one
+  that never existed. Ids are monotonic ints, and stay so across a restart.
+- **An optional ``Idempotency-Key``** on ``POST …/messages`` (#291): a retry
+  of an exchange that finished returns the stored exchange instead of
+  running the pipeline again, so a conductor that timed out — or talked to
+  an app that restarted — can retry without acting twice.
 - **Actor attribution is a log line, not an audit row.** Chess has no
   `activity_events` table (unlike PCC), so the resolved `X-Agent-Actor` is
   bound into a structured log line for the run and kept off the wire —
@@ -36,6 +41,7 @@ from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -43,7 +49,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from chessapp.conversation import DEFAULT_WINDOW_TURNS, condense
 from chessapp.provider import ProviderError
-from chessapp.tools import delegate_origin
+from chessapp.tools import _write_json_atomic, delegate_origin
 
 if TYPE_CHECKING:
     from chessapp.api import CommandOutcome
@@ -53,6 +59,10 @@ logger = logging.getLogger(__name__)
 # Cap on one chat turn: generous for typed input while bounding what a run
 # feeds the local model's context window (matches PCC's MAX_AGENT_MESSAGE_LENGTH).
 MAX_AGENT_MESSAGE_LENGTH = 8_000
+
+# An `Idempotency-Key` is the caller's name for one exchange; longer than this
+# is not a key but a payload.
+MAX_IDEMPOTENCY_KEY_LENGTH = 128
 
 # Auto-titles from the first user message are cut here, on a word boundary.
 MAX_DERIVED_TITLE_LENGTH = 60
@@ -74,6 +84,12 @@ def resolve_actor(header_value: str | None) -> str:
 
     Returns the header value only when it names a recognized delegate actor
     (``agent:conductor``); anything else falls back to :data:`LOOP_ACTOR`.
+
+    A *label*, not authentication (#291): any caller that can reach the port
+    can send the header, and nothing here checks who sent it. What it buys is
+    an honest audit line from a trusted caller on a trusted network. Before
+    anything grants access on an actor, the external gateway has to be
+    verified to authenticate callers and strip a forged header on the way in.
     """
     if header_value is not None and header_value in DELEGATE_ACTORS:
         return header_value
@@ -181,6 +197,11 @@ class StoredMessage:
     # every turn but a guarded one. Never on the wire — `MessageRead` names
     # its fields, and this is not one of them.
     memory: str | None = None
+    # The caller's `Idempotency-Key` for the exchange this user turn opened
+    # (#291). On the user turn, because that is committed before the pipeline
+    # runs: a key whose turn has no answer after it names an exchange that
+    # never finished. Never on the wire.
+    idempotency_key: str | None = None
 
 
 @dataclass
@@ -193,17 +214,32 @@ class StoredConversation:
     messages: list[StoredMessage] = field(default_factory=list)
 
 
+CONVERSATIONS_FILENAME = "conversations.json"
+_STORE_FORMAT = 1
+
+
 class ConversationStore:
-    """Process-lifetime conversation store (chess's documented divergence from
+    """The delegate conversation store (chess's documented divergence from
     PCC's SQLite). Threads and their immutable user/assistant turns live in a
     dict keyed by monotonic int id; a soft delete is a ``deleted_at`` mark, so
     :meth:`get` returns ``None`` for a missing *or* soft-deleted id alike.
+
+    With a `path` the whole store is written there after every change — one
+    atomic replace, so a crash leaves the previous whole document — and read
+    back on construction (#291): threads, their turns, soft deletes, the id
+    counters and every idempotency key survive a restart. Best-effort both
+    ways, the settings file's contract: an unreadable file is an empty store
+    and a warning, and a failed write costs a warning, never the exchange.
+    Without a `path` it is process-lifetime, exactly as before.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, path: Path | None = None) -> None:
         self._conversations: dict[int, StoredConversation] = {}
         self._next_conversation_id = 1
         self._next_message_id = 1
+        self._path = path
+        if path is not None:
+            self._load(path)
 
     def create(self, *, title: str | None = None) -> StoredConversation:
         now = _utcnow()
@@ -212,6 +248,7 @@ class ConversationStore:
         )
         self._next_conversation_id += 1
         self._conversations[conversation.id] = conversation
+        self._save()
         return conversation
 
     def get(self, conversation_id: int) -> StoredConversation | None:
@@ -228,14 +265,44 @@ class ConversationStore:
 
     def soft_delete(self, conversation: StoredConversation) -> None:
         conversation.deleted_at = _utcnow()
+        self._save()
 
     def append_user_message(
-        self, conversation: StoredConversation, content: str
+        self,
+        conversation: StoredConversation,
+        content: str,
+        idempotency_key: str | None = None,
     ) -> StoredMessage:
         """Store one user turn; an untitled conversation is titled from it."""
         if conversation.title is None:
             conversation.title = _derive_title(content)
-        return self._append(conversation, "user", content, None, None)
+        return self._append(
+            conversation,
+            "user",
+            content,
+            None,
+            None,
+            idempotency_key=idempotency_key,
+        )
+
+    def find_exchange(
+        self, conversation: StoredConversation, idempotency_key: str
+    ) -> tuple[StoredMessage, StoredMessage | None] | None:
+        """The exchange a key opened in this thread: its user turn and the
+        answer to it, or None for the answer when the exchange never finished.
+        None when the key was never used here.
+
+        The answer is the turn right after: exchanges in one thread are
+        serialized, so nothing can land between a question and its answer.
+        """
+        messages = conversation.messages
+        for index, message in enumerate(messages):
+            if message.role == "user" and message.idempotency_key == idempotency_key:
+                following = messages[index + 1] if index + 1 < len(messages) else None
+                if following is not None and following.role == "assistant":
+                    return message, following
+                return message, None
+        return None
 
     def append_assistant_message(
         self,
@@ -257,6 +324,8 @@ class ConversationStore:
         tool_calls: list[dict[str, Any]] | None,
         stop_reason: str | None,
         memory: str | None = None,
+        *,
+        idempotency_key: str | None = None,
     ) -> StoredMessage:
         message = StoredMessage(
             id=self._next_message_id,
@@ -267,11 +336,61 @@ class ConversationStore:
             stop_reason=stop_reason,
             created_at=_utcnow(),
             memory=memory,
+            idempotency_key=idempotency_key,
         )
         self._next_message_id += 1
         conversation.messages.append(message)
         conversation.updated_at = message.created_at
+        self._save()
         return message
+
+    # --- the file ---------------------------------------------------------------
+
+    def _save(self) -> None:
+        if self._path is None:
+            return
+        document = {
+            "format": _STORE_FORMAT,
+            "next_conversation_id": self._next_conversation_id,
+            "next_message_id": self._next_message_id,
+            "conversations": [
+                _conversation_to_dict(c) for c in self._conversations.values()
+            ],
+        }
+        try:
+            _write_json_atomic(self._path, document)
+        except OSError:
+            logger.warning("could not persist conversations to %s", self._path)
+
+    def _load(self, path: Path) -> None:
+        try:
+            data = json.loads(path.read_text())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            logger.warning("ignoring unreadable conversation store %s", path)
+            return
+        try:
+            if not isinstance(data, dict) or data.get("format") != _STORE_FORMAT:
+                raise ValueError("not a conversation store")
+            conversations = {
+                c.id: c for c in map(_conversation_from_dict, data["conversations"])
+            }
+            next_conversation = int(data["next_conversation_id"])
+            next_message = int(data["next_message_id"])
+        except (AttributeError, KeyError, TypeError, ValueError):
+            logger.warning(
+                "ignoring invalid conversation store %s", path, exc_info=True
+            )
+            return
+        # The counters are taken as at least one past every id on record, so a
+        # hand-edited or truncated file can never hand out an id twice.
+        message_ids = [m.id for c in conversations.values() for m in c.messages]
+        self._conversations = conversations
+        self._next_conversation_id = max(
+            [next_conversation, *(i + 1 for i in conversations)]
+        )
+        self._next_message_id = max([next_message, *(i + 1 for i in message_ids)])
 
     def history_for_loop(
         self, conversation: StoredConversation
@@ -296,6 +415,84 @@ class ConversationStore:
             if m.content is not None
         ]
         return condense(text_turns[-2 * DEFAULT_WINDOW_TURNS :])
+
+
+def _message_to_dict(message: StoredMessage) -> dict[str, Any]:
+    return {
+        "id": message.id,
+        "role": message.role,
+        "content": message.content,
+        "tool_calls": message.tool_calls,
+        "stop_reason": message.stop_reason,
+        "created_at": message.created_at.isoformat(),
+        "memory": message.memory,
+        "idempotency_key": message.idempotency_key,
+    }
+
+
+def _conversation_to_dict(conversation: StoredConversation) -> dict[str, Any]:
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "created_at": conversation.created_at.isoformat(),
+        "updated_at": conversation.updated_at.isoformat(),
+        "deleted_at": (
+            conversation.deleted_at.isoformat()
+            if conversation.deleted_at is not None
+            else None
+        ),
+        "messages": [_message_to_dict(m) for m in conversation.messages],
+    }
+
+
+def _optional_str(value: Any, name: str) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"{name} must be a string: {value!r}")
+    return value
+
+
+def _conversation_from_dict(data: Any) -> StoredConversation:
+    """One stored thread, validated on the way in: roles are the two the loop
+    replays, so a tampered file cannot inject a system turn into a model's
+    context (the same rule `Transcript.from_dict` holds)."""
+    conversation_id = data["id"]
+    if type(conversation_id) is not int:
+        raise ValueError(f"conversation id must be an int: {conversation_id!r}")
+    messages = []
+    for raw in data["messages"]:
+        role = raw["role"]
+        if role not in ("user", "assistant"):
+            raise ValueError(f"stored message has invalid role: {role!r}")
+        message_id = raw["id"]
+        if type(message_id) is not int:
+            raise ValueError(f"message id must be an int: {message_id!r}")
+        tool_calls = raw.get("tool_calls")
+        if tool_calls is not None and not isinstance(tool_calls, list):
+            raise ValueError("stored tool_calls must be a list")
+        messages.append(
+            StoredMessage(
+                id=message_id,
+                conversation_id=conversation_id,
+                role=role,
+                content=_optional_str(raw.get("content"), "content"),
+                tool_calls=tool_calls,
+                stop_reason=_optional_str(raw.get("stop_reason"), "stop_reason"),
+                created_at=datetime.fromisoformat(raw["created_at"]),
+                memory=_optional_str(raw.get("memory"), "memory"),
+                idempotency_key=_optional_str(
+                    raw.get("idempotency_key"), "idempotency_key"
+                ),
+            )
+        )
+    deleted_at = data.get("deleted_at")
+    return StoredConversation(
+        id=conversation_id,
+        title=_optional_str(data.get("title"), "title"),
+        created_at=datetime.fromisoformat(data["created_at"]),
+        updated_at=datetime.fromisoformat(data["updated_at"]),
+        deleted_at=datetime.fromisoformat(deleted_at) if deleted_at else None,
+        messages=messages,
+    )
 
 
 def _derive_title(content: str) -> str:
@@ -487,6 +684,35 @@ def build_agent_router(
             messages=[MessageRead.model_validate(m) for m in conversation.messages],
         )
 
+    def _replayed(
+        conversation_id: int,
+        content: str,
+        asked: StoredMessage,
+        answered: StoredMessage | None,
+    ) -> MessageExchange:
+        """The answer to a retried key (see `post_message`)."""
+        if asked.content != content:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="that Idempotency-Key was already used for a different message",
+            )
+        if answered is None:
+            logger.info(
+                "agent_delegate_retry_incomplete conversation_id=%s", conversation_id
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "that exchange did not complete — whatever it did is on the "
+                    "board; read the state and send it again under a new key"
+                ),
+            )
+        logger.info("agent_delegate_replayed conversation_id=%s", conversation_id)
+        return MessageExchange(
+            user_message=MessageRead.model_validate(asked),
+            assistant_message=MessageRead.model_validate(answered),
+        )
+
     @router.get("/conversations", response_model=list[ConversationRead])
     def list_conversations() -> list[StoredConversation]:
         return store.list_active()
@@ -522,6 +748,9 @@ def build_agent_router(
         conversation_id: int,
         data: MessageCreate,
         x_agent_actor: Annotated[str | None, Header()] = None,
+        idempotency_key: Annotated[
+            str | None, Header(min_length=1, max_length=MAX_IDEMPOTENCY_KEY_LENGTH)
+        ] = None,
     ) -> MessageExchange:
         """Store the user turn, run the command pipeline, store and return the
         assistant turn.
@@ -549,6 +778,21 @@ def build_agent_router(
         binds a destructive confirmation to the thread it was asked in (#281):
         the board version alone could not, because nothing needs to move between
         a question here and a "yes" said somewhere else.
+
+        **A retry is not a second exchange** (#291). With an ``Idempotency-Key``
+        the key is stored on the user turn, and a later post to this thread
+        with the same key is answered from the store, never by the pipeline:
+
+        - the exchange finished → the stored exchange, 200, byte for byte the
+          first answer — whether the first reply was lost to a timeout or to a
+          restart (the store is on disk when the app has a save dir);
+        - the exchange never finished (a 502, a stale 409, a crash mid-run) →
+          409: whatever it did is on the board, and running it again could do
+          it twice; read the state and send a new key;
+        - the key was used for different words → 422, a caller bug.
+
+        Checked under the thread's lock, so a retry racing the original waits
+        for it and then gets its answer. No key is today's behaviour.
         """
         # Fail fast before taking a lock, so an unknown id never mints one.
         _get_or_404(conversation_id)
@@ -570,8 +814,14 @@ def build_agent_router(
             # must 404 like any other unknown thread rather than append to a
             # soft-deleted ghost.
             conversation = _get_or_404(conversation_id)
+            if idempotency_key is not None:
+                seen = store.find_exchange(conversation, idempotency_key)
+                if seen is not None:
+                    return _replayed(conversation_id, data.content, *seen)
             history = store.history_for_loop(conversation)
-            user_message = store.append_user_message(conversation, data.content)
+            user_message = store.append_user_message(
+                conversation, data.content, idempotency_key
+            )
 
             try:
                 outcome = await run_command(

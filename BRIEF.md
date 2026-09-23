@@ -51,7 +51,9 @@ utterance that is exactly one unambiguous legal move skips the LLM entirely
 - **Writes:** make_move, undo, new_game, resign, claim_draw (offered only
   while a claim is available), offer_draw (the engine's answer is a code-owned
   rule over Stockfish's number and the material, `docs/draw-offer.md`),
-  save_game, resume_game, export_pgn
+  save_game, resume_game (both ask first when they would lose something —
+  a game in progress, an existing named save; `docs/persistence-and-identity.md`),
+  export_pgn
 - **Settings:** set_difficulty, set_verbosity, set_voice_output
 - **Output:** speak (TTS) + commentary text
 - **Future seam:** control_physical_board
