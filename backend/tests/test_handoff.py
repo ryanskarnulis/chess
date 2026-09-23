@@ -42,6 +42,11 @@ SET = {"name": "set_verbosity", "result": {"ok": True, "verbosity": "high"}}
         ([MOVED, ILLEGAL], "completed", "partial"),
         ([MOVED], "no_progress", "partial"),
         ([MOVED], "length", "partial"),
+        # #288: a budget ends the phase before the planner said it was done.
+        ([MOVED], "budget", "partial"),
+        ([MOVED], "max_iterations", "partial"),
+        ([MOVED], "correction_limit", "partial"),
+        ([LOOKED], "budget", "completed"),
     ],
 )
 def test_the_kind_comes_from_the_results_and_the_stop_alone(results, stop, kind):

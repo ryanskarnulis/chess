@@ -10,16 +10,18 @@ back, and keeps going until the model stops asking for tools — but it never
 impossible for a brain to corrupt game state. The loop is bounded, and the
 stop reason says how it ended (`completed | max_iterations |
 correction_limit`, the fleet's vocabulary — `../agent-standard/STANDARD.md`
-§3 — plus two chess additions: `provider_error` when the provider died
+§3 — plus three chess additions: `provider_error` when the provider died
 mid-turn (the response still carries every tool result that verifiably ran,
 so the pipeline can close the turn and tell the truth instead of catching an
 exception after the board changed, and `provider_failure` names *which*
 death it was so a caller can tell one worth retrying from one that is not),
-and `no_progress` when the loop ended a planning phase that had started
-repeating itself. The two are opposites for the player: a budget stop or a
-dead provider produces no commentary, while `no_progress` reaches the
-narrator like `completed` does — results came back, so there is something
-verified to speak from).
+`no_progress` when the loop ended a planning phase that had started
+repeating itself, and `budget` when a per-turn tool-work or wall-time budget
+ended it (#288; `budget` on the response names which). What the player gets
+is decided by what ran, not by the stop: a dead provider produces no
+commentary, and a stop on any budget produces none when no tool did any work;
+otherwise the narrator closes the turn like `completed` does — results came
+back, so there is something verified to speak from).
 
 How the words get written is the implementation's business, and
 `LlamaBrain`'s answer is a second, tool-free model phase
@@ -90,11 +92,11 @@ class AgentResponse:
 
     `text` is the user-facing commentary — spoken by the narrator phase from
     the turn's verified results (empty when the loop stopped on a budget
-    instead, in which case no narrator ran and the pipeline substitutes its
-    stuck reply). Every call the loop made and ran is in `tool_calls`, with
-    `tool_results` holding each
-    one's `{"name", "result"}` in the *same order*: the two are parallel by
-    construction, and the delegate wire zips them strictly.
+    before any tool did work, in which case no narrator ran and the pipeline
+    substitutes its stuck reply). Every call the loop made and ran is in
+    `tool_calls`, with `tool_results` holding each one's `{"name", "result"}`
+    in the *same order*: the two are parallel by construction, and the
+    delegate wire zips them strictly.
     """
 
     text: str
@@ -132,8 +134,14 @@ class AgentResponse:
     # What the narrator was told the turn did (#289): the results sorted into
     # done / refused / looked up, the kind derived from them, and whether the
     # engine's reply was still owed as it spoke. `None` on a turn no narrator
-    # closed — a budget stop, or a provider that died before the plan finished.
+    # closed — a budget stop with nothing done, or a provider that died before
+    # the plan finished.
     handoff: Handoff | None = None
+    # Which per-turn budget ended the planning phase (#288), or "" when none
+    # did: `iterations`, `corrections`, `tool_calls`, `analysis_calls` or
+    # `wall_time`. The stop reason says the phase ended early; this says on
+    # what, which is the number a trace reader tunes.
+    budget: str = ""
 
 
 @dataclass(frozen=True)
@@ -204,6 +212,8 @@ class _RunState:
     completion_tokens: int = 0
     latencies_ms: list[int] = field(default_factory=list)
     boards_shown: list[int] = field(default_factory=list)
+    # Which turn budget ended the planning phase (#288), or "" when none did.
+    budget: str = ""
 
     def record(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
         self.tool_calls.append(ToolCall(name=name, args=args))
@@ -248,6 +258,7 @@ class _RunState:
             model_latencies_ms=tuple(self.latencies_ms),
             state_refreshes=tuple(self.boards_shown),
             handoff=handoff,
+            budget=self.budget,
         )
 
 

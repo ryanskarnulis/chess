@@ -33,7 +33,9 @@ from chessapp.coordinator import TurnCoordinator
 from chessapp.game import GameSession
 from chessapp.llama_brain import (
     _ANSWER_MAX_TOKENS,
+    _BUDGET_NOTE,
     _NO_PROGRESS_NOTE,
+    _NOT_RUN,
     _PLANNER_TEMPERATURE,
     _REFRESH_LABEL,
     LlamaBrain,
@@ -482,6 +484,7 @@ def test_the_correction_that_ends_the_turn_still_runs_the_batchs_valid_calls():
         tool_calls_turn(
             ("undo", {"plies": 0}), ("set_difficulty", {"tier": "beginner"})
         ),
+        text_turn("Settings sorted; the undo never happened."),
         dispatcher=registry,
         tool_definitions=registry.definitions(),
         max_iterations=8,
@@ -491,7 +494,11 @@ def test_the_correction_that_ends_the_turn_still_runs_the_batchs_valid_calls():
     )
 
     assert resp.stop_reason == "correction_limit"
-    assert len(provider.calls) == 3  # the default budget: two recoveries, then out
+    assert resp.budget == "corrections"
+    # The default budget: two recoveries, then out — and since the settings
+    # really changed, the narrator speaks from them (#288).
+    assert system_prompts(provider) == [PLANNER, PLANNER, PLANNER, PERSONA]
+    assert resp.text == "Settings sorted; the undo never happened."
     assert ctx.settings.voice_output is True
     assert ctx.settings.verbosity == "high"
     assert ctx.settings.tier == "beginner", "the last response's sibling ran too"
@@ -547,13 +554,134 @@ def test_a_model_that_never_stops_calling_tools_hits_max_iterations():
         tool_calls_turn(("make_move", {"move": "e4"})),
         tool_calls_turn(("make_move", {"move": "e5"})),
         tool_calls_turn(("make_move", {"move": "e6"})),
+        text_turn("Played what I could."),
         max_iterations=3,
     )
     resp = brain.get_agent_response(board_state={}, command="play e4")
     assert resp.stop_reason == "max_iterations"
-    assert len(provider.calls) == 3  # the loop's turns only — no narrator
-    assert resp.text == ""
+    assert resp.budget == "iterations"
+    # Three planner turns, then the narrator speaks from what ran (#288).
+    assert system_prompts(provider) == [PLANNER, PLANNER, PLANNER, PERSONA]
+    assert resp.text == "Played what I could."
     assert len(resp.tool_results) == 3  # everything it did is still reported
+
+
+# --- the per-turn work budgets (#288) ----------------------------------------
+
+
+def test_calls_past_the_tool_call_cap_are_answered_not_run():
+    dispatcher = FakeDispatcher()
+    brain, provider = make_brain(
+        tool_calls_turn(*[("make_move", {"move": f"m{n}"}) for n in range(5)]),
+        text_turn("Three of those went in."),
+        dispatcher=dispatcher,
+        max_tool_calls=3,
+    )
+    resp = brain.get_agent_response(board_state={}, command="play them all")
+
+    assert [args["move"] for _, args in dispatcher.calls] == ["m0", "m1", "m2"]
+    assert resp.stop_reason == "budget"
+    assert resp.budget == "tool_calls"
+    # Every call still got an answer, in order: the wire's one-per-call shape.
+    tool_messages = [m for m in provider.calls[-1]["messages"] if m["role"] == "tool"]
+    assert tool_messages == []  # the narrator sees a brief, not the wire
+    assert len(resp.tool_results) == 5
+    assert [r["result"].get("error") for r in resp.tool_results[3:]] == [
+        _NOT_RUN,
+        _NOT_RUN,
+    ]
+    # The move that ran is narrated; the two that did not are on the record as
+    # refused, and the planning phase ended rather than asking again.
+    assert system_prompts(provider) == [PLANNER, PERSONA]
+    assert resp.handoff is not None and resp.handoff.kind == "partial"
+    assert [e.tool for e in resp.handoff.refused] == ["make_move", "make_move"]
+
+
+def test_analysis_past_its_cap_never_reaches_the_engine():
+    # The Stockfish-backed reads have their own, smaller cap: a batch of four
+    # evaluations runs three and answers the fourth, while a cheap read beside
+    # them still runs.
+    dispatcher = FakeDispatcher()
+    brain, _ = make_brain(
+        tool_calls_turn(
+            ("evaluate_position", {}),
+            ("get_best_moves", {}),
+            ("review_game", {}),
+            ("describe_position", {}),
+            ("analyze_last_move", {}),
+        ),
+        text_turn("Here's the read."),
+        dispatcher=dispatcher,
+        tool_definitions=[
+            *TOOLS,
+            *(
+                _fn(name, "A read.", {"type": "object", "properties": {}})
+                for name in ("review_game", "describe_position")
+            ),
+        ],
+        max_analysis_calls=3,
+    )
+    resp = brain.get_agent_response(board_state={}, command="tell me everything")
+
+    assert [name for name, _ in dispatcher.calls] == [
+        "evaluate_position",
+        "get_best_moves",
+        "review_game",
+        "describe_position",
+    ]
+    assert resp.stop_reason == "budget"
+    assert resp.budget == "analysis_calls"
+    assert resp.tool_results[-1]["result"]["error"] == _NOT_RUN
+
+
+def test_a_turn_inside_its_budgets_is_untouched():
+    dispatcher = FakeDispatcher()
+    brain, _ = make_brain(
+        tool_calls_turn(("evaluate_position", {}), ("make_move", {"move": "e4"})),
+        text_turn("done"),
+        text_turn("Even, and e4 is in."),
+        dispatcher=dispatcher,
+        max_tool_calls=2,
+        max_analysis_calls=1,
+    )
+    resp = brain.get_agent_response(board_state={}, command="check, then e4")
+    assert resp.stop_reason == "completed"
+    assert resp.budget == ""
+    assert len(dispatcher.calls) == 2
+
+
+def test_the_planning_deadline_ends_the_phase_between_round_trips():
+    # Round trips at t=0 and t=70 against a 60 s deadline: the first runs, the
+    # second is never started, and what the first did is narrated.
+    dispatcher = FakeDispatcher()
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        # No second planner turn is scripted: it is never asked for.
+        text_turn("e4 is in; ran out of road after that."),
+        dispatcher=dispatcher,
+        planning_deadline_s=60.0,
+        # planner start, planner end, next planner start, narrator start/end
+        clock=stub_clock(0.0, 5.0, 70.0, 70.0, 71.0),
+    )
+    resp = brain.get_agent_response(board_state={}, command="e4 then e5")
+
+    assert [args["move"] for _, args in dispatcher.calls] == ["e4"]
+    assert resp.stop_reason == "budget"
+    assert resp.budget == "wall_time"
+    assert system_prompts(provider) == [PLANNER, PERSONA]
+    assert resp.text == "e4 is in; ran out of road after that."
+
+
+def test_no_deadline_when_it_is_disabled():
+    brain, _ = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("done"),
+        text_turn("e4."),
+        planning_deadline_s=None,
+        clock=stub_clock(0.0, 1.0, 1_000.0, 1_001.0, 1_002.0, 1_003.0),
+    )
+    resp = brain.get_agent_response(board_state={}, command="e4")
+    assert resp.stop_reason == "completed"
 
 
 # --- one batch, one failing call: what runs, what is answered, what it costs --
@@ -652,8 +780,9 @@ def test_only_a_schema_failure_in_a_batch_costs_a_correction(
     on is the loop working, not misbehaving.
 
     Run with no corrections at all, so the difference is the whole outcome: the
-    two schema cases end the turn on the spot, the three domain cases carry on
-    to the planner's note and the narrator.
+    two schema cases end the planning phase on the spot, the three domain cases
+    carry on to the planner's note. The narrator closes both, because the
+    prelude's settings really changed (#288).
     """
     registry, ctx = app_shaped_registry(save_dir=tmp_path)
     brain, provider = make_brain(
@@ -669,7 +798,7 @@ def test_only_a_schema_failure_in_a_batch_costs_a_correction(
     )
 
     assert resp.stop_reason == ("correction_limit" if schema_level else "completed")
-    assert len(provider.calls) == (1 if schema_level else 3)
+    assert len(provider.calls) == (2 if schema_level else 3)
     # Either way the batch had already run in full before the budget was
     # consulted: partial success by design, not a transaction rolled back.
     assert ctx.settings.voice_output is True
@@ -728,17 +857,17 @@ def test_on_the_last_allowed_iteration_a_repeat_still_reaches_the_narrator():
     assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]
 
 
-def test_on_the_last_allowed_iteration_a_schema_error_ends_it_silently():
+def test_on_the_last_allowed_iteration_a_schema_error_still_speaks_from_what_ran():
     """The other side of that precedence. A schema failure skips the stall test
     — a malformed call never dispatched cannot be a repeat — and its own budget
     still has room, so nothing returns early and the loop simply runs out of
-    iterations. `max_iterations` reaches no narrator: correction budget left is
-    not an answer to speak from."""
+    iterations. The evaluation did run, so the narrator closes from it under
+    the budget note (#288); the malformed undo is on the record as refused."""
     registry, _ = real_registry()
     brain, provider = make_brain(
         tool_calls_turn(("evaluate_position", {})),
         tool_calls_turn(("undo", {"plies": 0})),
-        text_turn("never reached"),
+        text_turn("Even game. The undo didn't happen."),
         dispatcher=registry,
         tool_definitions=registry.definitions(),
         max_iterations=2,
@@ -747,8 +876,8 @@ def test_on_the_last_allowed_iteration_a_schema_error_ends_it_silently():
     resp = brain.get_agent_response(board_state={}, command="check it, then undo")
 
     assert resp.stop_reason == "max_iterations"
-    assert resp.text == ""
-    assert system_prompts(provider) == [PLANNER, PLANNER]
+    assert resp.text == "Even game. The undo didn't happen."
+    assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]
     # Both calls are still reported: the budget ended the turn, not the record.
     assert [r["name"] for r in resp.tool_results] == ["evaluate_position", "undo"]
 
@@ -1401,19 +1530,47 @@ def test_the_narrator_thinks_only_after_an_analysis_result(tool, thinks):
     assert provider.calls[-1]["enable_thinking"] is thinks
 
 
-def test_a_budget_stop_never_reaches_the_narrator():
+def _nothing_ran(**kwargs):
+    """A planner that only ever forms calls the schema rejects, on a correction
+    budget roomy enough that the iteration budget is what ends it: every turn
+    burns an iteration and dispatches nothing."""
+    return make_brain(
+        tool_calls_turn(("no_such_tool", {})),
+        tool_calls_turn(("also_not_a_tool", {})),
+        max_iterations=2,
+        max_corrections=8,
+        **kwargs,
+    )
+
+
+def test_a_budget_stop_with_nothing_done_never_reaches_the_narrator():
     # Nothing verified came back, so there is nothing to speak from: the turn
     # ends silent and the pipeline's canned stuck reply covers it.
-    brain, provider = make_brain(
-        tool_calls_turn(("make_move", {"move": "e4"})),
-        tool_calls_turn(("make_move", {"move": "e5"})),  # new work every turn
-        max_iterations=2,
-    )
+    brain, provider = _nothing_ran()
     resp = brain.get_agent_response(board_state={}, command="play e4")
     assert resp.stop_reason == "max_iterations"
+    assert resp.budget == "iterations"
     assert resp.text == ""
     assert system_prompts(provider) == [PLANNER, PLANNER]  # never the persona
     assert resp.model_calls == 2
+
+
+def test_a_budget_stop_after_real_work_is_narrated_as_partial():
+    # #288: the move landed, so the player hears about it — in the narrator's
+    # words, from a `partial` handoff whose note says the rest was not done.
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e5"})),  # new work every turn
+        text_turn("e4's down. Didn't get further than that."),
+        max_iterations=2,
+    )
+    resp = brain.get_agent_response(board_state={}, command="play e4 then e5")
+    assert resp.stop_reason == "max_iterations"
+    assert resp.text == "e4's down. Didn't get further than that."
+    assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]
+    assert resp.handoff is not None and resp.handoff.kind == "partial"
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert _BUDGET_NOTE in brief
 
 
 # --- per-phase sampling ------------------------------------------------------
@@ -2118,12 +2275,7 @@ def test_a_budget_stop_never_reports_narrating():
     """No narrator runs on a budget stop, so nothing may claim one did — the
     observation beat would open on a turn that never speaks."""
     seen: list[str] = []
-    brain, _ = make_brain(
-        tool_calls_turn(("make_move", {"move": "e4"})),
-        tool_calls_turn(("make_move", {"move": "e5"})),  # new work every turn
-        on_phase=seen.append,
-        max_iterations=2,
-    )
+    brain, _ = _nothing_ran(on_phase=seen.append)
     response = brain.get_agent_response({"fen": "x"}, "play e4")
     assert response.stop_reason == "max_iterations"
     assert set(seen) == {"planning"}
@@ -2565,12 +2717,8 @@ def test_a_facts_seam_that_raises_costs_the_facts_and_not_the_turn():
     assert "The game now" not in provider.calls[-1]["messages"][-1]["content"]
 
 
-def test_a_budget_stop_carries_no_handoff():
-    brain, _ = make_brain(
-        tool_calls_turn(("evaluate_position", {})),
-        tool_calls_turn(("get_best_moves", {})),
-        max_iterations=2,
-    )
+def test_a_budget_stop_with_nothing_done_carries_no_handoff():
+    brain, _ = _nothing_ran()
 
     resp = brain.get_agent_response(board_state={}, command="hmm")
 

@@ -30,7 +30,21 @@ not asking one call to do both jobs. The split cured the release-blocking
   `tests/test_closing_pass.py` pins it route by route. `Brain.narrate` (the
   fast path's commentary call) is the same code path with a different brief.
 
-A budget stop reaches no narrator — nothing verified came back to speak from.
+A budget stop speaks from what ran (#288). The planning phase is bounded by
+model turns (`max_iterations` 4), malformed calls (`max_corrections` 2),
+dispatched tool calls per turn (`max_tool_calls` 8), Stockfish-backed calls per
+turn (`max_analysis_calls` 3, `review_game` included) and a 60 s planning
+deadline checked between round trips; the per-turn caps were sized from the
+deployed trace (at most 2 calls and 2 analysis calls in any of 236 turns,
+planning p99 8.7 s). A call past a cap is answered `"not run this turn"`, never
+dispatched, and the phase ends there under `stop_reason="budget"` (or the
+standard's `max_iterations` / `correction_limit`), with the response's `budget`
+and the trace's naming which. When a tool did real work first, the narrator
+closes the turn from a `partial` handoff under the loop's `_BUDGET_NOTE` —
+whatever the record does not show as done was not done — so the player hears
+what happened and that the rest did not, in Glitch's words. When nothing ran
+there is nothing verified to speak from: the turn ends silent and the pipeline
+says its stuck reply.
 A `no_progress` stop (a planner turn whose every call repeats one this turn
 already made *and is answered as it was then*) *does* reach the narrator: real
 results came back, and the loop just refuses iterations that can only repeat.
