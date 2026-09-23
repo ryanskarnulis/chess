@@ -61,12 +61,6 @@ op and the no left the game untouched. Nothing is open here.
       first baseline. PR 5: `frontier_report.py` +
       `docs/frontier-history.jsonl`, graduation rules (≥0.8 held-out twice →
       gate floor) in `docs/agent-frontier.md`.
-- [ ] **Engine death inside a planner tool** (#329, found by the #318 walks):
-      `evaluate_position`/`get_best_moves` 500 the command; a settle whose
-      engine died (undo, resume, new game as black, startup) leaves the phase
-      awaiting the player with the engine to move, and the player's next move
-      is played for the engine's colour. Fix, then drop the three strict
-      xfails in `test_trajectories.py` and `_ENGINE_DEATH_UNSAFE`.
 - [ ] **Propose latency targets from measured data** (#317 follow-up): after
       the voice-latency tracing deploys, play a real hands-free session on an
       idle GPU, run `scripts/latency_report.py` on the container's trace, and

@@ -381,12 +381,6 @@ _KINDS: tuple[tuple[str, int], ...] = (
 )
 # How often a command, literal or drag carries an injected failure.
 _FAILURE_RATE = 0.12
-# Tools during which Stockfish dying escapes the #284 recovery (#329): the
-# engine is only killed on steps whose batch calls none of them, until that is
-# fixed. The named regressions reproduce each site.
-_ENGINE_DEATH_UNSAFE = frozenset(
-    {"evaluate_position", "get_best_moves", "undo", "resume_game", "new_game"}
-)
 # The names a walk saves and resumes under: two, so a save can collide.
 _SAVE_NAMES = ("alpha", "beta")
 
@@ -474,10 +468,6 @@ def next_step(rng: random.Random, state: dict[str, Any], memory: Memory) -> Step
             size = rng.choice([1, 1, 2, 2, 3, 4, 10])
             rounds.append(tuple(_planner_call(rng, legal) for _ in range(size)))
         dies = rng.choice(["provider", "engine", "stall"]) if failure else None
-        if dies == "engine" and _ENGINE_DEATH_UNSAFE & {
-            name for batch in rounds for name, _ in batch
-        }:
-            dies = None
         step = Step(
             kind="command",
             text="do the thing",

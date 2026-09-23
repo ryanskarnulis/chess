@@ -14,9 +14,8 @@ every step. This file is what runs:
 - **Named regressions.** The shortest step sequences that reproduced a real
   bug, each tagged with what it is: `reproduces` (went red on the build that
   had the bug — the fix reverted, or its check removed) or `prevents` (a guard
-  against a shape nothing has broken yet). An open bug the walks found is a
-  strict xfail on its issue, so fixing it fails the test until the marker
-  comes off.
+  against a shape nothing has broken yet). The walks found #329 themselves;
+  its three sites are here.
 - **The instrument's own checks.** Every invariant must be able to fail, and a
   walk must be a pure function of its seed. A checker that cannot fire is
   worse than none: the corpus would read green for having looked at nothing.
@@ -30,7 +29,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import chess.engine
 import pytest
 
 from trajectory import (
@@ -177,28 +175,34 @@ REGRESSIONS: dict[str, tuple[str, tuple[Step, ...]]] = {
         "prevents",
         (command(tuple([("evaluate_position", {})] * 5 + [("undo", {})] * 5)),),
     ),
-}
-
-# The #329 sites: Stockfish dying inside a tool the planner called. Each is a
-# strict xfail, so the fix fails these until the marker comes off — and then
-# `_ENGINE_DEATH_UNSAFE` in trajectory.py goes too.
-OPEN_BUGS: dict[str, tuple[Step, ...]] = {
+    # Stockfish dies inside a tool the planner called: a search used to 500
+    # the command, and an undo's settle left the player moving for the
+    # engine's colour (#329).
     "engine_dies_during_evaluate_position": (
-        command(
-            (("make_move", {"move": "e4"}), ("evaluate_position", {})),
-            engine_dies=True,
+        "reproduces:#329",
+        (
+            command(
+                (("make_move", {"move": "e4"}), ("evaluate_position", {})),
+                engine_dies=True,
+            ),
         ),
     ),
     "engine_dies_during_get_best_moves": (
-        command(
-            (("make_move", {"move": "e4"}), ("get_best_moves", {"n": 2})),
-            engine_dies=True,
+        "reproduces:#329",
+        (
+            command(
+                (("make_move", {"move": "e4"}), ("get_best_moves", {"n": 2})),
+                engine_dies=True,
+            ),
         ),
     ),
     "engine_dies_while_an_undo_settles": (
-        Step(kind="literal", text="e4"),
-        command((("undo", {"plies": 1}),), engine_dies=True),
-        Step(kind="literal", text="d4"),
+        "reproduces:#329",
+        (
+            Step(kind="literal", text="e4"),
+            command((("undo", {"plies": 1}),), engine_dies=True),
+            Step(kind="literal", text="d4"),
+        ),
     ),
 }
 
@@ -208,16 +212,6 @@ def test_named_regression(name: str, tmp_path: Path) -> None:
     _, steps = REGRESSIONS[name]
     start = late_game_session() if "late_game" in name else None
     run_steps(steps, tmp_path, start=start)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=(chess.engine.EngineTerminatedError, InvariantBreach),
-    reason="#329: engine death inside a planner tool",
-)
-@pytest.mark.parametrize("name", sorted(OPEN_BUGS))
-def test_open_bug(name: str, tmp_path: Path) -> None:
-    run_steps(OPEN_BUGS[name], tmp_path)
 
 
 def test_every_regression_says_what_it_is() -> None:
