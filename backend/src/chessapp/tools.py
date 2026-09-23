@@ -596,6 +596,43 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     return exclude
 
 
+# The planner's clarification tool (`build_registry`, the split registry only).
+ASK_PLAYER = "ask_player"
+
+
+def brain_tool_definitions(
+    registry: "ToolRegistry", ctx: ToolContext
+) -> list[dict[str, Any]]:
+    """What the brain is offered this command: the registry minus
+    `brain_tool_exclusions`, with `ask_player`'s candidates narrowed to the
+    live legal moves.
+
+    An enum rather than a free string because the list it names is the one the
+    planner already holds: a candidate outside it is a schema correction in the
+    loop, before anything reaches the narrator, so a clarification can only
+    ever offer moves the board allows. With fewer than two legal moves there is
+    nothing to choose between and the tool is withheld, the way `claim_draw`
+    is while no draw is claimable. app assembly, the eval harness and the
+    planner probe all build the offer here, so the measured agent is the
+    shipped one.
+    """
+    legal = ctx.session.legal_moves()
+    exclude = brain_tool_exclusions(ctx)
+    if len(legal) < 2:
+        exclude.append(ASK_PLAYER)
+    offered = registry.definitions(exclude=exclude)
+    for definition in offered:
+        function = definition["function"]
+        if function["name"] == ASK_PLAYER:
+            parameters = json.loads(json.dumps(function["parameters"]))
+            parameters["properties"]["candidates"]["items"] = {
+                "type": "string",
+                "enum": legal,
+            }
+            function["parameters"] = parameters
+    return offered
+
+
 def confirm_pending(
     registry: "ToolRegistry", ctx: ToolContext, origin: str
 ) -> tuple[str, dict[str, Any]] | None:
@@ -1893,5 +1930,36 @@ def build_registry(
         "Turn spoken (TTS) output on or off."
         ctx.settings.voice_output = enabled
         return {"ok": True, "voice_output": enabled}
+
+    if not atomic_exchange:
+        # The planner's typed clarification (#289, PR 2). Registered only on the
+        # app's own registry: it is a handoff to the narrator, and the MCP
+        # server's caller has no narrator behind the call — it asks its own
+        # user. `brain_tool_definitions` narrows `candidates` to an enum of the
+        # live `legal_moves` per command; the handler re-checks against the
+        # board anyway, because `dispatch` validates against the static schema.
+        @registry.tool()
+        def ask_player(
+            candidates: Annotated[
+                list[str],
+                Field(
+                    min_length=2,
+                    description="Every legal_moves entry the player's words fit.",
+                ),
+            ],
+        ) -> dict[str, Any]:
+            """Ask the player to choose, when their words fit two or more
+            entries of `legal_moves`. Nothing moves: the question goes to the
+            player, and their answer comes back as the next command."""
+            legal = set(ctx.session.legal_moves())
+            chosen = list(dict.fromkeys(candidates))
+            unknown = [san for san in chosen if san not in legal]
+            if unknown or len(chosen) < 2:
+                raise ToolError(
+                    "candidates must be two or more entries of legal_moves"
+                    + (f"; not legal here: {', '.join(unknown)}" if unknown else ""),
+                    retry=RETRY_DIFFERENT_ARGS,
+                )
+            return {"ok": True, "candidates": chosen}
 
     return registry

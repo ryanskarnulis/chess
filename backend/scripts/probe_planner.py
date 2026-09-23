@@ -9,7 +9,7 @@ batch of one arm alone is not something it can produce.
 
 What it sends is the shipped planner call, not a copy of it: the app's own
 state view (`api._agent_state_dict`), the tool offer `build_app` makes
-(`registry.definitions(exclude=brain_tool_exclusions(ctx))`), the messages
+(`tools.brain_tool_definitions(registry, ctx)`), the messages
 `LlamaBrain._messages` opens a run with, and `LlamaCppProvider.chat` with the
 planner's own generation ceiling, thinking off. An arm varies exactly one of
 five knobs: the planner prompt text, the planner temperature, llama-server's
@@ -29,7 +29,8 @@ Run from `backend/` with llama-swap up:
     python scripts/probe_planner.py --preflight-only                 # is the card free?
 
 Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
-`temperature=0.3`, `cache_prompt=false`, `model=<id>`, `tool_text=<tool>@file`.
+`temperature=0.3`, `cache_prompt=false`, `model=<id>`, `tool_text=<tool>@file`,
+`drop_tool=<tool>` (repeatable: the offer without that tool).
 `control` (no keys) is the shipped planner. `--fresh` calls llama-swap's
 `/unload` before the first sample so the session is new; it refuses while a
 slot is processing or another job holds the card (the shared-GPU rule).
@@ -73,7 +74,12 @@ from chessapp.llama_brain import (
 )
 from chessapp.personality import PLANNER_PROMPT
 from chessapp.provider import ChatResult, LlamaCppProvider, ProviderError
-from chessapp.tools import Settings, ToolContext, brain_tool_exclusions, build_registry
+from chessapp.tools import (
+    Settings,
+    ToolContext,
+    brain_tool_definitions,
+    build_registry,
+)
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8200/v1"
 DEFAULT_MODEL = "gemma-4-12b"
@@ -83,6 +89,8 @@ DEFAULT_MODEL = "gemma-4-12b"
 # Each item is an utterance on a position, plus the rule a pass must satisfy.
 # Rules are data, not code, so a record can say which rule scored it:
 #   ("no_tool",)                         the model called nothing (asked/refused)
+#   ("asks",)                            nothing, or its first call is
+#                                        `ask_player` — the two ways to ask (#289)
 #   ("first_call", name, constraints)    the first call is `name`; constraints:
 #       {"move_in": [...]}  its `move` argument is one of these
 #       {"absent": [...]}   these argument names were omitted
@@ -112,21 +120,21 @@ CORPUS: tuple[Item, ...] = (
         "knight_ask",
         "move my kings knight",
         (),
-        ("no_tool",),
+        ("asks",),
         note="two squares fit (Nf3, Nh3): the campaign's own ask",
     ),
     Item(
         "rook_ask",
         "move the rook",
         ("a4", "a5", "h4", "h5"),
-        ("no_tool",),
+        ("asks",),
         note="four rook moves fit; `ambiguous_move`'s position",
     ),
     Item(
         "bishop_ask",
         "move the bishop",
         ("e4", "e5", "d4", "d5"),
-        ("no_tool",),
+        ("asks",),
         held_out=True,
         note="both bishops mobile; held out of arm design",
     ),
@@ -134,7 +142,7 @@ CORPUS: tuple[Item, ...] = (
         "castle_both",
         "castle",
         _CASTLE_BOTH,
-        ("no_tool",),
+        ("asks",),
         held_out=True,
         note="O-O and O-O-O both legal; held out of arm design",
     ),
@@ -202,9 +210,23 @@ class Arm:
     cache_prompt: bool | None = None
     model: str | None = None
     tool_text: dict[str, str] = field(default_factory=dict)
+    drop_tools: tuple[str, ...] = ()
 
     def offer(self, definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """The tool offer with this arm's description overrides applied."""
+        """The tool offer with this arm's dropped tools removed and its
+        description overrides applied."""
+        missing_drops = set(self.drop_tools) - {
+            d["function"]["name"] for d in definitions
+        }
+        if missing_drops:
+            raise SystemExit(
+                f"arm {self.name!r} drops tools not in the offer: "
+                f"{', '.join(sorted(missing_drops))}"
+            )
+        if self.drop_tools:
+            definitions = [
+                d for d in definitions if d["function"]["name"] not in self.drop_tools
+            ]
         if not self.tool_text:
             return definitions
         offered = copy.deepcopy(definitions)
@@ -236,6 +258,7 @@ def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
         raise SystemExit(f"arm spec needs a name: {spec!r}")
     kwargs: dict[str, Any] = {}
     tool_text: dict[str, str] = {}
+    drop_tools: list[str] = []
     for pair in filter(None, rest.split(",")):
         key, eq, value = pair.partition("=")
         if not eq:
@@ -257,9 +280,11 @@ def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
             if not at or not tool:
                 raise SystemExit(f"arm {name!r}: tool_text must be <tool>@path")
             tool_text[tool] = read(Path(path))
+        elif key == "drop_tool":
+            drop_tools.append(value)
         else:
             raise SystemExit(f"arm {name!r}: unknown knob {key!r}")
-    return Arm(name=name, tool_text=tool_text, **kwargs)
+    return Arm(name=name, tool_text=tool_text, drop_tools=tuple(drop_tools), **kwargs)
 
 
 # --- classification and scoring -----------------------------------------------
@@ -284,6 +309,8 @@ def outcome_label(calls: Sequence[Call]) -> str:
             parts.append(f"make_move({args['move']})")
         elif name == "undo" and "plies" in args:
             parts.append(f"undo(plies={args['plies']})")
+        elif name == "ask_player" and "candidates" in args:
+            parts.append(f"ask_player({','.join(map(str, args['candidates']))})")
         else:
             parts.append(name)
     return "|".join(parts)
@@ -294,6 +321,8 @@ def passes(rule: Rule, calls: Sequence[Call]) -> bool:
     kind = rule[0]
     if kind == "no_tool":
         return not calls
+    if kind == "asks":
+        return not calls or calls[0]["name"] == "ask_player"
     if kind == "first_call":
         _, name, constraints = rule
         if not calls or calls[0]["name"] != name:
@@ -534,7 +563,7 @@ def prepare(
     ctx = ToolContext(session=session, engine=None, settings=Settings())
     coordinator = TurnCoordinator(ctx)
     registry = build_registry(ctx, coordinator, atomic_exchange=False)
-    tools = arm.offer(registry.definitions(exclude=brain_tool_exclusions(ctx)))
+    tools = arm.offer(brain_tool_definitions(registry, ctx))
     brain = create_llama_brain(
         base_url=base_url,
         model=model,

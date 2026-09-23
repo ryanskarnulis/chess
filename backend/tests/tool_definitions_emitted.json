@@ -861,6 +861,32 @@
           "additionalProperties": false
         }
       }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "ask_player",
+        "description": "Ask the player to choose, when their words fit two or more\nentries of `legal_moves`. Nothing moves: the question goes to the\nplayer, and their answer comes back as the next command.",
+        "parameters": {
+          "properties": {
+            "candidates": {
+              "description": "Every legal_moves entry the player's words fit.",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2,
+              "title": "Candidates",
+              "type": "array"
+            }
+          },
+          "required": [
+            "candidates"
+          ],
+          "title": "ask_playerArguments",
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
     }
   ]
 }

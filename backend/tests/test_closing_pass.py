@@ -36,9 +36,9 @@ from chessapp.engine import CandidateMove
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain
 from chessapp.tools import (
-    BOARD_STATE_TOOLS,
     CONFIRM_QUESTIONS,
     ToolContext,
+    brain_tool_definitions,
     build_registry,
 )
 from chessapp.trace import JsonlTracer
@@ -96,7 +96,9 @@ def make_client(
     brain = LlamaBrain(
         provider=provider,
         dispatcher=registry,
-        tool_definitions=registry.definitions(exclude=BOARD_STATE_TOOLS),
+        # The offer assembly makes, resolved per command (#289: `ask_player`'s
+        # candidates are the live legal moves).
+        tool_definitions=lambda: brain_tool_definitions(registry, ctx),
         system_prompt=PERSONA,
         planner_prompt=PLANNER,
         # Wired as app assembly wires it (#289): the narrator's facts, and
@@ -867,6 +869,7 @@ def test_a_false_planner_note_cannot_make_the_narrator_announce_an_undo(trace_pa
         "refused": [],
         "consulted": [],
         "reply_owed": False,
+        "candidates": [],
     }
 
 
@@ -1002,3 +1005,31 @@ def test_a_confirmed_destructive_op_narrates_without_a_side_to_move():
     assert len(briefs) == 2
     for brief in briefs:
         _no_side_to_move(brief)
+
+
+def test_a_typed_clarification_reaches_the_player_with_its_candidates(trace_path):
+    """PR 2 of #289: the planner declares the question with `ask_player`, the
+    candidates are board-validated, the loop ends on it, and the narrator's
+    question naming them is not mistaken for advice."""
+    client, provider, ctx = make_client(
+        tool_calls_turn(("ask_player", {"candidates": ["Nf3", "Nh3"]})),
+        text_turn("Which knight hop — Nf3 or Nh3?"),
+        tracer=JsonlTracer(trace_path),
+    )
+
+    body = client.post("/api/command", json={"text": "move my kings knight"}).json()
+
+    assert offered_tools(provider) == [True, False]
+    enum = next(
+        t["function"]["parameters"]["properties"]["candidates"]["items"]["enum"]
+        for t in provider.calls[0]["tools"]
+        if t["function"]["name"] == "ask_player"
+    )
+    assert enum == ctx.session.legal_moves()
+    assert body["commentary"] == "Which knight hop — Nf3 or Nh3?"
+    assert ctx.session.move_history() == []
+    record = last_turn(trace_path)
+    assert record["guarded"] is False
+    assert record["handoff"]["kind"] == "clarify"
+    assert record["handoff"]["candidates"] == ["Nf3", "Nh3"]
+    assert "has to choose between: Nf3, Nh3" in narrator_briefs(provider)[0]

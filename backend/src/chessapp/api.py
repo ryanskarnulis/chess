@@ -1009,6 +1009,10 @@ def _reported_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
             reported.update(result.get("alternatives", ()))
         elif r["name"] == "get_legal_moves":
             reported.update(result.get("moves", ()))
+        elif r["name"] == "ask_player":
+            # The clarification's candidates (#289): the board-validated moves
+            # the question is about, which the narrator has to name to ask it.
+            reported.update(result.get("candidates", ()))
     return reported
 
 

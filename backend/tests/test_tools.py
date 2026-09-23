@@ -2562,3 +2562,69 @@ def test_a_windowless_registry_is_unconstrained():
     assert registry.dispatch("new_game", {"player_color": "black"})["ok"] is True
     assert registry.dispatch("new_game", {"player_color": "white"})["ok"] is True
     assert ctx.session.player_color == "white"
+
+
+# --- ask_player: the planner's typed clarification (#289) ---------------------
+
+
+def _split(ctx):
+    from chessapp.coordinator import TurnCoordinator
+
+    return build_registry(ctx, TurnCoordinator(ctx), atomic_exchange=False)
+
+
+def _ask_offer(ctx):
+    from chessapp.tools import brain_tool_definitions
+
+    offered = brain_tool_definitions(_split(ctx), ctx)
+    return next((d for d in offered if d["function"]["name"] == "ask_player"), None)
+
+
+def test_ask_player_is_the_app_registrys_alone():
+    ctx = ToolContext(session=GameSession())
+    atomic = {d["function"]["name"] for d in build_registry(ctx).definitions()}
+    assert "ask_player" not in atomic, "the MCP surface has no narrator to hand to"
+    split = {d["function"]["name"] for d in _split(ctx).definitions()}
+    assert "ask_player" in split
+
+
+def test_the_offer_narrows_candidates_to_the_live_legal_moves():
+    ctx = ToolContext(session=GameSession())
+
+    offer = _ask_offer(ctx)
+
+    items = offer["function"]["parameters"]["properties"]["candidates"]["items"]
+    assert items == {"type": "string", "enum": ctx.session.legal_moves()}
+    registered = _split(ctx).definitions()
+    static = next(d for d in registered if d["function"]["name"] == "ask_player")
+    assert "enum" not in json.dumps(static), "the registry's own schema is untouched"
+
+
+def test_with_nothing_to_choose_between_ask_player_is_withheld():
+    # K+Q vs K, black to move with a single legal king move.
+    ctx = ToolContext(session=GameSession(fen="k7/2Q5/1K6/8/8/8/8/8 b - - 0 1"))
+    assert len(ctx.session.legal_moves()) < 2
+    assert _ask_offer(ctx) is None
+
+
+def test_ask_player_answers_its_candidates_and_moves_nothing():
+    ctx = ToolContext(session=GameSession())
+    registry = _split(ctx)
+    version = ctx.board_version
+
+    result = registry.dispatch("ask_player", {"candidates": ["Nf3", "Nh3", "Nf3"]})
+
+    assert result == {"ok": True, "candidates": ["Nf3", "Nh3"]}
+    assert ctx.board_version == version
+
+
+@pytest.mark.parametrize(
+    "candidates", [["Nf3", "Qh5"], ["Nf3", "Nf3"]], ids=["illegal", "one"]
+)
+def test_ask_player_refuses_what_the_board_does_not_offer(candidates):
+    ctx = ToolContext(session=GameSession())
+
+    result = _split(ctx).dispatch("ask_player", {"candidates": candidates})
+
+    assert result["ok"] is False
+    assert result["retry"] == "different_args"

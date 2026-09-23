@@ -2598,3 +2598,64 @@ def test_the_factory_wires_the_narrator_facts():
         narrator_facts=seam,
     )
     assert brain.narrator_facts is seam
+
+
+# --- ask_player ends the planning phase (#289, PR 2) ------------------------
+
+ASK_TOOL = _fn(
+    "ask_player",
+    "Ask the player to choose.",
+    {
+        "type": "object",
+        "properties": {
+            "candidates": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["Nf3", "Nh3", "e4"]},
+                "minItems": 2,
+            }
+        },
+        "required": ["candidates"],
+        "additionalProperties": False,
+    },
+)
+
+
+def test_an_ask_that_landed_ends_the_planner_and_hands_off_a_clarification():
+    dispatcher = FakeDispatcher(
+        {"ask_player": {"ok": True, "candidates": ["Nf3", "Nh3"]}}
+    )
+    brain, provider = make_brain(
+        tool_calls_turn(("ask_player", {"candidates": ["Nf3", "Nh3"]})),
+        text_turn("Nf3 or Nh3?"),  # the narrator — no second planner turn
+        dispatcher=dispatcher,
+        tool_definitions=[*TOOLS, ASK_TOOL],
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="move my kings knight")
+
+    assert system_prompts(provider) == [PLANNER, PERSONA]
+    assert resp.text == "Nf3 or Nh3?"
+    assert resp.handoff.kind == "clarify"
+    assert resp.handoff.candidates == ("Nf3", "Nh3")
+    assert (
+        "has to choose between: Nf3, Nh3"
+        in provider.calls[-1]["messages"][-1]["content"]
+    )
+
+
+def test_a_candidate_off_the_enum_is_a_schema_correction_not_a_question():
+    dispatcher = FakeDispatcher()
+    brain, provider = make_brain(
+        tool_calls_turn(("ask_player", {"candidates": ["Nf3", "Qh5"]})),
+        text_turn("note"),
+        text_turn("reply"),
+        dispatcher=dispatcher,
+        tool_definitions=[*TOOLS, ASK_TOOL],
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="move my kings knight")
+
+    assert dispatcher.calls == [], "never dispatched"
+    assert resp.tool_results[0]["result"]["ok"] is False
+    assert resp.handoff.kind == "declined"
+    assert system_prompts(provider) == [PLANNER, PLANNER, PERSONA]

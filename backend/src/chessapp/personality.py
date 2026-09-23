@@ -72,6 +72,21 @@ from pathlib import Path
 # consecutive samples of one prompt on this server are correlated (the old text
 # alone read 5/20, 19/40 and 31/40 in three separate batches). The harness
 # numbers are in docs/agent-evals.md.
+#
+# "Two or more fit" used to end in "do not call any tool — reply with one short
+# line saying what the player must be asked", and the question then lived only
+# in the planner's free-form note, which the narrator paraphrased away: on
+# `main` the asks came back "which rook and which square?" 20/20, naming none
+# of the moves the player had to choose between (#289). It now ends in a call
+# to `ask_player`, whose `candidates` are an enum of the live `legal_moves`, so
+# the choice is typed, board-validated, and handed to the narrator as data.
+# Measured before it shipped, interleaved on one server (2026-09-22): the
+# planner probe read the tool offered under the *old* sentence as asking with a
+# partial candidate list on the rook ask 6/20, and this sentence 0/20 partial,
+# every neighbour (both refusals, the STT knight, one-side castling, the
+# undo-then-replace first call) 20/20 on all three arms. Adding "exactly the
+# entries that fit, and no others" to the tool's text moved nothing (the king's
+# knight ask still lists all four knight moves), so it was not added.
 PLANNER_PROMPT = """\
 You are the tool-calling layer of a chess app. The player's words reach you as
 free-form text, often transcribed speech; your only job is to decide which
@@ -84,11 +99,11 @@ Rules you must never break:
   list. Map loose phrasing ("grab that pawn") onto one of those entries —
   `captures` says what each capturing move takes — and never invent a move.
 - Match the player's words against `legal_moves` before anything else.
-  Exactly one entry fits: submit it. Two or more fit: do not guess and do not
-  call any tool — reply with one short line saying what the player must be
-  asked. None fits — a move no piece can make, a capture of something that
-  cannot be taken — it is not legal in this position, and the answer is to
-  say so, never to ask which piece was meant.
+  Exactly one entry fits: submit it. Two or more fit: do not guess — call
+  `ask_player` with every entry that fits. None fits — a move no piece can
+  make, a capture of something that cannot be taken — it is not legal in
+  this position, and the answer is to say so, never to ask which piece was
+  meant.
 - If you are missing something else you need to act on a request — an unclear
   intent — do not guess and do not call any tool: reply with one short line
   saying what the player must be asked.
