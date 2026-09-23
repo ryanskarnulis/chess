@@ -17,6 +17,7 @@ reply (which is the `AgentResponse.text`).
 """
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,9 @@ from chessapp.llama_brain import (
     _ANSWER_MAX_TOKENS,
     _BUDGET_NOTE,
     _CHARS_PER_TOKEN,
+    _CLOSING_BUDGET_S,
+    _CLOSING_CEILING_S,
+    _HANG_UP_MARGIN_S,
     _NO_PROGRESS_NOTE,
     _NOT_RUN,
     _PLANNER_TEMPERATURE,
@@ -54,7 +58,13 @@ from chessapp.provider import (
     Usage,
 )
 from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
-from fakes import FakeEngine, ScriptedProvider, text_turn, tool_calls_turn
+from fakes import (
+    BlockingNarratorProvider,
+    FakeEngine,
+    ScriptedProvider,
+    text_turn,
+    tool_calls_turn,
+)
 
 # --- tool definitions the brain validates against --------------------------
 
@@ -1769,17 +1779,193 @@ def test_narrate_carries_the_observe_beats_read_ceiling():
     # is pinned where the budget lives (`test_reaction_budget.py`).
 
 
-def test_the_phases_the_pipeline_waits_for_send_no_ceiling():
-    # The planner is not optional and the loop's closing narrator legitimately
-    # runs 30 s and more with thinking on (docs/agent-evals.md) — neither is a
-    # call anyone stops waiting for, so neither may be cut short.
+def test_the_planner_sends_no_ceiling():
+    # The planner is not optional, its calls act, and it legitimately runs 30 s
+    # and more with thinking on (docs/agent-evals.md): it is bounded between
+    # round trips (`planning_deadline_s`), never by hanging up on one.
     brain, provider = make_brain(
         tool_calls_turn(("make_move", {"move": "e4"})),
         text_turn("played e4"),
         text_turn("e4 it is."),
     )
     brain.get_agent_response(board_state={}, command="play e4")
-    assert all(call["timeout"] is None for call in provider.calls)
+    planner_calls = [call for call in provider.calls if call["tools"] is not None]
+    assert planner_calls
+    assert all(call["timeout"] is None for call in planner_calls)
+
+
+# The loop's own closer is waited for on a budget (#316): tight when the
+# engine's reply is ready and held behind the words, a stall backstop when
+# nothing is. The socket hangs up a margin after the brain stops waiting, so
+# the brain's deadline always fires first and the read timeout only frees the
+# llama-server slot.
+
+
+def owed(reply_owed: bool):
+    """A narrator-facts seam saying whether the engine's reply is waiting."""
+    return lambda: {"reply_owed": reply_owed}
+
+
+@pytest.mark.parametrize(
+    ("reply_owed", "wait"),
+    [(True, _CLOSING_BUDGET_S), (False, _CLOSING_CEILING_S)],
+)
+def test_the_closer_hangs_up_a_margin_past_its_wait(reply_owed, wait):
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4 it is."),
+        narrator_facts=owed(reply_owed),
+    )
+    response = brain.get_agent_response(board_state={}, command="play e4")
+    assert response.text == "e4 it is."
+    assert not response.narration_late
+    assert provider.calls[-1]["tools"] is None
+    assert provider.calls[-1]["timeout"] == wait + _HANG_UP_MARGIN_S
+
+
+def test_an_unbounded_closer_sends_no_ceiling():
+    brain, provider = make_brain(
+        text_turn("note"),
+        text_turn("hi"),
+        narrator_facts=owed(True),
+        closing_budget_s=None,
+    )
+    assert brain.get_agent_response(board_state={}, command="hi").text == "hi"
+    assert provider.calls[-1]["timeout"] is None
+
+
+def test_the_closer_budget_clears_every_measured_closer_with_a_reply_waiting():
+    # 31 brain-route closers that spoke before a reply in the deployed trace
+    # (2026-09-04 → 09-18) took 0.8–2.0 s. The budget exists for a stuck
+    # model, never for a talkative one.
+    assert _CLOSING_BUDGET_S >= 5 * 2.0
+
+
+def test_the_closer_ceiling_never_cuts_a_thoughtful_answer():
+    # Thinking-on closers reach 30 s and more in the evals, the trace's
+    # slowest no-reply closer took 15 s; the ceiling is a stall backstop and
+    # must clear both, as well as the tight budget it stands in for.
+    assert _CLOSING_CEILING_S >= 2 * 30.0
+    assert _CLOSING_CEILING_S > _CLOSING_BUDGET_S
+
+
+def late_brain(*, reply_owed: bool, **kwargs):
+    """A brain whose planner plays e4 and whose narrator blocks until
+    released. The caller releases it (every test below does, in a finally)."""
+    metered = Usage(prompt_tokens=10, completion_tokens=2)
+    provider = BlockingNarratorProvider(
+        tool_calls_turn(("make_move", {"move": "e4"}), usage=metered),
+        text_turn("played e4", usage=metered),
+        words="Late words nobody should hear.",
+    )
+    brain = LlamaBrain(
+        provider=provider,
+        dispatcher=FakeDispatcher({"make_move": {"ok": True, "san": "e4"}}),
+        system_prompt=PERSONA,
+        tool_definitions=TOOLS,
+        planner_prompt=PLANNER,
+        narrator_facts=owed(reply_owed),
+        **kwargs,
+    )
+    return brain, provider
+
+
+def test_a_late_closer_returns_the_record_without_the_words():
+    brain, provider = late_brain(
+        reply_owed=True, closing_budget_s=0.05, closing_ceiling_s=None
+    )
+    try:
+        response = brain.get_agent_response(board_state={}, command="play e4")
+        # Came back while the words were provably still being written.
+        assert provider.entered.is_set() and not provider.finished.is_set()
+    finally:
+        provider.release.set()
+    assert response.narration_late
+    assert response.text == ""
+    # The plan's record stands: the move ran and its result comes back.
+    assert [c.name for c in response.tool_calls] == ["make_move"]
+    assert response.tool_results[0]["result"]["san"] == "e4"
+    assert response.stop_reason == "completed"
+    assert response.provider_failure == ""
+    assert response.handoff is not None and response.handoff.reply_owed
+    # The abandoned call is a call on the turn, its tokens unknown.
+    assert response.model_calls == 3
+    assert response.unmetered_calls == 1  # the planner's two were metered
+    assert response.prompt_tokens == 20
+    assert len(response.model_latencies_ms) == 3
+    assert provider.finished.wait(timeout=5.0)
+    assert "Late words" not in response.text
+
+
+def test_a_no_reply_closer_waits_past_the_tight_budget():
+    # Nothing is held behind a question's answer, so the tight budget does
+    # not apply: a closer slower than it but inside the ceiling is spoken.
+    brain, provider = late_brain(
+        reply_owed=False, closing_budget_s=0.01, closing_ceiling_s=5.0
+    )
+    threading.Timer(0.2, provider.release.set).start()
+    response = brain.get_agent_response(board_state={}, command="play e4")
+    assert not response.narration_late
+    assert response.text == "Late words nobody should hear."
+
+
+def test_a_thinking_closer_is_not_held_to_the_move_budget():
+    # After an analysis tool the closer reasons before it speaks — the answer
+    # the player asked for, not a reaction — and on the gate's
+    # move-plus-analysis scenarios that took 6–10 s and more. With a reply
+    # owed it still gets the stall ceiling, never the tight budget.
+    brain, provider = late_brain(
+        reply_owed=True,
+        closing_budget_s=0.01,
+        closing_ceiling_s=5.0,
+        enable_thinking=True,
+    )
+    threading.Timer(0.2, provider.release.set).start()
+    response = brain.get_agent_response(board_state={}, command="play e4")
+    assert not response.narration_late
+    assert response.text == "Late words nobody should hear."
+    assert provider.calls[-1]["enable_thinking"] is True
+    assert provider.calls[-1]["timeout"] == 5.0 + _HANG_UP_MARGIN_S
+
+
+def test_a_no_reply_closer_is_still_cut_at_the_ceiling():
+    brain, provider = late_brain(
+        reply_owed=False, closing_budget_s=None, closing_ceiling_s=0.05
+    )
+    try:
+        response = brain.get_agent_response(board_state={}, command="play e4")
+        assert not provider.finished.is_set()
+    finally:
+        provider.release.set()
+    assert response.narration_late
+    assert response.text == ""
+
+
+def test_a_budget_stop_closes_on_the_same_bound():
+    # `_budget_stop` ends in `_close` too: a turn the tool-call budget ended
+    # after real work is narrated, and that narration is bounded like any.
+    provider = BlockingNarratorProvider(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        words="Late words nobody should hear.",
+    )
+    brain = LlamaBrain(
+        provider=provider,
+        dispatcher=FakeDispatcher({"make_move": {"ok": True, "san": "e4"}}),
+        system_prompt=PERSONA,
+        tool_definitions=TOOLS,
+        planner_prompt=PLANNER,
+        narrator_facts=owed(True),
+        max_tool_calls=1,
+        closing_budget_s=0.05,
+    )
+    try:
+        response = brain.get_agent_response(board_state={}, command="play e4")
+    finally:
+        provider.release.set()
+    assert response.budget == "tool_calls"
+    assert response.narration_late
+    assert response.text == ""
 
 
 def test_the_rewrite_sends_no_ceiling_either():

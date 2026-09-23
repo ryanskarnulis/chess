@@ -324,13 +324,18 @@ single-fit ask over-asked (2026-09-17, #286, `docs/knight-ask-campaign.md`).
 `CHESSAPP_PLANNER_TEMPERATURE` overrides it; the eval harness resolves the
 number through the same function the app does, and pins that it did.
 
-`narrate` is also the one phase with a wall-clock ceiling. A token cap bounds
-generation, not queueing or a stalled server, and the observe beat is the one
-call whose caller has already decided it will not wait: the pipeline drops the
-reaction at `api._REACTION_BUDGET_S` and plays the reply Stockfish computed
-during it (#283, `docs/turn-coordinator.md`), and `_NARRATE_TIMEOUT` hangs up
-just above that so the abandoned generation stops holding a server slot. The
-planner and the closing narrator send no ceiling — they legitimately run 30 s
-and more with thinking on, and nothing is being held while they do.
+Both narrator phases have a wall clock; the planner does not. A token cap
+bounds generation, not queueing or a stalled server. The pipeline drops the
+observe beat's reaction at `api._REACTION_BUDGET_S` and plays the reply
+Stockfish computed during it (#283, `docs/turn-coordinator.md`), and
+`_NARRATE_TIMEOUT` hangs up just above that so the abandoned generation stops
+holding a server slot. The loop's closer is bounded inside the brain (#316):
+`_CLOSING_BUDGET_S` when the engine's reply is owed and held behind words that
+are only a reaction, `_CLOSING_CEILING_S` — a stall backstop, never a cut on a
+thinking answer — when nothing is held or the closer thinks; either way only the tool-free speech thread is left behind,
+and the plan's record comes back as `narration_late` with no text. The planner
+sends no ceiling: it legitimately runs 30 s and more with thinking on, its
+calls act, and it is bounded between round trips (`planning_deadline_s`), never
+during one.
 
 Every prompt change here is eval-gated (`docs/agent-evals.md`).

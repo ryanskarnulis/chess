@@ -146,7 +146,9 @@ def turn_record(
     engine is not the run.
 
     `reaction_late` marks a turn whose narration was still being written when
-    the turn went on without it (`api._REACTION_BUDGET_S`). It is not a failure
+    the turn went on without it (`api._REACTION_BUDGET_S` for the observe beat
+    and the other `narrate` sites; `llama_brain._CLOSING_BUDGET_S` and
+    `_CLOSING_CEILING_S` for the brain route's closer, #316). It is not a failure
     — the words are optional and the app said its own line instead — and that
     is exactly why it is recorded: the commentary of a cut reaction is
     indistinguishable from verbosity=low, from a dead provider and from a beat

@@ -156,6 +156,11 @@ class AgentResponse:
     # How many of the conversation's oldest exchanges were dropped to fit the
     # input budget (#288); 0 on every turn that fit, which is every real one.
     input_trimmed: int = 0
+    # True when the closing narration was still being written when the brain
+    # stopped waiting for it (#316): the plan ran and its record stands, the
+    # words are gone. `text` is empty, and it is not a provider failure — the
+    # model may well have answered, just not before the turn went on.
+    narration_late: bool = False
 
 
 @dataclass(frozen=True)
@@ -275,6 +280,8 @@ class _RunState:
         stop_reason: str,
         provider_failure: str = "",
         handoff: Handoff | None = None,
+        *,
+        narration_late: bool = False,
     ) -> AgentResponse:
         return AgentResponse(
             text=text,
@@ -292,6 +299,7 @@ class _RunState:
             handoff=handoff,
             budget=self.budget,
             input_trimmed=self.input_trimmed,
+            narration_late=narration_late,
         )
 
 

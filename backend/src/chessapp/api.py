@@ -52,13 +52,10 @@ object on the context.
 """
 
 import asyncio
-import contextvars
 import logging
 import math
 import mimetypes
-import queue
 import random
-import threading
 import time
 from collections.abc import (
     AsyncIterator,
@@ -98,6 +95,8 @@ from chessapp.agent_api import (
 from chessapp.analysis import captured_piece, review_game
 from chessapp.brain import CANCEL, CONFIRM, Brain, Narration
 from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
+from chessapp.deadline import LateReaction
+from chessapp.deadline import within_budget as _within_budget
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
@@ -725,6 +724,38 @@ def _move_commentary(
     return reaction
 
 
+def _late_close_words(
+    tool_results: Sequence[dict[str, Any]],
+    reply: MoveResult | None,
+    owed_reply: bool,
+    changed: bool,
+    session: GameSession,
+) -> str:
+    """What a brain-route turn says when its closer was too late (#316).
+
+    The brain route's version of `_move_confirmation`, which is what the fast
+    path says when *its* reaction is late: the player's moves the turn played
+    and the engine's answer, facts from the results. Not `STUCK_REPLY` on a
+    turn that moved something — "say it again" would invite replaying a move
+    that already landed — so a turn that changed the board some other way says
+    what the lost-brain line says when a turn stands. Only a turn that changed
+    nothing is left to ask again.
+    """
+    played = [
+        f"{record['result']['san']}."
+        for record in tool_results
+        if record["name"] == "make_move"
+        and record["result"].get("legal") is True
+        and record["result"].get("san")
+    ]
+    if played or owed_reply:
+        if line := _reply_announcement(reply, session):
+            played.append(line)
+    if played:
+        return " ".join(played)
+    return PROVIDER_LOST_TURN_STANDS if changed else STUCK_REPLY
+
+
 # What the player hears when the brain's loop ran out of budget instead of
 # answering (`max_iterations` / `correction_limit`): those stops carry no
 # commentary, and an empty bubble would read as a crash. Public so tests pin
@@ -793,70 +824,6 @@ def _engine_lost_words(commentary: str) -> str:
 # after a reboot) is over it and loses that one reaction to the app's own line;
 # hanging up does not unload the upstream, so the next turn is warm.
 _REACTION_BUDGET_S = 10.0
-
-
-class LateReaction(ProviderError):
-    """The app stopped waiting for a narration — the model may still be writing.
-
-    A `ProviderError` on purpose, and the same design choice `TurnStateError`
-    makes by subclassing `ValueError`: every branch that already treats the
-    words as the one thing a failure may cost — the observe beat, the
-    confirmed-op and resign narrations — handles lateness with no new failure
-    shape to learn. The distinct type is what keeps the record honest about
-    which of the two happened, since the player hears the same deterministic
-    line either way.
-
-    Deliberately *not* a `ProviderFailure`: that vocabulary answers "would
-    asking again work", and nothing here says the provider failed. It answered
-    too late for a turn that had already gone on without it, which is the app's
-    judgment about this beat and not a fact about the server.
-    """
-
-
-def _within_budget[T](work: Callable[[], T], budget: float) -> T:
-    """Run `work` on its own thread and give up on it after `budget` seconds.
-
-    Giving up is all this does: a model round trip cannot be cancelled, so the
-    thread runs on and whatever it produces is dropped — the same shape
-    `coordinator._PendingReply` uses for an engine computation the board moved
-    out from under, and safe for the same reason. The work handed here touches
-    no session: the narrator is given a board view snapshotted before the call
-    and answers with words, so a late thread has nothing to land. The one piece
-    of machine it can reach is the observation *phase* (a brain reports
-    `narrating`, and assembly reads that report as the beat opening), and that
-    is a mark on a turn the board is already waiting on: no mutation, and
-    collecting the reply is legal from either phase by construction.
-
-    The call's own exceptions cross back to the caller's thread unchanged; only
-    the deadline is this function's own answer.
-
-    It runs in a *copy* of the caller's context, which is what keeps the live
-    progress stream working: which interaction an event belongs to is a
-    `ContextVar` (`progress._CURRENT`), a bare thread starts from an empty
-    context, and the beat's own "narrating" frame would simply stop being sent
-    — the one thing the UI shows while Glitch is writing. A copy rather than
-    the context itself because the caller goes on without this thread and must
-    be free to close the interaction out from under it.
-    """
-    # Either the value in a 1-tuple or the exception that replaced it — never
-    # bare, so a `T` that is itself an exception could not be mistaken for one.
-    settled: queue.Queue[tuple[T] | BaseException] = queue.Queue(maxsize=1)
-    context = contextvars.copy_context()
-
-    def _run() -> None:
-        try:
-            settled.put((context.run(work),))
-        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller's thread
-            settled.put(exc)
-
-    threading.Thread(target=_run, name="bounded-words", daemon=True).start()
-    try:
-        outcome = settled.get(timeout=budget)
-    except queue.Empty:
-        raise LateReaction(f"no answer within {budget:.1f}s") from None
-    if isinstance(outcome, BaseException):
-        raise outcome
-    return outcome[0]
 
 
 def _failure_name(exc: BaseException) -> str:
@@ -3076,6 +3043,8 @@ def create_app(
             # either: the words were the only thing owed and the app said its
             # own line instead, so the record is the only place it shows.
             reaction_late = False
+            # The brain route's closer was cut (#316); see `_late_close_words`.
+            closer_late = False
             # The fast path's move beats, held for the commentary below: with no
             # narration to speak for the turn (verbosity=low, or a provider failure)
             # the move and the engine's reply become one canned confirmation. None on
@@ -3312,7 +3281,15 @@ def create_app(
                     ):
                         narrated_before_reply = ctx.session.fen()
                     commentary = response.text
-                    if not commentary and stop_reason != "provider_error":
+                    # A closer the brain stopped waiting for (#316): the plan's
+                    # record stands and the words are gone, the same shape as a
+                    # late observe beat. The app's own line is composed after
+                    # the guard, like every deterministic line, so it is never
+                    # guarded or rewritten; nothing of the words is remembered.
+                    closer_late = reaction_late = response.narration_late
+                    if closer_late:
+                        memory = ""
+                    elif not commentary and stop_reason != "provider_error":
                         commentary = STUCK_REPLY
                         memory = ""
                     elif stop_reason == "provider_error":
@@ -3483,6 +3460,14 @@ def create_app(
                         move_beats.result,
                         engine_reply,
                         owed_reply,
+                        ctx.session,
+                    )
+                elif closer_late and not commentary:
+                    commentary = _late_close_words(
+                        tool_results,
+                        engine_reply,
+                        owed_reply,
+                        _agent_state_dict(ctx) != before,
                         ctx.session,
                     )
                 elif owed_reply and (

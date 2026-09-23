@@ -101,10 +101,34 @@ derived from the token cap: 58 observe beats in the deployed trace took 0.7–2.
 (median ~1.5 s, one 7.5 s outlier), so the budget clears every healthy reaction
 with room for a busy GPU. Underneath it `llama_brain._NARRATE_TIMEOUT` (15 s)
 hangs up on the abandoned round trip, so it stops holding a llama-server slot the
-next turn needs; only `narrate` carries one, because the planner and the loop's
-closing narrator are calls nobody stops waiting for. The trace's `reaction_late`
-is where a cut beat shows — the commentary of one is indistinguishable from
-verbosity=low, from a dead provider, and from a beat that never opened.
+next turn needs. The trace's `reaction_late` is where a cut beat shows — the
+commentary of one is indistinguishable from verbosity=low, from a dead provider,
+and from a beat that never opened.
+
+**The brain route's closer is bounded too** (#316). "Push the king pawn" never
+reaches `api._narrate`: the planner plays the move and the loop's own closing
+narrator writes the words, inside `get_agent_response`, so until then the reply
+Stockfish already computed — and the mutation lock — waited on a phase the
+pipeline's budget could not see. The bound lives in the brain
+(`LlamaBrain._close`), around the tool-free speech call alone, so the thread
+that can act always returns on time with the plan's complete record and only a
+thread that can produce nothing but words is ever left behind. Two numbers,
+chosen by what the closer is doing: `_CLOSING_BUDGET_S` (10 s) when the reply
+is owed and the closer is only reacting — the 31 such closers in the deployed
+trace took 0.8–2.0 s, so it only fires on a stuck model — and
+`_CLOSING_CEILING_S` (60 s) otherwise. A closer that thinks is putting an
+evaluation into words, the answer the player asked for, so it gets the ceiling
+even with a reply owed: on the gate's move-plus-analysis scenarios it took
+6–10 s and more, and a first cut at 10 s sent both below their floor. A
+question's thoughtful answer runs 15–30 s and is never cut either; the ceiling
+is only a stall backstop. The socket hangs up 5 s after either
+(`_HANG_UP_MARGIN_S`). A cut closer comes back as `narration_late`, the trace
+records it as `reaction_late`, and the player hears the fast path's late line
+(`_late_close_words`: the moves and the reply — never `STUCK_REPLY` over a move
+that landed). What stays unbounded, knowingly: the planner is bounded between
+round trips (`planning_deadline_s`, #288) and never during one, because its
+calls act and no thread holding them may outlive the turn; and the guard's
+rewrite runs after the reply has been collected.
 
 ## Board controls
 
