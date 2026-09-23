@@ -102,6 +102,7 @@ def turn_record(
     spans_ms: dict[str, int] | None = None,
     serving: dict[str, str] | None = None,
     state_refreshes: Sequence[int] = (),
+    offer_refreshes: Sequence[int] = (),
     handoff: dict[str, Any] | None = None,
     budget: str = "",
     input_trimmed: int = 0,
@@ -246,6 +247,11 @@ def turn_record(
       what tells those two apart. `mutations: 2, state_refreshes: []` is a
       healthy move turn, and a mutating turn that goes on to decide again with
       nothing here is the bug this field exists to make visible.
+    - `offer_refreshes` is the subset of those versions at which the planner's
+      tool offer changed with the board (#315) — `ask_player`'s candidates
+      re-narrowed to the new menu, or a tool withheld or restored. Each one is
+      a prompt the planner re-read from the top, so a slow undo composition
+      reads here.
 
     `budget` names the per-turn budget that ended the brain route's planning
     phase (#288) — `iterations`, `corrections`, `tool_calls`,
@@ -289,6 +295,7 @@ def turn_record(
         "correlation_id": correlation_id,
         "mutations": mutations,
         "state_refreshes": list(state_refreshes),
+        "offer_refreshes": list(offer_refreshes),
         "handoff": handoff,
         "budget": budget,
         "input_trimmed": input_trimmed,

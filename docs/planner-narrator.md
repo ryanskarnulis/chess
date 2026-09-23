@@ -118,6 +118,34 @@ board versions the planner was re-shown (`state_refreshes`), which beside
 `mutations` is what says whether a turn that moved the board went on to decide
 against it.
 
+### The offer follows the board (#315, 2026-09-23)
+
+The block alone was half the fix. `ask_player`'s candidates are an enum of the
+live `legal_moves` (#289), and the loop resolved its tool offer — and the
+schemas it validates calls against — once per command. So "undo and move my
+king pawn" re-showed the planner the starting board, and its
+`ask_player(["e3", "e4"])` came back `'e4' is not one of [...]` against the
+pre-undo enum: two sources of truth inside one iteration.
+
+The offer is now re-resolved at the refresh and nowhere else. When a new board
+is appended, `brain_tool_definitions` runs again, and if the result differs
+from what is offered, the tools sent and the schemas checked are both swapped;
+the trace records the swap as `offer_refreshes` (a subset of
+`state_refreshes`). Three consequences are deliberate:
+
+- **Mid-exchange, nothing moves.** No refresh means no re-resolve, because an
+  enum narrowed then would be the engine's menu. The offer stays on the
+  player's last board — the one the planner was last shown — and the
+  `ask_player` handler refuses with `retry: never` while the engine is to move
+  (or the game is over), rather than calling the player's moves illegal.
+- **Availability rides along.** Under two legal moves `ask_player` is withheld,
+  so a takeback can bring it back or take it away mid-command, and a withheld
+  tool is an unknown to the loop, the way `claim_draw` is.
+- **Swapped only when different.** The tools render ahead of the conversation,
+  so a new list costs the planner a re-read of its whole prompt; an identical
+  one is left as it was. Command-entry schemas are unchanged (the fixed-board
+  golden in `test_tool_registry_schema.py` holds), and no schema was minimized.
+
 ## The narrator's second draft (the honesty guard, 2026-09-10)
 
 Every operational claim in the narrator's text — an ending, a draw, who won

@@ -712,7 +712,9 @@ def brain_tool_definitions(
 ) -> list[dict[str, Any]]:
     """What the brain is offered this command: the registry minus
     `brain_tool_exclusions`, with `ask_player`'s candidates narrowed to the
-    live legal moves.
+    live legal moves. Resolved at the start of each command and again each time
+    the loop re-shows the planner a board (#315), so the enum is always the
+    menu the planner was last handed.
 
     An enum rather than a free string because the list it names is the one the
     planner already holds: a candidate outside it is a schema correction in the
@@ -2119,8 +2121,11 @@ def build_registry(
         # app's own registry: it is a handoff to the narrator, and the MCP
         # server's caller has no narrator behind the call — it asks its own
         # user. `brain_tool_definitions` narrows `candidates` to an enum of the
-        # live `legal_moves` per command; the handler re-checks against the
-        # board anyway, because `dispatch` validates against the static schema.
+        # live `legal_moves` for each board the planner is shown (#315); the
+        # handler re-checks against the board anyway, because `dispatch`
+        # validates against the static schema — and because mid-exchange the
+        # offer is deliberately left on the player's last board, so only the
+        # handler can say there is nothing to ask until the engine replies.
         @registry.tool()
         def ask_player(
             candidates: Annotated[
@@ -2134,6 +2139,17 @@ def build_registry(
             """Ask the player to choose, when their words fit two or more
             entries of `legal_moves`. Nothing moves: the question goes to the
             player, and their answer comes back as the next command."""
+            if ctx.session.is_game_over():
+                raise ToolError(
+                    "the game is over; there is no move to ask about",
+                    retry=RETRY_NEVER,
+                )
+            if ctx.engine is not None and ctx.session.turn != ctx.session.player_color:
+                raise ToolError(
+                    "the engine is to move; there is nothing to ask the player"
+                    " until it replies",
+                    retry=RETRY_NEVER,
+                )
             legal = set(ctx.session.legal_moves())
             chosen = list(dict.fromkeys(candidates))
             unknown = [san for san in chosen if san not in legal]
