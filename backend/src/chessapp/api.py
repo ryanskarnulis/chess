@@ -93,7 +93,20 @@ from chessapp.agent_api import (
     build_agent_router,
 )
 from chessapp.analysis import captured_piece, review_game
-from chessapp.brain import CANCEL, CONFIRM, Brain, Narration
+from chessapp.brain import (
+    CALL_FAILED,
+    CALL_LATE,
+    CALL_OK,
+    CANCEL,
+    CONFIRM,
+    PHASE_ANSWER,
+    PHASE_REACTION,
+    PHASE_REWRITE,
+    PHASE_UNKNOWN,
+    Brain,
+    ModelCall,
+    Narration,
+)
 from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
 from chessapp.deadline import LateReaction
 from chessapp.deadline import within_budget as _within_budget
@@ -1509,15 +1522,19 @@ async def _honest_words(
     started = time.monotonic()
     try:
         narration = await offloop(brain.rewrite, commentary, lines, transcript)
-    except ProviderError:
+    except ProviderError as exc:
         # The turn is settled; the words are the only thing a dead provider can
         # cost here, and the fallback is what a turn with no words already says.
         # The round trip is still the turn's, and is counted as one (#290).
         logger.warning("rewrite_failed", exc_info=True, extra=logged)
         return _Guarded(
-            "", claims, commentary, rewrite="lost", cost=_ModelCost.failed(started)
+            "",
+            claims,
+            commentary,
+            rewrite="lost",
+            cost=_ModelCost.failed(started, PHASE_REWRITE, exc),
         )
-    cost = _ModelCost.of(narration)
+    cost = _ModelCost.of(narration, PHASE_REWRITE)
     second = narration.text
     again, _ = _unbacked(second, facts, advice) if second else ((), ())
     if second and not again:
@@ -1585,60 +1602,93 @@ class _ModelCost:
     from quietly recording three of the four.
 
     A call that raised is still a call (#290): the turn waited on it, so it is
-    counted with its latency and no tokens (`failed`), and `unmetered` says how
-    many calls reported no usage — the token totals are then a lower bound, not
-    a measured zero.
+    counted with its latency and no tokens (`failed`), and its tokens are
+    unknown — the token totals are then a lower bound, not a measured zero.
+
+    Held as the calls themselves, one `ModelCall` each, tagged with the phase
+    that made it and how it ended (#317); every number the trace sums is summed
+    off them in `turn_record`, so there is no second tally to disagree with.
     """
 
-    calls: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    latencies_ms: tuple[int, ...] = ()
-    unmetered: int = 0
+    calls: tuple[ModelCall, ...] = ()
+
+    @property
+    def latencies_ms(self) -> tuple[int, ...]:
+        return tuple(call.ms for call in self.calls)
 
     @classmethod
-    def of(cls, source: Any | None) -> "_ModelCost":
-        """The cost an `AgentResponse` or a `Narration` reports; `None` — a route
-        that never called the model — costs nothing."""
+    def of(cls, source: Any | None, phase: str = PHASE_UNKNOWN) -> "_ModelCost":
+        """The cost an `AgentResponse`, `Narration` or `Answer` reports; `None`
+        — a route that never called the model — costs nothing.
+
+        A source that tagged its own calls (the brain's loop) is taken as it
+        is. The single-call seams cannot know which beat they served, so the
+        caller names it as `phase`. A source that reports only totals (a test
+        double) is read call by call off its latencies, keeping both of its
+        totals: the last `unmetered_calls` of them are the unmetered ones, and
+        the token sums ride on the first metered call."""
         if source is None:
             return cls()
-        return cls(
-            calls=source.model_calls,
-            prompt_tokens=source.prompt_tokens,
-            completion_tokens=source.completion_tokens,
-            latencies_ms=tuple(source.model_latencies_ms),
-            unmetered=source.unmetered_calls,
+        tagged = tuple(getattr(source, "calls", ()))
+        if tagged:
+            return cls(calls=tagged)
+        readings = tuple(source.model_latencies_ms)
+        count = source.model_calls
+        if len(readings) < count:
+            readings += (0,) * (count - len(readings))
+        status = getattr(source, "status", CALL_OK)
+        failure = getattr(source, "failure", "")
+        metered = count - source.unmetered_calls
+        calls = tuple(
+            ModelCall(
+                phase,
+                status,
+                ms,
+                (source.prompt_tokens if i == 0 else 0) if i < metered else None,
+                (source.completion_tokens if i == 0 else 0) if i < metered else None,
+                failure=failure,
+            )
+            for i, ms in enumerate(readings[:count])
         )
+        return cls(calls=calls)
 
     @classmethod
-    def failed(cls, started: float) -> "_ModelCost":
+    def failed(
+        cls,
+        started: float,
+        phase: str,
+        exc: BaseException | None = None,
+        budget_s: float | None = None,
+    ) -> "_ModelCost":
         """One round trip that raised out of the brain — a dead provider or a
         reaction the app stopped waiting for — timed from `started`
-        (`time.monotonic()`) by the caller, the only one still around to."""
-        return cls(calls=1, latencies_ms=(_ms_since(started),), unmetered=1)
+        (`time.monotonic()`) by the caller, the only one still around to.
+        `exc` says which of the two: a `LateReaction` is `late`, censored at
+        `budget_s`; anything else is `failed`, with its provider failure kind."""
+        late = isinstance(exc, LateReaction)
+        failure = getattr(exc, "failure", "") if exc is not None and not late else ""
+        return cls(
+            calls=(
+                ModelCall(
+                    phase,
+                    CALL_LATE if late else CALL_FAILED,
+                    _ms_since(started),
+                    failure=str(failure),
+                    budget_ms=None if budget_s is None else round(budget_s * 1000),
+                ),
+            )
+        )
 
     def plus(self, other: "_ModelCost") -> "_ModelCost":
         """Two phases of one turn, added. The confirmation route can now spend
         two round trips — reading the player's answer, then narrating what the
         op did — and a turn that reported only the second would under-report
         every free-text confirmation."""
-        return _ModelCost(
-            calls=self.calls + other.calls,
-            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
-            completion_tokens=self.completion_tokens + other.completion_tokens,
-            latencies_ms=self.latencies_ms + other.latencies_ms,
-            unmetered=self.unmetered + other.unmetered,
-        )
+        return _ModelCost(calls=self.calls + other.calls)
 
     def as_trace(self) -> dict[str, Any]:
-        """These numbers under the names `turn_record` takes them by."""
-        return {
-            "model_calls": self.calls,
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "model_latencies_ms": self.latencies_ms,
-            "unmetered_calls": self.unmetered,
-        }
+        """These calls under the name `turn_record` takes them by."""
+        return {"calls": self.calls}
 
 
 @dataclass(frozen=True)
@@ -2190,13 +2240,13 @@ def create_app(
                 narration = _narrate(
                     _narrator_state_dict(ctx), changes, transcript, correlation_id
                 )
-                cost = _ModelCost.of(narration)
+                cost = _ModelCost.of(narration, PHASE_REACTION)
                 # Kept only once something was actually said from it: this is
                 # "the board the reaction was written from", and a beat the
                 # provider killed wrote no reaction. Read off the session,
                 # because the narrator's own view deliberately carries no FEN.
                 observed_fen = fen_at_observation
-            except LateReaction:
+            except LateReaction as exc:
                 # The budget expired with the reply already computed and
                 # waiting. Falling through is the whole fix: the collect below
                 # puts Stockfish's answer on the board, the turn closes on the
@@ -2205,9 +2255,13 @@ def create_app(
                 # records it so the trace can tell a late reaction from a lost
                 # one or a skipped one.
                 reaction_late = True
-                cost = _ModelCost.failed(started)
-            except ProviderError:
-                cost = _ModelCost.failed(started)
+                cost = _ModelCost.failed(
+                    started, PHASE_REACTION, exc, budget_s=reaction_budget
+                )
+            except ProviderError as exc:
+                cost = _ModelCost.failed(
+                    started, PHASE_REACTION, exc, budget_s=reaction_budget
+                )
                 logger.warning(
                     "observe_narration_failed",
                     exc_info=True,
@@ -3122,7 +3176,7 @@ def create_app(
                     # Summed, never assigned: an `unrelated` reading goes on
                     # down another road, which adds its own calls to this one
                     # (#290). A reader that died still made a round trip.
-                    cost = cost.plus(_ModelCost.of(read))
+                    cost = cost.plus(_ModelCost.of(read, PHASE_ANSWER))
                     if read.verdict == CONFIRM:
                         answer = True
                     elif read.verdict == CANCEL:
@@ -3161,7 +3215,14 @@ def create_app(
                                 # what the record says happened. A late one is
                                 # already logged by `_narrate`.
                                 reaction_late = isinstance(exc, LateReaction)
-                                cost = cost.plus(_ModelCost.failed(started))
+                                cost = cost.plus(
+                                    _ModelCost.failed(
+                                        started,
+                                        PHASE_REACTION,
+                                        exc,
+                                        budget_s=reaction_budget,
+                                    )
+                                )
                                 if not reaction_late:
                                     logger.warning(
                                         "close_narration_failed", exc_info=True
@@ -3171,7 +3232,9 @@ def create_app(
                                 )
                             else:
                                 commentary = narration.text
-                                cost = cost.plus(_ModelCost.of(narration))
+                                cost = cost.plus(
+                                    _ModelCost.of(narration, PHASE_REACTION)
+                                )
                     else:
                         # Declined: nothing ran, so there is nothing to narrate from.
                         commentary = _DECLINED_REPLY
@@ -3234,7 +3297,14 @@ def create_app(
                             # resignation is on the record either way, and only
                             # the record tells late from lost.
                             reaction_late = isinstance(exc, LateReaction)
-                            cost = cost.plus(_ModelCost.failed(started))
+                            cost = cost.plus(
+                                _ModelCost.failed(
+                                    started,
+                                    PHASE_REACTION,
+                                    exc,
+                                    budget_s=reaction_budget,
+                                )
+                            )
                             if not reaction_late:
                                 logger.warning("close_narration_failed", exc_info=True)
                             commentary = _destructive_confirmation(
@@ -3242,7 +3312,7 @@ def create_app(
                             )
                         else:
                             commentary = narration.text
-                            cost = cost.plus(_ModelCost.of(narration))
+                            cost = cost.plus(_ModelCost.of(narration, PHASE_REACTION))
                 else:
                     route = ROUTE_BRAIN
                     response = await _offloop(
@@ -3258,6 +3328,7 @@ def create_app(
                     # than carried through `_ModelCost`: it is not a cost, and
                     # this is the only route that has a loop to report one.
                     traced["state_refreshes"] = response.state_refreshes
+                    traced["planning"] = response.planning
                     traced["offer_refreshes"] = response.offer_refreshes
                     # Which per-turn budget ended the planning phase (#288),
                     # the same way: only this route has a loop to report one.

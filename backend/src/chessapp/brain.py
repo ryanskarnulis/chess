@@ -35,6 +35,77 @@ from typing import Any, Protocol
 
 from chessapp.handoff import Handoff
 
+# Which phase of a turn made a model round trip (#317). The trace used to hold
+# one unlabelled latency per call and left a reader to infer the phase from
+# the route and the call order, which a budget stop or a provider death
+# silently breaks. The brain names the phases it runs itself (`planner`,
+# `closer`); the others are single-call seams whose *caller* knows which beat
+# it is (`reaction`, `rewrite`, `answer`), so the pipeline stamps them.
+PHASE_PLANNER = "planner"
+PHASE_CLOSER = "closer"
+PHASE_REACTION = "reaction"
+PHASE_REWRITE = "rewrite"
+PHASE_ANSWER = "answer"
+# A call from a brain that does not tag its own (a test double): known to have
+# happened, not known to have been which.
+PHASE_UNKNOWN = "unknown"
+
+# How one round trip ended. `truncated` came back cut off by its `max_tokens`
+# (the tokens are real, the words were dropped); `bad_args` came back with
+# tool arguments that were not a JSON object; `failed` raised; `late` was still
+# running when its caller stopped waiting — not a failure of the provider, and
+# its `ms` is the wait, a censored reading rather than the call's duration.
+CALL_OK = "ok"
+CALL_TRUNCATED = "truncated"
+CALL_BAD_ARGS = "bad_args"
+CALL_FAILED = "failed"
+CALL_LATE = "late"
+
+
+@dataclass(frozen=True)
+class ModelCall:
+    """One model round trip, as the trace records it (#317).
+
+    Every call a turn made is one of these, whichever phase made it and however
+    it ended — which is what lets a reader tell a slow planner from a slow
+    narrator without guessing from the call order, and a failed call from a
+    cheap one. The turn's totals (`model_calls`, the token sums, `model_ms`)
+    are these added up, never a second count kept beside them.
+
+    `prompt_tokens`/`completion_tokens` are `None` when unknown — the call
+    raised, or the server sent no usage — never a zero that reads as measured.
+    `failure` is the `provider.ProviderFailure` kind of a `failed` call, and
+    `budget_ms` the wait the caller held this call to, when it held it to one:
+    beside a `late` status it says what the censored `ms` was censored at.
+    """
+
+    phase: str
+    status: str = CALL_OK
+    ms: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    failure: str = ""
+    budget_ms: int | None = None
+
+    @property
+    def metered(self) -> bool:
+        return self.prompt_tokens is not None and self.completion_tokens is not None
+
+    def as_trace(self, seq: int) -> dict[str, Any]:
+        """This call as one entry of the record's `calls` list. `seq` is its
+        position in the turn: with the record's `correlation_id` it names the
+        attempt, so a retried or duplicated call is two entries, never one."""
+        return {
+            "seq": seq,
+            "phase": self.phase,
+            "status": self.status,
+            "ms": self.ms,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "failure": self.failure,
+            "budget_ms": self.budget_ms,
+        }
+
 
 @dataclass(frozen=True)
 class ToolCall:
@@ -128,6 +199,17 @@ class AgentResponse:
     # measure: an unmeasured turn is not a fast one, so it records no readings
     # rather than zeros.
     model_latencies_ms: tuple[int, ...] = ()
+    # The same calls, one `ModelCall` each, in call order and tagged with the
+    # phase that made them and how they ended (#317). The fields above are
+    # these summed; a brain that does not tag its calls leaves this empty and
+    # the pipeline records its readings under `PHASE_UNKNOWN`.
+    calls: tuple[ModelCall, ...] = ()
+    # How the planning phase spent its wall clock against its deadline (#317):
+    # `{"elapsed_ms", "deadline_ms", "overrun_ms"}`, or `None` when no planner
+    # call ran. The deadline is checked *between* round trips, so the last one
+    # may start inside it and end past it; `overrun_ms` is by how much, which is
+    # the one number the check itself can never show.
+    planning: dict[str, int | None] | None = None
     # The board versions the planner was shown *during* the run, in order —
     # one per mid-command refresh of its state block (#282). Empty on a turn
     # that mutated nothing, and equally on one whose mutation left the board
@@ -177,12 +259,17 @@ class Narration:
     latency_ms: int = 0
     # 1 when the call returned no usage, so its token counts are unknown.
     unmetered_calls: int = 0
+    # How the one call ended (#317): `CALL_OK`, or `CALL_TRUNCATED` when the
+    # cap cut it off and `text` is empty for that reason. Which phase it was
+    # is the caller's to say — the same narrator serves three beats.
+    status: str = CALL_OK
 
     @property
     def model_latencies_ms(self) -> tuple[int, ...]:
         """The one call's latency, under the name `AgentResponse` uses — so
-        whatever reads a turn's cost reads both shapes the same way."""
-        return (self.latency_ms,)
+        whatever reads a turn's cost reads both shapes the same way. Empty for
+        a narration that never reached the model (its brief did not fit)."""
+        return (self.latency_ms,) if self.model_calls else ()
 
 
 # How a reply to a pending confirmation question can read. Deliberately three
@@ -217,6 +304,11 @@ class Answer:
     completion_tokens: int = 0
     latency_ms: int = 0
     unmetered_calls: int = 0
+    # How the one call ended (#317) — `CALL_FAILED` with the provider's
+    # `failure` kind for a reader that died, `CALL_TRUNCATED` for one the cap
+    # cut off. Either way the verdict is `unrelated`.
+    status: str = CALL_OK
+    failure: str = ""
 
     @property
     def model_latencies_ms(self) -> tuple[int, ...]:
@@ -234,6 +326,9 @@ class _RunState:
     completion_tokens: int = 0
     unmetered_calls: int = 0
     latencies_ms: list[int] = field(default_factory=list)
+    calls: list[ModelCall] = field(default_factory=list)
+    # The planning phase against its deadline (see `AgentResponse.planning`).
+    planning: dict[str, int | None] | None = None
     boards_shown: list[int] = field(default_factory=list)
     offers_refreshed: list[int] = field(default_factory=list)
     # Which turn budget ended the planning phase (#288), or "" when none did.
@@ -255,24 +350,19 @@ class _RunState:
         """Note that the planner's offer was re-resolved for `version`."""
         self.offers_refreshed.append(version)
 
-    def count_call(
-        self,
-        prompt_tokens: int = 0,
-        completion_tokens: int = 0,
-        latency_ms: int = 0,
-        *,
-        metered: bool = True,
-    ) -> None:
-        """Tally one model round trip, its tokens and its wall clock. Called for
-        every trip — including one that raised before returning a result (it
-        still cost a call, and usually the most time), which lands here with
-        `metered=False`: no tokens, a real latency, and a count that says the
-        tokens are unknown rather than zero."""
+    def count_call(self, call: ModelCall) -> None:
+        """Tally one model round trip: its phase, how it ended, its tokens and
+        its wall clock. Called for every trip — including one that raised
+        before returning a result (it still cost a call, and usually the most
+        time), which arrives with no tokens: a real latency, and a count that
+        says the tokens are unknown rather than zero. The totals are summed off
+        the calls here, so the two can never disagree."""
+        self.calls.append(call)
         self.model_calls += 1
-        self.unmetered_calls += 0 if metered else 1
-        self.prompt_tokens += prompt_tokens
-        self.completion_tokens += completion_tokens
-        self.latencies_ms.append(latency_ms)
+        self.unmetered_calls += 0 if call.metered else 1
+        self.prompt_tokens += call.prompt_tokens or 0
+        self.completion_tokens += call.completion_tokens or 0
+        self.latencies_ms.append(call.ms)
 
     def response(
         self,
@@ -294,6 +384,8 @@ class _RunState:
             completion_tokens=self.completion_tokens,
             unmetered_calls=self.unmetered_calls,
             model_latencies_ms=tuple(self.latencies_ms),
+            calls=tuple(self.calls),
+            planning=self.planning,
             state_refreshes=tuple(self.boards_shown),
             offer_refreshes=tuple(self.offers_refreshed),
             handoff=handoff,

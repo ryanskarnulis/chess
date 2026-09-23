@@ -16,7 +16,18 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.brain import CONFIRM, AgentResponse, Answer, Narration, ToolCall
+from chessapp.brain import (
+    CALL_FAILED,
+    CALL_LATE,
+    CONFIRM,
+    PHASE_CLOSER,
+    PHASE_PLANNER,
+    AgentResponse,
+    Answer,
+    ModelCall,
+    Narration,
+    ToolCall,
+)
 from chessapp.engine import CandidateMove
 from chessapp.game import GameSession
 from chessapp.tools import Settings, ToolContext
@@ -71,10 +82,80 @@ def _record_fields(**overrides):
 
 
 def test_turn_record_carries_model_cost_when_given():
-    record = _record_fields(model_calls=3, prompt_tokens=2841, completion_tokens=96)
+    record = _record_fields(
+        calls=(
+            ModelCall(PHASE_PLANNER, ms=100, prompt_tokens=2000, completion_tokens=40),
+            ModelCall(PHASE_PLANNER, ms=100, prompt_tokens=800, completion_tokens=6),
+            ModelCall(PHASE_CLOSER, ms=100, prompt_tokens=41, completion_tokens=50),
+        )
+    )
     assert record["model_calls"] == 3
     assert record["prompt_tokens"] == 2841
     assert record["completion_tokens"] == 96
+
+
+def test_turn_record_is_versioned_and_says_what_it_is():
+    """#317: a reader keys off `schema` rather than guessing from which fields
+    are present, and `kind` lets other records share the file."""
+    record = _record_fields()
+    assert record["schema"] == 2
+    assert record["kind"] == "turn"
+
+
+def test_turn_record_tags_each_call_and_derives_every_total_from_them():
+    """#317. The phase and outcome ride on each call, a failed or late call keeps
+    its time and its identity, and the totals are the calls summed — an unknown
+    token count is a null, never a zero that joins the sum as measured."""
+    record = _record_fields(
+        calls=(
+            ModelCall(PHASE_PLANNER, ms=400, prompt_tokens=900, completion_tokens=12),
+            ModelCall(PHASE_PLANNER, CALL_FAILED, ms=1200, failure="unreachable"),
+            ModelCall(PHASE_CLOSER, CALL_LATE, ms=10000, budget_ms=10000),
+        ),
+        planning={"elapsed_ms": 1600, "deadline_ms": 60000, "overrun_ms": 0},
+    )
+    assert record["calls"] == [
+        {
+            "seq": 0,
+            "phase": "planner",
+            "status": "ok",
+            "ms": 400,
+            "prompt_tokens": 900,
+            "completion_tokens": 12,
+            "failure": "",
+            "budget_ms": None,
+        },
+        {
+            "seq": 1,
+            "phase": "planner",
+            "status": "failed",
+            "ms": 1200,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "failure": "unreachable",
+            "budget_ms": None,
+        },
+        {
+            "seq": 2,
+            "phase": "closer",
+            "status": "late",
+            "ms": 10000,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "failure": "",
+            "budget_ms": 10000,
+        },
+    ]
+    assert record["model_calls"] == 3
+    assert record["unmetered_calls"] == 2
+    assert record["prompt_tokens"] == 900
+    assert record["model_latencies_ms"] == [400, 1200, 10000]
+    assert record["model_ms"] == 11600
+    assert record["planning"] == {
+        "elapsed_ms": 1600,
+        "deadline_ms": 60000,
+        "overrun_ms": 0,
+    }
 
 
 def test_turn_record_carries_the_engine_reply_when_there_was_one():
@@ -154,7 +235,9 @@ def test_turn_record_carries_the_mutation_count():
 def test_turn_record_times_each_model_call_and_sums_them():
     """Per-call latency is what tells a slow narrator from a slow planner; the
     total is derived here, so the two can never disagree in a record."""
-    record = _record_fields(model_calls=2, model_latencies_ms=[120, 900])
+    record = _record_fields(
+        calls=(ModelCall(PHASE_PLANNER, ms=120), ModelCall(PHASE_CLOSER, ms=900))
+    )
     assert record["model_latencies_ms"] == [120, 900]
     assert record["model_ms"] == 1020
 

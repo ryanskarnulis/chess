@@ -140,13 +140,21 @@ from typing import Any
 import jsonschema
 
 from chessapp.brain import (
+    CALL_BAD_ARGS,
+    CALL_FAILED,
+    CALL_LATE,
+    CALL_OK,
+    CALL_TRUNCATED,
     CANCEL,
     CONFIRM,
+    PHASE_CLOSER,
+    PHASE_PLANNER,
     RETRY_DIFFERENT_ARGS,
     RETRY_NEVER,
     UNRELATED,
     AgentResponse,
     Answer,
+    ModelCall,
     Narration,
     ToolDispatcher,
     _RunState,
@@ -554,7 +562,7 @@ class LlamaBrain:
             except ToolCallArgumentsError as exc:
                 # The model was still called and the loop pays for it, so the
                 # round trip counts (with no tokens — nothing came back to read).
-                run.count_call(latency_ms=self._elapsed_ms(started), metered=False)
+                self._count_planner(run, opened, started, CALL_BAD_ARGS)
                 # Nothing to attach a tool result to (see module docstring):
                 # correct with a user-role message and drop the unusable turn.
                 corrections += 1
@@ -579,12 +587,16 @@ class LlamaBrain:
                 # changed. The round trip is counted like any raised call.
                 # `exc.failure` rides along: the stop says the turn died, the
                 # kind says whether asking again is worth anything.
-                run.count_call(latency_ms=self._elapsed_ms(started), metered=False)
+                self._count_planner(
+                    run, opened, started, CALL_FAILED, failure=str(exc.failure)
+                )
                 return run.response("", "provider_error", str(exc.failure))
-            run.count_call(
-                *_usage_ints(result.usage),
-                self._elapsed_ms(started),
-                metered=result.usage is not None,
+            self._count_planner(
+                run,
+                opened,
+                started,
+                CALL_TRUNCATED if result.finish_reason == "length" else CALL_OK,
+                usage=result.usage,
             )
 
             if not result.tool_calls:
@@ -865,7 +877,7 @@ class LlamaBrain:
                 enable_thinking=False,
                 max_tokens=_ANSWER_MAX_TOKENS,
             )
-        except ProviderError:
+        except ProviderError as exc:
             logger.warning("answer_reading_failed", exc_info=True)
             # Still `unrelated`, which changes nothing — but the round trip was
             # made and the turn waited on it, so it is counted like any raised
@@ -874,6 +886,8 @@ class LlamaBrain:
                 model_calls=1,
                 unmetered_calls=1,
                 latency_ms=self._elapsed_ms(started),
+                status=CALL_FAILED,
+                failure=str(exc.failure),
             )
         prompt_tokens, completion_tokens = _usage_ints(result.usage)
         unmetered = 0 if result.usage is not None else 1
@@ -892,6 +906,7 @@ class LlamaBrain:
                 completion_tokens=completion_tokens,
                 latency_ms=self._elapsed_ms(started),
                 unmetered_calls=unmetered,
+                status=CALL_TRUNCATED,
             )
         word = (result.content or "").strip().strip(".!,'\"").lower()
         return Answer(
@@ -967,7 +982,14 @@ class LlamaBrain:
             # the turn has gone on. The call is counted with the time the turn
             # waited on it, its tokens unknown; the words are not waited for.
             logger.warning("closing_narration_late budget=%.1fs", wait)
-            run.count_call(latency_ms=self._elapsed_ms(started), metered=False)
+            run.count_call(
+                ModelCall(
+                    PHASE_CLOSER,
+                    CALL_LATE,
+                    self._elapsed_ms(started),
+                    budget_ms=_budget_ms(wait),
+                )
+            )
             return run.response("", stop_reason, handoff=handoff, narration_late=True)
         except ProviderError as exc:
             # The plan finished; the persona call died. Same contract as a
@@ -975,14 +997,28 @@ class LlamaBrain:
             # and the kind of death comes back with them. This is the call a
             # context overrun reaches first — the narrator carries the whole
             # conversation, so it is the longest prompt of the turn.
-            run.count_call(latency_ms=self._elapsed_ms(started), metered=False)
+            run.count_call(
+                ModelCall(
+                    PHASE_CLOSER,
+                    CALL_FAILED,
+                    self._elapsed_ms(started),
+                    failure=str(exc.failure),
+                    budget_ms=_budget_ms(wait),
+                )
+            )
             return run.response("", "provider_error", str(exc.failure), handoff)
-        run.count_call(
-            narration.prompt_tokens,
-            narration.completion_tokens,
-            self._elapsed_ms(started),
-            metered=not narration.unmetered_calls,
-        )
+        if narration.model_calls:
+            metered = not narration.unmetered_calls
+            run.count_call(
+                ModelCall(
+                    PHASE_CLOSER,
+                    narration.status,
+                    self._elapsed_ms(started),
+                    narration.prompt_tokens if metered else None,
+                    narration.completion_tokens if metered else None,
+                    budget_ms=_budget_ms(wait),
+                )
+            )
         return run.response(narration.text, stop_reason, handoff=handoff)
 
     def _speak(
@@ -1017,7 +1053,9 @@ class LlamaBrain:
             # this brief: nothing is sent, and the empty reply is the one every
             # caller already knows how to stand in for — a cut-off narration's.
             logger.warning("narration_over_input_budget")
-            return Narration(text="")
+            # Nothing was sent, so nothing is counted: a call that never
+            # happened is not a fast one (#317).
+            return Narration(text="", model_calls=0)
         result = self.provider.chat(
             messages,
             tools=None,
@@ -1039,6 +1077,7 @@ class LlamaBrain:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             unmetered_calls=0 if result.usage is not None else 1,
+            status=CALL_TRUNCATED if truncated else CALL_OK,
         )
 
     def _dispatch(
@@ -1127,6 +1166,47 @@ class LlamaBrain:
         is read by eye.
         """
         return max(0, round((self.clock() - started) * 1000))
+
+    def _count_planner(
+        self,
+        run: _RunState,
+        opened: float,
+        started: float,
+        status: str,
+        *,
+        usage: Usage | None = None,
+        failure: str = "",
+    ) -> None:
+        """Count one planner round trip and re-read the phase's clock (#317).
+
+        One clock reading serves both, so the call's latency and the phase's
+        elapsed time end at the same instant. `overrun_ms` is how far past the
+        deadline the phase ran: the deadline is checked before a round trip
+        starts, never during one, so a call that started inside it can end past
+        it — the one case the check cannot prevent, and so the one worth a
+        number."""
+        ended = self.clock()
+        metered = usage is not None
+        prompt_tokens, completion_tokens = _usage_ints(usage)
+        run.count_call(
+            ModelCall(
+                PHASE_PLANNER,
+                status,
+                max(0, round((ended - started) * 1000)),
+                prompt_tokens if metered else None,
+                completion_tokens if metered else None,
+                failure=failure,
+            )
+        )
+        elapsed_ms = max(0, round((ended - opened) * 1000))
+        deadline_ms = _budget_ms(self.planning_deadline_s)
+        run.planning = {
+            "elapsed_ms": elapsed_ms,
+            "deadline_ms": deadline_ms,
+            "overrun_ms": None
+            if deadline_ms is None
+            else max(0, elapsed_ms - deadline_ms),
+        }
 
     def _thinking(self, run: _RunState) -> bool:
         """Thinking is off until an analysis tool has answered; from then on
@@ -1288,6 +1368,11 @@ def _rewrite_brief(commentary: str, corrections: Sequence[str]) -> str:
         "for it — the player has not seen the first version. Do not call any "
         "tools."
     )
+
+
+def _budget_ms(seconds: float | None) -> int | None:
+    """A configured wait in the trace's unit, or `None` for no limit."""
+    return None if seconds is None else round(seconds * 1000)
 
 
 def _usage_ints(usage: Usage | None) -> tuple[int, int]:

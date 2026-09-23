@@ -864,11 +864,15 @@ def _measured(
     # `rewrite`), and the splitter needs to know or it hands the planner the
     # first narrator round trip.
     rewrites = 1 if traced.get("rewrite") else 0
+    # The calls' own phase tags (#317), when the record has them: read before
+    # the route-and-stop rule, which stays the fallback.
+    phases = [call["phase"] for call in traced.get("calls", ())] or None
     latencies = split_latencies(
         traced.get("model_latencies_ms", ()),
         route=traced.get("route"),
         stop_reason=traced.get("stop_reason"),
         rewrites=rewrites,
+        phases=phases,
     )
     # Tokens come off the *call meter* rather than the trace, because the trace
     # sums the turn and a sum is exactly what could not answer the last
@@ -881,6 +885,7 @@ def _measured(
         route=traced.get("route"),
         stop_reason=traced.get("stop_reason"),
         rewrites=rewrites,
+        phases=phases,
     )
     tok_s = generation_rate(tokens.narrator_out, latencies.narrator_ms)
     print(

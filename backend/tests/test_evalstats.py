@@ -924,3 +924,77 @@ def test_generation_rate_refuses_to_divide_by_an_unknown() -> None:
     assert generation_rate(940, None) is None
     # A 0 ms reading is a clock that did not run, not an infinitely fast model.
     assert generation_rate(940, 0) is None
+
+
+# --- a schema-2 record's phase tags decide the split (#317) ------------------
+
+
+def test_tagged_calls_split_a_provider_death_the_positions_could_not():
+    """The positional rule has to call a brain turn that died UNKNOWN: the dead
+    call could have been either phase. The tags say which it was."""
+    untagged = split_latencies((400, 900), route="brain", stop_reason="provider_error")
+    assert untagged.attribution == Attribution.UNKNOWN
+
+    tagged = split_latencies(
+        (400, 900),
+        route="brain",
+        stop_reason="provider_error",
+        phases=("planner", "closer"),
+    )
+    assert tagged.attribution == Attribution.SPLIT
+    assert (tagged.planner_ms, tagged.narrator_ms) == (400, 900)
+
+
+def test_tagged_calls_place_the_reader_in_neither_phase():
+    """A confirmation that read the answer and then narrated: positions cannot
+    tell the two apart, the tags can — and the reader is neither phase."""
+    latencies = split_latencies(
+        (150, 800),
+        route="confirmation",
+        stop_reason="completed",
+        phases=("answer", "reaction"),
+    )
+    assert latencies.attribution == Attribution.SPLIT
+    assert (latencies.planner_ms, latencies.narrator_ms) == (0, 800)
+    assert latencies.total_ms == 950
+
+
+def test_a_rewrite_is_narrator_time_by_its_tag():
+    latencies = split_latencies(
+        (300, 700, 500),
+        route="brain",
+        stop_reason="completed",
+        phases=("planner", "closer", "rewrite"),
+    )
+    assert (latencies.planner_ms, latencies.narrator_ms) == (300, 1200)
+
+
+def test_no_narrator_tag_is_no_narrator():
+    latencies = split_latencies(
+        (300, 700), route="brain", stop_reason="budget", phases=("planner", "planner")
+    )
+    assert latencies.attribution == Attribution.NO_NARRATOR
+    assert latencies.narrator_ms is None
+
+
+def test_an_untagged_or_mismatched_record_falls_back_to_the_positions():
+    fallback = split_latencies((300, 700), route="brain", stop_reason="completed")
+    for phases in (("unknown", "unknown"), ("planner",), None):
+        assert (
+            split_latencies(
+                (300, 700), route="brain", stop_reason="completed", phases=phases
+            )
+            == fallback
+        )
+
+
+def test_tokens_split_by_the_same_tags():
+    tokens = split_tokens(
+        [(900, 12), (None, None), (1200, 80)],
+        route="confirmation",
+        stop_reason="completed",
+        phases=("answer", "planner", "closer"),
+    )
+    assert tokens.attribution == Attribution.SPLIT
+    assert tokens.planner_out is None  # the planner's one call reported nothing
+    assert (tokens.narrator_in, tokens.narrator_out) == (1200, 80)

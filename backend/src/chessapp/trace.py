@@ -28,6 +28,18 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+from chessapp.brain import ModelCall
+
+# The record layout's version (#317). A reader keys off it rather than off
+# which fields happen to be present: 2 is the first version that says so, and
+# the first whose model cost is a list of phase-tagged `calls`. A record with no
+# `schema` is version 1. Bump it on any change a reader must branch on.
+TRACE_SCHEMA = 2
+# What a record in the trace file is. Only turns so far; the kind is on every
+# record so another kind can share the file without a reader mistaking it for
+# a turn.
+KIND_TURN = "turn"
+
 # The four roads an utterance can take through `_run_command`. Three of them are
 # deterministic; only `brain` involves the model in deciding what to do.
 ROUTE_CONFIRMATION = "confirmation"
@@ -94,11 +106,8 @@ def turn_record(
     engine_failure: str = "",
     reaction_late: bool = False,
     error: str = "",
-    model_calls: int = 0,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    model_latencies_ms: Sequence[int] = (),
-    unmetered_calls: int = 0,
+    calls: Sequence[ModelCall] = (),
+    planning: dict[str, int | None] | None = None,
     spans_ms: dict[str, int] | None = None,
     serving: dict[str, str] | None = None,
     state_refreshes: Sequence[int] = (),
@@ -185,9 +194,27 @@ def turn_record(
     which is the one way this one becomes worthless. The trace is opt-in and
     off by default, so this costs nothing until somebody is already debugging.
 
+    `calls` is every model round trip the turn made, one entry each in call
+    order (#317): `seq` (its place in the turn — with `correlation_id`, the
+    attempt's identity), `phase` (`planner`, `closer`, `reaction`, `rewrite`,
+    `answer`, or `unknown` from a brain that does not tag its calls), `status`
+    (`ok`, `truncated`, `bad_args`, `failed` with the provider's `failure` kind,
+    or `late` — still running when its caller stopped waiting, so its `ms` is
+    the wait, censored at `budget_ms`), its wall clock in `ms`, and its tokens,
+    `null` when unknown. Every total below is derived from this list here, so a
+    record's parts and its sums cannot disagree and no call is counted twice.
+
+    `planning` is the brain route's planning phase against its wall-clock
+    budget (#317): `elapsed_ms` from the first planner call's start to the last
+    one's end, the configured `deadline_ms` (`null` for none), and
+    `overrun_ms`, how far past the deadline the phase ran. The deadline is
+    checked between round trips, so a call that started inside it may end past
+    it; that overrun is the thing the check cannot prevent and this makes
+    visible. `None` on a turn no planner call ran.
+
     `model_calls`/`prompt_tokens`/`completion_tokens` are the turn's total cost
     at the provider boundary — how many times the model was called and the tokens
-    summed across those calls. They default to 0 so a deterministic route (a
+    summed across those calls. They are 0 with no calls so a deterministic route (a
     canned confirmation, a declined op) records a real, readable zero rather than
     a gap. This is the number every context-shrinking cut is measured against.
     Every round trip the turn made is in `model_calls`, whichever phase made it
@@ -198,10 +225,11 @@ def turn_record(
     than a measured total.
 
     `model_latencies_ms` is one reading per model call, in call order, and
-    `model_ms` is their sum — derived here rather than passed, so the total and
-    the parts cannot disagree in a record. Per-call rather than per-turn because
-    a slow planner and a slow narrator are different problems, and the turn's
-    total cannot tell them apart.
+    `model_ms` is their sum. Per-call rather than per-turn because a slow
+    planner and a slow narrator are different problems, and the turn's total
+    cannot tell them apart. All five are kept for the readers written before
+    `calls` existed; `calls` is the one to read, because only it says which
+    phase each reading belongs to.
 
     `spans_ms` is where the turn's wall clock went outside the model (#290),
     whole milliseconds per phase, a key present only for a phase that ran:
@@ -275,7 +303,10 @@ def turn_record(
     narration that announced something is re-judged against this, not against
     the planner's note: "took it back" under `performed: []` is the miss.
     """
+    unmetered = sum(1 for call in calls if not call.metered)
     return {
+        "schema": TRACE_SCHEMA,
+        "kind": KIND_TURN,
         "utterance": utterance,
         "route": route,
         "origin": origin,
@@ -301,12 +332,14 @@ def turn_record(
         "handoff": handoff,
         "budget": budget,
         "input_trimmed": input_trimmed,
-        "model_calls": model_calls,
-        "unmetered_calls": unmetered_calls,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "model_ms": sum(model_latencies_ms),
-        "model_latencies_ms": list(model_latencies_ms),
+        "model_calls": len(calls),
+        "unmetered_calls": unmetered,
+        "prompt_tokens": sum(call.prompt_tokens or 0 for call in calls),
+        "completion_tokens": sum(call.completion_tokens or 0 for call in calls),
+        "model_ms": sum(call.ms for call in calls),
+        "model_latencies_ms": [call.ms for call in calls],
+        "calls": [call.as_trace(seq) for seq, call in enumerate(calls)],
+        "planning": planning,
         "spans_ms": spans_ms,
         "serving": serving,
         "fen_before": fen_before,
