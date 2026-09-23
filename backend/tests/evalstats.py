@@ -161,7 +161,9 @@ class Attribution(StrEnum):
     # boundary the route and stop reason put there.
     SPLIT = "SPLIT"
     # A budget stop: no narrator ran, so every reading is the planner's and
-    # there is no narrator time — not an unmeasured one, none.
+    # there is no narrator time — not an unmeasured one, none. Also a tagged
+    # turn whose only call was the confirmation reader (#317): no narrator
+    # ran there either, and the reader is neither phase.
     NO_NARRATOR = "NO_NARRATOR"
     # No readings came back: either the model was never called (a canned
     # confirmation at verbosity=low) or nothing was traced at all (a request that
