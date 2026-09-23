@@ -4,6 +4,10 @@ import { SpeakerOffIcon, SpeakerOnIcon } from './icons'
 import { MicButton } from './MicButton'
 import { unlockAudio } from './tts'
 
+/** The backend's cap on one command (`agent_api.MAX_AGENT_MESSAGE_LENGTH`):
+ * longer is refused 422, so the box never lets one be typed. */
+export const MAX_COMMAND_LENGTH = 8_000
+
 export interface CommandBoxProps {
   /** Send a (trimmed, non-empty) command to the agent. Hands-free voice
    * awaits the returned promise before listening again. */
@@ -96,6 +100,7 @@ export function CommandBox({
           <input
             type="text"
             aria-label="Command"
+            maxLength={MAX_COMMAND_LENGTH}
             placeholder={disabled ? 'No agent — play on' : 'Talk to Glitch…'}
             value={text}
             onChange={(e) => setText(e.target.value)}
