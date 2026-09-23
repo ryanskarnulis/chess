@@ -17,6 +17,7 @@ agent evals can assert how many times the live model was called and whether
 thinking was on. Keep the doubles here — not copied into test files.
 """
 
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -337,6 +338,38 @@ class ScriptedProvider:
         if isinstance(turn, Exception):
             raise turn
         return turn
+
+
+class BlockingNarratorProvider(ScriptedProvider):
+    """A scripted provider whose *narrator* calls block until released (#316).
+
+    A narrator call is the one with no tools on offer, so the planner's round
+    trips play their script as ever and only the words stall: the shape of a
+    llama-server that answers the parse and then sits on the persona call.
+    `entered` says a narrator call was reached, `release` lets it finish, and
+    `finished` says it did — so "the turn came back while the words were still
+    being written" is a fact a test can assert rather than a race it hopes for.
+    What the released call returns is `words`.
+    """
+
+    def __init__(
+        self, *turns: ChatResult | Exception, words: str, patience: float = 5.0
+    ) -> None:
+        super().__init__(*turns)
+        self.words = words
+        self.patience = patience
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    def chat(self, messages, *, tools=None, **kwargs) -> ChatResult:
+        if tools is not None:
+            return super().chat(messages, tools=tools, **kwargs)
+        super().chat(messages, tools=tools, **kwargs)  # recorded, not played
+        self.entered.set()
+        self.release.wait(timeout=self.patience)
+        self.finished.set()
+        return text_turn(self.words)
 
 
 @dataclass(frozen=True)

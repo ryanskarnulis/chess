@@ -117,12 +117,16 @@ Model-specific quirks, split across the two layers:
   would strand a batch half-done. The loop dispatches them, goes on to the
   next iteration, and treats the `content` fragment beside them as no handoff
   note at all (audit 2026-09-05, decided).
-- `narrate` — and only `narrate` — also carries a wall-clock ceiling
-  (`_NARRATE_TIMEOUT`). A token cap bounds generation, not queueing or a
-  stalled server, and the observe beat is the one phase whose caller has
-  already decided how long it will wait (`api._REACTION_BUDGET_S`): hanging up
-  is what stops an abandoned reaction holding a llama-server slot the next
-  turn needs (#283).
+- The two narrator phases carry a wall-clock ceiling; the planner does not.
+  A token cap bounds generation, not queueing or a stalled server. `narrate`
+  hangs up at `_NARRATE_TIMEOUT`, because its caller has already decided how
+  long it will wait (`api._REACTION_BUDGET_S`, #283). The loop's own closer
+  stops *waiting* at `_CLOSING_BUDGET_S` when the engine's reply is ready and
+  held behind it, and at `_CLOSING_CEILING_S` otherwise (#316); the plan's
+  record comes back without the words, and the socket hangs up a margin later
+  so the abandoned generation frees its llama-server slot. The planner is
+  bounded between round trips (`planning_deadline_s`), never during one: its
+  calls can act, so no thread holding them may outlive the turn.
 """
 
 import hashlib
@@ -147,6 +151,7 @@ from chessapp.brain import (
     ToolDispatcher,
     _RunState,
 )
+from chessapp.deadline import LateReaction, within_budget
 from chessapp.handoff import build as build_handoff
 from chessapp.handoff import narrator_result_view
 from chessapp.handoff import render as render_handoff
@@ -236,10 +241,43 @@ _ANSWER_MAX_TOKENS = 16
 # backstop underneath it — without it the abandoned generation keeps a
 # llama-server slot until the 300 s read timeout and the next turn's planner
 # queues behind words nobody will ever hear. Sized just above the budget so the
-# two cannot race, and scoped to `narrate` alone: the planner and the loop's own
-# closing narrator legitimately run 30 s and more with thinking on
-# (`docs/agent-evals.md`), and they are not calls the app stops waiting for.
+# two cannot race. The planner sends none: it legitimately runs 30 s and more
+# with thinking on (`docs/agent-evals.md`), and its calls are the record of what
+# ran. The loop's own closer has budgets of its own, below.
 _NARRATE_TIMEOUT = 15.0
+
+# How long the loop's closing narration may take when the engine's reply is
+# already owed and waiting behind it and the closer is not thinking (#316). This
+# is the brain route's version of the observe beat: the planner played the
+# player's move, Stockfish started on the answer the moment it landed, and until
+# the closer returns that answer cannot be played — nor can anything else, since
+# the command holds the mutation lock. Measured, not derived: across the 31
+# brain-route closers in the deployed trace that spoke before a reply
+# (2026-09-04 → 09-18) the call took 0.8–2.0 s, median 1.3 s. The same 10 s the
+# pipeline gives the observe beat clears every one of them by 5×, so the budget
+# only fires on a model that is stuck, never on one that is merely talking. A
+# *thinking* closer is not held to it even with a reply owed: after an analysis
+# tool the closer reasons before it speaks, and on the gate's move-plus-analysis
+# scenarios (`move_and_judgment`, `best_move_then_play`, 2026-09-23) that took
+# 6–10 s and more — half the samples were cut at 10 s. Those get
+# `_CLOSING_CEILING_S`.
+_CLOSING_BUDGET_S = 10.0
+
+# The closer's ceiling when no reply is waiting, or when the closer thinks
+# (#316): a question, an analysis, a setting, a move played on the engine's
+# advice. This is a stall backstop and not a budget — sized so it never cuts a
+# thoughtful answer. The slowest such closer in the deployed trace took 15 s
+# and thinking-on evals reach 30 s and more; 60 s is the planning phase's own
+# wall clock
+# (`_DEFAULT_PLANNING_DEADLINE_S`), so a turn at worst waits as long for its
+# words as it may spend deciding what to do.
+_CLOSING_CEILING_S = 60.0
+
+# How far past a closer's budget the socket stays open, so the brain's own
+# deadline is always what fires first and the read timeout only frees the
+# llama-server slot the abandoned generation holds. The same 5 s gap
+# `_NARRATE_TIMEOUT` keeps above `api._REACTION_BUDGET_S`.
+_HANG_UP_MARGIN_S = 5.0
 
 # The whole prompt for that phase. No persona and no board — the question is
 # about what the player meant, and every extra line is one more thing for a
@@ -359,6 +397,12 @@ class LlamaBrain:
     # `narrate` carries one, because it is the only phase whose caller has
     # already decided it will not wait; `None` disables it.
     narrate_timeout: float | None = _NARRATE_TIMEOUT
+    # How long the loop's closer is waited for (#316; see the module
+    # constants): `closing_budget_s` when the engine's reply is owed and held
+    # behind the words, `closing_ceiling_s` when nothing is. `None` waits for
+    # as long as the provider does.
+    closing_budget_s: float | None = _CLOSING_BUDGET_S
+    closing_ceiling_s: float | None = _CLOSING_CEILING_S
     # Wall clock for the per-call latencies the trace records. Injected so the
     # timing is testable, and read *here* rather than in the provider because a
     # round trip that raises has a latency too — and only the caller of a raising
@@ -891,13 +935,40 @@ class LlamaBrain:
             facts=facts,
         )
         self._report(BRAIN_NARRATING)
+        brief = render_handoff(handoff, command, run.tool_results)
+        thinking = self._thinking(run)
+        # The tight budget is for a closer that is only reacting: nothing
+        # computed may wait on it. One that thinks is putting an evaluation into
+        # words, which is the answer the player asked for, so it gets the stall
+        # ceiling whether or not a reply is owed.
+        reacting = handoff.reply_owed and not thinking
+        wait = self.closing_budget_s if reacting else self.closing_ceiling_s
         started = self.clock()
         try:
-            narration = self._speak(
-                render_handoff(handoff, command, run.tool_results),
-                transcript,
-                thinking=self._thinking(run),
-            )
+            if wait is None:
+                narration = self._speak(brief, transcript, thinking=thinking)
+            else:
+                # Only the speech runs on the bounded thread (#316). The plan
+                # has finished and every tool it called has run, so what this
+                # returns early is the complete record; the thread left behind
+                # holds no tools and no dispatcher, so it can only produce
+                # words, and those are dropped.
+                narration = within_budget(
+                    lambda: self._speak(
+                        brief,
+                        transcript,
+                        thinking=thinking,
+                        timeout=wait + _HANG_UP_MARGIN_S,
+                    ),
+                    wait,
+                )
+        except LateReaction:
+            # Not a provider failure: the model may still answer, just after
+            # the turn has gone on. The call is counted with the time the turn
+            # waited on it, its tokens unknown; the words are not waited for.
+            logger.warning("closing_narration_late budget=%.1fs", wait)
+            run.count_call(latency_ms=self._elapsed_ms(started), metered=False)
+            return run.response("", stop_reason, handoff=handoff, narration_late=True)
         except ProviderError as exc:
             # The plan finished; the persona call died. Same contract as a
             # mid-loop failure: the verified results come back, the words don't,
@@ -926,9 +997,10 @@ class LlamaBrain:
         brief describing what happened — and no tools, so this phase cannot
         act on anything it reads.
 
-        `timeout` is the observe beat's alone (`_NARRATE_TIMEOUT`): the rewrite
-        and the loop's closer are calls the pipeline waits for, so they send
-        none and keep the client's."""
+        `timeout` is the read ceiling for a call someone has a deadline on:
+        the observe beat (`_NARRATE_TIMEOUT`) and the loop's closer (its budget
+        plus `_HANG_UP_MARGIN_S`). The rewrite sends none and keeps the
+        client's."""
         system = self._resolve_system_prompt()
 
         def build(kept: Sequence[dict[str, str]]) -> list[dict[str, Any]]:

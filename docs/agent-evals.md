@@ -276,6 +276,28 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-23 on the bounded-closer tree (#316: the loop's closing narrator
+is waited for on a budget inside `LlamaBrain._close` — 10 s when the reply is
+owed and the closer is only reacting, a 60 s stall ceiling when nothing is held
+or the closer thinks; a cut closer returns the plan's record with no words; no
+prompt, schema or model change): 52 passed in a single run, 14 m 33 s, infra 0;
+every pass-rate scenario 5/5 ABOVE_FLOOR STABLE (44 of 44,
+`pgn_is_handed_over_not_recited` included). `long_capture` 5/5 ×3,
+`judgment_question` 15.3 s. Costs unmoved (`fast_path_low` 0 model calls,
+`fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).**
+
+The budgets are read off this run. Closers that did not think (210 samples)
+peaked at 2.8 s against the 10 s budget; closers that thought (26) peaked at
+34.0 s (`advice_capture_survives_guard`) against the 60 s ceiling, so no
+single tight number could serve both. The first cut held *every* closer with a
+reply owed to 10 s and failed the gate: `move_and_judgment` 1/5 and
+`best_move_then_play` BELOW_FLOOR, their thinking closers taking 6–13 s and
+half of them cut at 10.0 s — hence the thinking exemption. Cold load from a
+warm page cache (the run's first call, llama-swap unloaded): 4.45 s, inside the
+budget.
+
+Previously:
+
 **Run 2026-09-23 on the offer-follows-the-board tree (#315: the planner's tool
 offer and validation schemas are re-resolved when the loop re-shows it a
 board, so `ask_player`'s enum is the refreshed menu; kept while a reply is
