@@ -31,12 +31,18 @@ tell a crashed server from a request the server refuses identically forever.
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any, Protocol
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
+
+from chessapp.context_capture import CallStamp, ContextCapture
+
+logger = logging.getLogger(__name__)
 
 # BRIEF-mandated sampling for Gemma-4 tool calling. The canonical set lives in
 # ../agent-standard/model-profile.md; the provider always sets it per request
@@ -52,6 +58,10 @@ _TOP_K = 64
 # near it; the connect phase stays short so a dead server fails fast.
 _READ_TIMEOUT = 300.0
 _CONNECT_TIMEOUT = 10.0
+# How long the context capture waits for llama-server to render a call's
+# template (#359). Rendering is string work with no generation behind it, so
+# this is a ceiling for a server that went away, never a wait anyone meets.
+_TEMPLATE_TIMEOUT = 5.0
 
 
 class ProviderFailure(StrEnum):
@@ -319,6 +329,11 @@ class LlamaCppProvider:
     Synchronous by design, matching the sync tool/API layer; FastAPI runs sync
     callers in worker threads. `client` is injectable for tests
     (`httpx.MockTransport`); otherwise the provider owns one.
+
+    `capture`, when given, keeps every call's exact request and response bytes
+    and the prompt the server's chat template rendered from them
+    (`context_capture.py`, #359). `None` — the default — sends one request per
+    call, exactly as before the knob existed.
     """
 
     def __init__(
@@ -328,9 +343,16 @@ class LlamaCppProvider:
         *,
         timeout_seconds: float = _READ_TIMEOUT,
         client: httpx.Client | None = None,
+        capture: ContextCapture | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._capture = capture
+        # llama-swap serves the OpenAI routes under `/v1` and proxies a model's
+        # own llama-server routes under `/upstream/<model>/` from the root —
+        # the same split `serving.ServingProbe` reads `/props` through.
+        root = self._base_url
+        self._root = root[: -len("/v1")] if root.endswith("/v1") else root
         self._client = client or httpx.Client(
             timeout=httpx.Timeout(timeout_seconds, connect=_CONNECT_TIMEOUT)
         )
@@ -426,14 +448,40 @@ class LlamaCppProvider:
             if timeout is None
             else httpx.Timeout(timeout, connect=_CONNECT_TIMEOUT)
         )
+        # Built once and then sent, rather than `post(json=...)`: the same
+        # bytes httpx always sent, and `request.content` is then literally what
+        # went out — which is what the context capture keeps (#359).
+        request = self._client.build_request(
+            "POST",
+            f"{self._base_url}/chat/completions",
+            json=payload,
+            timeout=deadline,
+        )
+        stamp = self._begin_capture()
+        if stamp is None:
+            return self._completion(self._send(request))
+        started = time.monotonic()
+        response: httpx.Response | None = None
+        error: Exception | None = None
         try:
-            response = self._client.post(
-                f"{self._base_url}/chat/completions", json=payload, timeout=deadline
-            )
+            response = self._send(request)
+            return self._completion(response)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            self._capture_call(stamp, request, response, error, started)
+
+    def _send(self, request: httpx.Request) -> httpx.Response:
+        try:
+            return self._client.send(request)
         except httpx.HTTPError as exc:
             raise ProviderRequestError(
                 f"llama-server request failed: {exc}", ProviderFailure.UNREACHABLE
             ) from exc
+
+    @staticmethod
+    def _completion(response: httpx.Response) -> _WireCompletion:
         if response.status_code != 200:
             # 5xx is the server having a bad moment (llama-swap mid-restart);
             # 4xx is the server having read the request and refusing it, which
@@ -450,6 +498,76 @@ class LlamaCppProvider:
             raise ProviderResponseError(
                 f"llama-server response failed wire validation: {exc}"
             ) from exc
+
+    def _begin_capture(self) -> CallStamp | None:
+        if self._capture is None:
+            return None
+        try:
+            return self._capture.begin()
+        except Exception:
+            logger.warning("context_capture_failed", exc_info=True)
+            return None
+
+    def _capture_call(
+        self,
+        stamp: CallStamp,
+        request: httpx.Request,
+        response: httpx.Response | None,
+        error: Exception | None,
+        started: float,
+    ) -> None:
+        """Hand one finished call to the capture. Never raises: the call's own
+        outcome — a result or its typed error — is what the turn gets."""
+        assert self._capture is not None
+        try:
+            ms = round((time.monotonic() - started) * 1000)
+            self._capture.record(
+                stamp,
+                {
+                    "url": str(request.url),
+                    "ms": ms,
+                    "request": _body_text(request.content),
+                    "status_code": None if response is None else response.status_code,
+                    "response": None
+                    if response is None
+                    else _body_text(response.content),
+                    "error": ""
+                    if error is None
+                    else f"{type(error).__name__}: {error}",
+                    # A server that never answered cannot render either; asking
+                    # would only hang a turn that is already failing.
+                    "template": None
+                    if response is None
+                    else self._render_template(request.content),
+                },
+            )
+        except Exception:
+            logger.warning("context_capture_failed", exc_info=True)
+
+    def _render_template(self, body: bytes) -> dict[str, str]:
+        """The prompt string llama-server's chat template renders from `body`.
+
+        Asked of the server rather than re-rendered here: the text the model
+        tokenized is whatever *its* `--jinja` template makes of these messages
+        and tools, and a copy of the template in this repo would be a second
+        truth that drifts. The same bytes go to `/apply-template` as went to
+        `/chat/completions`, so the rendering is of exactly that request.
+        """
+        try:
+            response = self._client.post(
+                f"{self._root}/upstream/{self._model}/apply-template",
+                content=body,
+                headers={"content-type": "application/json"},
+                timeout=_TEMPLATE_TIMEOUT,
+            )
+            if response.status_code != 200:
+                return {"error": f"HTTP {response.status_code}: {response.text[:500]}"}
+            prompt = response.json().get("prompt")
+            if not isinstance(prompt, str):
+                return {"error": "apply-template answered without a prompt string"}
+            return {"prompt": prompt}
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
 
     @staticmethod
     def _result(completion: _WireCompletion) -> ChatResult:
@@ -485,3 +603,12 @@ class LlamaCppProvider:
             usage=completion.usage,
             server=ServerMeta.read(completion),
         )
+
+
+def _body_text(body: bytes) -> str:
+    """A wire body as the text it is. llama-server speaks UTF-8 both ways; a
+    body that is not is kept with its bad bytes replaced rather than lost."""
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError:
+        return body.decode("utf-8", errors="replace")

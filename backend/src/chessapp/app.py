@@ -33,13 +33,14 @@ from chessapp.api import (
     planner_board_refresh,
 )
 from chessapp.brain import Brain
+from chessapp.context_capture import ContextCapture, JsonlContextCapture
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import _PLANNER_TEMPERATURE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import ProgressReporter
-from chessapp.provider import ChatProvider
+from chessapp.provider import ChatProvider, LlamaCppProvider
 from chessapp.serving import ServingManifest, ServingProbe, app_revision
 from chessapp.tools import (
     ToolContext,
@@ -75,6 +76,7 @@ def build_app(
     static_dir: Path | None = None,
     tracer: Tracer | None = None,
     planner_temperature: float | None = _PLANNER_TEMPERATURE,
+    context_capture: ContextCapture | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -85,6 +87,8 @@ def build_app(
     brain without a real llama-server. `planner_temperature` samples the
     planner phase apart from the narrator, the brain's `_PLANNER_TEMPERATURE`
     unless overridden (None: both on the provider's default).
+    `context_capture` keeps every model call's exact bytes (#359); it rides the
+    default provider, so an injected `provider` is left exactly as given.
 
     `agent_enabled=False` is **direct mode**: no brain is constructed at all, so
     `/api/command` 503s and the board plays the deterministic exchange. It needs
@@ -172,7 +176,9 @@ def build_app(
             system_prompt_provider=lambda: system_prompt_for(ctx.settings.verbosity),
             planner_prompt_provider=lambda: PLANNER_PROMPT,
             planner_temperature=planner_temperature,
-            provider=provider,
+            provider=provider
+            if provider is not None or context_capture is None
+            else LlamaCppProvider(llama_base_url, model, capture=context_capture),
             # The brain's own two phases, live (`progress.py`). Nothing else
             # can see inside `get_agent_response`, and the narrator half of it
             # is the observe beat.
@@ -288,6 +294,18 @@ def _tracer_from_env() -> Tracer | None:
     return JsonlTracer(Path(path)) if path else None
 
 
+def _context_capture_from_env() -> ContextCapture | None:
+    """Capture every model call's exact request, response and rendered
+    prompt by pointing `CHESSAPP_CONTEXT_PATH` at a JSONL file (#359).
+
+    Off by default, and meant to stay off outside a debugging session: each
+    call is kept whole, twice (its JSON and its rendered template), so the
+    file grows by kilobytes per model call. `docs/context-capture.md`.
+    """
+    path = os.environ.get("CHESSAPP_CONTEXT_PATH")
+    return JsonlContextCapture(Path(path)) if path else None
+
+
 def _planner_temperature_from_env() -> float:
     """The planner phase's sampling temperature.
 
@@ -321,6 +339,7 @@ def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
         static_dir=Path(static_dir_env) if static_dir_env else None,
         tracer=_tracer_from_env(),
         planner_temperature=_planner_temperature_from_env(),
+        context_capture=_context_capture_from_env(),
     )
 
 

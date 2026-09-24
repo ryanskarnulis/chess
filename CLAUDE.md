@@ -25,6 +25,8 @@ ruff check . && ruff format --check .                # lint (what CI runs)
 ruff format .                                        # auto-format
 
 CHESSAPP_TRACE_PATH=/tmp/turns.jsonl chessapp        # trace every agent turn
+CHESSAPP_CONTEXT_PATH=/tmp/ctx.jsonl chessapp         # exact bytes of every model call
+python scripts/watch_context.py /tmp/ctx.jsonl --trace /tmp/turns.jsonl   # watch them live
 CHESSAPP_AGENT_EVALS=1 pytest tests/test_agent_evals.py -v -s   # live-model evals (needs GPU)
 CHESSAPP_AGENT_FRONTIER=1 pytest tests/test_agent_frontier.py -v -s   # frontier: scored, never gated (docs/agent-frontier.md)
 python scripts/frontier_report.py trend                  # frontier history, per split
@@ -72,8 +74,11 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 Set `CHESSAPP_TRACE_PATH` and every interaction appends one JSONL record:
 utterance, route, tool trajectory, stop reason, FENs, guard decision, and
 cost. It is the first thing to reach for when a turn misbehaves, and a traced
-misfire is a ready-made eval scenario. The same file also holds `serving`
-manifests (the weights, build and settings actually serving the app) and the
+misfire is a ready-made eval scenario. To see exactly what a model call was
+shown and what it said back (request, rendered prompt, raw response), set
+`CHESSAPP_CONTEXT_PATH` and run `scripts/watch_context.py`
+(`docs/context-capture.md`); it is heavy, so leave it off otherwise. The trace
+file also holds `serving` manifests (the weights, build and settings actually serving the app) and the
 `speech`/`voice` records that follow one voice interaction end to end.
 `docs/latency-measurement.md` has the record kinds, the clock rules and
 `scripts/latency_report.py`. `docs/turn-coordinator.md` and
