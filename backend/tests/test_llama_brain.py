@@ -26,11 +26,18 @@ from chessapp.api import planner_board_refresh
 from chessapp.brain import (
     CANCEL,
     CONFIRM,
+    PHASE_ANSWER,
+    PHASE_CLOSER,
+    PHASE_PLANNER,
+    PHASE_REACTION,
+    PHASE_REWRITE,
+    PHASE_UNKNOWN,
     RETRY_DIFFERENT_ARGS,
     RETRY_NEVER,
     UNRELATED,
     AgentResponse,
 )
+from chessapp.context_capture import current_phase
 from chessapp.coordinator import TurnCoordinator
 from chessapp.game import GameSession
 from chessapp.llama_brain import (
@@ -3609,3 +3616,54 @@ def test_a_narration_that_never_reached_the_model_is_no_call():
     assert provider.calls == []
     assert narration.model_calls == 0
     assert narration.model_latencies_ms == ()
+
+
+# --- each call site names its phase for the context capture (#359) ---------
+
+
+class PhaseRecordingProvider(ScriptedProvider):
+    """Records the phase `model_phase` named for each call, as the provider
+    seam reads it when it captures the call."""
+
+    def __init__(self, *turns) -> None:
+        super().__init__(*turns)
+        self.phases: list[str] = []
+
+    def chat(self, messages, **kwargs):
+        self.phases.append(current_phase())
+        return super().chat(messages, **kwargs)
+
+
+def phase_brain(*turns, **kwargs) -> tuple[LlamaBrain, PhaseRecordingProvider]:
+    provider = PhaseRecordingProvider(*turns)
+    brain = LlamaBrain(
+        provider=provider,
+        dispatcher=FakeDispatcher({"make_move": {"ok": True, "san": "e4"}}),
+        system_prompt=PERSONA,
+        **{"tool_definitions": TOOLS, "planner_prompt": PLANNER, **kwargs},
+    )
+    return brain, provider
+
+
+@pytest.mark.parametrize("closing_budget_s", [None, 5.0])
+def test_the_loop_tags_its_planner_and_closer_calls(closing_budget_s):
+    # With a budget the closer speaks on `within_budget`'s thread, which must
+    # still see the phase: it is set before the context is copied.
+    brain, provider = phase_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("Your move."),
+        narrator_facts=owed(True),
+        closing_budget_s=closing_budget_s,
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    assert provider.phases == [PHASE_PLANNER, PHASE_PLANNER, PHASE_CLOSER]
+    assert current_phase() == PHASE_UNKNOWN, "the tag does not leak past the call"
+
+
+def test_the_single_call_seams_tag_their_calls():
+    brain, provider = phase_brain(text_turn("confirm"))
+    brain.narrate(board_state={}, changes=[])
+    brain.rewrite("Game over.", ["The game is not over."])
+    brain.read_answer("Resign?", "yes")
+    assert provider.phases == [PHASE_REACTION, PHASE_REWRITE, PHASE_ANSWER]

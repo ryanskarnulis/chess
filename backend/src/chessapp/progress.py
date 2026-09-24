@@ -179,3 +179,17 @@ class ProgressReporter:
             )
         except Exception:
             logger.warning("progress_emit_failed", exc_info=True)
+
+
+def current_interaction() -> tuple[str, int] | None:
+    """The interaction the calling code runs inside, as `(correlation_id,
+    turn_id)`, or `None` outside one.
+
+    For the diagnostics that stamp a record with the turn it belongs to and
+    have no reporter to go through — the context capture at the provider seam
+    (`context_capture.py`) is the one. It reads the same variable the events
+    do, so a captured model call and the progress line it happened under can
+    never name different turns.
+    """
+    current = _CURRENT.get()
+    return None if current is None else (current.correlation_id, current.turn_id)

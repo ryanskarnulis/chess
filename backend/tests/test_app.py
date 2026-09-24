@@ -24,9 +24,11 @@ from chessapp.app import (
     serve,
 )
 from chessapp.brain import AgentResponse
+from chessapp.context_capture import JsonlContextCapture
 from chessapp.engine import DEFAULT_TIER
 from chessapp.llama_brain import _PLANNER_TEMPERATURE, _REFRESH_LABEL
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
+from chessapp.provider import LlamaCppProvider
 from chessapp.tools import BOARD_STATE_TOOLS
 from fakes import (
     FakeEngine,
@@ -237,6 +239,49 @@ def test_build_app_from_env_reads_the_planner_temperature(monkeypatch):
     monkeypatch.setenv("CHESSAPP_PLANNER_TEMPERATURE", "1.0")
     build_app_from_env()
     assert captured["planner_temperature"] == 1.0
+
+
+def test_context_capture_rides_the_default_provider_when_configured(
+    monkeypatch, tmp_path
+):
+    # #359: `CHESSAPP_CONTEXT_PATH` turns the capture on at the provider seam,
+    # and unset it is off — the provider the brain gets carries no capture
+    # and sends one request per call, as it always did.
+    captured: dict[str, object] = {}
+
+    def fake_create_llama_brain(*, provider=None, **kwargs):
+        captured["provider"] = provider
+        return ScriptedBrain(AgentResponse(text="hi"))
+
+    monkeypatch.setattr(chessapp.app, "create_llama_brain", fake_create_llama_brain)
+
+    monkeypatch.delenv("CHESSAPP_CONTEXT_PATH", raising=False)
+    build_app_from_env()
+    assert captured["provider"] is None, "off: the brain builds its own, as ever"
+
+    path = tmp_path / "context.jsonl"
+    monkeypatch.setenv("CHESSAPP_CONTEXT_PATH", str(path))
+    build_app_from_env()
+    provider = captured["provider"]
+    assert isinstance(provider, LlamaCppProvider)
+    assert isinstance(provider._capture, JsonlContextCapture)
+    assert provider._capture.path == path
+
+
+def test_context_capture_leaves_an_injected_provider_alone(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_create_llama_brain(*, provider=None, **kwargs):
+        captured["provider"] = provider
+        return ScriptedBrain(AgentResponse(text="hi"))
+
+    monkeypatch.setattr(chessapp.app, "create_llama_brain", fake_create_llama_brain)
+    fake = ScriptedProvider([])
+    build_app(
+        provider=fake,
+        context_capture=JsonlContextCapture(tmp_path / "context.jsonl"),
+    )
+    assert captured["provider"] is fake
 
 
 def test_build_app_from_env_honors_the_llamacpp_env_vars(monkeypatch):

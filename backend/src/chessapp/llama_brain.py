@@ -147,8 +147,11 @@ from chessapp.brain import (
     CALL_TRUNCATED,
     CANCEL,
     CONFIRM,
+    PHASE_ANSWER,
     PHASE_CLOSER,
     PHASE_PLANNER,
+    PHASE_REACTION,
+    PHASE_REWRITE,
     RETRY_DIFFERENT_ARGS,
     RETRY_NEVER,
     UNRELATED,
@@ -160,6 +163,7 @@ from chessapp.brain import (
     ToolDispatcher,
     _RunState,
 )
+from chessapp.context_capture import model_phase
 from chessapp.deadline import LateReaction, within_budget
 from chessapp.handoff import build as build_handoff
 from chessapp.handoff import narrator_result_view
@@ -862,12 +866,13 @@ class LlamaBrain:
         # and this route's accounting is the `Narration` itself.
         self._report(BRAIN_NARRATING)
         started = self.clock()
-        narration = self._speak(
-            _fast_path_brief(board_state, changes),
-            transcript,
-            thinking=self.enable_thinking,
-            timeout=self.narrate_timeout,
-        )
+        with model_phase(PHASE_REACTION):
+            narration = self._speak(
+                _fast_path_brief(board_state, changes),
+                transcript,
+                thinking=self.enable_thinking,
+                timeout=self.narrate_timeout,
+            )
         return replace(narration, latency_ms=self._elapsed_ms(started))
 
     def rewrite(
@@ -884,11 +889,12 @@ class LlamaBrain:
         # reason `narrate` is: the `Narration` is this call's accounting.
         self._report(BRAIN_REWRITING)
         started = self.clock()
-        narration = self._speak(
-            _rewrite_brief(commentary, corrections),
-            transcript,
-            thinking=False,
-        )
+        with model_phase(PHASE_REWRITE):
+            narration = self._speak(
+                _rewrite_brief(commentary, corrections),
+                transcript,
+                thinking=False,
+            )
         return replace(narration, latency_ms=self._elapsed_ms(started))
 
     def read_answer(self, question: str, text: str) -> Answer:
@@ -908,12 +914,13 @@ class LlamaBrain:
             },
         ]
         try:
-            result = self.provider.chat(
-                messages,
-                tools=None,
-                enable_thinking=False,
-                max_tokens=_ANSWER_MAX_TOKENS,
-            )
+            with model_phase(PHASE_ANSWER):
+                result = self.provider.chat(
+                    messages,
+                    tools=None,
+                    enable_thinking=False,
+                    max_tokens=_ANSWER_MAX_TOKENS,
+                )
         except ProviderError as exc:
             logger.warning("answer_reading_failed", exc_info=True)
             # Still `unrelated`, which changes nothing — but the round trip was
@@ -1000,23 +1007,26 @@ class LlamaBrain:
         wait = self.closing_budget_s if reacting else self.closing_ceiling_s
         started = self.clock()
         try:
-            if wait is None:
-                narration = self._speak(brief, transcript, thinking=thinking)
-            else:
-                # Only the speech runs on the bounded thread (#316). The plan
-                # has finished and every tool it called has run, so what this
-                # returns early is the complete record; the thread left behind
-                # holds no tools and no dispatcher, so it can only produce
-                # words, and those are dropped.
-                narration = within_budget(
-                    lambda: self._speak(
-                        brief,
-                        transcript,
-                        thinking=thinking,
-                        timeout=wait + _HANG_UP_MARGIN_S,
-                    ),
-                    wait,
-                )
+            # Set before `within_budget` copies the context, so the bounded
+            # thread's call is tagged too.
+            with model_phase(PHASE_CLOSER):
+                if wait is None:
+                    narration = self._speak(brief, transcript, thinking=thinking)
+                else:
+                    # Only the speech runs on the bounded thread (#316). The
+                    # plan has finished and every tool it called has run, so
+                    # what this returns early is the complete record; the
+                    # thread left behind holds no tools and no dispatcher, so
+                    # it can only produce words, and those are dropped.
+                    narration = within_budget(
+                        lambda: self._speak(
+                            brief,
+                            transcript,
+                            thinking=thinking,
+                            timeout=wait + _HANG_UP_MARGIN_S,
+                        ),
+                        wait,
+                    )
         except LateReaction:
             # Not a provider failure: the model may still answer, just after
             # the turn has gone on. The call is counted with the time the turn
@@ -1293,13 +1303,16 @@ class LlamaBrain:
         # ends when the model declines to use them, not because we took them
         # away (the phase that may not act is the narrator, and it is a
         # different call).
-        return self.provider.chat(
-            messages,
-            tools=tools,
-            enable_thinking=(self.enable_thinking if thinking is None else thinking),
-            max_tokens=self.planner_max_tokens,
-            temperature=self.planner_temperature,
-        )
+        with model_phase(PHASE_PLANNER):
+            return self.provider.chat(
+                messages,
+                tools=tools,
+                enable_thinking=(
+                    self.enable_thinking if thinking is None else thinking
+                ),
+                max_tokens=self.planner_max_tokens,
+                temperature=self.planner_temperature,
+            )
 
     def _messages(
         self,
