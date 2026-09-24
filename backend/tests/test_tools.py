@@ -2678,3 +2678,42 @@ def test_ask_player_refuses_on_a_finished_game():
     assert result["ok"] is False
     assert "game is over" in result["error"]
     assert result["retry"] == "never"
+
+
+def test_the_planner_must_say_how_the_words_chose_its_move():
+    """#351: `source` is required in the planner's offer, in the shape the
+    probe screened, and optional on the registry the delegate wire reads."""
+    from chessapp.tools import brain_tool_definitions
+
+    ctx = ToolContext(session=GameSession())
+    registry = build_registry(ctx, atomic_exchange=False)
+    offered = next(
+        d["function"]
+        for d in brain_tool_definitions(registry, ctx)
+        if d["function"]["name"] == "make_move"
+    )
+    assert offered["parameters"]["required"] == ["move", "source"]
+    assert offered["parameters"]["properties"]["source"]["enum"] == [
+        "said_the_move",
+        "picked_by_position",
+    ]
+    static = next(
+        d["function"]
+        for d in registry.definitions()
+        if d["function"]["name"] == "make_move"
+    )
+    assert static["parameters"]["required"] == ["move"]
+    assert registry.dispatch("make_move", {"move": "e4"})["legal"] is True
+
+
+def test_the_mcp_flavour_of_make_move_has_no_source():
+    ctx = ToolContext(session=GameSession())
+    registry = build_registry(ctx)
+    make_move = next(
+        d["function"]
+        for d in registry.definitions()
+        if d["function"]["name"] == "make_move"
+    )
+    assert "source" not in make_move["parameters"]["properties"]
+    refused = registry.dispatch("make_move", {"move": "e4", "source": "said_the_move"})
+    assert refused["ok"] is False and refused["retry"] == "different_args"

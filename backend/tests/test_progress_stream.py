@@ -181,7 +181,7 @@ def test_an_illegal_move_still_closes_its_progress_line():
 
 def test_the_brain_route_reports_planning_then_narrating():
     client = live_client(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("note: played e4"),
         text_turn("Pawn to e4. Your move."),
     )
@@ -199,7 +199,7 @@ def test_the_narrator_turn_is_the_observation_beat():
     reaction happens *inside* `get_agent_response`, which holds no coordinator,
     so the brain's report of its narrator phase is what opens the beat."""
     client = live_client(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("note: played e4"),
         text_turn("Pawn to e4."),
     )

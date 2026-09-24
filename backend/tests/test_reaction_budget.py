@@ -375,7 +375,7 @@ def plays_e4(**kwargs) -> BlockingNarratorProvider:
     """The issue's repro script: the planner plays e4, then hands off; the
     narrator call blocks until released."""
     return BlockingNarratorProvider(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
         words=LATE_WORDS,
         patience=PATIENCE,
@@ -542,7 +542,7 @@ def test_a_closer_inside_the_budget_is_spoken_before_the_reply():
     """React-before-reply, untouched: Glitch's words, then the app's
     announcement, and nothing recorded as late."""
     provider = ScriptedProvider(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
         text_turn("King pawn, straight down the middle."),
     )

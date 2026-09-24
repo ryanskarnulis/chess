@@ -3416,7 +3416,7 @@ def test_while_a_reply_is_owed_the_offer_stays_on_the_players_board():
     ctx = ToolContext(session=GameSession(), engine=FakeEngine())
     brain, provider = _offered_brain(
         ctx,
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         tool_calls_turn(("ask_player", {"candidates": ["d4", "c4"]})),
         text_turn("note"),
         text_turn("reply"),

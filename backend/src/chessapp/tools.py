@@ -738,6 +738,8 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
 
 # The planner's clarification tool (`build_registry`, the split registry only).
 ASK_PLAYER = "ask_player"
+MAKE_MOVE = "make_move"
+MOVE_SOURCE = "source"
 
 
 def brain_tool_definitions(
@@ -765,6 +767,19 @@ def brain_tool_definitions(
     offered = registry.definitions(exclude=exclude)
     for definition in offered:
         function = definition["function"]
+        if function["name"] == MAKE_MOVE and MOVE_SOURCE in (
+            function["parameters"].get("properties", {})
+        ):
+            # Required for the planner, in the shape the probe screened (#351):
+            # an optional label is one the model can leave off.
+            parameters = json.loads(json.dumps(function["parameters"]))
+            parameters["properties"][MOVE_SOURCE] = {
+                "type": "string",
+                "enum": [MOVE_SAID, MOVE_BY_POSITION],
+                "description": _MOVE_SOURCE_DESCRIPTION,
+            }
+            parameters["required"] = [*parameters.get("required", []), MOVE_SOURCE]
+            function["parameters"] = parameters
         if function["name"] == ASK_PLAYER:
             parameters = json.loads(json.dumps(function["parameters"]))
             parameters["properties"]["candidates"]["items"] = {
@@ -1377,6 +1392,73 @@ _MAKE_MOVE_SPLIT_TAIL = (
 )
 
 
+# `make_move`'s `source` (#351). The 12B reads an ordinal ("the first one") as
+# an index into `legal_moves` — Nh3, the first legal move, 20/20 with nothing
+# asked — and no prompt wording moved it (#319's three screens, each 0/3–4).
+# What did: a required, typed label for *how the words chose the move*, which
+# is on the surface of the utterance and so a label the model gives honestly,
+# and a check in code of the one thing code owns — whether a question stands
+# to pick from. Probe screen 2026-09-24, arms interleaved, 20 samples each:
+# this label 20/20 on the no-question, stale-question and open-question
+# ordinals with every neighbour 20/20; a label for *where* the move came from
+# (`player_named_it` / `answer_to_open_question`) 0/20 with nothing asked,
+# because the model will not say nothing was asked; `legal_moves` sorted or
+# grouped moved the pick to the new first entry; thinking fixed nothing and
+# cost the undo-then-replace ask 16/20. The words are the model's to read;
+# whether a question stands is not.
+MOVE_SAID = "said_the_move"
+MOVE_BY_POSITION = "picked_by_position"
+_MOVE_SOURCE_DESCRIPTION = (
+    f"{MOVE_SAID}: the player's words say the piece or square. "
+    f"{MOVE_BY_POSITION}: they chose by position or number in a list "
+    "('the first one', 'the second option')."
+)
+
+
+def _san(session: "GameSession", move: str) -> str | None:
+    """`move` as SAN on the current board, or None when it is not a legal
+    move here (the move path then refuses it with its alternatives)."""
+    board = chess.Board(session.fen())
+    try:
+        return board.san(board.parse_san(move))
+    except ValueError:
+        pass
+    try:
+        parsed = chess.Move.from_uci(move)
+    except ValueError:
+        return None
+    return board.san(parsed) if parsed in board.legal_moves else None
+
+
+def _check_positional_pick(ctx: "ToolContext", move: str) -> None:
+    """Refuse a move picked by position when there is nothing to pick from.
+
+    A pick by position is only a move when a question this conversation was
+    asked still stands and the move is one of the options it offered. Read
+    without consuming: the turn already read the record once
+    (`live_clarification` drops an expired one as it reports it), so a record
+    still in its slot is one that turn found standing — this re-checks it
+    against the board as it is now rather than trusting that.
+    """
+    record = ctx.clarifications.get(ctx.origin)
+    stands = record is not None and not staleness(
+        record, game_id=ctx.session.game_id, board_version=ctx.board_version
+    )
+    if not stands:
+        raise ToolError(
+            "no question stands in this conversation, so a pick by position"
+            " names no move; nothing was played — say what the player must"
+            " be asked",
+            retry=RETRY_NEVER,
+        )
+    if _san(ctx.session, move) not in record.candidates:
+        raise ToolError(
+            "a pick by position must be one of the moves the open question"
+            f" offered: {', '.join(record.candidates)}",
+            retry=RETRY_DIFFERENT_ARGS,
+        )
+
+
 def _make_move_doc(atomic_exchange: bool) -> str:
     tail = _MAKE_MOVE_ATOMIC_TAIL if atomic_exchange else _MAKE_MOVE_SPLIT_TAIL
     return f"{_MAKE_MOVE_HOW}\n\n{tail}"
@@ -1577,9 +1659,7 @@ def build_registry(
             ],
         }
 
-    def make_move(
-        move: Annotated[str, Field(description="SAN or UCI move.")],
-    ) -> dict[str, Any]:
+    def _play(move: str) -> dict[str, Any]:
         # The turn sequence — player move, then the engine's reply — is the
         # coordinator's, not this tool's and not the model's. All this tool
         # chooses is how much of the sequence to run before answering: the whole
@@ -1637,6 +1717,30 @@ def build_registry(
             payload["fen"] = ctx.session.fen()
             payload["turn"] = ctx.session.turn
         return payload
+
+    if atomic_exchange:
+        # The MCP server's flavour: its caller has no clarification record and
+        # asks its own user, so there is no pick-by-position for code to check.
+        def make_move(
+            move: Annotated[str, Field(description="SAN or UCI move.")],
+        ) -> dict[str, Any]:
+            return _play(move)
+
+    else:
+        # The app's flavour carries `source` (#351): how the player's words
+        # chose the move. `brain_tool_definitions` makes it required for the
+        # planner; it is optional here so the delegate wire and every caller
+        # that names a move outright need not say so.
+        def make_move(
+            move: Annotated[str, Field(description="SAN or UCI move.")],
+            source: Annotated[
+                Literal["said_the_move", "picked_by_position"] | None,
+                Field(description=_MOVE_SOURCE_DESCRIPTION),
+            ] = None,
+        ) -> dict[str, Any]:
+            if source == MOVE_BY_POSITION:
+                _check_positional_pick(ctx, move)
+            return _play(move)
 
     make_move.__doc__ = _make_move_doc(atomic_exchange)
     registry.tool()(make_move)

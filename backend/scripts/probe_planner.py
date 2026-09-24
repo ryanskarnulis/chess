@@ -413,7 +413,8 @@ def _source_schema(
                 "enum": values,
                 "description": description,
             }
-            parameters["required"] = [*parameters.get("required", []), "source"]
+            required = [r for r in parameters.get("required", []) if r != "source"]
+            parameters["required"] = [*required, "source"]
         return definitions
 
     return apply

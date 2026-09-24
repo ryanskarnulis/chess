@@ -586,6 +586,23 @@
               "description": "SAN or UCI move.",
               "title": "Move",
               "type": "string"
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "said_the_move",
+                    "picked_by_position"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "said_the_move: the player's words say the piece or square. picked_by_position: they chose by position or number in a list ('the first one', 'the second option').",
+              "title": "Source"
             }
           },
           "required": [
