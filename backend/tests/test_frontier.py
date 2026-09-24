@@ -86,7 +86,7 @@ def scripted_factory(*turns):
 UNDO_D4_JUDGE = (
     tool_calls_turn(
         ("undo", {}),
-        ("make_move", {"move": "d4"}),
+        ("make_move", {"move": "d4", "source": "said_the_move"}),
         ("evaluate_position", {}),
     ),
     text_turn("Okay."),
@@ -210,7 +210,10 @@ def test_samples_cycle_through_the_splits_variants():
 
 
 def test_a_low_score_is_measured_not_raised():
-    wrong = (tool_calls_turn(("make_move", {"move": "Nf3"})), text_turn("Okay."))
+    wrong = (
+        tool_calls_turn(("make_move", {"move": "Nf3", "source": "said_the_move"})),
+        text_turn("Okay."),
+    )
 
     result = measure(
         scenario(variant()), runs=2, split="dev", app_factory=scripted_factory(*wrong)

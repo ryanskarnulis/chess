@@ -137,7 +137,7 @@ def test_build_app_wires_the_planner_and_narrator_prompts():
     # turns run on the compact planner contract and the closing turn runs on the
     # personality — one command, both prompts, from real app assembly.
     fake = ScriptedProvider(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
         text_turn("e4 it is."),
     )
@@ -506,7 +506,7 @@ def test_a_replacement_move_is_planned_against_the_board_the_undo_left():
     see that."""
     provider = ScriptedProvider(
         tool_calls_turn(("undo", {})),
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("took it back and played e4"),
         text_turn("Back to square one, then e4."),
     )
@@ -603,7 +603,7 @@ def test_a_move_mid_exchange_hands_the_planner_no_board_at_all():
     and the engine's legal moves, and handing those to a phase that chooses
     moves is #193 one layer up. Nothing is sent instead."""
     provider = ScriptedProvider(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
         text_turn("e4 it is."),
     )
@@ -655,7 +655,7 @@ def test_the_narrator_still_sees_no_side_to_play_for():
     of it may reach the closing pass."""
     provider = ScriptedProvider(
         tool_calls_turn(("undo", {})),
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("took it back and played e4"),
         text_turn("Back to square one, then e4."),
     )

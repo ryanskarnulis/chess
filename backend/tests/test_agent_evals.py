@@ -321,6 +321,8 @@ _FLOORS: dict[str, float] = {
     # The two gates #291 added. New, so at the family's starting floor.
     "resume_mid_game_asks": 0.8,
     "save_over_existing_asks": 0.8,
+    # #351's traced misfire, new, so at the family's starting floor.
+    "ordinal_with_nothing_asked": 0.8,
 }
 
 # The loop's budget stops live in `evalstats.BUDGET_STOPS`, next to the other
@@ -3034,6 +3036,49 @@ def test_eval_impossible_capture_is_refused_not_asked(engine: EnginePlayer) -> N
         engine, "impossible_capture_is_refused_not_asked", "take the pawn"
     )
     _assert_floor(result, _FLOORS["impossible_capture_is_refused_not_asked"])
+
+
+def test_eval_ordinal_with_nothing_asked_moves_nothing(engine: EnginePlayer) -> None:
+    """ "the first one" on a fresh thread, with nothing asked, is not a move.
+
+    #351: the 12B reads an ordinal as an index into `legal_moves` and played
+    Nh3, the first legal move, 20/20 on a delegate thread that had asked
+    nothing; three prompt wordings each scored 0/3–4. `make_move` now carries a
+    required `source`, and code refuses `picked_by_position` unless this
+    conversation's question stands — probe-screened 20/20 against 0/20
+    (`scripts/probe_planner.py`, `ordinal_no_question`). The probe scores only
+    the first response; this is the whole loop, refusal and all, which is where
+    a retry labelled `said_the_move` would show. The reply's wording is free —
+    asking what they meant is the expected shape, never a piece on the board.
+    """
+    utterance = "the first one"
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        assert app.ctx.session.legal_moves()[0] == "Nh3", "the misfire's premise"
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert _legal_moves(assistant) == [], (
+            "nothing was asked, so an ordinal names no move: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        assert _board_mutations(assistant) == []
+        assert app.ctx.session.move_history() == []
+        assert app.ctx.settings.snapshot() == before["settings"]
+        _assert_not_guarded(app.tracer.last)
+
+    result = _pass_rate(
+        engine,
+        "ordinal_with_nothing_asked",
+        utterance,
+        check,
+        floor=_FLOORS["ordinal_with_nothing_asked"],
+        setup=setup,
+        requires_narrator=True,
+    )
+    _assert_floor(result, _FLOORS["ordinal_with_nothing_asked"])
 
 
 def _constraint_respected(

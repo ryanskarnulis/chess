@@ -80,7 +80,8 @@ def test_a_candidate_played_by_the_planner_answers_it_once():
     question = ctx.clarifications[PANEL_ORIGIN]
 
     provider.rescript(
-        tool_calls_turn(("make_move", {"move": "Nf3"})), text_turn("Hop.")
+        tool_calls_turn(("make_move", {"move": "Nf3", "source": "said_the_move"})),
+        text_turn("Hop."),
     )
     client.post("/api/command", json={"text": "the one to f3"})
 
@@ -399,3 +400,108 @@ def test_the_question_survives_the_input_budget_trimming_the_conversation():
     planner = next(call for call in provider.calls if call["tools"] is not None)
     conversation = [m["content"] for m in planner["messages"][1:-1]]
     assert not any("Nf3 or Nh3?" in str(content) for content in conversation)
+
+
+# --- a pick by position (#351) -------------------------------------------------
+#
+# `make_move`'s `source` says how the player's words chose the move. A pick by
+# position ("the first one") is only a move while this conversation's question
+# stands and only as one of its options — the planner reads the words, code
+# holds whether anything is on offer. Nothing here reads the model's words.
+
+BY_POSITION = "picked_by_position"
+
+
+def _pick(provider, move: str) -> None:
+    provider.rescript(
+        tool_calls_turn(("make_move", {"move": move, "source": BY_POSITION})),
+        text_turn("note"),
+        text_turn("Which one did you mean?"),
+    )
+
+
+def _last_tool_result(provider) -> dict:
+    """The last tool result the planner was handed, as it read it."""
+    for call in reversed(provider.calls):
+        tools = [m for m in call["messages"] if m["role"] == "tool"]
+        if tools:
+            return json.loads(tools[-1]["content"])
+    raise AssertionError("no tool result was handed back")
+
+
+def test_a_pick_by_position_answers_the_open_question():
+    client, provider, ctx, turns = _asked()
+
+    _pick(provider, "Nf3")
+    client.post("/api/command", json={"text": "the first one"})
+
+    assert ctx.session.move_history() == ["Nf3", "e5"]
+    closed = turns.records[-1]["clarification"]["closed"]
+    assert (closed["status"], closed["move"]) == (ANSWERED, "Nf3")
+
+
+def test_a_pick_by_position_may_be_spelled_in_uci():
+    client, provider, ctx, _ = _asked()
+
+    _pick(provider, "g1h3")
+    client.post("/api/command", json={"text": "the second one"})
+
+    assert ctx.session.move_history() == ["Nh3", "e5"]
+
+
+def test_a_pick_by_position_with_nothing_asked_moves_nothing():
+    """The bug: "the first one" with no question played `legal_moves[0]`."""
+    client, provider, ctx = make_client(ctx=None)[:3]
+
+    _pick(provider, "Nh3")
+    client.post("/api/command", json={"text": "the first one"})
+
+    assert ctx.session.move_history() == []
+    refused = _last_tool_result(provider)
+    assert refused["ok"] is False
+    assert refused["retry"] == "never"
+    assert "no question stands" in refused["error"]
+
+
+def test_a_pick_by_position_on_a_stale_question_moves_nothing():
+    """Another client moved: the question is about a board that is gone, and
+    the transcript's "Nf3 or Nh3?" is not something to pick from."""
+    client, provider, ctx, _ = _asked()
+    ctx.settings.verbosity = "low"
+    thread = client.post("/api/agent/conversations", json={}).json()["id"]
+    client.post(f"/api/agent/conversations/{thread}/messages", json={"content": "d4"})
+    before = ctx.session.move_history()
+
+    _pick(provider, "Nf3")
+    client.post("/api/command", json={"text": "the first one"})
+
+    assert ctx.session.move_history() == before
+    assert "no question stands" in _last_tool_result(provider)["error"]
+
+
+def test_a_pick_by_position_off_the_question_is_corrected_not_played():
+    client, provider, ctx, _ = _asked()
+
+    _pick(provider, "Nc3")
+    client.post("/api/command", json={"text": "the third one"})
+
+    assert ctx.session.move_history() == []
+    refused = _last_tool_result(provider)
+    assert refused["retry"] == "different_args"
+    assert "Nf3, Nh3" in refused["error"]
+    assert ctx.clarifications[PANEL_ORIGIN].candidates == ("Nf3", "Nh3")
+
+
+def test_another_threads_question_is_nothing_to_pick_from():
+    client, provider, ctx = make_client(ASK, QUESTION, ctx=None)[:3]
+    first = client.post("/api/agent/conversations", json={}).json()["id"]
+    client.post(
+        f"/api/agent/conversations/{first}/messages", json={"content": KNIGHT_ASK}
+    )
+    assert ctx.clarifications[delegate_origin(first)].candidates == ("Nf3", "Nh3")
+
+    _pick(provider, "Nf3")
+    client.post("/api/command", json={"text": "the first one"})
+
+    assert ctx.session.move_history() == []
+    assert "no question stands" in _last_tool_result(provider)["error"]

@@ -147,8 +147,10 @@ def finished(ctx: ToolContext) -> ToolContext:
 
 def test_brain_route_closes_tool_free_and_a_second_move_is_dead():
     client, provider, ctx = make_client(
-        tool_calls_turn(("make_move", {"move": "e4"})),
-        tool_calls_turn(("make_move", {"move": "d4"})),  # budget already spent
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
+        tool_calls_turn(
+            ("make_move", {"move": "d4", "source": "said_the_move"})
+        ),  # budget already spent
         text_turn("note: played e4, second move refused"),
         text_turn("e4 it is."),
     )
@@ -270,7 +272,10 @@ def test_whether_a_reply_is_owed_is_decided_by_whether_the_undo_landed(
     """
     turns = CollectedTurns()
     client, _, ctx = make_client(
-        tool_calls_turn(("make_move", {"move": "e4"}), ("undo", {"plies": plies})),
+        tool_calls_turn(
+            ("make_move", {"move": "e4", "source": "said_the_move"}),
+            ("undo", {"plies": plies}),
+        ),
         text_turn("played e4; the takeback is another matter"),
         text_turn("e4 is on."),
         tracer=turns,
@@ -305,7 +310,7 @@ def test_an_integral_float_argument_lands_instead_of_ending_the_command():
     """
     client, _, ctx = make_client(
         tool_calls_turn(
-            ("make_move", {"move": "e4"}),
+            ("make_move", {"move": "e4", "source": "said_the_move"}),
             ("undo", {"plies": 1.0}),
             ("set_voice_output", {"enabled": True}),
         ),
@@ -450,7 +455,10 @@ def test_a_resumed_mid_exchange_save_finishes_the_exchange(tmp_path):
     ctx = ToolContext(session=GameSession(), engine=FakeEngine(), save_dir=tmp_path)
     coordinator = TurnCoordinator(ctx)
     client, _, ctx = make_client(
-        tool_calls_turn(("make_move", {"move": "e4"}), ("save_game", {"name": "half"})),
+        tool_calls_turn(
+            ("make_move", {"move": "e4", "source": "said_the_move"}),
+            ("save_game", {"name": "half"}),
+        ),
         text_turn("moved and saved"),
         text_turn("Saved."),
         tool_calls_turn(("resume_game", {"name": "half"})),
@@ -533,10 +541,10 @@ def test_an_engine_that_died_mid_command_is_healed_by_the_next_one():
     ctx = ToolContext(session=GameSession(), engine=FailEngine())
     coordinator = TurnCoordinator(ctx)
     client, _, ctx = make_client(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
         text_turn("e4, then."),
-        tool_calls_turn(("make_move", {"move": "d4"})),
+        tool_calls_turn(("make_move", {"move": "d4", "source": "said_the_move"})),
         text_turn("that one did not land"),
         text_turn("Couldn't play that."),
         ctx=ctx,
@@ -612,7 +620,10 @@ def exchange_client(narration: str, tracer=None):
     for san in ("e4", "d5"):
         assert ctx.session.submit_move(san).legal
     return make_client(
-        tool_calls_turn(("make_move", {"move": "exd5"}), ("describe_position", {})),
+        tool_calls_turn(
+            ("make_move", {"move": "exd5", "source": "said_the_move"}),
+            ("describe_position", {}),
+        ),
         text_turn("note: took on d5, player a pawn up"),
         text_turn(narration),
         ctx=ctx,
@@ -661,7 +672,10 @@ def test_the_rewrite_is_tool_free_and_is_what_the_player_hears(trace_path):
     for san in ("e4", "d5"):
         assert ctx.session.submit_move(san).legal
     client, provider, _ = make_client(
-        tool_calls_turn(("make_move", {"move": "exd5"}), ("describe_position", {})),
+        tool_calls_turn(
+            ("make_move", {"move": "exd5", "source": "said_the_move"}),
+            ("describe_position", {}),
+        ),
         text_turn("note: took on d5, player a pawn up"),
         text_turn("You are up a rook."),
         text_turn("You are up a pawn. For now."),
@@ -722,7 +736,9 @@ def test_the_command_trail_holds_the_board_after_each_mutating_call(monkeypatch)
 
     monkeypatch.setattr(api, "_verified_facts", spy)
     client, _, ctx = make_client(
-        tool_calls_turn(("undo", {}), ("make_move", {"move": "d4"})),
+        tool_calls_turn(
+            ("undo", {}), ("make_move", {"move": "d4", "source": "said_the_move"})
+        ),
         text_turn("note: took it back and played d4"),
         text_turn("Queen's pawn instead."),
         ctx=ctx,
@@ -907,7 +923,7 @@ def test_the_brain_route_never_announces_the_engines_reply_early(reply_uci, trac
     pipeline collects the reply, so "...Nf6" is a guess — and it is cut
     whether the guess was right (the engine plays Nf6) or wrong (Nc6)."""
     client, provider, ctx = make_client(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
         text_turn("King's pawn. My turn. Nf6."),
         text_turn("King's pawn. Bold."),  # the rewrite
@@ -930,7 +946,7 @@ def test_a_threatened_reply_is_still_glitchs_to_make(trace_path):
     """The future hedges still exempt a threat: "I'll hit you with Nf6" is
     trash talk about a move he might play, not an announcement."""
     client, _, _ = make_client(
-        tool_calls_turn(("make_move", {"move": "e4"})),
+        tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
         text_turn("King's pawn. I'll hit you with Nf6."),
         ctx=ToolContext(session=GameSession(), engine=FakeEngine("g8f6")),
@@ -1056,7 +1072,7 @@ def test_a_landed_ask_leaves_the_move_after_it_unplayed():
         tool_calls_turn(
             ("set_verbosity", {"verbosity": "low"}),
             ("ask_player", {"candidates": ["Nf3", "Nh3"]}),
-            ("make_move", {"move": "Nf3"}),
+            ("make_move", {"move": "Nf3", "source": "said_the_move"}),
         ),
         text_turn("Nf3 or Nh3?"),
         tracer=turns,

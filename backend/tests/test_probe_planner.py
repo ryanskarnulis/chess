@@ -510,10 +510,13 @@ def test_the_provenance_schema_requires_a_source_on_make_move_only() -> None:
     assert "source" in parameters["required"] and "move" in parameters["required"]
     others = [d for d in prepared.tools if d["function"]["name"] != "make_move"]
     assert others == [d for d in control.tools if d["function"]["name"] != "make_move"]
+    # Since #351 the shipped offer carries the `form` label; the arm replaces it.
     shipped = next(d for d in control.tools if d["function"]["name"] == "make_move")
-    assert "source" not in shipped["function"]["parameters"]["properties"], (
+    shipped_parameters = shipped["function"]["parameters"]
+    assert shipped_parameters["properties"]["source"]["enum"] == [SAID, BY_POSITION], (
         "the control offer was mutated"
     )
+    assert parameters["required"].count("source") == 1
     assert prepared.offer_sha != control.offer_sha
 
 
