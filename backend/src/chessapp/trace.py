@@ -122,6 +122,7 @@ def turn_record(
     state_refreshes: Sequence[int] = (),
     offer_refreshes: Sequence[int] = (),
     handoff: dict[str, Any] | None = None,
+    clarification: dict[str, Any] | None = None,
     budget: str = "",
     input_trimmed: int = 0,
     game_id: str = "",
@@ -327,6 +328,16 @@ def turn_record(
     `None` on every other route, and on a brain turn no narrator closed. A
     narration that announced something is re-judged against this, not against
     the planner's note: "took it back" under `performed: []` is the miss.
+
+    `clarification` is the origin's open question across the turn (#319,
+    `clarification`): `open` — the id of the question standing as the turn
+    began; `expired` — one this turn's read found gone (the board or the game
+    changed under it), with why; `closed` — what this turn did to the open
+    one (`answered` with the move, or `superseded`); `created` — the question
+    this turn asked, with the board and game it is bound to. `None` on the
+    routes that do not touch a conversation (the buttons, the confirm
+    endpoint). A move played with `open` set and nothing `closed` is the bug
+    this exists to show.
     """
     unmetered = sum(1 for call in calls if not call.metered)
     return {
@@ -356,6 +367,7 @@ def turn_record(
         "state_refreshes": list(state_refreshes),
         "offer_refreshes": list(offer_refreshes),
         "handoff": handoff,
+        "clarification": clarification,
         "budget": budget,
         "input_trimmed": input_trimmed,
         "model_calls": len(calls),

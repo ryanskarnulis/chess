@@ -299,6 +299,38 @@ split, read by a phase that holds no tools.
 narrator was told (kind, the tools done / refused / looked up, `reply_owed`),
 so a narration is re-judged against that and not against the note.
 
+## The open question (#319, 2026-09-23)
+
+A landed `ask_player` used to end with the narrator's question: the next turn
+had to recover *which* moves were on offer from Glitch's wording in the
+transcript, which paraphrases them, drops out of the verbatim window four
+turns later, and is bound to no board and no conversation. So the harness
+keeps the question (`clarification.py`), the way it keeps an armed op: the
+origin it was asked in, the `game_id` and `board_version` it was asked about
+(the board at the end of the asking turn, which is the one the player hears
+it over), what the player said, and the handoff's validated candidates.
+
+| Event | When | Result |
+|---|---|---|
+| asked | a turn ends `clarify` | a record for that origin, replacing any before it (`superseded`, `asked_again`) |
+| open | the game and board are unchanged | kept, however many asides come between: no turn cap |
+| answered | the origin's next board change is a move among the candidates — a drag, the fast path or the planner | closed with the move; gone, so it answers once |
+| superseded | the origin changes the board some other way (another move, an undo, a reset) | closed |
+| invalidated | the board or game changed from anywhere else | found at the next read (`ToolContext.live_clarification`), reported once as expired |
+
+Code decides only whether a question still stands and what closed it, from
+the tool results; nothing reads the player's words and nothing ever plays a
+candidate for them — an answer is the planner's ordinary `make_move` against
+the live board. "Never mind" is the model's to understand: the record stays
+open but inert until the next move or ask closes it. It is never read by the
+confirmation gate, so it cannot license a destructive op. Not persisted
+(`docs/persistence-and-identity.md`).
+
+The trace's `clarification` field records each turn's view of it — `open`,
+`expired`, `closed` (`answered` with the move, or `superseded`) and `created`
+— and the seeded trajectories hold every record to the walk's own model of it
+(`check_question_is_its_askers`).
+
 ## What the narrator is not given
 
 - **A stale board.** The brain route's facts are read as the planner hands

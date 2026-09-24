@@ -290,6 +290,20 @@ def late_game_session() -> GameSession:
     return session
 
 
+class TurnRecords:
+    """The app's `Tracer` seam, in memory: every turn record, across restarts.
+    What the open-question invariant reads (#319) — the record is the only
+    place the app says which question a turn found open, and what it did to
+    it."""
+
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def record(self, record: dict[str, Any]) -> None:
+        if record.get("kind") == "turn":
+            self.records.append(record)
+
+
 class Harness:
     """The shipped app over a scripted provider, restartable in place."""
 
@@ -311,6 +325,7 @@ class Harness:
             )
         self.provider = WalkProvider()
         self.engine = LegalEngine()
+        self.tracer = TurnRecords()
         self.client = self._build()
         self.conversations = {
             origin: self.client.post("/api/agent/conversations", json={}).json()["id"]
@@ -335,7 +350,10 @@ class Harness:
             ),
         ):
             app = build_app(
-                provider=self.provider, engine=self.engine, save_dir=self.save_dir
+                provider=self.provider,
+                engine=self.engine,
+                save_dir=self.save_dir,
+                tracer=self.tracer,
             )
         return TestClient(app)
 
@@ -546,6 +564,17 @@ class Pending:
     version: int
 
 
+@dataclass(frozen=True)
+class Question:
+    """The walk's model of one origin's open question (#319): the one the
+    trace said a turn asked, keyed by the trace's own origin."""
+
+    id: str
+    candidates: tuple[str, ...]
+    version: int
+    game_id: str
+
+
 # The walk cannot see what a step that died half-way armed: a delegate turn
 # whose provider failed answers 502 with no results. Until the next turn
 # clears the slot, the confirmation checks stand down rather than guess.
@@ -567,6 +596,10 @@ class Observed:
     provider_calls: list[dict[str, Any]] = field(default_factory=list)
     seconds: float = 0.0
     pending_before: Pending | None = None
+    # The turn records this step wrote, and the walk's model of every
+    # origin's open question before it ran (#319).
+    turns: list[dict[str, Any]] = field(default_factory=list)
+    questions_before: dict[str, Question] = field(default_factory=dict)
     # For a retry: the step it repeats, as it was first observed.
     original: Observed | None = None
 
@@ -597,10 +630,22 @@ def _script(step: Step) -> list[ChatResult | Exception]:
     return [*turns, text_turn(NEUTRAL)]
 
 
-def run_step(harness: Harness, step: Step, pending: Pending | None = None) -> Observed:
+def run_step(
+    harness: Harness,
+    step: Step,
+    pending: Pending | None = None,
+    questions: dict[str, Question] | None = None,
+) -> Observed:
     reset_rate_limit()
     before = harness.state()
-    observed = Observed(step=step, before=before, after=before, pending_before=pending)
+    observed = Observed(
+        step=step,
+        before=before,
+        after=before,
+        pending_before=pending,
+        questions_before=dict(questions or {}),
+    )
+    traced = len(harness.tracer.records)
     started = time.monotonic()
     if step.kind == "restart":
         harness.restart()
@@ -639,7 +684,35 @@ def run_step(harness: Harness, step: Step, pending: Pending | None = None) -> Ob
         observed.commentary = observed.response.get("commentary")
         observed.provider_calls = list(harness.provider.calls)
     observed.after = harness.state()
+    observed.turns = harness.tracer.records[traced:]
     return observed
+
+
+def next_questions(
+    observed: Observed, questions: dict[str, Question]
+) -> dict[str, Question]:
+    """Every origin's open question after a step, as the trace reported it:
+    closed or expired drops it, asked opens one, a restart forgets them all
+    (`tools.live_checkpoint`). Built off the records so that
+    `check_question_is_its_askers` can hold each later record to it."""
+    if observed.step.kind == "restart":
+        return {}
+    questions = dict(questions)
+    for record in observed.turns:
+        told = record.get("clarification")
+        if not told:
+            continue
+        origin = record["origin"]
+        if told["expired"] or told["closed"]:
+            questions.pop(origin, None)
+        if (created := told["created"]) is not None:
+            questions[origin] = Question(
+                id=created["id"],
+                candidates=tuple(created["candidates"]),
+                version=created["board_version"],
+                game_id=created["game_id"],
+            )
+    return questions
 
 
 def next_pending(observed: Observed, pending: Pending | None) -> Pending | None:
@@ -741,6 +814,72 @@ def _latest_board(messages: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
         if found:
             latest = max(found, key=lambda item: item[0])[1]
     return latest
+
+
+def check_question_is_its_askers(observed: Observed) -> None:
+    """#319: an open question is read only by the origin it was asked in, and
+    only while its game and board are the ones it was asked about. A stale
+    one is reported expired, once; a live one never is; one is never lost
+    without saying so; it is answered only by one of its own candidates; and
+    a turn opens one exactly when its ask landed, on the board it ended on.
+    """
+    before, after = observed.before, observed.after
+    for record in observed.turns:
+        told = record.get("clarification")
+        if not told:
+            continue
+        origin = record["origin"]
+        known = observed.questions_before.get(origin)
+        standing = known is not None and (known.version, known.game_id) == (
+            before["version"],
+            before["game_id"],
+        )
+        if told["open"] is not None:
+            if known is None or known.id != told["open"]:
+                raise InvariantBreach(
+                    f"{origin} read question {told['open']} it was never asked"
+                )
+            if not standing:
+                raise InvariantBreach(
+                    f"{origin} read a stale question as open: {known}"
+                )
+        if told["expired"] is not None:
+            if known is None or known.id != told["expired"]["id"]:
+                raise InvariantBreach(
+                    f"{origin} was told {told['expired']} expired, not its own"
+                )
+            if standing:
+                raise InvariantBreach(f"{origin}'s live question read as expired")
+        if known is not None and told["open"] is None and told["expired"] is None:
+            raise InvariantBreach(f"{origin}'s question {known.id} vanished unread")
+        closed = told["closed"]
+        if closed is not None and closed["status"] == "answered":
+            if known is None or closed["move"] not in known.candidates:
+                raise InvariantBreach(
+                    f"{closed['move']} answered a question that did not offer it: "
+                    f"{known}"
+                )
+        created = told["created"]
+        if observed.status_code not in (None, 200):
+            continue
+        asks = [
+            entry["result"]["candidates"]
+            for entry in observed.results
+            if entry["name"] == "ask_player" and _ok(entry.get("result") or {})
+        ]
+        if bool(asks) != (created is not None):
+            raise InvariantBreach(
+                f"a landed ask and an opened question disagree: {asks} / {created}"
+            )
+        if created is not None and (
+            created["candidates"] != asks[0]
+            or created["board_version"] != after["version"]
+            or created["game_id"] != after["game_id"]
+        ):
+            raise InvariantBreach(
+                f"the question opened is not the one asked, on the board it ended "
+                f"on: {created} vs {asks[0]} at {after['version']}"
+            )
 
 
 def check_offer_follows_board(observed: Observed) -> None:
@@ -1006,6 +1145,7 @@ def check_budgets_cap_the_turn(observed: Observed) -> None:
 INVARIANTS: tuple[Callable[[Observed], None], ...] = (
     check_status,
     check_clarification_moves_nothing,
+    check_question_is_its_askers,
     check_offer_follows_board,
     check_no_unexplained_mutation,
     check_board_is_coherent,
@@ -1038,11 +1178,12 @@ class _Run:
     def __init__(self, harness: Harness) -> None:
         self.harness = harness
         self.pending: Pending | None = None
+        self.questions: dict[str, Question] = {}
         self.keyed: dict[tuple[str, str], Observed] = {}
         self.log: list[Observed] = []
 
     def step(self, step: Step) -> Observed:
-        observed = run_step(self.harness, step, self.pending)
+        observed = run_step(self.harness, step, self.pending, self.questions)
         if step.key is not None:
             where = (step.origin, step.key)
             if step.kind == "retry":
@@ -1054,6 +1195,7 @@ class _Run:
 
     def settle(self, observed: Observed) -> None:
         self.pending = next_pending(observed, self.pending)
+        self.questions = next_questions(observed, self.questions)
 
 
 def _check(run: _Run, observed: Observed, seed: int | None, length: int) -> None:

@@ -204,6 +204,14 @@ def test_turn_record_carries_the_handoff_or_none():
     assert _record_fields(handoff=handoff)["handoff"] == handoff
 
 
+def test_turn_record_carries_the_open_question_or_none():
+    """#319: which question stood, expired, closed or was asked; `None` on a
+    route that touches no conversation."""
+    told = {"open": "abc", "expired": None, "created": None, "closed": None}
+    assert _record_fields()["clarification"] is None
+    assert _record_fields(clarification=told)["clarification"] == told
+
+
 def test_turn_record_names_the_budget_that_ended_the_turn():
     """#288: which budget tripped, beside the stop reason; empty otherwise."""
     assert _record_fields()["budget"] == ""
