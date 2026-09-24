@@ -54,15 +54,10 @@ op and the no left the game untouched. Nothing is open here.
       `docs/agent-frontier.md`): a relative difficulty ask ("make it harder")
       jumps to `maximum`; and a rewind past the 100-ply undo cap is one
       takeback. Levers are the planner's reading, never a parser.
-- [ ] **Frontier eval tier** (#318, PR 5; PRs 1–4 in DONE.md). Plan
-      agreed 2026-09-23: three layers — deterministic trajectories in CI (must
-      pass; shipped), the existing gate (unchanged), and a new opt-in
-      **frontier** tier of deliberately hard live-model scenarios that is
-      scored, never failed, and tracked over time; the harness shipped (PR 3,
-      `docs/agent-frontier.md`); corpus v1 and its baseline shipped (PR 4).
-      PR 5: `frontier_report.py` +
-      `docs/frontier-history.jsonl`, graduation rules (≥0.8 held-out twice →
-      gate floor) in `docs/agent-frontier.md`.
+- [ ] **Frontier corpus v2** (#318 follow-up): several wordings per split
+      (baseline v1 swung up to ten samples on one wording), harder variants
+      for the six scenarios at 10/10 on both splits, and a second held-out run
+      so graduation can be read (`docs/agent-frontier.md`).
 - [ ] **Propose latency targets from measured data** (#317 follow-up): after
       the voice-latency tracing deploys, play a real hands-free session on an
       idle GPU, run `scripts/latency_report.py` on the container's trace, and

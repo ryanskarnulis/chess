@@ -27,6 +27,21 @@ CHESSAPP_AGENT_FRONTIER=1 CHESSAPP_EVAL_REPORT=/tmp/frontier.jsonl \
 The gate's `LLAMACPP_*` and `CHESSAPP_STOCKFISH` apply. Check the shared card
 is idle first, as for any eval run.
 
+### Recording a run
+
+```bash
+CHESSAPP_AGENT_FRONTIER=1 CHESSAPP_FRONTIER_SPLIT=dev \
+    CHESSAPP_EVAL_REPORT=/tmp/frontier.jsonl .venv/bin/pytest tests/test_agent_frontier.py -s
+CHESSAPP_AGENT_FRONTIER=1 CHESSAPP_FRONTIER_SPLIT=heldout \
+    CHESSAPP_EVAL_REPORT=/tmp/frontier.jsonl .venv/bin/pytest tests/test_agent_frontier.py -s
+python scripts/frontier_report.py append /tmp/frontier.jsonl --label "after #340"
+python scripts/frontier_report.py trend            # both splits, last six runs
+```
+
+`append` adds one line per split to `docs/frontier-history.jsonl` (commit it
+with the change it measured); `trend` prints a scenario × run table per split.
+Run both splits every time: a dev number alone is not believed.
+
 ## What a run reports
 
 Per scenario: whole-task passes out of N with a one-sided 95% Wilson
@@ -49,6 +64,43 @@ An item **fails** only when the number cannot be trusted:
 - **no sample measured** — every one an infrastructure death.
 
 A low score is never a failure.
+
+## Reading the history
+
+- **A mark means the intervals separated.** `trend` puts ▲/▼ on a cell only
+  when its one-sided 95% Wilson interval does not overlap the previous run's.
+  At ten samples that takes a big move (5/10 → 8/10 is no mark), and that is
+  deliberate: runs on different days sit on differently-warmed servers, and
+  consecutive samples of one prompt are correlated (`docs/agent-evals.md`).
+  The history shows *trend*; it is not evidence a particular change worked.
+- **A claim that a change moved a score is an A/B**, alternating blocks on
+  one server:
+
+  ```bash
+  scripts/eval_campaign.sh --suite frontier --split heldout \
+      --a /path/to/main --b /path/to/branch --k 'noisy_thread' --blocks 4 --runs 5
+  ```
+
+  `campaign_report.py` joins the blocks into one arm table, as for the gate.
+
+## Graduation and retirement
+
+- **Graduate** a scenario when its held-out whole-task rate is at least 0.8
+  in each of the two most recent held-out runs (`trend` marks it `yes` in the
+  `gate?` column; `frontier_report.GRADUATION_RATE` / `GRADUATION_RUNS`).
+  Graduating means writing it as a gate scenario in `test_agent_evals.py`
+  from its held-out wording, at the family floor (0.8) in `_FLOORS`, running
+  the gate, and removing it from the corpus in the same PR — from then on it
+  blocks merges.
+- **Harden or retire** a scenario that sits at 10/10 on both splits without
+  graduating yet: add a harder variant, or let it graduate. The corpus is
+  only worth running while most of it is not solved; baseline v1 had six such
+  scenarios, and corpus v2 should replace them with harder ones.
+- **Never demote.** A gate scenario that regresses is a regression and fails
+  the gate; it does not move here to get quiet.
+- **Never lower the bar to graduate.** A scenario whose checkpoint is found
+  unfair is fixed and re-measured from scratch, with the fix recorded (as in
+  "Scenario fixes made before the baseline" below).
 
 ## Writing a scenario
 
