@@ -22,8 +22,11 @@ from chessapp.personality import PLANNER_PROMPT
 from chessapp.provider import ChatResult, LlamaCppProvider, ToolCall
 from chessapp.tools import BOARD_STATE_TOOLS
 from probe_planner import (
+    ANSWER,
     CORPUS,
+    NAMED,
     Arm,
+    Question,
     busy_slots,
     classify,
     corpus,
@@ -31,12 +34,15 @@ from probe_planner import (
     format_summary,
     independent_agreement,
     lag1_agreement,
+    lands,
     outcome_label,
     parse_arm,
     passes,
     position,
     preflight_reasons,
     prepare,
+    question_records,
+    san_piece,
     schedule,
     sha,
     summarize,
@@ -391,3 +397,152 @@ def test_a_drop_tool_arm_offers_everything_but_that_tool():
     assert [d["function"]["name"] for d in arm.offer(offer)] == ["make_move"]
     with pytest.raises(SystemExit):
         parse_arm("x:drop_tool=nope").offer(offer)
+
+
+# --- the ordinal items and their levers (#351) ---------------------------------
+
+
+def _item(name: str):
+    return next(i for i in CORPUS if i.name == name)
+
+
+def _state(prepared) -> dict:
+    head = prepared.messages[-1]["content"].split("\n\nCommand: ")[0]
+    return json.loads(head.removeprefix("Board state:\n"))
+
+
+def _prepare(item_name: str, arm: Arm | None = None):
+    provider = LlamaCppProvider("http://llm.test/v1", "gemma-4-12b")
+    return prepare(
+        _item(item_name),
+        arm or Arm(name="control"),
+        provider,
+        "http://llm.test/v1",
+        "m",
+    )
+
+
+def test_the_no_move_rule_passes_anything_that_moves_nothing() -> None:
+    rule = ("no_move",)
+    assert passes(rule, [])
+    assert passes(rule, [{"name": "ask_player", "args": {"candidates": ["a", "b"]}}])
+    assert passes(rule, [{"name": "get_best_moves", "args": {}}])
+    assert not passes(rule, [{"name": "make_move", "args": {"move": "Nh3"}}])
+
+
+def test_the_ordinal_items_offer_their_candidates_out_of_legal_moves_order() -> None:
+    # The premise the whole set rests on: a pick that follows `legal_moves`
+    # order lands on the wrong move, so following the question is visible.
+    first = position(_item("ordinal_open_pick")).legal_moves()
+    assert first[0] == "Nh3" and _item("ordinal_open_pick").question.candidates[0] == (
+        "Nf3"
+    )
+    second = position(_item("ordinal_open_second")).legal_moves()
+    assert second[1] != _item("ordinal_open_second").question.candidates[1] == "e3"
+    for name in ("ordinal_no_question", "ordinal_stale"):
+        assert position(_item(name)).legal_moves()[0] == "Nh3"
+    stale = _item("ordinal_stale")
+    assert set(stale.question.candidates) <= set(position(stale).legal_moves()), (
+        "the stale candidates are still legal, so playing one is possible"
+    )
+
+
+def test_an_item_question_reaches_the_planner_state_open_or_closed() -> None:
+    open_state = _state(_prepare("ordinal_open_pick"))
+    assert open_state["open_question"] == {
+        "player_asked": "move my kings knight",
+        "choose_between": ["Nf3", "Nh3"],
+    }
+    assert "closed_question" not in open_state
+    stale_state = _state(_prepare("ordinal_stale"))
+    assert "open_question" not in stale_state
+    assert stale_state["closed_question"]["player_asked"] == "move my kings knight"
+    assert question_records(None) == (None, None)
+    none_state = _state(_prepare("ordinal_no_question"))
+    assert not {"open_question", "closed_question"} & set(none_state)
+
+
+def test_an_item_transcript_sits_between_the_prompt_and_the_command() -> None:
+    prepared = _prepare("ordinal_open_pick")
+    roles = [m["role"] for m in prepared.messages]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert prepared.messages[1]["content"] == "move my kings knight"
+    assert prepared.messages[-1]["content"].endswith("Command: the first one")
+
+
+def test_state_views_reshape_only_legal_moves() -> None:
+    control = _state(_prepare("ordinal_no_question"))
+    for view in ("sorted", "by_piece", "joined"):
+        shown = _state(
+            _prepare("ordinal_no_question", parse_arm(f"v:state_view={view}"))
+        )
+        assert {k: v for k, v in shown.items() if k != "legal_moves"} == {
+            k: v for k, v in control.items() if k != "legal_moves"
+        }
+    sorted_moves = _state(
+        _prepare("ordinal_no_question", parse_arm("v:state_view=sorted"))
+    )
+    assert sorted(sorted_moves["legal_moves"]) == sorted(control["legal_moves"])
+    assert sorted_moves["legal_moves"][0] == "Ke2", "king first, then by SAN"
+    grouped = _state(
+        _prepare("ordinal_no_question", parse_arm("v:state_view=by_piece"))
+    )
+    assert grouped["legal_moves"]["knight"] == ["Na3", "Nc3", "Ne2", "Nf3", "Nh3"]
+    assert sorted(m for ms in grouped["legal_moves"].values() for m in ms) == sorted(
+        control["legal_moves"]
+    )
+    joined = _state(_prepare("ordinal_no_question", parse_arm("v:state_view=joined")))
+    assert sorted(joined["legal_moves"].split()) == sorted(control["legal_moves"])
+    sans = ("O-O", "Kf1", "Qh5", "Rxa8", "Bb5", "Nf3", "e4")
+    assert [san_piece(s) for s in sans] == [
+        "king", "king", "queen", "rook", "bishop", "knight", "pawn",
+    ]  # fmt: skip
+
+
+def test_the_provenance_schema_requires_a_source_on_make_move_only() -> None:
+    control = _prepare("ordinal_open_pick")
+    prepared = _prepare("ordinal_open_pick", parse_arm("p:tool_schema=provenance"))
+    make_move = next(d for d in prepared.tools if d["function"]["name"] == "make_move")
+    parameters = make_move["function"]["parameters"]
+    assert parameters["properties"]["source"]["enum"] == [NAMED, ANSWER]
+    assert "source" in parameters["required"] and "move" in parameters["required"]
+    others = [d for d in prepared.tools if d["function"]["name"] != "make_move"]
+    assert others == [d for d in control.tools if d["function"]["name"] != "make_move"]
+    shipped = next(d for d in control.tools if d["function"]["name"] == "make_move")
+    assert "source" not in shipped["function"]["parameters"]["properties"], (
+        "the control offer was mutated"
+    )
+    assert prepared.offer_sha != control.offer_sha
+
+
+def test_a_claimed_answer_lands_only_on_a_standing_question_and_its_candidates() -> (
+    None
+):
+    def move(san: str, source: str | None = None) -> dict:
+        args = {"move": san} | ({"source": source} if source else {})
+        return {"name": "make_move", "args": args}
+
+    knight = Question("move my kings knight", ("Nf3", "Nh3"))
+    stale = Question("move my kings knight", ("Nf3", "Nh3"), stale=True)
+    assert lands(move("Nf3", ANSWER), knight)
+    assert not lands(move("Nc3", ANSWER), knight), "not one it offered"
+    assert not lands(move("Nf3", ANSWER), stale), "the question is gone"
+    assert not lands(move("Nh3", ANSWER), None), "nothing was asked"
+    # Anything not claimed as an answer is the shipped behavior.
+    assert lands(move("Nh3", NAMED), None)
+    assert lands(move("Nh3"), None)
+    assert lands({"name": "undo", "args": {}}, None)
+    assert outcome_label([move("Nf3", ANSWER)]) == f"make_move(Nf3,{ANSWER})"
+
+
+def test_the_new_knobs_parse_and_refuse_unknown_values() -> None:
+    arm = parse_arm("x:state_view=by_piece,tool_schema=provenance,thinking=on")
+    assert (arm.state_view, arm.tool_schema, arm.thinking) == (
+        "by_piece",
+        "provenance",
+        True,
+    )
+    assert parse_arm("control").thinking is False
+    for spec in ("x:state_view=shuffled", "x:tool_schema=why", "x:thinking=maybe"):
+        with pytest.raises(SystemExit):
+            parse_arm(spec)
