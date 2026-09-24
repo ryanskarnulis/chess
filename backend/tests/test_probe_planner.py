@@ -26,7 +26,9 @@ from probe_planner import (
     BY_POSITION,
     CORPUS,
     NAMED,
+    PIECE_ONLY,
     SAID,
+    SAID_SQUARE,
     Arm,
     Question,
     busy_slots,
@@ -130,6 +132,13 @@ def test_every_setup_is_legal_and_every_position_holds_its_premise() -> None:
     assert len([m for m in _legal("bishop_ask") if m.startswith("B")]) >= 2
     assert not any("x" in m for m in _legal("take_pawn"))
     assert "Nf3" in _legal("stt_knight")
+    for pawn in ("pawn_ask", "king_pawn_ask", "pawn_forward_ask", "pawn_advance_ask"):
+        assert {"e3", "e4"} <= _legal(pawn), pawn
+    # #352's asks: nothing that fits sits where the menu puts its first entries.
+    assert {"Nc3", "Na3"} <= _legal("queen_knight_ask")
+    queen = position(next(i for i in CORPUS if i.name == "queen_ask")).legal_moves()
+    assert {m for m in queen if m.startswith("Q")} == {"Qe2", "Qf3", "Qg4", "Qh5"}
+    assert not any(m.startswith("Q") for m in queen[:2])
 
 
 def test_the_asks_the_planner_must_answer_are_not_settled_by_the_parser() -> None:
@@ -156,7 +165,7 @@ def test_held_out_items_stay_out_unless_named_or_included() -> None:
         "knight_ask",
     ]
     with pytest.raises(SystemExit):
-        corpus(["queen_ask"], False)
+        corpus(["no_such_item"], False)
 
 
 # --- arms ---------------------------------------------------------------------
@@ -564,3 +573,27 @@ def test_the_new_knobs_parse_and_refuse_unknown_values() -> None:
     for spec in ("x:state_view=shuffled", "x:tool_schema=why", "x:thinking=maybe"):
         with pytest.raises(SystemExit):
             parse_arm(spec)
+
+
+def test_a_move_that_named_only_its_piece_lands_only_when_the_piece_has_one_move():
+    start = position(next(i for i in CORPUS if i.name == "pawn_ask")).fen()
+    pawn = {"name": "make_move", "args": {"move": "e4", "source": PIECE_ONLY}}
+    assert not lands(pawn, None, start)  # e3 and e4: the app would refuse it
+    said = {"name": "make_move", "args": {"move": "e4", "source": SAID_SQUARE}}
+    assert lands(said, None, start)
+    # Two moves for the piece: refused. One: the words need not say where.
+    lone = "4k3/8/8/8/8/8/P7/K7 w - - 0 1"  # the a-pawn: a3 and a4
+    assert not lands(
+        {"name": "make_move", "args": {"move": "a3", "source": PIECE_ONLY}}, None, lone
+    )
+    rook = "4k3/8/8/8/8/8/8/K6R w - - 0 1"
+    assert not lands(
+        {"name": "make_move", "args": {"move": "Rh2", "source": PIECE_ONLY}}, None, rook
+    )
+    boxed = "k7/8/8/8/8/p7/P7/K7 w - - 0 1"  # the king's only move is Kb1
+    assert lands(
+        {"name": "make_move", "args": {"move": "Kb1", "source": PIECE_ONLY}},
+        None,
+        boxed,
+    )
+    assert not lands(pawn, None)  # no board to check against: refused

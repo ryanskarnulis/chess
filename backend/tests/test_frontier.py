@@ -38,7 +38,16 @@ from frontier import (
     grade,
     measure,
 )
-from frontier_corpus import SCENARIOS, after_e4_e5
+from frontier_corpus import (
+    BISHOP_TO_MOVE,
+    QUEEN_TO_MOVE,
+    SCENARIOS,
+    after,
+    after_e4_e5,
+    first_offered,
+    fits_sort_late,
+    second_offered,
+)
 from test_agent_evals import EvalApp, _CollectingTracer
 from trajectory import LegalEngine
 
@@ -377,3 +386,58 @@ def test_every_checkpoint_grades_an_episode_of_its_shape(s, v):
     verdict = grade(episode, s.checkpoints)
 
     assert not verdict.whole, f"{s.name}: doing nothing must not pass"
+
+
+# --- the ordinal checkpoints and their premise (#352) ---------------------------------
+
+
+def _ask_then_pick(offered: list[str], played: list[str]) -> Episode:
+    """After 1.e4 e5, turn 1 asked with `offered`; turn 2 played `played`.
+    The setup's moves are there on purpose: the checkpoints must grade the
+    answer, not the first move of the game."""
+    opening = {"game_id": "g", "fen": "set", "history": ["e4", "e5"]}
+    after_pick = {"game_id": "g", "fen": "changed", "history": ["e4", "e5", *played]}
+    ask = {
+        "name": "ask_player",
+        "args": {},
+        "result": {"ok": True, "candidates": offered},
+    }
+
+    def turn(results: list[dict[str, Any]], after_turn: dict[str, Any]) -> Turn:
+        return Turn(
+            say=Say("x"),
+            status=200,
+            route="brain",
+            stop_reason="completed",
+            results=results,
+            commentary="",
+            before=opening,
+            after=after_turn,
+            model_calls=2,
+            seconds=1.0,
+        )
+
+    return Episode(
+        variant="v", start=opening, turns=[turn([ask], opening), turn([], after_pick)]
+    )
+
+
+def test_the_offered_checkpoints_read_the_asks_own_order():
+    episode = _ask_then_pick(["Qh5", "Qg4", "Qf3", "Qe2"], ["Qg4"])
+
+    assert second_offered(1, 2).check(episode)
+    assert not first_offered(1, 2).check(episode)
+    # The menu's reading of "the second one" is Nf3: not a pick from the list.
+    assert not second_offered(1, 2).check(_ask_then_pick(["Qh5", "Qg4"], ["Nf3"]))
+    assert not second_offered(1, 2).check(_ask_then_pick(["Qh5"], ["Qh5"]))
+    assert first_offered(1, 2).check(_ask_then_pick(["Qh5", "Qg4"], ["Qh5", "d6"]))
+
+
+def test_the_late_sorting_setups_keep_their_premise():
+    for setup in (QUEEN_TO_MOVE, BISHOP_TO_MOVE):
+        app = _SetupOnly()
+        setup(app)
+        assert app.ctx.session.legal_moves()[:2] == ["Nh3", "Nf3"]
+    # A position where a fitting move is first in the menu is refused.
+    with pytest.raises(AssertionError):
+        fits_sort_late(after(), lambda m: m.startswith("N"))(_SetupOnly())

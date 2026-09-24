@@ -989,19 +989,31 @@ def asked(index: int) -> Checkpoint:
     )
 
 
-def first_offered(asked_turn: int, index: int, ply: int = 0) -> Checkpoint:
-    """After turn `index`, the move at `ply` is the first candidate turn
-    `asked_turn`'s `ask_player` offered — read off that ask's own result, so
-    the check follows whatever the planner listed (#348 lists all four knight
-    moves for a king's-knight ask) rather than a list written here."""
-
+def _played_offered(asked_turn: int, index: int, n: int) -> Callable:
     def check(e: Episode) -> bool:
         ask = e.turn(asked_turn).result("ask_player")
         offered = (ask or {}).get("candidates") or []
-        played = e.history(after_turn=index)[ply : ply + 1]
-        return bool(offered) and played == offered[:1]
+        start = len(e.turn(index).before["history"])
+        played = e.history(after_turn=index)[start : start + 1]
+        return len(offered) >= n and played == offered[n - 1 : n]
 
-    return Checkpoint("played_first_offered", check)
+    return check
+
+
+def first_offered(asked_turn: int, index: int) -> Checkpoint:
+    """Turn `index`'s first move is the first candidate turn `asked_turn`'s
+    `ask_player` offered — read off that ask's own result, so the check
+    follows whatever the planner listed (#348 lists all four knight moves for
+    a king's-knight ask) rather than a list written here. The move is counted
+    from where turn `index` began, not from the start of the game, so a setup
+    that places moves first (#352's 1.e4 e5) is graded on the answer."""
+    return Checkpoint("played_first_offered", _played_offered(asked_turn, index, 1))
+
+
+def second_offered(asked_turn: int, index: int) -> Checkpoint:
+    """`first_offered`, for the second candidate: a reply that names nothing
+    but a place in the question's own list."""
+    return Checkpoint("played_second_offered", _played_offered(asked_turn, index, 2))
 
 
 def picked(index: int, san: str, ply: int = 0) -> Checkpoint:
@@ -1156,12 +1168,15 @@ TWO_THREADS_SIMILAR_ASKS = Scenario(
         "knight in one, the e-pawn in the other. The second thread's 'the "
         "first one' must pick from its own question, never the first thread's."
     ),
+    # The dev pawn ask was "push my e pawn", which the planner plays (e3)
+    # rather than asks, so the scenario missed at asked_2 on every arm and never
+    # reached the ordinal it is here to measure (#352; the ask miss is #357).
     dev=(
         Variant(
             "knight_then_pawn",
             (
                 Say("move my kings knight", origin="d0"),
-                Say("push my e pawn", origin="d1"),
+                Say("move my e-file pawn", origin="d1"),
                 Say("the first one", origin="d1"),
             ),
             FRESH,
@@ -1182,6 +1197,212 @@ TWO_THREADS_SIMILAR_ASKS = Scenario(
         asked(1),
         asked(2),
         first_offered(2, 3),
+    ),
+)
+
+# --- ordinals only the question resolves (#352) ---------------------------------------
+#
+# The king's-knight asks above offer their candidates in `legal_moves` order,
+# Nh3 first, and before #351 the planner read "the first one" as
+# `legal_moves[0]`: the pick landed whether or not it read the question. The
+# planner still lists what fits in menu order (queen, bishop and pawn asks
+# alike), so these ask about a piece none of whose moves is among the menu's
+# first two entries. A pick read off the menu then lands on a knight, and only
+# the question says which move "the first one" or "the second one" is.
+
+
+def fits_sort_late(
+    setup: Callable[[EvalApp], None], fits: Callable[[str], bool]
+) -> Callable[[EvalApp], None]:
+    """`setup`, then #352's premise: two or more moves fit the ask, and neither
+    of the first two entries of `legal_moves` is one of them."""
+
+    def check(app: EvalApp) -> None:
+        setup(app)
+        menu = app.ctx.session.legal_moves()
+        assert len([m for m in menu if fits(m)]) >= 2, menu
+        assert not any(fits(m) for m in menu[:2]), menu[:2]
+
+    return check
+
+
+QUEEN_TO_MOVE = fits_sort_late(AFTER_E4_E5, lambda m: m.startswith("Q"))
+BISHOP_TO_MOVE = fits_sort_late(AFTER_E4_E5, lambda m: m.startswith("B"))
+
+QUEEN_ASK_ASIDE_THEN_FIRST = Scenario(
+    name="queen_ask_aside_then_first",
+    tier=2,
+    why=(
+        "A queen ask is answered 'the first one' after an aside. The queen's "
+        "moves sort after the knights' in `legal_moves`, so the pick lands "
+        "only if the ordinal is read against the question, not the menu."
+    ),
+    dev=(
+        Variant(
+            "difficulty_aside",
+            (
+                Say("move my queen"),
+                Say("what difficulty am I on?"),
+                Say("the first one"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+        Variant(
+            "voice_aside",
+            (
+                Say("bring my queen out"),
+                Say("is voice output on right now?"),
+                Say("first one please"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "verbosity_aside",
+            (
+                Say("let's get the queen moving"),
+                Say("how chatty are you set to be?"),
+                Say("go with the first option"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+        Variant(
+            "level_aside",
+            (
+                Say("develop my queen"),
+                Say("how strong is the engine set right now?"),
+                Say("I'll take the first"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+    ),
+    checkpoints=(asked(1), still(2), first_offered(1, 3)),
+)
+
+ASK_ASIDE_THEN_SECOND = Scenario(
+    name="ask_aside_then_second",
+    tier=2,
+    why=(
+        "'The second one', two turns after the ask: the second candidate is a "
+        "queen or bishop move, while `legal_moves[1]` is Nf3, so only the "
+        "question's own list resolves it."
+    ),
+    dev=(
+        Variant(
+            "queen",
+            (
+                Say("move my queen"),
+                Say("what difficulty am I on?"),
+                Say("the second one"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+        Variant(
+            "bishop",
+            (
+                Say("move my bishop"),
+                Say("is voice output on right now?"),
+                Say("second one"),
+            ),
+            BISHOP_TO_MOVE,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "queen",
+            (
+                Say("I want to play a queen move"),
+                Say("how chatty are you set to be?"),
+                Say("go with the second option"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+        Variant(
+            "bishop",
+            (
+                Say("develop my bishop"),
+                Say("how strong is the engine set right now?"),
+                Say("I'll take the second"),
+            ),
+            BISHOP_TO_MOVE,
+        ),
+    ),
+    checkpoints=(asked(1), still(2), second_offered(1, 3)),
+)
+
+QUEEN_ASK_LONG_CHAT_THEN_FIRST = Scenario(
+    name="queen_ask_long_chat_then_first",
+    tier=2,
+    why=(
+        "`knight_ask_long_chat_then_pick` with an ask whose candidates sort "
+        "late: five turns of chat push Glitch's question out of the verbatim "
+        "window, and 'the first one' is neither a square nor `legal_moves[0]`, "
+        "so only the kept record (#319) says which move it was."
+    ),
+    dev=(
+        Variant(
+            "chat",
+            (
+                Say("bring my queen out"),
+                Say("hang on, what's your favourite opening?"),
+                Say("why do people like it?"),
+                Say("tell me a chess joke"),
+                Say("who was the best player ever?"),
+                Say("fair enough. okay, where were we"),
+                Say("the first one you offered"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+        Variant(
+            "study_chat",
+            (
+                Say("move my queen"),
+                Say("before that, how do I get better at openings?"),
+                Say("should I learn the Sicilian?"),
+                Say("what's the Italian game?"),
+                Say("is it good for beginners?"),
+                Say("cool. back to it"),
+                Say("the first of the ones you gave me"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "lesson_chat",
+            (
+                Say("where can my queen go? move it"),
+                Say("wait, before that: what does castling actually do?"),
+                Say("and when should I do it?"),
+                Say("what's a fork?"),
+                Say("any tips for a beginner?"),
+                Say("thanks. right, back to the game"),
+                Say("go with the first option you gave me"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+        Variant(
+            "history_chat",
+            (
+                Say("let's get the queen moving"),
+                Say("quick question, who invented chess?"),
+                Say("how old is it?"),
+                Say("when did the queen get so strong?"),
+                Say("interesting. and castling, when did that start?"),
+                Say("okay, let's get on with it"),
+                Say("the first option from before"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+    ),
+    checkpoints=(
+        asked(1),
+        Checkpoint(
+            "chat_moved_nothing",
+            lambda e: not any(e.turn(i).moved for i in range(2, 7)),
+        ),
+        first_offered(1, 7),
     ),
 )
 
@@ -1207,4 +1428,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     KNIGHT_ASK_LONG_CHAT_THEN_PICK,
     KNIGHT_ASK_THEN_BOARD_CHANGES,
     TWO_THREADS_SIMILAR_ASKS,
+    QUEEN_ASK_ASIDE_THEN_FIRST,
+    ASK_ASIDE_THEN_SECOND,
+    QUEEN_ASK_LONG_CHAT_THEN_FIRST,
 )
