@@ -728,8 +728,8 @@ def _arguments(arguments: dict[str, Any]) -> str:
 def _trajectory(assistant: dict[str, Any]) -> str:
     """The turn's calls in order, each with the arguments it carried.
 
-    The arguments are the point (TODO.md's "does the planner flip hints on when
-    nobody asked?"): `set_hints_mode` on the line said a setting had been
+    The arguments are the point ("does the planner flip hints on when nobody
+    asked?"): `set_hints_mode` on the line said a setting had been
     changed and could not say which way. They ride on the wire already, so
     reading them costs nothing but this rendering.
 
@@ -1933,7 +1933,7 @@ def _pass_rate(
                     # rather than aggregated because the whole question is
                     # whether the slow samples and the `no_progress` samples are
                     # the *same* samples — which needs the pairing kept, and
-                    # which is why the medians in TODO.md's repeat-stop item had
+                    # which is why the repeat-stop investigation's medians had
                     # to be read out of terminal scrollback.
                     **run.latencies.as_record(),
                     # And what each of those calls wrote. Milliseconds alone
@@ -2046,8 +2046,8 @@ def _assert_floor(result: RateResult, floor: float, *, blocking: bool = False) -
     item, so a bad sample is no longer a regression. A count that never resolved
     (the interval still straddles the floor at the cap) is reported as
     UNDECIDED — and passes, except where the item is release-blocking, because
-    `TODO.md` declares `long_capture` a release blocker and an unresolved gate on
-    a release blocker is not a pass.
+    `long_capture` is a release blocker (CLAUDE.md eval gate) and an
+    unresolved gate on a release blocker is not a pass.
 
     What a green now means is therefore weaker than it looked and stronger than
     it was: **not statistically below the floor**. The gate separates ≈0.95 from
@@ -2890,7 +2890,7 @@ def test_eval_position_is_described_not_evaluated(engine: EnginePlayer) -> None:
     answered, and that no verdict tool ran — never a word of the reply: how
     Glitch reads a position out is exactly the thing this suite must not pin.
 
-    The settings assertion folds in TODO.md's standing item ("a question turn
+    The settings assertion folds in the standing rule ("a question turn
     shouldn't mutate settings the player owns"): a read-only ask that comes
     back having changed difficulty or verbosity has done something the player
     did not ask for, and this is the cheapest place that can see it.
@@ -3664,7 +3664,7 @@ def test_eval_voice_setting_and_move(engine: EnginePlayer) -> None:
     The settings pin is a whole-snapshot comparison with exactly one key
     changed, not a read of `voice_output` alone: an agent that turned voice off
     *and* dialled the difficulty down has done something the player did not ask
-    for, and TODO.md's standing item is that a turn changes only the setting it
+    for, and the standing rule is that a turn changes only the setting it
     was asked to change.
     """
     utterance = "turn voice output off and play e4"
@@ -4838,7 +4838,7 @@ def test_eval_long_transcript_capture_still_lands(
         runner=_run_panel,
     )
 
-    # `blocking=True` for this one alone: TODO.md declares the `long_capture`
-    # regression release-blocking, and an unresolved gate on a release blocker is
-    # not a pass. Everywhere else UNDECIDED is reported and allowed.
+    # `blocking=True` for this one alone: the `long_capture` regression is
+    # release-blocking (CLAUDE.md eval gate), and an unresolved gate on a
+    # release blocker is not a pass. Everywhere else UNDECIDED is reported and allowed.
     _assert_floor(result, floor, blocking=True)

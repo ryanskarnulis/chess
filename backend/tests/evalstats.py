@@ -599,7 +599,7 @@ def split_latencies(
     `model_ms` is a per-turn sum, and the question it cannot answer is the one
     Sprint 5 is asking: a `no_progress` turn was measured narrating 2–3× slower
     than a `completed` one at the *same* model-call count (40.5 s and ≈26.7 s
-    medians against 9.9–11.5 s — `TODO.md`). Whether that is the narrator's own
+    medians against 9.9–11.5 s). Whether that is the narrator's own
     round trip or a hard sample that made both the repeat and the long narration
     happen needs planner time told from narrator time, which the readings can
     give and the total cannot.

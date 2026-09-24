@@ -10,8 +10,7 @@ voice-first) that acts as opponent, interface, and game controller.
 
 Layout: Python backend in `backend/` (src-layout package `chessapp`), React
 web UI in `frontend/`, decision records in `docs/`. `BRIEF.md` is the design
-reference. `TODO.md` is the backlog; `DONE.md` is the completion log (move a
-finished item there with the date). The llama-server flags live in the shared
+reference. The llama-server flags live in the shared
 `../llama-swap/config.yaml`, not here.
 
 ## Commands
@@ -53,6 +52,8 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   The global Glitch text is vendored from `../agent-standard/`; fix drift by
   re-copying, never by editing the copy.
 - **Never feed model thought blocks back into history** — final answers only.
+- **Backlog is GitHub issues** (`gh issue list`). File follow-up work as an
+  issue, never in a markdown file; PRs close issues with `Closes #N`.
 - **Git:** never commit to `main`. Branch → PR → squash-merge on green CI
   (`gh pr checks --watch`, then `gh pr merge --squash`).
 - **Tests ship with changes.** The deterministic core stays thoroughly
@@ -61,6 +62,10 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 - **Eval gate:** a change to prompts, the model, or the agent loop runs the
   eval suite before merge and must not regress the recorded baseline
   (`docs/agent-evals.md`). Evals stay a manual local command — never in CI.
+  `long_capture` is release-blocking: a change that sends it red does not
+  merge. Never re-attempt tool-schema minimization on gemma-4-12b (stripping
+  pydantic keys collapses `undo_and_replace`); re-test only if the brain model
+  changes. Details: `docs/agent-evals.md` "Standing results".
 
 ## Debugging agent behavior
 

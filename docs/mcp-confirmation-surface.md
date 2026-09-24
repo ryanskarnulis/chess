@@ -194,8 +194,7 @@ green as they are):
   changed (`test_list_tools_matches_registry_definitions`, plus
   `test_emitted_schemas_match_the_snapshot_byte_for_byte`).
 - `docs/turn-coordinator.md`'s "Board controls" gains MCP as the third
-  answering surface; `TODO.md`'s "Later — MCP confirmation surface" moves to
-  DONE with the PR.
+  answering surface.
 
 ## Open questions this note does not decide
 
@@ -207,7 +206,7 @@ green as they are):
 
 ## Verified live (2026-09-05)
 
-The check `TODO.md` carried after #272, run once against the real client: a
+The check left open after #272 (done as #273), run once against the real client: a
 fresh Claude Code 2.1.261 session in an empty folder with only this server
 attached (`--mcp-config` + `--strict-mcp-config`, the server's stdio tee'd
 both ways for the record, `CHESSAPP_STOCKFISH` set so the engine replied).

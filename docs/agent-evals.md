@@ -270,7 +270,7 @@ of the two knights instead of asking about half the time, the five-sample
 blocks cluster (4/5, 0/5, 5/5, 1/5, 4/10, 2/5, 1/5, 7/15), and the guard eating
 the question (finding 6) was the smaller of its two failure modes all along. It
 shipped as a measured-miss xfail (`raises=AssertionError`, non-strict) with the
-planner's one/several/none procedure filed as the lever in `TODO.md`, and the
+planner's one/several/none procedure filed as the lever (#269), and the
 lever was pulled the same day: the procedure's bullet had repeated the
 `captures` fact between its premise and its "one fits: submit" outcome, and
 deleting the repeat measured 17/20 against 8/20 (the planner-procedure
@@ -460,7 +460,8 @@ prompt and tool-offer change, measured before the gate:
 
 The `offer_draw_routes` miss is a guard false positive on a correct answer
 ("the engine says it's too early to call it a draw" read by the draw class),
-logged in `TODO.md`; the scenario's turn never offers `ask_player` a reason to
+logged and since fixed ("Placement and draw-shape sweep" under "Standing
+results"); the scenario's turn never offers `ask_player` a reason to
 run.
 
 **Run 2026-09-22 on the typed-handoff tree (#289 PR 1, astra audit F9: the
@@ -482,7 +483,8 @@ piece-letter notation ("White: Ke1, Qd1, Ra1 …") and the move class read
 `Ke1` as an unplayable move. Measured interleaved against unchanged `main`
 (four alternating blocks of five on one server, `eval_campaign.sh` with a
 tree-tolerant harness): `main` 19/20, this tree 19/20, the same misfire on
-each; `position_is_described` 20/20 both. Logged in `TODO.md`.
+each; `position_is_described` 20/20 both. Logged and since fixed ("Placement
+and draw-shape sweep" under "Standing results").
 
 **Run 2026-09-18 on the guard-outcome tree (#287, astra audit F7: the honesty
 guard's `outcome` class checks the winner and the termination on a finished
@@ -513,7 +515,7 @@ real reaction, and the answer is in the one number that measures the beat it
 bounds: `fast_path_normal`'s narrator call ran **1.2 s** against a 10 s budget,
 which is the same 0.7–2.1 s band the deployed trace showed when the number was
 chosen. The three 4/5 scenarios are the known ones and are not this tree's: the
-knight ask is TODO's ~60%-day item, and `undo_twice_and_replace` 4/5 is where
+knight ask is #286's ~60%-day item, and `undo_twice_and_replace` 4/5 is where
 the 2026-09-05 baseline left it.
 
 **Run 2026-09-17 on the planner-temperature tree (#286, the knight-ask
@@ -597,7 +599,7 @@ over real games. Worth remembering before building another scenario around a
 stale-input bug: an input the tool layer re-validates is one the model can be
 wrong about for free.
 
-**Run 2026-09-10 on the guard-rewrite tree (the honesty guard's cut is a narrator rewrite and the advice guard fires only against engine evidence): 48 passed, 1 failed in a single run, 13 m 08 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except `ambiguous_knight_then_selection` 2/5 BELOW_FLOOR — every miss the planner playing a knight instead of asking, at 3 model calls (planner, note, narrator: no rewrite ran on any sample), and nothing the planner sees changed on this tree (no prompt, schema or state-view change; the rewrite is a narrator call after the guard). Re-measured interleaved on one server, four blocks of five a tree alternating: this tree 13/20 (3, 3, 4, 3), unchanged main `f4deeed` 11/20 (2, 4, 3, 2). The day's rate on that ask is ~60% on both trees, so the red is the model server's day and not this change; it is filed in `TODO.md` rather than re-floored.** No sample in the run was guarded, so the rewrite's own live rate is unmeasured here — the deployed trace is where it will show (`rewrite` field). `long_capture` 5/5 ×3, `judgment_question` 11.0 s, costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).
+**Run 2026-09-10 on the guard-rewrite tree (the honesty guard's cut is a narrator rewrite and the advice guard fires only against engine evidence): 48 passed, 1 failed in a single run, 13 m 08 s, infra 0; every pass-rate scenario 5/5 ABOVE_FLOOR STABLE except `ambiguous_knight_then_selection` 2/5 BELOW_FLOOR — every miss the planner playing a knight instead of asking, at 3 model calls (planner, note, narrator: no rewrite ran on any sample), and nothing the planner sees changed on this tree (no prompt, schema or state-view change; the rewrite is a narrator call after the guard). Re-measured interleaved on one server, four blocks of five a tree alternating: this tree 13/20 (3, 3, 4, 3), unchanged main `f4deeed` 11/20 (2, 4, 3, 2). The day's rate on that ask is ~60% on both trees, so the red is the model server's day and not this change; it is filed as #286 rather than re-floored.** No sample in the run was guarded, so the rewrite's own live rate is unmeasured here — the deployed trace is where it will show (`rewrite` field). `long_capture` 5/5 ×3, `judgment_question` 11.0 s, costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0).
 
 **Run 2026-09-06 on the draw-offer tree (#276, `offer_draw` added to the schema): 47 passed in a single run, 10 m 50 s, 202 samples, infra 0; every pass-rate scenario ABOVE_FLOOR — `undo_and_replace` 5/5, `undo_twice_and_replace` 5/5, `long_capture` 5/5 ×3, `ambiguous_knight_then_selection` 8/10 (one escalation block), `impossible_capture_is_refused_not_asked` 4/5, everything else 5/5 STABLE; `judgment_question` 9.1 s.** The two new scenarios erred on their first sample in that run on a harness bug (the check indexed the wire's `result`, which is a JSON string) and were re-run on the fixed check with no production change between the two trees: `offer_draw_routes` 5/5 and `offer_draw_accepted` 5/5, both 3 model calls, trajectory `[offer_draw]` on every sample. Costs unmoved (`fast_path_low` 0 model calls, `fast_path_normal` 1, `plain_move` 3, `resign_literal_fast_path` 0). The schema gained one tool and nothing collapsed; the gate is here because a changed tool list has collapsed `undo_and_replace` before.
 
@@ -783,7 +785,7 @@ goes on to `make_move`), and the scenario is still red — 1/5 in the gate,
 5/20 alone — because what remains is a *reading* miss: two named moves become
 `undo(plies=2)` (one exchange) or `undo(plies=1)` (the reply alone), and the
 replacement lands on a board that still holds the second move. That is model
-understanding with `undo`'s description as its lever (TODO.md), so the
+understanding with `undo`'s description as its lever (#267), so the
 scenario ships as a non-strict xfail with the measurement in its marker: the
 loop fix is pinned deterministically in `test_llama_brain.py`, and this
 scenario waits for the description PR that will gate on it.

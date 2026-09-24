@@ -15,7 +15,7 @@ joins lines with newlines where the old hand-written string joined with spaces,
 which is cosmetically identical to the model.
 
 Those normalizations are exactly the keys the standing prohibition protects.
-The 2026-07-21 minimization attempt (DONE.md; `docs/agent-evals.md` "Standing
+The 2026-07-21 minimization attempt (`docs/agent-evals.md` "Standing
 results") found that stripping any one of Pydantic's `title`, the `default`,
 or the `anyOf`-null union off the emitted schema independently collapsed
 `undo_and_replace` on gemma-4-12b — and this golden, by design, cannot see any

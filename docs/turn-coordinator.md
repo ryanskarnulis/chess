@@ -311,4 +311,4 @@ browser's own milestones by `interaction_id`: `docs/latency-measurement.md`.
   elicits, the client's user accepts or declines, and only that yes turns
   `confirm_pending`. A client whose handshake declared no form elicitation is
   refused truthfully (`confirmation_unavailable`) with nothing armed. Run end
-  to end against Claude Code 2.1.261 on 2026-09-05 (DONE.md).
+  to end against Claude Code 2.1.261 on 2026-09-05 (#273).
