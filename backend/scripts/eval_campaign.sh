@@ -22,6 +22,11 @@
 # (the prefix overridable from the environment), and its closing line carries
 # the serving manifest the run was probed under (#317).
 #
+# --suite frontier runs `tests/test_agent_frontier.py -k <expr>` instead, with
+# CHESSAPP_FRONTIER_RUNS=<runs> and CHESSAPP_FRONTIER_SPLIT=<--split, default
+# heldout>: the only honest way to say a change moved a frontier score, since
+# runs on different days sit on differently-warmed servers (#318).
+#
 # --fresh-per-block calls llama-swap /unload before each arm-block after the
 # probe's pre-flight (refuses while a slot is processing or another job holds
 # the card). Reports land in --out (default ./campaign-<utc>/) as
@@ -33,7 +38,7 @@ BACKEND="$(cd "$HERE/.." && pwd)"
 PYTHON="$BACKEND/.venv/bin/python"
 [ -x "$PYTHON" ] || PYTHON="$(command -v python)"
 
-A=""; B=""; K=""; BLOCKS=4; FRESH=0; OUT=""; RUNS=5
+A=""; B=""; K=""; BLOCKS=4; FRESH=0; OUT=""; RUNS=5; SUITE=gate; SPLIT=heldout
 ENV_A=(); ENV_B=()
 BASE_URL="${LLAMACPP_BASE_URL:-http://127.0.0.1:8200/v1}"
 MODEL="${LLAMACPP_MODEL:-gemma-4-12b}"
@@ -48,11 +53,18 @@ while [ $# -gt 0 ]; do
     --runs) RUNS="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --fresh-per-block) FRESH=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --suite) SUITE="$2"; shift 2 ;;
+    --split) SPLIT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 [ -n "$A" ] && [ -n "$B" ] && [ -n "$K" ] || { echo "need --a, --b and --k" >&2; exit 2; }
+case "$SUITE" in
+  gate) SUITE_FILE="$BACKEND/tests/test_agent_evals.py"; SUITE_ENV=(CHESSAPP_AGENT_EVALS=1 CHESSAPP_EVAL_RUNS="$RUNS" CHESSAPP_EVAL_MAX_RUNS="$RUNS") ;;
+  frontier) SUITE_FILE="$BACKEND/tests/test_agent_frontier.py"; SUITE_ENV=(CHESSAPP_AGENT_FRONTIER=1 CHESSAPP_FRONTIER_RUNS="$RUNS" CHESSAPP_FRONTIER_SPLIT="$SPLIT") ;;
+  *) echo "--suite is gate or frontier" >&2; exit 2 ;;
+esac
 A="$(cd "$A" && pwd)"; B="$(cd "$B" && pwd)"
 [ -d "$A/backend/src/chessapp" ] || { echo "$A is not a chess tree" >&2; exit 2; }
 [ -d "$B/backend/src/chessapp" ] || { echo "$B is not a chess tree" >&2; exit 2; }
@@ -91,17 +103,17 @@ run_block() {  # $1 = block number, $2 = arm name, $3 = tree
   identity "$2" "$3"
   local -a extra=()
   while IFS= read -r kv; do [ -n "$kv" ] && extra+=("$kv"); done < <(arm_env "$2")
-  (cd "$BACKEND" && env "${extra[@]+"${extra[@]}"}" PYTHONPATH="$3/backend/src" CHESSAPP_AGENT_EVALS=1 \
-     CHESSAPP_EVAL_RUNS="$RUNS" CHESSAPP_EVAL_MAX_RUNS="$RUNS" CHESSAPP_EVAL_REPORT="$report" \
+  (cd "$BACKEND" && env "${extra[@]+"${extra[@]}"}" PYTHONPATH="$3/backend/src" "${SUITE_ENV[@]}" \
+     CHESSAPP_EVAL_REPORT="$report" \
      LLAMACPP_BASE_URL="$BASE_URL" LLAMACPP_MODEL="$MODEL" \
      CHESSAPP_EXPERIMENT="${CHESSAPP_EXPERIMENT:-$(basename "$OUT")}/block-$1-$2" \
-     "$PYTHON" -m pytest "$BACKEND/tests/test_agent_evals.py" -k "$K" -s 2>&1 | tee -a "$OUT/block-$1-$2.out" | grep -E '^\[eval\]|passed|failed' || true)
+     "$PYTHON" -m pytest "$SUITE_FILE" -k "$K" -s 2>&1 | tee -a "$OUT/block-$1-$2.out" | grep -E '^\[eval\]|^\[frontier\] scenario|passed|failed' || true)
   log "block $1 arm $2 end $(date -u +%H:%M:%SZ)"
   SPECS+=("$2=$report")
 }
 
 SPECS=()
-log "campaign $(date -u +%FT%TZ) tests $BACKEND/tests k='$K' blocks=$BLOCKS runs=$RUNS fresh=$FRESH"
+log "campaign $(date -u +%FT%TZ) suite $SUITE ($SUITE_FILE) k='$K' blocks=$BLOCKS runs=$RUNS split=$SPLIT fresh=$FRESH"
 for ((i = 1; i <= BLOCKS; i++)); do
   if (( i % 2 )); then run_block "$i" a "$A"; run_block "$i" b "$B"
   else run_block "$i" b "$B"; run_block "$i" a "$A"; fi

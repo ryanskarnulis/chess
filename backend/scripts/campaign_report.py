@@ -29,7 +29,9 @@ def aggregate(
     table: dict[str, dict[str, dict[str, Any]]] = {}
     for arm, records in reports:
         for record in records:
-            if record.get("kind") != "scenario":
+            # The gate's `scenario` records and the frontier tier's
+            # `frontier` ones (#318) — one sampling block each, as run.
+            if record.get("kind") not in ("scenario", "frontier"):
                 continue
             cell = table.setdefault(record["scenario"], {}).setdefault(
                 arm, {"passed": 0, "runs": 0, "blocks": []}
@@ -39,7 +41,8 @@ def aggregate(
             # One harness report may itself hold several sampling blocks
             # (escalation); keep each block's passes as the harness scored it
             # (`RateResult.blocks` is (passed, runs) per block).
-            cell["blocks"].extend(int(block[0]) for block in record.get("blocks", []))
+            blocks = record.get("blocks") or [[record["passed"], record["runs"]]]
+            cell["blocks"].extend(int(block[0]) for block in blocks)
     return table
 
 
