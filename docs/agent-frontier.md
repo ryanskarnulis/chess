@@ -72,11 +72,67 @@ after each turn, the tool results, the route and stop reason). The rules:
   turns lean on earlier ones), 3 frontier (long sessions and long games,
   expected near zero).
 
-## Status
+## Baseline v1 (2026-09-24)
 
-The harness shipped with two starter scenarios, one in each of tiers 1 and 2,
-to exercise it end to end. Both are too easy to be frontier — a first live
-smoke run (3 samples each, dev, `ade22ed`) read `undo_replace_and_judge` 2/3
-(rubric 0.93, the miss a verdict skipped) and `knight_ask_then_change_of_mind`
-3/3 after the wording fix. The hard corpus, with its first recorded baseline,
-is #318's PR 4; the run history and graduation rules are PR 5.
+Corpus v1: 17 scenarios (5 tier-1, 8 tier-2, 4 tier-3), 10 samples each on
+each split, gemma-4-12b at planner temperature 0.3 on an idle card, on
+`2cdf63d` plus this corpus (planner prompt `d5212278576b`, narrator prompt
+`718632b62443`, offer `629dacddf1b4`). 340 samples: **0 invariant breaches,
+0 infra deaths**. Whole-task passes, rubric in brackets. The raw per-split
+records are the first two lines of `docs/frontier-history.jsonl`.
+
+| Tier | Scenario | dev | held-out | Where it misses |
+| --- | --- | --- | --- | --- |
+| 1 | `undo_replace_and_judge` | 5/10 (0.90) | 10/10 (1.00) | judged_after_the_move |
+| 1 | `settings_move_and_verdict` | 9/10 (0.98) | 9/10 (0.98) | completed_1 |
+| 1 | `top_move_play_and_save` | 10/10 (1.00) | 10/10 (1.00) | — |
+| 1 | `noisy_takeback_and_replace` | 10/10 (1.00) | 10/10 (1.00) | — |
+| 1 | `constraint_keeps_difficulty` | 10/10 (1.00) | 10/10 (1.00) | — |
+| 2 | `knight_ask_then_change_of_mind` | 7/10 (0.94) | 10/10 (1.00) | played_d4 |
+| 2 | `suggested_move_later` | 10/10 (1.00) | 10/10 (1.00) | — |
+| 2 | `save_reset_resume` | 10/10 (1.00) | 10/10 (1.00) | — |
+| 2 | `draw_declined_then_advice` | 10/10 (1.00) | 10/10 (1.00) | — |
+| 2 | `undo_chain_across_turns` | 7/10 (0.78) | 10/10 (1.00) | exactly_one_more_exchange, played_d4, second_takeback |
+| 2 | `difficulty_up_and_back` | 0/10 (0.40) | 0/10 (0.40) | back_where_it_started, harder_still, one_step_not_the_top |
+| 2 | `undo_then_ambiguous_bishop` | 10/10 (1.00) | 0/10 (0.75) | played_Bc4 |
+| 2 | `noisy_thread` | 0/10 (0.75) | 8/10 (0.95) | played_Nc3 |
+| 3 | `long_session` | 7/10 (0.97) | 10/10 (1.00) | played_the_suggestion_6 |
+| 3 | `late_game_review_undo_replay` | 0/10 (0.60) | 0/10 (0.58) | back_before_the_worst_move, played_the_best_there, reviewed |
+| 3 | `late_game_save_undo_resume` | 1/10 (0.78) | 9/10 (0.97) | undid_three |
+| 3 | `second_choice_chain` | 10/10 (1.00) | 9/10 (0.98) | played_the_second |
+
+`difficulty_up_and_back` was re-run after its checkpoints were made explicit
+(below); every other row is the first run.
+
+### What it says
+
+- **Wording moves the number more than tier does.** The same task swings up
+  to ten samples between its dev and held-out wording, in both directions:
+  "the one to c4" 10/10 against "c4 one" 0/10 (the pawn move played), "take
+  back my last three moves" 1/10 against "undo my three most recent moves"
+  9/10 (three *plies* undone, the known ply misread), "see three" 0/10
+  against "sea three" 8/10 (`Ne2`, not `Nc3`). One wording per split measures
+  that wording; corpus v2 should carry several per split before a rate is
+  read as the task's.
+- **Two tasks are consistently beyond the model today, 0/20 each.** A
+  relative difficulty ask from the bottom tier ("make the engine harder")
+  goes straight to `maximum` every time, which leaves "harder still" nothing
+  to do and "back where it started" unremembered. And rewinding a 150-ply game
+  to before the player's worst move (138 plies, over the 100-ply cap on one
+  undo) is one ordinary takeback, every time.
+- **Six scenarios are 10/10 on both splits** (`top_move_play_and_save`,
+  `noisy_takeback_and_replace`, `constraint_keeps_difficulty`,
+  `suggested_move_later`, `save_reset_resume`, `draw_declined_then_advice`).
+  They are gate candidates under the graduation rule, or need harder
+  variants to stay frontier.
+
+### Scenario fixes made before the baseline
+
+A 1-sample pilot and the first baseline run each found a checkpoint that
+scored the scenario, not the model — the rule above, applied:
+
+- `long_session` turn 6, "play that one", followed a reply naming several
+  candidates, and the model asked which — correctly. Now "play your top pick".
+- `difficulty_up_and_back` scored zero without saying why. It now starts at
+  `beginner` (room to climb) and has an explicit `one_step_not_the_top`
+  checkpoint, so the rubric names the miss.
