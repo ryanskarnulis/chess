@@ -12,8 +12,9 @@ state view (`api._agent_state_dict`), the tool offer `build_app` makes
 (`tools.brain_tool_definitions(registry, ctx)`), the messages
 `LlamaBrain._messages` opens a run with, and `LlamaCppProvider.chat` with the
 planner's own generation ceiling, thinking off. An arm varies exactly one of
-five knobs: the planner prompt text, the planner temperature, llama-server's
-per-request `cache_prompt`, one tool's description text, or the model id.
+its knobs: the planner prompt text, the planner temperature, llama-server's
+per-request `cache_prompt`, one tool's description text, the model id, the
+shape `legal_moves` is shown in, `make_move`'s schema, or thinking (#351).
 
 Each sample is classified from the wire result alone — the tool calls the
 model made, or `no_tool` — and scored against the corpus item's rule. No
@@ -30,7 +31,10 @@ Run from `backend/` with llama-swap up:
 
 Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `temperature=0.3`, `cache_prompt=false`, `model=<id>`, `tool_text=<tool>@file`,
-`drop_tool=<tool>` (repeatable: the offer without that tool).
+`drop_tool=<tool>` (repeatable: the offer without that tool),
+`state_view=sorted|by_piece|joined` (the shape `legal_moves` is shown in),
+`tool_schema=provenance` (`make_move` says where its move came from, scored
+as the app would check it) and `thinking=on`.
 `control` (no keys) is the shipped planner. `--fresh` calls llama-swap's
 `/unload` before the first sample so the session is new; it refuses while a
 slot is processing or another job holds the card (the shared-GPU rule).
@@ -63,6 +67,7 @@ from typing import Any
 
 import httpx
 
+from chessapp import clarification
 from chessapp.api import _agent_state_dict, planner_state
 from chessapp.coordinator import TurnCoordinator
 from chessapp.fastparse import parse_move
@@ -91,6 +96,8 @@ DEFAULT_MODEL = "gemma-4-12b"
 #   ("no_tool",)                         the model called nothing (asked/refused)
 #   ("asks",)                            nothing, or its first call is
 #                                        `ask_player` — the two ways to ask (#289)
+#   ("no_move",)                         no `make_move` that would land: asking,
+#                                        replying and reading all pass (#351)
 #   ("first_call", name, constraints)    the first call is `name`; constraints:
 #       {"move_in": [...]}  its `move` argument is one of these
 #       {"absent": [...]}   these argument names were omitted
@@ -101,6 +108,17 @@ Rule = tuple[Any, ...]
 
 
 @dataclass(frozen=True)
+class Question:
+    """A clarification record as the planner's state shows it (#319): the
+    player's ask and the moves offered. `stale` puts it in `closed_question`
+    (the board changed after it was asked) rather than `open_question`."""
+
+    request: str
+    candidates: tuple[str, ...]
+    stale: bool = False
+
+
+@dataclass(frozen=True)
 class Item:
     name: str
     utterance: str
@@ -108,12 +126,31 @@ class Item:
     rule: Rule
     held_out: bool = False
     note: str = ""
+    # Prior conversation as (role, content) pairs, final answers only — what
+    # `LlamaBrain._messages` puts between the system prompt and the command.
+    transcript: tuple[tuple[str, str], ...] = ()
+    question: Question | None = None
 
 
 _CASTLE_BOTH = (
     "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "d3", "d6",
     "Be3", "Be6", "Nc3", "Nf6", "Qd2", "Qd7",
 )  # fmt: skip
+
+# The ordinal items (#351). The planner reads "the first one" as
+# `legal_moves[0]` whatever it was asked, so each question here offers its
+# candidates in an order that is *not* `legal_moves` order (Nh3 comes before
+# Nf3 there): a pick that follows the list lands on the wrong move, and a lever
+# that simply refuses every ordinal fails the open-question items.
+_KNIGHT_ASKED = (
+    ("user", "move my kings knight"),
+    ("assistant", "King's knight: f3 or h3?"),
+)
+_KNIGHT_QUESTION = ("move my kings knight", ("Nf3", "Nh3"))
+_PLAIN_TURN = (
+    ("user", "e4"),
+    ("assistant", "e4, and I answer e5. Classic."),
+)
 
 CORPUS: tuple[Item, ...] = (
     Item(
@@ -181,6 +218,54 @@ CORPUS: tuple[Item, ...] = (
         ("first_call", "undo", {"absent": ["plies"]}),
         note="the first call is the takeback with `plies` left to the app",
     ),
+    Item(
+        "ordinal_no_question",
+        "the first one",
+        ("e4", "e5"),
+        ("no_move",),
+        transcript=_PLAIN_TURN,
+        note="nothing was asked: an ordinal names no move (#351; Nh3 20/20)",
+    ),
+    Item(
+        "ordinal_no_question_alt",
+        "go with the first option",
+        ("e4", "e5"),
+        ("no_move",),
+        held_out=True,
+        transcript=_PLAIN_TURN,
+        note="the heldout wording of the no-question ordinal",
+    ),
+    Item(
+        "ordinal_stale",
+        "the first one",
+        ("d4", "d5"),
+        ("no_move",),
+        transcript=_KNIGHT_ASKED,
+        question=Question(*_KNIGHT_QUESTION, stale=True),
+        note="the knight question closed when the board changed under it",
+    ),
+    Item(
+        "ordinal_open_pick",
+        "the first one",
+        (),
+        ("first_call", "make_move", {"move_in": ["Nf3", "g1f3"]}),
+        transcript=_KNIGHT_ASKED,
+        question=Question(*_KNIGHT_QUESTION),
+        note="the open question's first is Nf3; legal_moves[0] is Nh3 (#352)",
+    ),
+    Item(
+        "ordinal_open_second",
+        "the second one",
+        (),
+        ("first_call", "make_move", {"move_in": ["e3", "e2e3"]}),
+        held_out=True,
+        transcript=(
+            ("user", "push my e pawn"),
+            ("assistant", "e-pawn: e4 or e3?"),
+        ),
+        question=Question("push my e pawn", ("e4", "e3")),
+        note="the second offered is e3; legal_moves[1] is Nf3",
+    ),
 )
 
 
@@ -211,6 +296,15 @@ class Arm:
     model: str | None = None
     tool_text: dict[str, str] = field(default_factory=dict)
     drop_tools: tuple[str, ...] = ()
+    state_view: str | None = None
+    tool_schema: str | None = None
+    thinking: bool = False
+
+    def view(self, state: dict[str, Any]) -> dict[str, Any]:
+        """The planner's opening state as this arm shows it."""
+        if self.state_view is None:
+            return state
+        return STATE_VIEWS[self.state_view](state)
 
     def offer(self, definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The tool offer with this arm's dropped tools removed and its
@@ -227,6 +321,8 @@ class Arm:
             definitions = [
                 d for d in definitions if d["function"]["name"] not in self.drop_tools
             ]
+        if self.tool_schema is not None:
+            definitions = TOOL_SCHEMAS[self.tool_schema](copy.deepcopy(definitions))
         if not self.tool_text:
             return definitions
         offered = copy.deepcopy(definitions)
@@ -242,6 +338,81 @@ class Arm:
             if text is not None:
                 d["function"]["description"] = text
         return offered
+
+
+# Data-shape arms (#351): the same facts, in a shape with or without an order
+# an ordinal could index into. Only `legal_moves` changes; `make_move` and
+# `ask_player`'s enum still take the flat SAN strings.
+
+_PIECE_NAMES = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
+_PIECE_ORDER = ("king", "queen", "rook", "bishop", "knight", "pawn")
+
+
+def san_piece(san: str) -> str:
+    """The piece a SAN move moves: castling is the king's, a bare square a pawn's."""
+    if san.startswith("O-O"):
+        return "king"
+    return _PIECE_NAMES.get(san[0], "pawn")
+
+
+def _sorted_view(state: dict[str, Any]) -> dict[str, Any]:
+    moves = state["legal_moves"]
+    return {
+        **state,
+        "legal_moves": sorted(
+            moves, key=lambda san: (_PIECE_ORDER.index(san_piece(san)), san)
+        ),
+    }
+
+
+def _by_piece_view(state: dict[str, Any]) -> dict[str, Any]:
+    grouped: dict[str, list[str]] = {}
+    for piece in _PIECE_ORDER:
+        fitting = sorted(san for san in state["legal_moves"] if san_piece(san) == piece)
+        if fitting:
+            grouped[piece] = fitting
+    return {**state, "legal_moves": grouped}
+
+
+def _joined_view(state: dict[str, Any]) -> dict[str, Any]:
+    return {**state, "legal_moves": " ".join(sorted(state["legal_moves"]))}
+
+
+STATE_VIEWS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "sorted": _sorted_view,
+    "by_piece": _by_piece_view,
+    "joined": _joined_view,
+}
+
+# Schema arms (#351): a typed claim code can check without reading language.
+# `provenance` makes `make_move` say where the move came from; the app would
+# refuse `answer_to_open_question` when no question stands or the move is not
+# one it offered — `lands` is that check, applied to what the probe scores.
+ANSWER = "answer_to_open_question"
+NAMED = "player_named_it"
+
+
+def _provenance_schema(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for d in definitions:
+        function = d["function"]
+        if function["name"] != "make_move":
+            continue
+        parameters = function["parameters"]
+        parameters["properties"]["source"] = {
+            "type": "string",
+            "enum": [NAMED, ANSWER],
+            "description": (
+                f"{NAMED}: the player's own words name this move. "
+                f"{ANSWER}: they picked it from the board state's `open_question`."
+            ),
+        }
+        parameters["required"] = [*parameters.get("required", []), "source"]
+    return definitions
+
+
+TOOL_SCHEMAS: dict[str, Callable[[list[dict[str, Any]]], list[dict[str, Any]]]] = {
+    "provenance": _provenance_schema,
+}
 
 
 def _read_at(value: str, *, what: str) -> str:
@@ -282,6 +453,21 @@ def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
             tool_text[tool] = read(Path(path))
         elif key == "drop_tool":
             drop_tools.append(value)
+        elif key == "state_view":
+            if value not in STATE_VIEWS:
+                raise SystemExit(
+                    f"arm {name!r}: state_view must be one of {', '.join(STATE_VIEWS)}"
+                )
+            kwargs["state_view"] = value
+        elif key == "tool_schema":
+            if value not in TOOL_SCHEMAS:
+                known = ", ".join(TOOL_SCHEMAS)
+                raise SystemExit(f"arm {name!r}: tool_schema must be one of {known}")
+            kwargs["tool_schema"] = value
+        elif key == "thinking":
+            if value.lower() not in ("on", "off"):
+                raise SystemExit(f"arm {name!r}: thinking must be on|off")
+            kwargs["thinking"] = value.lower() == "on"
         else:
             raise SystemExit(f"arm {name!r}: unknown knob {key!r}")
     return Arm(name=name, tool_text=tool_text, drop_tools=tuple(drop_tools), **kwargs)
@@ -306,7 +492,8 @@ def outcome_label(calls: Sequence[Call]) -> str:
     for call in calls:
         name, args = call["name"], call["args"]
         if name == "make_move" and "move" in args:
-            parts.append(f"make_move({args['move']})")
+            source = f",{args['source']}" if "source" in args else ""
+            parts.append(f"make_move({args['move']}{source})")
         elif name == "undo" and "plies" in args:
             parts.append(f"undo(plies={args['plies']})")
         elif name == "ask_player" and "candidates" in args:
@@ -316,11 +503,24 @@ def outcome_label(calls: Sequence[Call]) -> str:
     return "|".join(parts)
 
 
+def lands(call: Call, question: Question | None) -> bool:
+    """Whether the app would carry `call` out, as far as the provenance check
+    goes: a move claimed as an answer lands only on a question that stands and
+    only as one of its candidates. Every other call is the shipped behavior."""
+    if call["name"] != "make_move" or call["args"].get("source") != ANSWER:
+        return True
+    if question is None or question.stale:
+        return False
+    return call["args"].get("move") in question.candidates
+
+
 def passes(rule: Rule, calls: Sequence[Call]) -> bool:
     """Score one sample's calls against an item's rule."""
     kind = rule[0]
     if kind == "no_tool":
         return not calls
+    if kind == "no_move":
+        return not any(call["name"] == "make_move" for call in calls)
     if kind == "asks":
         return not calls or calls[0]["name"] == "ask_player"
     if kind == "first_call":
@@ -556,6 +756,26 @@ class Prepared:
     fast_path: str | None
 
 
+def question_records(
+    question: Question | None,
+) -> tuple[clarification.Clarification | None, clarification.Closed | None]:
+    """The records `planner_state` takes for an item's question."""
+    if question is None:
+        return None, None
+    record = clarification.ask(
+        origin="probe",
+        game_id="probe",
+        board_version=0,
+        request=question.request,
+        candidates=question.candidates,
+    )
+    if not question.stale:
+        return record, None
+    return None, clarification.Closed(
+        record, clarification.INVALIDATED, clarification.BOARD_CHANGED
+    )
+
+
 def prepare(
     item: Item, arm: Arm, provider: LlamaCppProvider, base_url: str, model: str
 ) -> Prepared:
@@ -572,9 +792,11 @@ def prepare(
         planner_prompt_provider=lambda: arm.prompt,
         provider=provider,
     )
-    # The shipped opening block (#319); a probe item opens no question.
-    state = planner_state(_agent_state_dict(ctx), None, None)
-    messages = brain._messages(state, item.utterance)
+    # The shipped opening block (#319), with the item's question if it has one.
+    open_record, closed = question_records(item.question)
+    state = arm.view(planner_state(_agent_state_dict(ctx), open_record, closed))
+    transcript = [{"role": role, "content": text} for role, text in item.transcript]
+    messages = brain._messages(state, item.utterance, transcript)
     return Prepared(
         messages=messages,
         tools=tools,
@@ -658,7 +880,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = providers[model]._payload(
                 prepared.messages,
                 tools=prepared.tools,
-                enable_thinking=False,
+                enable_thinking=arm.thinking,
                 max_tokens=_PLANNER_MAX_TOKENS,
                 temperature=arm.temperature,
                 cache_prompt=arm.cache_prompt,
@@ -710,12 +932,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             started = time.monotonic()
             error: str | None = None
             calls: list[Call] = []
+            landed: list[Call] = []
             usage: dict[str, Any] | None = None
             try:
                 result = provider.chat(
                     prepared.messages,
                     tools=prepared.tools,
-                    enable_thinking=False,
+                    enable_thinking=arm.thinking,
                     max_tokens=_PLANNER_MAX_TOKENS,
                     temperature=arm.temperature,
                     cache_prompt=arm.cache_prompt,
@@ -724,6 +947,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 error = f"{type(exc).__name__}: {exc}"
             else:
                 calls = classify(result)
+                landed = [c for c in calls if lands(c, item.question)]
                 usage = result.usage.model_dump() if result.usage else None
                 if running_sha is None:
                     running_sha = sha(json.dumps(swap.running(), sort_keys=True))
@@ -743,7 +967,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "rule": list(item.rule),
                 "calls": calls,
                 "outcome": outcome_label(calls) if error is None else "error",
-                "passed": passes(item.rule, calls) if error is None else None,
+                # Scored on what would land: a call the app refuses moves nothing.
+                "passed": passes(item.rule, landed) if error is None else None,
+                "refused": [c for c in calls if c not in landed],
                 "error": error,
                 "latency_ms": round((time.monotonic() - started) * 1000),
                 "usage": usage,
@@ -753,6 +979,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "model": model,
                 "temperature": arm.temperature,
                 "cache_prompt": arm.cache_prompt,
+                "state_view": arm.state_view,
+                "tool_schema": arm.tool_schema,
+                "thinking": arm.thinking,
                 "running_sha": running_sha,
                 "running_models": running_models,
                 "session_fresh": session_fresh,
@@ -763,7 +992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             handle.flush()
             mark = "ERR" if error else ("pass" if record["passed"] else "MISS")
             print(
-                f"[{ordinal:4d}] {sample:3d} {item.name:13s} {arm.name:10s} {mark:4s} "
+                f"[{ordinal:4d}] {sample:3d} {item.name:23s} {arm.name:10s} {mark:4s} "
                 f"{record['outcome']}  {record['latency_ms']} ms",
                 file=sys.stderr,
             )
