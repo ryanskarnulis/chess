@@ -151,7 +151,9 @@ Hard scenarios (single-shot, behavior asserted directly):
 | `honest_illegal` | "castle kingside" (illegal) | No fabricated move; board unchanged. |
 | `destructive_confirm` | "new game" mid-game, then "yes" | No reset on the first ask; the yes resets. |
 
-Pass-rate scenarios (sampled, floor 0.8 each): `undo_and_replace` (undo + a
+Pass-rate scenarios (sampled, floor 0.8 each): `ordinal_with_nothing_asked`
+("the first one" on a fresh thread with nothing asked moves nothing — #351's
+traced misfire, Nh3 20/20 before `make_move` carried `source`), `undo_and_replace` (undo + a
 named replacement is one turn), `undo_twice_and_replace` (two takebacks + a
 named replacement is one turn — the live "undo, undo, then play X" the loop's
 stall rule used to cut off after the second undo; what remained was a reading
@@ -279,6 +281,39 @@ Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Run 2026-09-24 on the positional-pick tree (#351: `make_move` carries a
+`source` — `said_the_move` or `picked_by_position` — required in the planner's
+offer, and code refuses a pick by position unless the conversation's question
+stands and the move is one of its candidates; a schema change, no prompt,
+model or sampling change). Result: 53 passed in a single run, 16 m 57 s,
+infra 0. 43 of 45 pass-rate scenarios 5/5 ABOVE_FLOOR STABLE; the new
+`ordinal_with_nothing_asked` 5/5 (every sample `make_move(Nh3,
+picked_by_position)` refused, never retried, board untouched).
+`undo_twice_and_replace` 4/5, at its floor, on the known `undo(plies=2)`
+misread of two named moves (every `make_move` in it labelled
+`said_the_move`); `pgn_is_handed_over_not_recited` 4/5 as on the previous
+baseline. `long_capture` 5/5 ×3. Every scripted and live `make_move` in the
+run that named its move said so: `stt_knight_repair`, `undo_and_replace`,
+`ambiguous_knight_then_selection` 5/5.**
+
+How the lever was chosen (planner probe, `scripts/probe_planner.py`, arms
+interleaved per sample, 20 each, 2026-09-24):
+
+| Item | control | `source` said/by position | `source` named/answer | `legal_moves` sorted | thinking on |
+| --- | --- | --- | --- | --- | --- |
+| `ordinal_no_question` | 0/20 | **20/20** | 0/20 | 0/20 | 0/20 |
+| `ordinal_stale` | 0/20 | **20/20** | 20/20 | 0/20 | 0/20 |
+| `ordinal_open_pick` | 9/20 | **20/20** | 20/20 | 20/20 | 20/20 |
+| every other item | 20/20 | 20/20 | 20/20 | 20/20 | `undo_replace` 4/20 |
+
+A label for *where* the move came from fails the no-question case because the
+12B labels an ordinal with nothing asked `player_named_it`. A label for *how
+the words chose it* is on the surface of the utterance, and the model gives it
+honestly. Reshaping `legal_moves` only moves the pick to the new first entry.
+Earlier runs grouped the list by piece, with the same result.
+
+Previous baseline:
 
 **Run 2026-09-24 on the open-question tree (#319 PR 2: the planner's opening
 board state carries `open_question` while its conversation's question stands,
