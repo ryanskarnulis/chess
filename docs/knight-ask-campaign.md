@@ -98,7 +98,7 @@ Decision after Phase 1:
 - Fresh and warm both near 60%: the prompt or the model. Phase 2 starts with
   arms B and C, then D.
 - Fresh and warm both ≥17/20: 2026-09-10 was an off day of the server. The
-  re-baseline is recorded, the `TODO.md` item moves to `DONE.md`, and
+  re-baseline is recorded, #286 closes, and
   whether arm D still ships as hardening is a decision for Ryan.
 
 ## Phase 2: one variable at a time
@@ -126,7 +126,7 @@ alone, never stacked until one has won on its own.
     move with no ambiguity branch, and it sits in the tool offer on every
     call. Arm: drop the worked example. Tool descriptions are prompt text,
     not pydantic keys, but `undo_and_replace` gates any tool-text change
-    (`TODO.md` standing constraint).
+    (CLAUDE.md eval gate).
   - The planner bullet's own example clause ("grab that pawn").
   - Nothing added. An arm that needs a new sentence is out.
 - **D. Structured clarification handoff.** A planner tool
@@ -166,8 +166,7 @@ full gate with `long_capture` 5/5 ×3.
 
 One PR per shipped variable. Each PR re-records "Current baseline" in
 `docs/agent-evals.md` with the fresh and warm counts and the session
-identities, appends its arm table, moves the `TODO.md` item to `DONE.md`, and
-the last one closes #286. `CLAUDE.md` rules that bind here: no phrase lists
+identities, appends its arm table, and the last one closes #286. `CLAUDE.md` rules that bind here: no phrase lists
 and no regex for language; a guard that fires on a correct answer is
 loosened, not scripted around; evals stay a manual local command.
 
@@ -243,7 +242,9 @@ reads a bare "castle" as kingside. Whether that is the player's own convention
 (short castling is what "castle" usually means at the board) or an ambiguity
 to ask about is a design decision for Ryan; the app's fast path never sees
 this case (`parse_move` returns None when both are legal), so today it always
-reaches the planner and always lands O-O.
+reaches the planner and always lands O-O. Settled by #289 PR 2: a bare
+"castle" with both castlings legal is now asked ("O-O or O-O-O?"). Revisit
+only if that reads as a nuisance in play.
 
 **Harness confirm (arm B vs control, four alternating blocks of five on one
 server, `eval_campaign.sh --a main --b main --env-b

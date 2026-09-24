@@ -251,14 +251,14 @@ def _mcp_tool(
     …and through `ctx.mutation_lock`, which is this surface's whole share of the
     board-version work (audit item 7). MCP gets **no `version` parameter**: its
     tools are advertised from the very schema objects the brain is offered, and
-    that schema shape is frozen by the eval floor on gemma-4-12b (TODO.md's
-    standing warning about the shelved minimization). What MCP has instead is
-    the other two guarantees — `make_move` is the *atomic* exchange, so a call
-    can never leave a turn half-played, and the lock makes each call indivisible
-    against every other client on the session. Two concurrent MCP calls
-    therefore take turns; what they cannot do is check one board and act on
-    another. Held around reads too, which cost nothing and keeps the rule "one
-    call, one hold" rather than a list of which tools mutate.
+    that schema shape is frozen by the eval floor on gemma-4-12b (the standing
+    warning about the shelved minimization, `docs/agent-evals.md`). What MCP has
+    instead is the other two guarantees — `make_move` is the *atomic* exchange,
+    so a call can never leave a turn half-played, and the lock makes each call
+    indivisible against every other client on the session. Two concurrent MCP
+    calls therefore take turns; what they cannot do is check one board and act
+    on another. Held around reads too, which cost nothing and keeps the rule
+    "one call, one hold" rather than a list of which tools mutate.
 
     The wrapper's second MCP-specific job is the confirmation (`_confirm`): a
     dispatch that comes back with a *newly* armed op is a gated call the gate

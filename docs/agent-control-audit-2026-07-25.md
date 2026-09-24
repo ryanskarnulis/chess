@@ -5,7 +5,7 @@ control Glitch has over agent-enabled turns. The verbatim report is in the
 second half of this document; this first half is the code-checked review of it,
 because several of its findings describe things that already exist, and a few
 of its prescriptions conflict with the repo's non-negotiables (CLAUDE.md "Core
-Architecture Principle" / "Binding Invariants"). `TODO.md` was rebuilt from
+Architecture Principle" / "Binding Invariants"). The backlog was rebuilt from
 this document on 2026-07-25; item numbers below are the report's.
 
 ## Verified accurate — the load-bearing findings
@@ -101,7 +101,7 @@ collapsed `undo_and_replace` 88% → ~6%, and the isolation run showed *every*
 component of the cut regresses below the floor. gemma-4-12b's tool-use training
 evidently expects the pydantic/JSON-Schema shape. **Do not re-attempt on this
 model**; re-run `test_eval_undo_and_replace_is_one_turn` as the gate if the
-brain model ever changes. Full record in `DONE.md` (2026-07-21) and branch
+brain model ever changes. Full record in `docs/agent-evals.md` "Standing results" and branch
 `chore/clean-tool-schema-noise` history.
 
 ## Latency constraint on the P0 work

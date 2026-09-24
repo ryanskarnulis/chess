@@ -15,7 +15,7 @@ Everything runs in containers on your own hardware (the app, Speaches for STT, K
 
 ## Status
 
-Playable end-to-end: web board, voice in and out, the Glitch agent, analysis and whole-game review, and a delegate API the workspace conductor drives. See [`TODO.md`](TODO.md) for what's next and [`DONE.md`](DONE.md) for progress. The full design rationale lives in [`BRIEF.md`](BRIEF.md).
+Playable end-to-end: web board, voice in and out, the Glitch agent, analysis and whole-game review, and a delegate API the workspace conductor drives. What's next is in [GitHub issues](https://github.com/ryanskarnulis/chess/issues); progress is the closed issues and merged PRs. The full design rationale lives in [`BRIEF.md`](BRIEF.md).
 
 Roadmap:
 
@@ -33,8 +33,6 @@ docs/        Decision records (voice fast-path evaluation, agent-eval baseline)
 app.yaml     Workspace app manifest (gateway entry + conductor delegate block)
 BRIEF.md     Project brief — architecture, stack, phasing, risks
 CLAUDE.md    Development process: TDD, git workflow, commands
-TODO.md      Living backlog
-DONE.md      Completion log
 ```
 
 ## Development

@@ -150,7 +150,7 @@ def test_the_eval_line_carries_the_per_call_split(capsys: Any) -> None:
 def test_a_repeat_stop_reaches_the_line_as_a_knowable_split(capsys: Any) -> None:
     """The measurement the slice exists for: on a `no_progress` turn the narrator
     still ran, so its round trip is separable from the planner's — which is what
-    turns TODO.md's "narrates 2–3× slower" into a number instead of a suspicion."""
+    turns "narrates 2–3× slower" into a number instead of a suspicion."""
     app = _app(
         _traced(
             stop_reason="no_progress",
@@ -335,7 +335,7 @@ def test_the_sample_record_pairs_the_tokens_with_the_milliseconds() -> None:
 # The trajectory named the tools and not their arguments, which is a blind spot
 # with a live suspect behind it: across four `hints_off_no_advice` runs a
 # `set_hints_mode` call turns up on 9/65 turns where the player only asked "what
-# should I play here?" (TODO.md). Whether it turned hints **on** — a setting the
+# should I play here?". Whether it turned hints **on** — a setting the
 # player owns, changed by an agent that was asked a question — is unknowable from
 # `trajectory=[get_best_moves → set_hints_mode]`. The arguments are already on
 # the wire (`agent_api._tool_call_read` puts them there); only the reporting

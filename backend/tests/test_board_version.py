@@ -433,10 +433,10 @@ def test_two_clients_cannot_advance_the_same_turn_twice():
 def test_the_mcp_surface_serializes_its_mutations():
     """MCP gets no `version` parameter — its tools are advertised from the *same*
     schema objects the brain is offered, and changing those collapses the eval
-    floor on gemma-4-12b (TODO.md's standing warning). What it gets instead is
-    the other half: every dispatch goes through the context's mutation lock, so
-    two concurrent MCP calls cannot interleave a turn, and its `make_move` is the
-    atomic exchange, so neither can leave one half-played.
+    floor on gemma-4-12b (`docs/agent-evals.md` "Standing results"). What it
+    gets instead is the other half: every dispatch goes through the context's
+    mutation lock, so two concurrent MCP calls cannot interleave a turn, and its
+    `make_move` is the atomic exchange, so neither can leave one half-played.
     """
     engine = BarrierEngine(delay=0.1)
     ctx = ToolContext(session=GameSession(), engine=engine)
