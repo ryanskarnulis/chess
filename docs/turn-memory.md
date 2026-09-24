@@ -42,6 +42,20 @@ brain:
   which `condense` renders as the inert ack (chat templates must alternate
   roles). Carriers: `api.CommandOutcome.memory`, `StoredMessage.memory`.
 
+## What the digest cannot carry: an open question
+
+The digest drops Glitch's words, so a question he asked ("Nf3 or Nh3?") is
+gone from the planner's view four turns later, and the input budget can trim
+it sooner (`LlamaBrain._admit`). It is not memory's job to keep it: the
+question is a harness record (#319, `clarification.py`), bound to the
+conversation, game and board it was asked about, and shown in the planner's
+state block as `open_question` (the player's ask and the candidates) while it
+stands (`api.planner_state`). The state block is never trimmed, so the
+question survives however long the conversation grows. The record holds no
+board fact, so it is not the second, ageing copy the rules above forbid; once
+the board moves it is withdrawn, and the next turn is told once that it closed
+(`closed_question`), because the transcript may still be quoting it.
+
 ## Call sites
 
 `Transcript.memory()` (command pipeline + board drag) and

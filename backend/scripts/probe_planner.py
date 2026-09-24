@@ -63,7 +63,7 @@ from typing import Any
 
 import httpx
 
-from chessapp.api import _agent_state_dict
+from chessapp.api import _agent_state_dict, planner_state
 from chessapp.coordinator import TurnCoordinator
 from chessapp.fastparse import parse_move
 from chessapp.game import GameSession
@@ -572,7 +572,9 @@ def prepare(
         planner_prompt_provider=lambda: arm.prompt,
         provider=provider,
     )
-    messages = brain._messages(_agent_state_dict(ctx), item.utterance)
+    # The shipped opening block (#319); a probe item opens no question.
+    state = planner_state(_agent_state_dict(ctx), None, None)
+    messages = brain._messages(state, item.utterance)
     return Prepared(
         messages=messages,
         tools=tools,

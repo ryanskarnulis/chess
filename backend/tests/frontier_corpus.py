@@ -973,6 +973,218 @@ SECOND_CHOICE_CHAIN = Scenario(
 )
 
 
+# --- the open question (#319) ---------------------------------------------------------
+#
+# A question asked in one turn and answered several turns later, from a record
+# the harness keeps (`clarification.py`), not from the narrator's wording. The
+# three numbers #319 asks for read off these: a move on the ask turn is the
+# ambiguous-request mutation rate, the final pick is successful resolution,
+# and a stale question must never be answered by a move.
+
+
+def asked(index: int) -> Checkpoint:
+    """Turn `index` asked which move, and moved nothing doing it."""
+    return Checkpoint(
+        f"asked_{index}", lambda e: e.turn(index).asked and not e.turn(index).moved
+    )
+
+
+def first_offered(asked_turn: int, index: int, ply: int = 0) -> Checkpoint:
+    """After turn `index`, the move at `ply` is the first candidate turn
+    `asked_turn`'s `ask_player` offered — read off that ask's own result, so
+    the check follows whatever the planner listed (#348 lists all four knight
+    moves for a king's-knight ask) rather than a list written here."""
+
+    def check(e: Episode) -> bool:
+        ask = e.turn(asked_turn).result("ask_player")
+        offered = (ask or {}).get("candidates") or []
+        played = e.history(after_turn=index)[ply : ply + 1]
+        return bool(offered) and played == offered[:1]
+
+    return Checkpoint("played_first_offered", check)
+
+
+def picked(index: int, san: str, ply: int = 0) -> Checkpoint:
+    """After turn `index`, the move at `ply` of the game is `san`."""
+    return Checkpoint(
+        f"played_{san}", lambda e: e.history(after_turn=index)[ply : ply + 1] == [san]
+    )
+
+
+KNIGHT_ASK_ASIDE_THEN_PICK = Scenario(
+    name="knight_ask_aside_then_pick",
+    tier=2,
+    why=(
+        "A question survives an unrelated read between it and its answer: the "
+        "answer arrives two turns after the ask, with an aside in the middle "
+        "that must move nothing."
+    ),
+    dev=(
+        Variant(
+            "difficulty_aside",
+            (
+                Say("move my kings knight"),
+                Say("what difficulty am I on?"),
+                Say("the one to f3"),
+            ),
+            FRESH,
+        ),
+        Variant(
+            "voice_aside",
+            (
+                Say("develop my king side knight"),
+                Say("is voice output on right now?"),
+                Say("put it on f3"),
+            ),
+            FRESH,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "verbosity_aside",
+            (
+                Say("bring the king's knight out"),
+                Say("how chatty are you set to be?"),
+                Say("the f3 square one"),
+            ),
+            FRESH,
+        ),
+    ),
+    checkpoints=(asked(1), still(2), picked(3, "Nf3")),
+)
+
+KNIGHT_ASK_LONG_CHAT_THEN_PICK = Scenario(
+    name="knight_ask_long_chat_then_pick",
+    tier=2,
+    why=(
+        "Five turns of chat push the question out of the verbatim window "
+        "(`conversation.RECENT_TURNS`): Glitch's words naming the candidates "
+        "are gone from the planner's view, and the answer names no square, so "
+        "only the kept record says what 'the first one' was."
+    ),
+    dev=(
+        Variant(
+            "chat",
+            (
+                Say("move my kings knight"),
+                Say("hang on, what's your favourite opening?"),
+                Say("why do people like it?"),
+                Say("tell me a chess joke"),
+                Say("who was the best player ever?"),
+                Say("fair enough. okay, where were we"),
+                Say("the first one you offered"),
+            ),
+            FRESH,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "lesson_chat",
+            (
+                Say("bring the king's knight out"),
+                Say("wait, before that: what does castling actually do?"),
+                Say("and when should I do it?"),
+                Say("what's a fork?"),
+                Say("any tips for a beginner?"),
+                Say("thanks. right, back to the game"),
+                Say("go with the first option you gave me"),
+            ),
+            FRESH,
+        ),
+    ),
+    checkpoints=(
+        asked(1),
+        Checkpoint(
+            "chat_moved_nothing",
+            lambda e: not any(e.turn(i).moved for i in range(2, 7)),
+        ),
+        first_offered(1, 7),
+    ),
+)
+
+KNIGHT_ASK_THEN_BOARD_CHANGES = Scenario(
+    name="knight_ask_then_board_changes",
+    tier=2,
+    why=(
+        "Another client changes the board between the question and its "
+        "answer. The answer refers only to the old question ('the first one'), "
+        "so no candidate may be played from it: ask again or say so."
+    ),
+    dev=(
+        Variant(
+            "other_client_moves",
+            (
+                Say("move my kings knight"),
+                Say("d4", origin="d0", model=False),
+                Say("the first one"),
+            ),
+            AFTER_E4_E5,
+        ),
+        Variant(
+            "other_client_undoes",
+            (
+                Say("develop my king side knight"),
+                Say("take back the last move", origin="d0"),
+                Say("the second one"),
+            ),
+            AFTER_E4_E5,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "other_client_develops",
+            (
+                Say("bring the king's knight out"),
+                Say("Nc3", origin="d0", model=False),
+                Say("go with the first option"),
+            ),
+            AFTER_E4_E5,
+        ),
+    ),
+    checkpoints=(
+        asked(1),
+        Checkpoint("board_changed", lambda e: e.turn(2).moved),
+        still(3),
+    ),
+)
+
+TWO_THREADS_SIMILAR_ASKS = Scenario(
+    name="two_threads_similar_asks",
+    tier=2,
+    why=(
+        "Two delegate threads each have a question open on one board — a "
+        "knight in one, the e-pawn in the other. The second thread's 'the "
+        "first one' must pick from its own question, never the first thread's."
+    ),
+    dev=(
+        Variant(
+            "knight_then_pawn",
+            (
+                Say("move my kings knight", origin="d0"),
+                Say("push my e pawn", origin="d1"),
+                Say("the first one", origin="d1"),
+            ),
+            FRESH,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "knight_then_pawn",
+            (
+                Say("bring the king's knight out", origin="d0"),
+                Say("move the pawn in front of my king", origin="d1"),
+                Say("go with the first option", origin="d1"),
+            ),
+            FRESH,
+        ),
+    ),
+    checkpoints=(
+        asked(1),
+        asked(2),
+        first_offered(2, 3),
+    ),
+)
+
 SCENARIOS: tuple[Scenario, ...] = (
     UNDO_REPLACE_AND_JUDGE,
     SETTINGS_MOVE_AND_VERDICT,
@@ -991,4 +1203,8 @@ SCENARIOS: tuple[Scenario, ...] = (
     LATE_GAME_REVIEW_UNDO_REPLAY,
     LATE_GAME_SAVE_UNDO_RESUME,
     SECOND_CHOICE_CHAIN,
+    KNIGHT_ASK_ASIDE_THEN_PICK,
+    KNIGHT_ASK_LONG_CHAT_THEN_PICK,
+    KNIGHT_ASK_THEN_BOARD_CHANGES,
+    TWO_THREADS_SIMILAR_ASKS,
 )

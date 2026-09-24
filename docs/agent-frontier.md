@@ -178,6 +178,28 @@ records are the first two lines of `docs/frontier-history.jsonl`.
   They are gate candidates under the graduation rule, or need harder
   variants to stay frontier.
 
+### The open-question scenarios (#319, 2026-09-24)
+
+Four tier-2 scenarios added with #319, measured as interleaved blocks of five
+against main (the record kept but not shown to the planner) on the dev split
+only — a comparison, not yet a baseline, and not in the history file:
+
+| Scenario | main | #319 | Where it misses |
+| --- | --- | --- | --- |
+| `knight_ask_aside_then_pick` | 6/10 | 6/10 | asked_1 (the king-side-knight wording is played, not asked) |
+| `knight_ask_long_chat_then_pick` | 10/10 | 10/10 | — |
+| `knight_ask_then_board_changes` | 0/10 | 0/10 | moved_nothing_3 |
+| `two_threads_similar_asks` | 0/10 | 0/10 | asked_2, played_first_offered |
+
+Only the stale-question and two-thread scenarios measure anything today, as
+canaries for moves played on a question that does not stand. The other two
+cannot tell the two arms apart: the planner reads an ordinal ("the first
+one") as the first entry of `legal_moves` whether or not a question is open,
+and the king's-knight ask lists its candidates in that same order (#348), so
+the pick lands whatever the planner is shown. A discriminating version needs
+an ask whose first candidate is not `legal_moves[0]` (#352); the ordinal
+reading itself is #351.
+
 ### Scenario fixes made before the baseline
 
 A 1-sample pilot and the first baseline run each found a checkpoint that

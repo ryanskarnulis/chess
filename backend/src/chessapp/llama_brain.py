@@ -832,9 +832,11 @@ class LlamaBrain:
         *for*. It goes a user/assistant pair at a time, oldest first (the
         digest before any verbatim turn), so the alternation the chat template
         expects holds, and the latest exchange is never dropped: it is what
-        "do the second one" refers to, and where an unanswered `ask_player`
-        clarification lives. When that is still too large the caller decides
-        what an over-budget prompt means for its phase.
+        "do the second one" refers to. An unanswered `ask_player` question
+        no longer depends on it — its candidates ride in the state block as
+        `open_question` (#319, `api.planner_state`), which is never trimmed.
+        When that is still too large the caller decides what an over-budget
+        prompt means for its phase.
         """
         kept = list(transcript)
         trimmed = 0

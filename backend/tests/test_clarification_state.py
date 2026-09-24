@@ -9,6 +9,8 @@ resume. The brain is a real `LlamaBrain` over a scripted provider
 one the shipped loop builds; nothing here reads the model's words.
 """
 
+import json
+
 from chessapp.clarification import (
     ANSWERED,
     ASKED_AGAIN,
@@ -253,3 +255,147 @@ def test_a_yes_after_a_question_confirms_nothing():
     assert ctx.board_version == version
     assert turns.records[-1]["route"] == "brain"
     assert ctx.clarifications[PANEL_ORIGIN] is question
+
+
+# --- what the planner is shown (PR 2) ----------------------------------------------
+
+
+def _opening_states(provider) -> list[dict]:
+    """The opening board state of every planner request the provider saw —
+    the `Board state:` block `LlamaBrain._messages` writes, parsed. Planner
+    requests are the ones offered tools; the narrator's never are."""
+    states = []
+    for call in provider.calls:
+        if call["tools"] is None:
+            continue
+        opening = next(
+            m["content"]
+            for m in reversed(call["messages"])
+            if m["role"] == "user" and m["content"].startswith("Board state:\n")
+        )
+        block = opening.removeprefix("Board state:\n").split("\n\nCommand: ")[0]
+        states.append(json.loads(block))
+    return states
+
+
+def _narrator_text(provider) -> str:
+    return "\n".join(
+        str(m.get("content"))
+        for call in provider.calls
+        if call["tools"] is None
+        for m in call["messages"]
+    )
+
+
+def test_the_planner_is_shown_the_open_question():
+    """The record, not the narrator's words: the player's own ask and the
+    validated candidates, on every planner request while it stands."""
+    client, provider, ctx, _ = _asked()
+
+    for aside in ("what difficulty am I on?", "the one to f3"):
+        _quiet(provider)
+        client.post("/api/command", json={"text": aside})
+        (state,) = _opening_states(provider)
+        assert state["open_question"] == {
+            "player_asked": KNIGHT_ASK,
+            "choose_between": ["Nf3", "Nh3"],
+        }
+        assert "closed_question" not in state
+        # The planner's only: the narrator never reads the record.
+        assert "open_question" not in _narrator_text(provider)
+
+
+def test_no_question_no_key():
+    """A turn with nothing asked carries neither key — which is every turn of
+    every gated scenario that asks nothing, so their prompts are unchanged."""
+    turns = CollectedTurns()
+    client, provider, _ = make_client(
+        text_turn("the player said hi"), text_turn("Hi."), tracer=turns
+    )
+
+    client.post("/api/command", json={"text": "hello"})
+
+    (state,) = _opening_states(provider)
+    assert "open_question" not in state and "closed_question" not in state
+
+
+def test_a_stale_question_is_named_closed_once_then_forgotten():
+    client, provider, ctx, _ = _asked()
+    ctx.settings.verbosity = "low"
+    thread = client.post("/api/agent/conversations", json={}).json()["id"]
+    client.post(f"/api/agent/conversations/{thread}/messages", json={"content": "e4"})
+
+    _quiet(provider)
+    client.post("/api/command", json={"text": "the first one"})
+    (state,) = _opening_states(provider)
+    assert state["closed_question"] == {
+        "player_asked": KNIGHT_ASK,
+        "why": "the board changed after it was asked",
+    }
+    assert "open_question" not in state
+
+    _quiet(provider)
+    client.post("/api/command", json={"text": "hm?"})
+    (state,) = _opening_states(provider)
+    assert "open_question" not in state and "closed_question" not in state
+
+
+def test_a_different_game_is_said_as_one():
+    client, provider, ctx, _ = _asked()
+
+    ctx.replace_session(GameSession(), Transcript())
+    _quiet(provider)
+    client.post("/api/command", json={"text": "the first one"})
+
+    (state,) = _opening_states(provider)
+    assert state["closed_question"]["why"] == "a different game is on the board now"
+
+
+def test_another_threads_question_is_never_shown():
+    turns = CollectedTurns()
+    client, provider, _ = make_client(ASK, QUESTION, tracer=turns)
+    first = client.post("/api/agent/conversations", json={}).json()["id"]
+    second = client.post("/api/agent/conversations", json={}).json()["id"]
+    client.post(
+        f"/api/agent/conversations/{first}/messages", json={"content": KNIGHT_ASK}
+    )
+
+    _quiet(provider)
+    client.post(
+        f"/api/agent/conversations/{second}/messages",
+        json={"content": "the one to f3"},
+    )
+
+    (state,) = _opening_states(provider)
+    assert "open_question" not in state and "closed_question" not in state
+
+
+def test_the_question_survives_the_input_budget_trimming_the_conversation():
+    """The acceptance criterion the record exists for: a conversation long
+    enough that the input budget drops its oldest exchanges — the question
+    among them — still hands the planner the open question, because the state
+    block is never trimmed. And it carries no board fact of its own, so what
+    is kept cannot be a stale copy of the position."""
+    turns = CollectedTurns()
+    client, provider, ctx = make_client(
+        ASK, QUESTION, tracer=turns, input_budget_tokens=10_000
+    )
+    client.post("/api/command", json={"text": KNIGHT_ASK})
+    chatter = "tell me more about the history of this opening " * 160
+    for _ in range(5):
+        _quiet(provider)
+        client.post("/api/command", json={"text": chatter})
+
+    _quiet(provider)
+    client.post("/api/command", json={"text": "the one to f3"})
+
+    assert turns.records[-1]["input_trimmed"] > 0
+    (state,) = _opening_states(provider)
+    assert state["open_question"] == {
+        "player_asked": KNIGHT_ASK,
+        "choose_between": ["Nf3", "Nh3"],
+    }
+    # Nothing of the question is left in the conversation the planner reads.
+    planner = next(call for call in provider.calls if call["tools"] is not None)
+    conversation = [m["content"] for m in planner["messages"][1:-1]]
+    assert not any("Nf3 or Nh3?" in str(content) for content in conversation)
