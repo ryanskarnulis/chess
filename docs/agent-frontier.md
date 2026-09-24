@@ -200,6 +200,24 @@ the pick lands whatever the planner is shown. A discriminating version needs
 an ask whose first candidate is not `legal_moves[0]` (#352); the ordinal
 reading itself is #351.
 
+#### After #351 (2026-09-24)
+
+`make_move` now carries `source`, and code refuses a pick by position when no
+question stands. The two canaries, run in interleaved blocks of five against
+main, 10 samples a side on each split:
+
+| Scenario | Split | main | #351 | Where it misses |
+| --- | --- | --- | --- | --- |
+| `knight_ask_then_board_changes` | dev | 0/10 | 8/10 | — |
+| `knight_ask_then_board_changes` | heldout | 0/10 | 10/10 | — |
+| `two_threads_similar_asks` | dev | 0/10 | 0/10 | asked_2 (the e-pawn ask is played, not asked) |
+| `two_threads_similar_asks` | heldout | 10/10 | 10/10 | — |
+
+The stale-question scenario is fixed. The dev two-thread variant misses one
+step before the ordinal: "push my e pawn" is played rather than asked. That is
+an ask miss on both arms, not the ordinal reading, which #351 fixes. Neither
+result is in the history file yet: this is a comparison, not a baseline.
+
 ### Scenario fixes made before the baseline
 
 A 1-sample pilot and the first baseline run each found a checkpoint that
