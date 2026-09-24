@@ -50,13 +50,17 @@ op and the no left the game untouched. Nothing is open here.
 
 ## Evals / observability
 
-- [ ] **Frontier eval tier** (#318, PRs 4–5; PRs 1–3 in DONE.md). Plan
+- [ ] Two model behaviours the frontier baseline found at 0/20 (see
+      `docs/agent-frontier.md`): a relative difficulty ask ("make it harder")
+      jumps to `maximum`; and a rewind past the 100-ply undo cap is one
+      takeback. Levers are the planner's reading, never a parser.
+- [ ] **Frontier eval tier** (#318, PR 5; PRs 1–4 in DONE.md). Plan
       agreed 2026-09-23: three layers — deterministic trajectories in CI (must
       pass; shipped), the existing gate (unchanged), and a new opt-in
       **frontier** tier of deliberately hard live-model scenarios that is
       scored, never failed, and tracked over time; the harness shipped (PR 3,
-      `docs/agent-frontier.md`). PR 4: corpus v1 in three tiers with dev/held-out splits and a
-      first baseline. PR 5: `frontier_report.py` +
+      `docs/agent-frontier.md`); corpus v1 and its baseline shipped (PR 4).
+      PR 5: `frontier_report.py` +
       `docs/frontier-history.jsonl`, graduation rules (≥0.8 held-out twice →
       gate floor) in `docs/agent-frontier.md`.
 - [ ] **Propose latency targets from measured data** (#317 follow-up): after

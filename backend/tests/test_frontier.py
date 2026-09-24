@@ -300,23 +300,77 @@ def test_every_scenario_is_well_formed():
 
 def test_heldout_wordings_are_not_dev_wordings():
     for s in SCENARIOS:
-        dev = {say.text for v in s.dev for say in v.says}
-        heldout = {say.text for v in s.heldout for say in v.says}
+        # Only what the model reads: a bare "yes" or a SAN is the same on
+        # both splits by design, and no parser answer is tuned against.
+        dev = {say.text for v in s.dev for say in v.says if say.model}
+        heldout = {say.text for v in s.heldout for say in v.says if say.model}
         assert not dev & heldout, s.name
 
 
-@pytest.mark.parametrize(
-    "fen",
-    [START, "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"],
-    ids=["opening", "after_e4_e5"],
-)
-def test_no_model_step_is_a_parser_utterance(fen):
-    """The route pin catches this live; this catches it before a GPU is spent."""
+class _SetupOnly:
+    """Enough of an `EvalApp` for a variant's setup: a context and nothing
+    that talks to a model."""
+
+    def __init__(self) -> None:
+        self.ctx = ToolContext(session=GameSession())
+
+
+def _variants():
     for s in SCENARIOS:
         for v in s.dev + s.heldout:
-            for say in v.says:
-                if not say.model:
-                    continue
-                assert parse_move(say.text, fen) is None, (s.name, say.text)
-                assert not parse_resign(say.text), (s.name, say.text)
-                assert parse_confirmation(say.text) is None, (s.name, say.text)
+            yield pytest.param(s, v, id=f"{s.name}[{v.name}]")
+
+
+@pytest.mark.parametrize(("s", "v"), _variants())
+def test_no_model_step_is_a_parser_utterance_on_its_own_board(s, v):
+    """The route pin catches this live; this catches it before a GPU is spent,
+    on the board the variant's setup leaves (and on the opening, which a reset
+    returns to)."""
+    app = _SetupOnly()
+    if v.setup is not None:
+        v.setup(app)
+    for fen in {app.ctx.session.fen(), START}:
+        for say in v.says:
+            if not say.model:
+                continue
+            assert parse_move(say.text, fen) is None, say.text
+            assert not parse_resign(say.text), say.text
+            assert parse_confirmation(say.text) is None, say.text
+
+
+@pytest.mark.parametrize(("s", "v"), _variants())
+def test_every_checkpoint_grades_an_episode_of_its_shape(s, v):
+    """A checkpoint that raises is a broken scenario (`ScenarioError`), and
+    finding that out mid-baseline wastes a GPU run: each one is graded here on
+    an episode with the variant's turn count and nothing done."""
+    app = _SetupOnly()
+    if v.setup is not None:
+        v.setup(app)
+    state = {
+        "game_id": "g",
+        "fen": app.ctx.session.fen(),
+        "history": app.ctx.session.move_history(),
+        "game_over": False,
+    }
+    settings = app.ctx.settings.snapshot()
+    turns = [
+        Turn(
+            say=say,
+            status=200,
+            route="brain",
+            stop_reason="completed",
+            results=[],
+            commentary="",
+            before=state,
+            after=state,
+            model_calls=2,
+            seconds=1.0,
+            settings=settings,
+        )
+        for say in v.says
+    ]
+    episode = Episode(variant=v.name, start=state, turns=turns, start_settings=settings)
+
+    verdict = grade(episode, s.checkpoints)
+
+    assert not verdict.whole, f"{s.name}: doing nothing must not pass"

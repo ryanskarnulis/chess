@@ -1,0 +1,9 @@
+[Event "Deterministic 150-ply audit fixture"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "Player"]
+[Black "Glitch"]
+[Result "*"]
+
+1. f3 f6 2. a4 d5 3. g3 Qd6 4. e3 Qc5 5. Ba6 Bg4 6. Ke2 Qc4+ 7. d3 Qe4 8. Bxb7 c6 9. dxe4 e6 10. Bxa8 Kd8 11. Bb7 Ne7 12. Nc3 h5 13. Kd2 f5 14. Qf1 Nd7 15. exf5 Nc8 16. Ke2 Bc5 17. Nb5 Re8 18. Qg2 Nb8 19. a5 Bxf5 20. Ra2 Bb6 21. e4 Rh8 22. Ra1 Rh6 23. Bg5+ Kd7 24. Bxh6 cxb5 25. Rc1 Bd8 26. Bg5 d4 27. Kd1 Nb6 28. Bh6 Bc7 29. Ba8 Na4 30. Kd2 g6 31. Bg5 d3 32. Ra1 Bb6 33. Bf4 Bd8 34. Rf1 Bg5 35. Rf2 Bd8 36. Ke3 h4 37. Bd6 Bf6 38. Kd2 Bxe4 39. b3 Bd8 40. Be7 Bb7 41. Kc1 Bc8 42. c4 bxc4 43. Ba3 Nb6 44. Kd1 Bf6 45. Bd6 Nxa8 46. f4 g5 47. Bxb8 c3 48. gxh4 Nb6 49. Bd6 Bg7 50. Qa8 Bd4 51. Bc5 Kc7 52. Bxd4 c2+ 53. Rxc2+ dxc2+ 54. Kd2 Bb7 55. fxg5 Kd6 56. Bc3 Nxa8 57. Kc1 Ba6 58. Nf3 Kc6 59. Bb4 Bc8 60. a6 Kc7 61. Bc5 Kd7 62. Be7 Bxa6 63. Bf8 Bf1 64. Kb2 Nc7 65. Kxc2 Kc6 66. Kb1 Bg2 67. Rd1 Bh3 68. Kc2 a5 69. Ra1 Na6 70. Re1 Bf1 71. Kb2 e5 72. Bg7 Nc5 73. Ka2 Bc4 74. Ka1 Be2 75. Rc1 Kb7 *

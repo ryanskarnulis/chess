@@ -48,6 +48,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from chessapp.agent_api import reset_rate_limit
+from chessapp.game import GameSession
+from chessapp.tools import GAME_SAVE_DIRNAME
 from chessapp.trace import ROUTE_BRAIN
 from evalstats import (
     DETERMINISTIC_FAILURES,
@@ -155,6 +157,9 @@ class Turn:
     after: dict[str, Any]
     model_calls: int
     seconds: float
+    # The settings after this turn (`Settings.snapshot`): what a settings ask
+    # is graded on, since the panel's results carry no arguments.
+    settings: dict[str, Any] = field(default_factory=dict)
 
     def ran(self, name: str) -> list[dict[str, Any]]:
         """Calls to `name` that succeeded (a move `legal`, the rest `ok`)."""
@@ -162,6 +167,19 @@ class Turn:
 
     def succeeded(self) -> list[str]:
         return [r["name"] for r in self.results if _ok(r["result"])]
+
+    def result(self, name: str) -> dict[str, Any] | None:
+        """The first successful `name` call's result, or None."""
+        ran = self.ran(name)
+        return ran[0]["result"] if ran else None
+
+    def armed(self, name: str | None = None) -> bool:
+        """The gate refused a destructive call and asked (`tools._gate`)."""
+        return any(
+            (name is None or r["name"] == name)
+            and str(r["result"].get("error", "")).startswith("confirmation required")
+            for r in self.results
+        )
 
     @property
     def moved(self) -> bool:
@@ -183,6 +201,7 @@ class Episode:
     start: dict[str, Any]
     turns: list[Turn]
     app: EvalApp | None = None
+    start_settings: dict[str, Any] = field(default_factory=dict)
 
     def turn(self, index: int) -> Turn:
         """Turn `index`, 1-based, the way scenarios are written."""
@@ -195,6 +214,25 @@ class Episode:
     def history(self, after_turn: int | None = None) -> list[str]:
         state = self.final if after_turn is None else self.turn(after_turn).after
         return list(state["history"])
+
+    def settings(self, after_turn: int | None = None) -> dict[str, Any]:
+        if after_turn == 0:
+            return self.start_settings
+        index = len(self.turns) if after_turn is None else after_turn
+        return self.turn(index).settings
+
+    def saved(self, name: str) -> list[str] | None:
+        """The move history in save `name`, read back the way the app reads
+        it (`GameSession.load`), or None when there is no such save or it does
+        not load — a bad save is a missed checkpoint, not a harness error."""
+        save_dir = None if self.app is None else self.app.ctx.save_dir
+        if save_dir is None:
+            return None
+        path = save_dir / GAME_SAVE_DIRNAME / f"{name}.json"
+        try:
+            return GameSession.load(path).move_history()
+        except (OSError, ValueError):
+            return None
 
 
 def _ok(result: dict[str, Any]) -> bool:
@@ -402,7 +440,13 @@ def play(
     if variant.setup is not None:
         variant.setup(app)
     start = _state(app)
-    episode = Episode(variant=variant.name, start=start, turns=[], app=app)
+    episode = Episode(
+        variant=variant.name,
+        start=start,
+        turns=[],
+        app=app,
+        start_settings=app.ctx.settings.snapshot(),
+    )
     breaches: list[str] = []
     pending: Pending | None = None
     opened: dict[str, int] = {}
@@ -434,6 +478,7 @@ def play(
             after=after,
             model_calls=len(run.model_calls),
             seconds=round(measured["duration"], 1),
+            settings=app.ctx.settings.snapshot(),
         )
         episode.turns.append(turn)
         observed = Observed(
@@ -484,6 +529,16 @@ def _sample_record(
                     r["name"] + ("" if _ok(r["result"]) else "!") for r in turn.results
                 ],
                 "history": turn.after["history"][-6:],
+                "settings": {
+                    key: turn.settings.get(key)
+                    for key in (
+                        "tier",
+                        "skill_level",
+                        "elo",
+                        "verbosity",
+                        "voice_output",
+                    )
+                },
                 "model_calls": turn.model_calls,
                 "seconds": turn.seconds,
             }
