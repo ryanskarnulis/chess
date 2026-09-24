@@ -33,8 +33,8 @@ Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `temperature=0.3`, `cache_prompt=false`, `model=<id>`, `tool_text=<tool>@file`,
 `drop_tool=<tool>` (repeatable: the offer without that tool),
 `state_view=sorted|by_piece|joined` (the shape `legal_moves` is shown in),
-`tool_schema=provenance` (`make_move` says where its move came from, scored
-as the app would check it) and `thinking=on`.
+`tool_schema=provenance|form` (`make_move` says where its move came from, or
+how the words chose it, scored as the app would check it) and `thinking=on`.
 `control` (no keys) is the shipped planner. `--fresh` calls llama-swap's
 `/unload` before the first sample so the session is new; it refuses while a
 slot is processing or another job holds the card (the shared-GPU rule).
@@ -385,33 +385,52 @@ STATE_VIEWS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 }
 
 # Schema arms (#351): a typed claim code can check without reading language.
-# `provenance` makes `make_move` say where the move came from; the app would
-# refuse `answer_to_open_question` when no question stands or the move is not
-# one it offered — `lands` is that check, applied to what the probe scores.
+# Each makes `make_move` carry a required `source`, one of whose values says
+# the move was chosen off a question; the app would refuse that value when no
+# question stands or the move is not one it offered — `lands` is that check,
+# applied to what the probe scores. `provenance` asks *where* the move came
+# from; `form` asks only *how the words chose it* — by naming it, or by
+# position — which is on the surface of the utterance, so a 12B that won't
+# admit "nothing was asked" may still admit "they said 'the first one'".
 ANSWER = "answer_to_open_question"
 NAMED = "player_named_it"
+SAID = "said_the_move"
+BY_POSITION = "picked_by_position"
+CHECKED_SOURCES = (ANSWER, BY_POSITION)
 
 
-def _provenance_schema(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for d in definitions:
-        function = d["function"]
-        if function["name"] != "make_move":
-            continue
-        parameters = function["parameters"]
-        parameters["properties"]["source"] = {
-            "type": "string",
-            "enum": [NAMED, ANSWER],
-            "description": (
-                f"{NAMED}: the player's own words name this move. "
-                f"{ANSWER}: they picked it from the board state's `open_question`."
-            ),
-        }
-        parameters["required"] = [*parameters.get("required", []), "source"]
-    return definitions
+def _source_schema(
+    values: list[str], description: str
+) -> Callable[[list[dict[str, Any]]], list[dict[str, Any]]]:
+    def apply(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for d in definitions:
+            function = d["function"]
+            if function["name"] != "make_move":
+                continue
+            parameters = function["parameters"]
+            parameters["properties"]["source"] = {
+                "type": "string",
+                "enum": values,
+                "description": description,
+            }
+            parameters["required"] = [*parameters.get("required", []), "source"]
+        return definitions
+
+    return apply
 
 
 TOOL_SCHEMAS: dict[str, Callable[[list[dict[str, Any]]], list[dict[str, Any]]]] = {
-    "provenance": _provenance_schema,
+    "provenance": _source_schema(
+        [NAMED, ANSWER],
+        f"{NAMED}: the player's own words name this move. "
+        f"{ANSWER}: they picked it from the board state's `open_question`.",
+    ),
+    "form": _source_schema(
+        [SAID, BY_POSITION],
+        f"{SAID}: the player's words say the piece or square. "
+        f"{BY_POSITION}: they chose by position or number in a list "
+        "('the first one', 'the second option').",
+    ),
 }
 
 
@@ -507,7 +526,9 @@ def lands(call: Call, question: Question | None) -> bool:
     """Whether the app would carry `call` out, as far as the provenance check
     goes: a move claimed as an answer lands only on a question that stands and
     only as one of its candidates. Every other call is the shipped behavior."""
-    if call["name"] != "make_move" or call["args"].get("source") != ANSWER:
+    if call["name"] != "make_move":
+        return True
+    if call["args"].get("source") not in CHECKED_SOURCES:
         return True
     if question is None or question.stale:
         return False

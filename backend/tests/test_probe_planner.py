@@ -23,8 +23,10 @@ from chessapp.provider import ChatResult, LlamaCppProvider, ToolCall
 from chessapp.tools import BOARD_STATE_TOOLS
 from probe_planner import (
     ANSWER,
+    BY_POSITION,
     CORPUS,
     NAMED,
+    SAID,
     Arm,
     Question,
     busy_slots,
@@ -533,6 +535,19 @@ def test_a_claimed_answer_lands_only_on_a_standing_question_and_its_candidates()
     assert lands(move("Nh3"), None)
     assert lands({"name": "undo", "args": {}}, None)
     assert outcome_label([move("Nf3", ANSWER)]) == f"make_move(Nf3,{ANSWER})"
+    # The `form` arm's positional pick is checked the same way; a said move isn't.
+    assert lands(move("Nf3", BY_POSITION), knight)
+    assert not lands(move("Nh3", BY_POSITION), None)
+    assert not lands(move("Nh3", BY_POSITION), stale)
+    assert lands(move("Nh3", SAID), None)
+
+
+def test_the_form_schema_asks_how_the_words_chose_the_move() -> None:
+    prepared = _prepare("ordinal_no_question", parse_arm("f:tool_schema=form"))
+    make_move = next(d for d in prepared.tools if d["function"]["name"] == "make_move")
+    source = make_move["function"]["parameters"]["properties"]["source"]
+    assert source["enum"] == [SAID, BY_POSITION]
+    assert "source" in make_move["function"]["parameters"]["required"]
 
 
 def test_the_new_knobs_parse_and_refuse_unknown_values() -> None:
