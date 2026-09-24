@@ -218,6 +218,77 @@ step before the ordinal: "push my e pawn" is played rather than asked. That is
 an ask miss on both arms, not the ordinal reading, which #351 fixes. Neither
 result is in the history file yet: this is a comparison, not a baseline.
 
+#### Ordinals only the question resolves (#352, 2026-09-24)
+
+The knight scenarios above cannot say whether the planner reads "the first
+one" off the question or off the menu, because the answer is `legal_moves[0]`
+either way. Three scenarios where the two readings disagree:
+
+| Scenario | The ask | The answer | What the menu reading plays |
+| --- | --- | --- | --- |
+| `queen_ask_aside_then_first` | a queen move, after 1.e4 e5, then an aside | "the first one" | Nh3 (`legal_moves[0]`) |
+| `ask_aside_then_second` | a queen or bishop move, after 1.e4 e5, then an aside | "the second one" | Nf3 (`legal_moves[1]`) |
+| `queen_ask_long_chat_then_first` | a queen move, then five turns of chat | "the first one you offered" | Nh3 |
+
+Each variant's setup asserts the premise (`fits_sort_late`): two or more
+moves fit the ask, and none is among the first two entries of `legal_moves`.
+The planner lists the candidates itself, so which asks work had to be
+screened (`probe_planner.py`, control, 10–20 samples per wording). It always
+lists what fits **in `legal_moves` order**, so the only lever is a piece
+whose moves all sort late:
+
+- A queen's-knight ask is no good. It offers all four knight moves, Nh3
+  first (#348), the same list as the king's knight.
+- Every queen wording (6) and bishop wording (5) screened after 1.e4 e5 was
+  asked 10/10. Candidates: `Qh5,Qg4,Qf3,Qe2`, and `Ba6,Bb5,Bc4,Bd3,Be2` or
+  a subset.
+- Pawn asks are fragile: "push my e pawn", "advance the pawn on e2" and
+  "move my king's pawn forward" are played, not asked (#357).
+
+The first run graded all three at 0/10 on both arms because of a scenario
+bug: `first_offered` read ply 0 of the game, which after the 1.e4 e5 setup
+is e4. It now reads the answering turn's own first move, and the run was
+repeated from scratch.
+
+The comparison below is interleaved blocks of five, the build before #356
+(`ae25873`) against main (`375d71b`), 10 samples a side:
+
+| Scenario | Split | before #356 | main | Where it misses |
+| --- | --- | --- | --- | --- |
+| `queen_ask_aside_then_first` | dev | 10/10 | 10/10 | — |
+| `queen_ask_aside_then_first` | heldout | 10/10 | 10/10 | — |
+| `ask_aside_then_second` | dev | 10/10 | 10/10 | — |
+| `ask_aside_then_second` | heldout | 10/10 | 10/10 | — |
+| `queen_ask_long_chat_then_first` | dev | 9/10 | 10/10 | played_first_offered (Nh3, before #356) |
+| `queen_ask_long_chat_then_first` | heldout | 8/10 | 9/10 | asked_1 ("where can my queen go? move it" not asked) |
+| `two_threads_similar_asks` | dev | 10/10 | 10/10 | — |
+| `two_threads_similar_asks` | heldout | 10/10 | 10/10 | — |
+
+**What it says.** When a question stands and was asked in this
+conversation, the full loop resolves an ordinal against it, even across
+five turns of chat that push the question out of the verbatim window. That
+holds on both builds: the record the planner is shown (#353) already does
+the work. #351's `legal_moves[0]` reading shows up once in the 60 samples
+before #356 (Nh3 after the long chat) and never in the 60 after. What #356 fixes is the
+ordinal with *no* question standing (`knight_ask_then_board_changes` above).
+These three scenarios make that reading visible if it comes back. They sit
+at or near 10/10, so they are graduation candidates rather than hard
+frontier; the next harder step is #339's.
+
+**`two_threads_similar_asks` dev changed its premise.** The d1 ask was "push
+my e pawn", which the planner plays instead of asking (e4 in the full app,
+5/5 traced; e3 16/20 in the probe; #357). Every sample missed at `asked_2`,
+and the scenario never reached the two-thread ordinal it exists to measure.
+It now asks "move my e-file pawn", which is asked 10/10 on the probe, and
+scores 10/10 on both arms. The old dev number (0/10) and the new one measure
+different things.
+
+The baseline for these four, a straight run of 10 per split on main, is the
+`#352` lines in `docs/frontier-history.jsonl` (`375d71b`). Dev: 10/10 on all
+four. Heldout: 10/10, except `queen_ask_aside_then_first` at 9/10. In that
+miss, "I'll take the first" ended in a refused `make_move` and nothing was
+played.
+
 ### Scenario fixes made before the baseline
 
 A 1-sample pilot and the first baseline run each found a checkpoint that

@@ -33,8 +33,8 @@ Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `temperature=0.3`, `cache_prompt=false`, `model=<id>`, `tool_text=<tool>@file`,
 `drop_tool=<tool>` (repeatable: the offer without that tool),
 `state_view=sorted|by_piece|joined` (the shape `legal_moves` is shown in),
-`tool_schema=provenance|form` (`make_move` says where its move came from, or
-how the words chose it, scored as the app would check it) and `thinking=on`.
+`tool_schema=provenance|form|square` (`make_move` says where its move came
+from, or how the words chose it, scored as the app would check it) and `thinking=on`.
 `control` (no keys) is the shipped planner. `--fresh` calls llama-swap's
 `/unload` before the first sample so the session is new; it refuses while a
 slot is processing or another job holds the card (the shared-GPU rule).
@@ -65,6 +65,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import chess
 import httpx
 
 from chessapp import clarification
@@ -182,6 +183,48 @@ CORPUS: tuple[Item, ...] = (
         ("asks",),
         held_out=True,
         note="O-O and O-O-O both legal; held out of arm design",
+    ),
+    Item(
+        "pawn_ask",
+        "push my e pawn",
+        (),
+        ("asks",),
+        note="e3 and e4 fit; `two_threads_similar_asks` dev plays it (#352)",
+    ),
+    Item(
+        "king_pawn_ask",
+        "move the pawn in front of my king",
+        (),
+        ("asks",),
+        note="e3 and e4 fit; the heldout wording of `pawn_ask`",
+    ),
+    Item(
+        "pawn_forward_ask",
+        "move my king's pawn forward",
+        (),
+        ("asks",),
+        note="the same pawn ask with a direction word: e4 10/10 on control",
+    ),
+    Item(
+        "pawn_advance_ask",
+        "advance the pawn on e2",
+        (),
+        ("asks",),
+        note="the same pawn ask naming its square: e3 10/10 on control",
+    ),
+    Item(
+        "queen_knight_ask",
+        "move my queens knight",
+        (),
+        ("asks",),
+        note="Nc3 and Na3 fit, neither near legal_moves[0] (Nh3) (#352)",
+    ),
+    Item(
+        "queen_ask",
+        "move my queen",
+        ("e4", "e5"),
+        ("asks",),
+        note="four queen moves fit, none of them legal_moves[0] or [1] (#352)",
     ),
     Item(
         "take_pawn",
@@ -397,6 +440,12 @@ NAMED = "player_named_it"
 SAID = "said_the_move"
 BY_POSITION = "picked_by_position"
 CHECKED_SOURCES = (ANSWER, BY_POSITION)
+# `square` splits `said_the_move` for the pawn-push miss: "push my e pawn" says
+# the piece, which `form` counts as saying the move, and the planner plays e3
+# or e4 without asking. A move whose words name only the piece lands only when
+# that piece has one legal move — a board fact, which code owns.
+SAID_SQUARE = "said_the_square"
+PIECE_ONLY = "said_the_piece_only"
 
 
 def _source_schema(
@@ -429,6 +478,13 @@ TOOL_SCHEMAS: dict[str, Callable[[list[dict[str, Any]]], list[dict[str, Any]]]] 
     "form": _source_schema(
         [SAID, BY_POSITION],
         f"{SAID}: the player's words say the piece or square. "
+        f"{BY_POSITION}: they chose by position or number in a list "
+        "('the first one', 'the second option').",
+    ),
+    "square": _source_schema(
+        [SAID_SQUARE, PIECE_ONLY, BY_POSITION],
+        f"{SAID_SQUARE}: the player's words say where it goes (a square or a "
+        f"move). {PIECE_ONLY}: they name a piece or pawn but not where it goes. "
         f"{BY_POSITION}: they chose by position or number in a list "
         "('the first one', 'the second option').",
     ),
@@ -523,17 +579,30 @@ def outcome_label(calls: Sequence[Call]) -> str:
     return "|".join(parts)
 
 
-def lands(call: Call, question: Question | None) -> bool:
+def lands(call: Call, question: Question | None, fen: str | None = None) -> bool:
     """Whether the app would carry `call` out, as far as the provenance check
     goes: a move claimed as an answer lands only on a question that stands and
-    only as one of its candidates. Every other call is the shipped behavior."""
+    only as one of its candidates, and a move whose words named only the piece
+    lands only when that piece has a single legal move on `fen`. Every other
+    call is the shipped behavior."""
     if call["name"] != "make_move":
         return True
+    if call["args"].get("source") == PIECE_ONLY:
+        return fen is not None and _only_move_of_its_piece(fen, call["args"])
     if call["args"].get("source") not in CHECKED_SOURCES:
         return True
     if question is None or question.stale:
         return False
     return call["args"].get("move") in question.candidates
+
+
+def _only_move_of_its_piece(fen: str, args: dict[str, Any]) -> bool:
+    board = chess.Board(fen)
+    try:
+        move = board.parse_san(str(args.get("move")))
+    except ValueError:
+        return False
+    return sum(m.from_square == move.from_square for m in board.legal_moves) == 1
 
 
 def passes(rule: Rule, calls: Sequence[Call]) -> bool:
@@ -969,7 +1038,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 error = f"{type(exc).__name__}: {exc}"
             else:
                 calls = classify(result)
-                landed = [c for c in calls if lands(c, item.question)]
+                landed = [c for c in calls if lands(c, item.question, prepared.fen)]
                 usage = result.usage.model_dump() if result.usage else None
                 if running_sha is None:
                     running_sha = sha(json.dumps(swap.running(), sort_keys=True))
