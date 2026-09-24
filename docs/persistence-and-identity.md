@@ -34,6 +34,13 @@ What does **not** survive a restart:
 - **The pending question.** It was asked in a conversation about a board on
   a screen; after a restart nothing is armed, and the player asks again. A
   "yes" can never meet a question the restarted app did not ask.
+- **An open clarification** (#319). A "Nf3 or Nh3?" the planner asked is
+  kept per conversation while its board stands (`ToolContext.clarifications`),
+  and not checkpointed, for the same reason: discarded safely, and asked
+  again if it is still needed. The restore bumps the board version past the
+  checkpoint besides, so a question stamped before it would read as stale.
+  The transcript does survive, and every move is still checked against the
+  board, so a player who answers across a restart gets the ordinary road.
 - **An in-flight turn.** A command the process died inside has whatever
   outcome the checkpoint recorded; nothing re-runs it.
 
@@ -91,6 +98,11 @@ conversation it was asked in (`origin`): the panel, one delegate thread
 can answer it, and only while that board is still on screen (#281,
 `ToolContext.live_pending`). A delegate therefore cannot confirm a question
 it did not ask.
+
+An open clarification (#319) is bound the same two ways and kept one per
+origin: a delegate thread never reads another's "which knight?", and a
+command from elsewhere that moves nothing leaves it standing. It is not a
+permission: it never reaches the gate, so a "yes" after one confirms nothing.
 
 ## Board versions are opt-in
 

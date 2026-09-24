@@ -89,6 +89,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from chessapp import clarification
 from chessapp.agent_api import (
     CONVERSATIONS_FILENAME,
     MAX_AGENT_MESSAGE_LENGTH,
@@ -1445,6 +1446,69 @@ def _destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
     )
 
 
+def _settle_question(
+    ctx: ToolContext,
+    origin: str,
+    question: clarification.Clarification | None,
+    version_before: int,
+    tool_results: Sequence[dict[str, Any]],
+    request: str = "",
+    asked: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Close or open `origin`'s question as an interaction ends (#319), and
+    say what happened for the trace.
+
+    `question` is what `ToolContext.live_clarification` read on the way in —
+    live then, on the board `version_before` names. If this interaction moved
+    the board it is settled (`clarification.settle`: answered by a candidate,
+    or superseded); if it only asked again, the new question replaces it. A
+    turn that did neither leaves it open, which is the continuation policy.
+    `asked` is the handoff's candidates on a `clarify` turn, and the new
+    question is stamped with the board at the end of the turn — the one the
+    player hears it over, the reason `restamp_pending` exists.
+
+    Under the mutation lock like everything that touches the context.
+    """
+    closed: clarification.Closed | None = None
+    created: clarification.Clarification | None = None
+    if question is not None and ctx.clarifications.get(origin) is question:
+        if ctx.board_version != version_before:
+            closed = clarification.settle(question, tool_results)
+            del ctx.clarifications[origin]
+        elif asked:
+            closed = clarification.Closed(
+                question, clarification.SUPERSEDED, clarification.ASKED_AGAIN
+            )
+    if asked:
+        created = clarification.ask(
+            origin=origin,
+            game_id=ctx.session.game_id,
+            board_version=ctx.board_version,
+            request=request,
+            candidates=asked,
+        )
+        ctx.clarifications[origin] = created
+    return {
+        "created": created.trace() if created is not None else None,
+        "closed": closed.trace() if closed is not None else None,
+    }
+
+
+def _question_trace(
+    question: clarification.Clarification | None,
+    expired: clarification.Closed | None,
+) -> dict[str, Any]:
+    """The turn record's `clarification` field as an interaction opens: which
+    question stood (`open`), and which one this read found gone (`expired`).
+    `_settle_question` fills in the rest as it ends."""
+    return {
+        "open": question.id if question is not None else None,
+        "expired": expired.trace() if expired is not None else None,
+        "created": None,
+        "closed": None,
+    }
+
+
 def _remembered_facts(
     tool_results: Sequence[dict[str, Any]],
     engine_reply: MoveResult | None,
@@ -2415,6 +2479,10 @@ def create_app(
         # calls are bracketed the same way — but *without* a command window:
         # a drag dispatches once by construction and is deliberately
         # unbudgeted (see `TurnCoordinator.begin_command`).
+        # The panel's open question (#319): a drag is the player's own board,
+        # so a dragged candidate answers it like a spoken one.
+        question, expired = ctx.live_clarification(PANEL_ORIGIN)
+        asked_about = _question_trace(question, expired)
         with progress.interaction(correlation_id, turn_id):
             transcript = ctx.transcript.memory()
             beats = await _offloop(_play_move, move, transcript, correlation_id)
@@ -2492,6 +2560,11 @@ def create_app(
                         beats.changes, beats.engine_reply, ctx.session
                     ),
                 )
+                asked_about.update(
+                    _settle_question(
+                        ctx, PANEL_ORIGIN, question, version_before, beats.changes
+                    )
+                )
                 _publish_state()
             _trace_turn(
                 utterance=move,
@@ -2516,6 +2589,7 @@ def create_app(
                 rewrite_suppressed=verdict.rewrite_suppressed,
                 engine_failure=beats.engine_failure,
                 reaction_late=beats.reaction_late,
+                clarification=asked_about,
                 **beats.cost.plus(verdict.cost).as_trace(),
             )
             return {
@@ -3145,6 +3219,10 @@ def create_app(
         # Under `_mutation` in both callers, so this is the one interaction
         # running: whoever the gate arms for below, it is this one's question.
         ctx.origin = origin
+        # This origin's open question (#319), read the way `live_pending` is:
+        # one that no longer stands on this board is dropped here and reported
+        # once, as `expired`.
+        question, expired = ctx.live_clarification(origin)
         before = _agent_state_dict(ctx)
         # What locates this turn afterwards (audit item 18): the coordinator turn
         # it opened under, an id for this one interaction, and the board version
@@ -3231,7 +3309,10 @@ def create_app(
                 "correlation_id": correlation_id,
                 "interaction_id": interaction_id,
                 "fen_before": before["fen"],
+                "clarification": _question_trace(question, expired),
             }
+            # The candidates of a question this turn asked (`clarify` handoff).
+            asked: tuple[str, ...] = ()
             try:
                 # An armed destructive op (the tool gate refused new_game/resign
                 # last turn and asked). This turn is its answer — and the answer is
@@ -3440,6 +3521,11 @@ def create_app(
                         if response.handoff is not None
                         else None
                     )
+                    if (
+                        response.handoff is not None
+                        and response.handoff.kind == "clarify"
+                    ):
+                        asked = response.handoff.candidates
                     # The board the narrator just spoke over, when it spoke
                     # before the engine's reply existed — read here, before
                     # the close beat below collects that reply (#289).
@@ -3678,6 +3764,13 @@ def create_app(
                 # land after it ("play e4 and start over"). Their yes next turn is
                 # an answer to that board and no other.
                 ctx.restamp_pending()
+                # The same moment for the open question: settled by what this
+                # turn did to the board, or replaced by the one it asked.
+                traced["clarification"].update(
+                    _settle_question(
+                        ctx, origin, question, version_before, tool_results, text, asked
+                    )
+                )
                 # The UI still gets its own full document; a mutation shows up in the
                 # agent view too (any board change moves the fen), so that comparison
                 # decides the broadcast. What the turn already published as it ran

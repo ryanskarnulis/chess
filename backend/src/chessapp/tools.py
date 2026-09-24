@@ -54,6 +54,7 @@ from chessapp.analysis import review_game as _review_game
 # defined beside `ToolDispatcher` and re-exported here, so `tools.RETRY_NEVER`
 # still names the one definition both sides of the seam read.
 from chessapp.brain import RETRY_DIFFERENT_ARGS, RETRY_NEVER
+from chessapp.clarification import INVALIDATED, Clarification, Closed, staleness
 from chessapp.conversation import Transcript
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
@@ -266,10 +267,12 @@ def live_checkpoint(ctx: "ToolContext") -> dict[str, Any]:
     """The live game as the checkpoint records it: the session, the panel
     transcript, and the board version it stood at.
 
-    The pending confirmation is deliberately not in it. A question is asked in
-    a conversation, of a board on a screen, and a restart ends both: the
-    player asks again rather than a "yes" meeting a question nobody on the
-    other side of the restart remembers asking.
+    The pending confirmation is deliberately not in it, and neither is an
+    open clarification (#319). A question is asked in a conversation, of a
+    board on a screen, and a restart ends both: the player asks again rather
+    than a "yes" meeting a question nobody on the other side of the restart
+    remembers asking. (The restore bumps the board version past this one, so
+    a question stamped here would read as stale anyway.)
     """
     return {
         "checkpoint": _CHECKPOINT_FORMAT,
@@ -497,6 +500,9 @@ class ToolContext:
     settings: Settings = field(default_factory=Settings)
     transcript: Transcript = field(default_factory=Transcript)
     pending: PendingOp | None = None
+    # The open question per origin (#319, `clarification`): one slot for each
+    # conversation, read through `live_clarification`, never persisted.
+    clarifications: dict[str, Clarification] = field(default_factory=dict)
     origin: str = PANEL_ORIGIN
     _confirming: bool = False
     # Carried across session swaps so the version never goes backwards; see
@@ -577,6 +583,32 @@ class ToolContext:
             self.pending = None
             return None
         return pending
+
+    def live_clarification(
+        self, origin: str
+    ) -> tuple[Clarification | None, Closed | None]:
+        """`origin`'s open question as `(live, expired)`: the question when it
+        still stands on this game and this board, or — once, and only to the
+        origin that was asked — what became of it when it does not.
+
+        `live_pending`'s two bindings, kept per origin rather than in one slot:
+        a question asked in one delegate thread is never another's to read,
+        and a command elsewhere that moves nothing leaves it standing. Anything
+        that *does* move the board — a drag, a button, another thread, a
+        resume — is found here, at the next read, rather than by asking every
+        surface that can move a board to remember to clear it. The expired
+        record is dropped as it is returned, so it is reported exactly once.
+        """
+        record = self.clarifications.get(origin)
+        if record is None:
+            return None, None
+        reason = staleness(
+            record, game_id=self.session.game_id, board_version=self.board_version
+        )
+        if not reason:
+            return record, None
+        del self.clarifications[origin]
+        return None, Closed(record, INVALIDATED, reason)
 
     def restamp_pending(self) -> None:
         """Point the armed op at the board the player is being asked about.
