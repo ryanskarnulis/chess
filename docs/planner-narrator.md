@@ -326,6 +326,23 @@ open but inert until the next move or ask closes it. It is never read by the
 confirmation gate, so it cannot license a destructive op. Not persisted
 (`docs/persistence-and-identity.md`).
 
+**What the planner sees** (`api.planner_state`). While the question stands,
+the opening board state carries `open_question: {player_asked,
+choose_between}`; the turn after it goes stale carries `closed_question:
+{player_asked, why}` once, then neither. Planner only — the narrator's views
+are derived from `_agent_state_dict`, which never holds it — and not in the
+mid-command refresh, since a turn that has moved the board has made the
+question stale anyway. Turns with no question carry neither key, so the gated
+scenarios that ask nothing read exactly the prompt they always did. No
+`PLANNER_PROMPT` change: the keys say what they are, and every arm that added
+a sentence to the matching rule has made the knight ask worse (`personality.py`).
+Measured on gemma-4-12b (`docs/agent-evals.md`, 2026-09-24): neutral. The
+gate holds, and the frontier's #319 scenarios score the same with and
+without the keys — the planner resolves "the first one" against
+`legal_moves` order rather than against any question, and a stale question's
+first candidate is played with `closed_question` in view. Three wordings
+meant to make it heed the closed question were screened and dropped.
+
 The trace's `clarification` field records each turn's view of it — `open`,
 `expired`, `closed` (`answered` with the move, or `superseded`) and `created`
 — and the seeded trajectories hold every record to the walk's own model of it

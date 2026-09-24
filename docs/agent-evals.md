@@ -280,6 +280,34 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-24 on the open-question tree (#319 PR 2: the planner's opening
+board state carries `open_question` while its conversation's question stands,
+and `closed_question` once after it goes stale; no prompt, schema, model or
+sampling change). Result: 52 passed in a single run, 13 m 52 s, infra 0. 43 of
+44 pass-rate scenarios 5/5 ABOVE_FLOOR STABLE; `pgn_is_handed_over_not_recited`
+4/5, at its floor, on a scenario that asks nothing and so reads a
+byte-identical prompt. `long_capture` 5/5 ×3. The asks the change touches:
+`ambiguous_knight_then_selection` 5/5 (the one gated scenario whose second
+step now carries `open_question`), `ambiguous_move` 5/5, `stt_knight_repair`
+5/5 ×2, `undo_and_replace` and `undo_twice_and_replace` 5/5.**
+
+What it measured beside the gate, and what it did not (the frontier's four
+#319 scenarios, `docs/agent-frontier.md`): **no behaviour change on the 12B.**
+Interleaved blocks against main, dev split, 10 samples a side, every scenario
+scored identically on both. The one sharp result is a confound: the planner
+reads "the first one" as the first entry of `legal_moves`, with a question on
+offer or without one. A delegate thread that had asked nothing played Nh3 on
+"the first one" 20/20, so the scenarios that answer with an ordinal cannot
+tell the record from the move list. The stale-question case — another client
+moves, then "the first one" — played the old question's first candidate 10/10
+with `closed_question` shown and 10/10 without. Three one-line fixes were
+screened live before being dropped, each 0 of 3–4: a planner-prompt bullet
+saying a closed question no longer stands, the same bullet with the closed
+options named in the key, and the note as a plain sentence beside the command
+instead of in the JSON. None shipped (#351).
+
+The #317 PR 1 run before it:
+
 **Run 2026-09-23 on the phase-tagged-calls tree (#317 PR 1). Every model
 round trip now carries its phase and status, and the planner records its
 elapsed time against the deadline. Only accounting changed: no prompt, schema,

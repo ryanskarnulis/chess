@@ -523,6 +523,56 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+# Why a question the planner may still see in the transcript no longer stands
+# (`closed_question`), by `clarification.staleness`'s reason.
+_CLOSED_BECAUSE = {
+    clarification.BOARD_CHANGED: "the board changed after it was asked",
+    clarification.GAME_CHANGED: "a different game is on the board now",
+}
+
+
+def planner_state(
+    state: dict[str, Any],
+    question: clarification.Clarification | None,
+    expired: clarification.Closed | None,
+) -> dict[str, Any]:
+    """The opening board state the planner reads (#319): the agent view plus,
+    when there is one, the question its conversation has open.
+
+    `open_question` is the player's own ask and the moves they were asked to
+    choose between — the record, not the narrator's wording of it, so it
+    survives a rephrased question, asides, the digest dropping Glitch's turns
+    and the input budget trimming the conversation (the state block is never
+    trimmed). What the player now means by "the one to f3" is still the
+    planner's to read; the answer is still an ordinary `make_move` against
+    `legal_moves`. It holds no board fact of its own — no FEN, no menu — so it
+    can never be a second, ageing copy of the position, and it is only here
+    while `ToolContext.live_clarification` says the question stands.
+
+    `closed_question`, once, is the other half: a question the transcript
+    still shows, about a board that is gone. Without it "the first one" after
+    another client moved reads as an answer to a question nothing stands
+    behind any more.
+
+    Built from what the turn already read rather than by reading again,
+    because the read drops a stale record: one read per turn, one report.
+    Deliberately not in `_agent_state_dict`, which the narrator's views are
+    derived from and the turn's change detection compares.
+    """
+    view = dict(state)
+    if question is not None:
+        view["open_question"] = {
+            "player_asked": question.request,
+            "choose_between": list(question.candidates),
+        }
+    elif expired is not None:
+        view["closed_question"] = {
+            "player_asked": expired.record.request,
+            "why": _CLOSED_BECAUSE.get(expired.reason, "it no longer stands"),
+        }
+    return view
+
+
 def _agent_settings_dict(ctx: ToolContext) -> dict[str, Any]:
     """The live settings the brain is shown: difficulty (exactly the one field
     of tier / skill_level / elo that is set), voice output, and verbosity."""
@@ -3494,7 +3544,10 @@ def create_app(
                 else:
                     route = ROUTE_BRAIN
                     response = await _offloop(
-                        brain.get_agent_response, before, text, transcript
+                        brain.get_agent_response,
+                        planner_state(before, question, expired),
+                        text,
+                        transcript,
                     )
                     tool_results = list(response.tool_results)
                     tool_args = [call.args for call in response.tool_calls]

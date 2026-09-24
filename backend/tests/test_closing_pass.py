@@ -74,6 +74,7 @@ def make_client(
     ctx: ToolContext | None = None,
     tracer=None,
     coordinator: TurnCoordinator | None = None,
+    **brain_kwargs,
 ):
     """The full pipeline over a real `LlamaBrain` whose provider is scripted —
     the one wiring that lets a route-level test see which calls carried tools,
@@ -104,6 +105,7 @@ def make_client(
         # Wired as app assembly wires it (#289): the narrator's facts, and
         # whether the reply is still owed, read as the planner hands off.
         narrator_facts=lambda: api.narrator_facts(ctx, coordinator),
+        **brain_kwargs,
     )
     app = create_app(
         ctx,
