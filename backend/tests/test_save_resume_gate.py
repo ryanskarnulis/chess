@@ -15,8 +15,9 @@ boundary:
 
 import json
 
-from chessapp.api import _destructive_confirmation, _destructive_succeeded
+from chessapp.api import _destructive_confirmation
 from chessapp.coordinator import TurnCoordinator
+from chessapp.facts import destructive_succeeded
 from chessapp.game import GameSession
 from chessapp.tools import (
     CONFIRM_QUESTIONS,
@@ -269,9 +270,9 @@ def test_an_overwrite_spends_no_destructive_budget(tmp_path):
 
 def test_a_confirmed_resume_is_not_a_game_ending():
     results = [{"name": "resume_game", "result": {"ok": True, "name": "x"}}]
-    assert _destructive_succeeded(results) is False
+    assert destructive_succeeded(results) is False
     saves = [{"name": "save_game", "result": {"ok": True, "name": "x"}}]
-    assert _destructive_succeeded(saves) is False
+    assert destructive_succeeded(saves) is False
 
 
 def test_the_low_verbosity_lines_name_what_ran():
