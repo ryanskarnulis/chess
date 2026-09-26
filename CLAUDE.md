@@ -41,21 +41,25 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   holds state; Stockfish calculates; the model only routes language to tools
   and must never be able to corrupt the game. The app plays a full game with
   the LLM off (`CHESSAPP_AGENT=off`).
-- **Code owns truth and safety; the model owns understanding.**
-  Deterministic code decides legality, what the settings actually are, when a
-  destructive op may run, and whether a claim in the commentary is backed by
-  the board. Working out what the player *meant* is the model's job, and so
-  is *saying* it: when the honesty guard cuts a claim, the narrator is asked
-  to say it again with the true facts, never handed a canned line
-  (`docs/planner-narrator.md`). So no regex fast paths or literal parsers
-  for language, and when a guard fires on a correct answer, loosen the guard
-  rather than script the answer. Glitch should feel alive, not canned.
+- **Code owns actions; the model owns understanding and speech.**
+  Deterministic code decides legality, what the settings actually are, and
+  when a destructive op may run, and enforces it inside the tools, which
+  refuse a bad call and say how to fix it. Working out what the player
+  *meant* is the model's job, and so is *saying* what happened: code never
+  cuts, rewrites or scripts Glitch's words. When he gets something wrong, fix
+  what he was shown (context, history, tool results, prompts) and measure it
+  as speech accuracy, offline. So no regex fast paths or literal parsers for
+  language, and no new speech guards. The honesty guard still runs until
+  #368 retires it, so don't extend it. Glitch should feel alive, not canned.
 - **Personality is tone only** — never move choice, difficulty, or settings.
   The global Glitch text is vendored from `../agent-standard/`; fix drift by
   re-copying, never by editing the copy.
 - **Never feed model thought blocks back into history** — final answers only.
 - **Backlog is GitHub issues** (`gh issue list`). File follow-up work as an
-  issue, never in a markdown file; PRs close issues with `Closes #N`.
+  issue, never in a markdown file; PRs close issues with `Closes #N`. The
+  pinned roadmap #366 orders the work: its sub-issues are the steps in order,
+  so take the first open one unless told otherwise. `P1`–`P3` labels are
+  rough priority, not the order.
 - **Git:** never commit to `main`. Branch → PR → squash-merge on green CI
   (`gh pr checks --watch`, then `gh pr merge --squash`).
 - **Tests ship with changes.** The deterministic core stays thoroughly
@@ -77,7 +81,8 @@ cost. It is the first thing to reach for when a turn misbehaves, and a traced
 misfire is a ready-made eval scenario. To see exactly what a model call was
 shown and what it said back (request, rendered prompt, raw response), set
 `CHESSAPP_CONTEXT_PATH` and run `scripts/watch_context.py`
-(`docs/context-capture.md`); it is heavy, so leave it off otherwise. The trace
+(`docs/context-capture.md`, which also covers the deployed container); it is
+heavy, so leave it off otherwise. The trace
 file also holds `serving` manifests (the weights, build and settings actually serving the app) and the
 `speech`/`voice` records that follow one voice interaction end to end.
 `docs/latency-measurement.md` has the record kinds, the clock rules and

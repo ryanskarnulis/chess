@@ -99,6 +99,12 @@ basic gameplay fully offline. CD deploys `main` to the home server.
    before any design work; until then only the tool seam exists. Existing
    OSS (ChessnutPy, chessnutair) covers *sensing* boards; actuation is the
    unverified piece.
+5. **Agent redesign** — in progress since 2026-09-26, ordered by roadmap
+   #366. Code owns actions inside the tools, and the model owns speech,
+   measured offline rather than guarded live. A running story of the game
+   replaces quoted history, a second brain (`lookup`) supplies knowledge,
+   and model settings move into config so the brain can be swapped as
+   better models arrive.
 
 ## Stack (chosen)
 
