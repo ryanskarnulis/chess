@@ -194,6 +194,10 @@ rather than the reply. The trace records both drafts and both verdicts
 (`guarded`, `suppressed`, `rewrite`, `rewrite_claims`, `rewrite_suppressed`);
 `guarded` still reads the *first* draft, because the eval floor measures the
 model's own discipline and the rewrite is what spares the player the miss.
+Since trace schema 3 every guarded route also records `draft` (the model's
+own words as the guard was handed them, clean or not) and `evidence` (the
+`facts.TurnEvidence` the facts were assembled from), so a turn's speech can
+be re-judged offline on the facts it really had (#367).
 
 The advice check rides the same call and was inverted the same day: it fires
 only when the turn consulted the engine (`get_best_moves` /

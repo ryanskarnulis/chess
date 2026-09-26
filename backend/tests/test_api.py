@@ -22,14 +22,14 @@ from chessapp.api import (
     _REFRESH_KEYS,
     _agent_state_dict,
     _narrator_state_dict,
-    _verified_facts,
+    _turn_evidence,
     create_app,
     narrator_facts,
     planner_board_refresh,
 )
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.engine import DEFAULT_TIER, CandidateMove, EnginePlayer
-from chessapp.facts import relative_outcome
+from chessapp.facts import assemble, relative_outcome
 from chessapp.game import GameSession
 from chessapp.honesty import unverified_claims
 from chessapp.tools import ToolContext, build_registry
@@ -859,6 +859,11 @@ def test_the_narrator_facts_name_the_winner_from_the_players_side():
     outcome = narrator_facts(ctx, TurnCoordinator(ctx))["outcome"]
 
     assert outcome == {"winner": "opponent", "termination": "checkmate"}
+
+
+def _verified_facts(ctx, *evidence):
+    """The facts the guard is handed, assembled as the pipeline assembles them."""
+    return assemble(_turn_evidence(ctx, *evidence))
 
 
 def _replied(pending: bool):
