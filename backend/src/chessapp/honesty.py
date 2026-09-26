@@ -979,6 +979,11 @@ _CLAIM_CLASSES = (
 )
 
 
+# Every claim class, in the order the guard reads them: the families speech
+# accuracy is reported by (#367).
+CLAIM_NAMES = tuple(claim.name for claim in _CLAIM_CLASSES)
+
+
 @dataclass(frozen=True)
 class Claim:
     """One operational claim a commentary made, and whether the facts back it.

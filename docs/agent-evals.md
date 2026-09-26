@@ -940,6 +940,11 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
 - **`play_as_black` run-order confound is unresolved** (2026-07-26): the
   recorded mid-suite dip did not reproduce, but the isolated arm shared the
   GPU with a second pytest — re-run cleanly before trusting either number.
+- **Speech accuracy is scored offline** (2026-09-26, #367): the guard's own
+  reading, re-run over traced drafts and their recorded evidence, counted per
+  family as claims made and backed (`scripts/speech_report.py`,
+  `docs/speech-accuracy.md`). The sweeps below were the first hand-run
+  versions of it; the deployed-trace baseline is there.
 - **Honesty-guard false-positive sweep** (2026-07-25): `unverified_claims`
   over the 46 recorded live turns guards exactly the two known lies (2/46).
   Re-run the sweep when a fresh trace corpus exists.
