@@ -89,6 +89,30 @@ A family the reading cannot score reliably would be reported as unscored
   fires only on the two real lies above (`docs/agent-evals.md`, "Standing
   results").
 
+- **The first schema-3 frontier run** (2026-09-26, dev split, 2 samples per
+  scenario, 60 claims) found 2 unbacked claims, both in
+  `late_game_review_undo_replay`. Labelled against the review the turn
+  really got (the player's worst move was d3, 816 centipawns, best Bxc4),
+  **both were true**: "lost like 800 centipawns on that one" and "Bxc4 was
+  the move". Both were scorer errors, fixed below. With the fix the run
+  reads 60/60.
+
+**Where the scorer backs more than the guard.** `speech_accuracy._widened`
+adds two facts the live guard lacks. Each was found as a scorer error on a
+true line:
+
+- **A review's alternatives.** `review_game` reports each critical move's
+  `best`, but the guard's move facts cover only moves the turn played, could
+  play, or an analysis of the current position named.
+- **A rounded centipawn count.** Any reported count of 100 or more also backs
+  its roundings to 10, 50 and 100. The evaluation class otherwise accepts only
+  exact counts and pawn tenths.
+
+Both are scorer-only. Widening the guard would change what the player hears,
+and #368 retires the guard anyway. Both lines are labelled tests in
+`test_speech_accuracy.py`, beside a count and a move no review backs, which
+stay unbacked.
+
 **What the scorer is lenient about, by design.** These errors inflate
 accuracy and never count against the model:
 
@@ -132,6 +156,29 @@ claims backed over 283 speakable turns.
 | `evaluation` | 1 | 1 |
 
 Unscored on these legacy records: `move` 56, `unplayed_reply` 56, `capture`
-25, `outcome` 1. The first schema-3 baseline comes from the eval gate and the
-frontier tier, which report speech accuracy per run, and from the
-deployed trace once games are played on a schema-3 build.
+25, `outcome` 1.
+
+**Eval gate, 2026-09-26 (schema 3, gemma-4-12b, planner 0.3; 53 passed):**
+100%, 91/91 claims backed over 279 traced turns. Nothing was unbacked and
+nothing unscored. That fits the gate's design: its scenarios score the
+trajectory, and the guard did not fire once in the run.
+
+| family | made | backed |
+| --- | ---: | ---: |
+| `move` | 34 | 34 |
+| `unplayed_reply` | 19 | 19 |
+| `save` | 18 | 18 |
+| `ending` | 10 | 10 |
+| `capture` | 5 | 5 |
+| `draw` | 2 | 2 |
+| `restart` | 1 | 1 |
+| `difficulty` | 1 | 1 |
+| `evaluation` | 1 | 1 |
+
+The gate's number is a floor check on the speech its scenarios happen to
+provoke, not a measure of how Glitch talks in a game. The deployed trace is
+that measure, and a schema-3 row for it lands once games are played on this
+build. The frontier tier trends its own per run (`frontier_report.py trend`);
+the first recorded row is #340's before-snapshot. The two-sample dev pass
+that checked the frontier plumbing (not recorded in the history) read 58/60
+before the widening above and 60/60 after it.

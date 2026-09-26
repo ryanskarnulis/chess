@@ -39,8 +39,10 @@ python scripts/frontier_report.py trend            # both splits, last six runs
 ```
 
 `append` adds one line per split to `docs/frontier-history.jsonl` (commit it
-with the change it measured); `trend` prints a scenario × run table per split.
-Run both splits every time: a dev number alone is not believed.
+with the change it measured); `trend` prints a scenario × run table per split,
+with the run's speech accuracy as its last row (`trend --speech` adds the
+per-family table). Run both splits every time: a dev number alone is not
+believed.
 
 ## What a run reports
 
@@ -48,7 +50,12 @@ Per scenario: whole-task passes out of N with a one-sided 95% Wilson
 interval, the **rubric score** (the mean fraction of checkpoints met — the
 number that moves while whole-task passes are still near zero), each
 checkpoint's hit count, the normalised failure modes, infra deaths, and every
-sample's turns (route, stop reason, tools, history). The report opens with a
+sample's turns (route, stop reason, tools, history). It also reports
+**speech accuracy** (#367): every traced turn's draft re-judged against its
+facts, as claims made and backed per family, for the scenario (`speech`) and
+for each sample (`speech`, with the `unbacked` lines quoted). Like the rubric
+it is reported and never asserted; `docs/speech-accuracy.md` says how it is
+scored. The report opens with a
 `frontier_header` naming the git sha, model, planner temperature, split, and
 the shas of the planner prompt, the narrator prompt and the tool offer, so a
 number is always tied to what produced it.
