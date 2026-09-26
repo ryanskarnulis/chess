@@ -49,6 +49,7 @@ from typing import Any
 
 from chessapp.agent_api import reset_rate_limit
 from chessapp.game import GameSession
+from chessapp.speech_accuracy import Tally, tally
 from chessapp.tools import GAME_SAVE_DIRNAME
 from chessapp.trace import ROUTE_BRAIN
 from evalstats import (
@@ -202,6 +203,9 @@ class Episode:
     turns: list[Turn]
     app: EvalApp | None = None
     start_settings: dict[str, Any] = field(default_factory=dict)
+    # Every trace record the sample's turns wrote, in order: what speech
+    # accuracy is scored from (#367).
+    traces: list[dict[str, Any]] = field(default_factory=list)
 
     def turn(self, index: int) -> Turn:
         """Turn `index`, 1-based, the way scenarios are written."""
@@ -290,6 +294,7 @@ class FrontierResult:
     samples: list[dict[str, Any]] = field(default_factory=list)
     infra: int = 0
     breaches: list[str] = field(default_factory=list)
+    speech: Tally = field(default_factory=Tally)
 
     @property
     def runs(self) -> int:
@@ -329,7 +334,7 @@ class FrontierResult:
         rubric = "—" if self.rubric is None else f"{self.rubric:.2f}"
         return (
             f"{self.passed}/{self.runs} whole [{low:.2f}, {high:.2f}] "
-            f"rubric {rubric} infra {self.infra}"
+            f"rubric {rubric} infra {self.infra} · {self.speech.summary()}"
         )
 
     def record(self, **meta: Any) -> dict[str, Any]:
@@ -347,6 +352,7 @@ class FrontierResult:
             "failure_modes": dict(self.failure_modes),
             "infra": self.infra,
             "breaches": list(self.breaches),
+            "speech": self.speech.as_dict(),
             "samples": list(self.samples),
             **meta,
         }
@@ -454,6 +460,7 @@ def play(
         label = f"{scenario.name}[{variant.name}]/{index}"
         before = _state(app)
         response, measured, results, commentary = _say(app, label, say, opened)
+        episode.traces.extend(app.tracer.turns)
         run = measured["run"]
         if response.status_code != 200 or run.stop_reason == STOP_PROVIDER_ERROR:
             raise Infra(
@@ -513,12 +520,18 @@ def play(
 def _sample_record(
     episode: Episode, verdict: Grade, breaches: Sequence[str]
 ) -> dict[str, Any]:
+    speech = tally(episode.traces)
     return {
         "variant": episode.variant,
         "whole": verdict.whole,
         "score": verdict.score,
         "hits": verdict.hits,
         "breaches": list(breaches),
+        "speech": speech.as_dict(),
+        "unbacked": [
+            {"family": u.family, "said": u.said, "sentence": u.sentence}
+            for u in speech.unbacked
+        ],
         "turns": [
             {
                 "said": turn.say.text,
@@ -590,6 +603,8 @@ def measure(
         verdict = grade(episode, scenario.checkpoints)
         result.grades.append(verdict)
         result.breaches.extend(breaches)
+        for trace in episode.traces:
+            result.speech.observe(trace)
         result.samples.append(_sample_record(episode, verdict, breaches))
         mark = "✓" if verdict.whole else "·"
         print(

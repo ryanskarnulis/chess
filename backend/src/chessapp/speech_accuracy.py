@@ -28,7 +28,7 @@ are, and the recorded baseline.
 
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from chessapp.facts import (
@@ -134,15 +134,55 @@ def _legacy_facts(record: Mapping[str, Any]) -> VerifiedFacts:
     )
 
 
+# The steps a centipawn count is rounded to when it is said aloud: "like 800"
+# for 816, "about 820", "nearly 850".
+_CENTIPAWN_STEPS = (10, 50, 100)
+
+
+def _widened(
+    facts: VerifiedFacts, tool_results: Iterable[Mapping[str, Any]]
+) -> VerifiedFacts:
+    """The guard's facts, plus two things the reading gets wrong on correct
+    lines, which the scorer backs and the live guard does not (#367).
+
+    Found by hand-labelling the first schema-3 frontier run: both unbacked
+    lines of `late_game_review_undo_replay` were true.
+
+    - A game review's alternatives. `review_game` reports each critical
+      move's `best`, and "Bxc4 was the move" quotes it; the facts only carry
+      the moves a turn played, could play, or an analysis of the *current*
+      position named.
+    - A rounded centipawn count. "Lost like 800 centipawns" for a reported
+      816 is the number, said the way people say numbers; the evaluation
+      class accepts exact counts and pawn tenths only.
+
+    Scorer-only on purpose: widening the guard's facts would change what the
+    player hears, and the guard is retired in #368 anyway.
+    """
+    reviewed = {
+        move[key]
+        for result in tool_results
+        if result["name"] == "review_game" and result["result"].get("ok") is True
+        for move in result["result"].get("critical", ())
+        for key in ("san", "best")
+        if move.get(key)
+    }
+    numbers = set(facts.numbers)
+    for number in facts.numbers:
+        if number.lstrip("+-").isdigit() and abs(value := int(number)) >= 100:
+            numbers.update(str(round(value / step) * step) for step in _CENTIPAWN_STEPS)
+    return replace(facts, moves=facts.moves | reviewed, numbers=frozenset(numbers))
+
+
 def score_record(record: Mapping[str, Any]) -> TurnScore | None:
     """The turn re-judged, or None when the record holds no words of the
     model's to judge (another kind of record, a route the model does not speak
     on, a turn that never reached the guard)."""
-    if not _is_turn(record):
-        return None
+    if not _is_turn(record) or "tools" not in record:
+        return None  # not a turn, or a partial record a test fake wrote
     if record.get("evidence"):
         evidence = TurnEvidence.from_trace(record["evidence"], record["tools"])
-        facts = assemble(evidence)
+        facts = _widened(assemble(evidence), evidence.tool_results)
         return TurnScore(
             _meaningful(
                 claims(record.get("draft") or "", facts),
@@ -155,13 +195,13 @@ def score_record(record: Mapping[str, Any]) -> TurnScore | None:
     if record.get("schema", 1) >= 3:
         return None  # a current record with no evidence never reached the guard
     draft = _legacy_draft(record)
-    if draft is None:
+    if draft is None or "fen_after" not in record:
         return None
     unscored = frozenset(UNSCORED) | (frozenset(CLAIM_NAMES) - LEGACY_SCORED)
     # The ending's winner is the player's side only where the record says so.
     if "outcome" not in record:
         unscored |= {"outcome"}
-    facts = _legacy_facts(record)
+    facts = _widened(_legacy_facts(record), record["tools"])
     return TurnScore(
         _meaningful(claims(draft, facts), facts, reply_pending=None),
         unscored,
@@ -258,6 +298,18 @@ class Tally:
         """Backed over made across the scored families; None with no claims."""
         made = self.claims_made
         return self.claims_backed / made if made else None
+
+    def summary(self) -> str:
+        """One line for a run's log: the accuracy with its denominator, the
+        unbacked families, and how much went unscored."""
+        made, backed = self.claims_made, self.claims_backed
+        rate = f"{backed / made:.1%}" if made else "—"
+        missed = Counter(item.family for item in self.unbacked)
+        unbacked = ",".join(f"{name}×{n}" for name, n in missed.most_common())
+        return (
+            f"speech {backed}/{made} ({rate}) over {self.turns} turns "
+            f"unbacked=[{unbacked}] unscored={sum(self.unscored_made.values())}"
+        )
 
     def as_dict(self) -> dict[str, Any]:
         """The run's numbers, in the shape the eval reports and the frontier

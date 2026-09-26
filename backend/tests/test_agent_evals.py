@@ -98,6 +98,12 @@ Set `CHESSAPP_EVAL_REPORT=/path/to.jsonl` and the suite writes one machine-
 readable line per scenario *as it finishes*, so a baseline stops being
 transcribed by hand out of terminal scrollback.
 
+**Every run reports speech accuracy** (#367): each turn the app traces is
+re-judged offline (`chessapp.speech_accuracy`) as it is recorded, and each
+scenario's `[eval]` summary, its report line (`speech`) and the closing
+`suite` record carry claims made and backed per family, with the unbacked
+lines printed at the end. Reported, never asserted (`docs/speech-accuracy.md`).
+
 **A turn's model time is reported per call and per phase** (Sprint 5). Both the
 `[eval]` line and the report's per-sample records carry `call_ms` (one reading
 per round trip, in call order, off the trace), `planner_ms`, `narrator_ms` and
@@ -155,6 +161,7 @@ from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.serving import ServingManifest, ServingProbe, app_revision
+from chessapp.speech_accuracy import Tally
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
     Settings,
@@ -358,6 +365,27 @@ class _SuiteTotals:
 _SUITE = _SuiteTotals()
 
 
+@dataclass
+class _SpeechTotals:
+    """Speech accuracy over the run (#367): every turn the app traces is
+    scored as it is recorded, into the suite's tally and the running
+    scenario's. Reported, never asserted — it is the number a prompt or model
+    change is compared on, not a floor (`docs/speech-accuracy.md`)."""
+
+    suite: Tally = field(default_factory=Tally)
+    scenario: Tally = field(default_factory=Tally)
+
+    def observe(self, turn: dict[str, Any]) -> None:
+        self.suite.observe(turn)
+        self.scenario.observe(turn)
+
+    def begin_scenario(self) -> None:
+        self.scenario = Tally()
+
+
+_SPEECH = _SpeechTotals()
+
+
 def _report(record: dict[str, Any]) -> None:
     """Append one JSONL line, if a report path was asked for.
 
@@ -428,8 +456,12 @@ def _report_session() -> Generator[None, None, None]:
             "infra_spent": _SUITE.infra_spent,
             "infra_budget": _SUITE.infra_budget,
             "serving": _SERVING["manifest"].record() if _SERVING else None,
+            "speech": _SPEECH.suite.as_dict(),
         }
     )
+    print(f"\n[eval] {_SPEECH.suite.summary()}")
+    for item in _SPEECH.suite.unbacked:
+        print(f'[eval]   ✗ {item.family} {item.said!r}: "{item.sentence}"')
 
 
 # --- app / engine fixtures ----------------------------------------------------
@@ -473,6 +505,7 @@ class _CollectingTracer:
 
     def record(self, turn: dict[str, Any]) -> None:
         self.turns.append(turn)
+        _SPEECH.observe(turn)
 
     def reset(self) -> None:
         """One sample measures one utterance — same rule as `provider.reset()`."""
@@ -1894,6 +1927,7 @@ def _pass_rate(
     inconclusive = 0
     taken = 0
     started = time.monotonic()
+    _SPEECH.begin_scenario()
 
     def record(**meta: Any) -> dict[str, Any]:
         """Assemble the scenario's report line from whatever is settled so far,
@@ -1904,6 +1938,7 @@ def _pass_rate(
             "seam": _seam_name(runner),
             "utterance": utterance,
             "samples": samples,
+            "speech": _SPEECH.scenario.as_dict(),
             **meta,
         }
 
@@ -2033,6 +2068,7 @@ def _pass_rate(
     print(
         f"\n[eval] scenario={scenario} PASS_RATE={result.summary()} floor={floor:.0%}"
     )
+    print(f"[eval] scenario={scenario} {_SPEECH.scenario.summary()}")
     for failure in result.failures:
         print(f"[eval]   ✗ {failure}")
     for mode, count in sorted(result.failure_modes.items(), key=lambda item: -item[1]):

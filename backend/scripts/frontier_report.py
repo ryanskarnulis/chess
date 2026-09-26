@@ -7,9 +7,11 @@
 `append` turns one run's report (a `frontier_header` and a `frontier` record
 per scenario, `tests/test_agent_frontier.py`) into one summary line per split
 in `docs/frontier-history.jsonl`: the configuration shas, and per scenario the
-passes, runs, rubric and checkpoint hits. `trend` prints, per split, a
-scenario × run table with a mark where the latest run moved against the one
-before it, and flags gate candidates.
+passes, runs, rubric and checkpoint hits, plus the split's speech accuracy
+(#367, `docs/speech-accuracy.md`). `trend` prints, per split, a scenario ×
+run table with a mark where the latest run moved against the one before it,
+a speech-accuracy row under it, and flags gate candidates; `--speech` adds the
+per-family breakdown.
 
 Two readings keep the table honest (`docs/agent-frontier.md`):
 
@@ -39,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
+from chessapp.speech_accuracy import merge  # noqa: E402
 from evalstats import wilson_interval  # noqa: E402
 
 HISTORY = Path(__file__).resolve().parents[2] / "docs" / "frontier-history.jsonl"
@@ -64,6 +67,7 @@ def summarize(
     from the header that opened it.
     """
     lines: dict[str, dict[str, Any]] = {}
+    speeches: dict[str, list[dict[str, Any] | None]] = {}
     header: dict[str, Any] = {}
     for record in records:
         if record.get("kind") == "frontier_header":
@@ -92,6 +96,9 @@ def summarize(
             "breaches": len(record["breaches"]),
             "checkpoint_hits": record["checkpoint_hits"],
         }
+        speeches.setdefault(split, []).append(record.get("speech"))
+    for split, line in lines.items():
+        line["speech"] = merge(speeches[split])
     return list(lines.values())
 
 
@@ -108,6 +115,52 @@ def moved(before: dict[str, Any], after: dict[str, Any]) -> str:
     if high_a < low_b:
         return "▼"
     return ""
+
+
+def _speech_cell(speech: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A run's speech accuracy as the cell `moved` reads: backed of made."""
+    if not speech or not speech["made"]:
+        return None
+    return {"passed": speech["backed"], "runs": speech["made"]}
+
+
+def speech_row(runs: Sequence[dict[str, Any]]) -> list[str]:
+    """One cell per run: `backed/made (pct)`, marked like any other row.
+    `—` for a run recorded before speech was, or one that made no claims."""
+    cells = []
+    previous = None
+    for line in runs:
+        cell = _speech_cell(line.get("speech"))
+        if cell is None:
+            cells.append("—")
+            continue
+        mark = moved(previous, cell) if previous is not None else ""
+        cells.append(f"{cell['passed']}/{cell['runs']} ({_rate(cell):.0%}){mark}")
+        previous = cell
+    return cells
+
+
+def speech_families(history: Sequence[dict[str, Any]], split: str, last: int) -> str:
+    """The split's speech accuracy per claim family, one column per run."""
+    runs = [line for line in history if line["split"] == split][-last:]
+    names: list[str] = []
+    for line in runs:
+        for name in (line.get("speech") or {}).get("families", {}):
+            if name not in names:
+                names.append(name)
+    if not names:
+        return f"no {split} speech recorded"
+    head = ["family"] + [
+        f"{line['date']} {line.get('git_sha') or ''}".strip() for line in runs
+    ]
+    rows = ["| " + " | ".join(head) + " |", "|" + " --- |" * len(head)]
+    for name in names:
+        cells = []
+        for line in runs:
+            counts = (line.get("speech") or {}).get("families", {}).get(name)
+            cells.append(f"{counts['backed']}/{counts['made']}" if counts else "—")
+        rows.append("| " + " | ".join([f"`{name}`", *cells]) + " |")
+    return "\n".join(rows)
 
 
 def graduates(history: Sequence[dict[str, Any]]) -> list[str]:
@@ -172,6 +225,10 @@ def trend(history: Sequence[dict[str, Any]], split: str, last: int = 6) -> str:
         if split == "heldout":
             row.append("yes" if name in ready else "")
         rows.append("| " + " | ".join(row) + " |")
+    speech = ["", "speech accuracy", *speech_row(runs)]
+    if split == "heldout":
+        speech.append("")
+    rows.append("| " + " | ".join(speech) + " |")
     return "\n".join(rows)
 
 
@@ -191,6 +248,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     show = sub.add_parser("trend", help="print the history as tables")
     show.add_argument("--split", choices=["dev", "heldout"], action="append")
     show.add_argument("--last", type=int, default=6)
+    show.add_argument(
+        "--speech", action="store_true", help="add speech accuracy per family"
+    )
     args = parser.parse_args(argv)
 
     if args.command == "append":
@@ -208,6 +268,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     for split in args.split or ["dev", "heldout"]:
         print(f"\n## {split}\n")
         print(trend(history, split, args.last))
+        if args.speech:
+            print(f"\n### {split} speech accuracy, per family\n")
+            print(speech_families(history, split, args.last))
     return 0
 
 

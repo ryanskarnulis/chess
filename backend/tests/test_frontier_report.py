@@ -170,3 +170,71 @@ def test_the_campaign_table_joins_frontier_records_as_one_block_each():
 
     assert table["x"]["a"] == {"passed": 8, "runs": 20, "blocks": [3, 5]}
     assert table["x"]["b"]["blocks"] == [7]
+
+
+# --- speech accuracy, trended beside the task scores (#367) ---------------------
+
+
+def speech(backed, made, **families):
+    return {
+        "turns": 10,
+        "legacy_turns": 0,
+        "made": made,
+        "backed": backed,
+        "accuracy": backed / made if made else None,
+        "families": families or {"capture": {"made": made, "backed": backed}},
+        "unscored": {},
+    }
+
+
+def test_a_splits_speech_is_its_scenarios_merged():
+    lines = summarize(
+        [
+            header(),
+            {**record("a", "dev", 5), "speech": speech(3, 4)},
+            {**record("b", "dev", 5), "speech": speech(1, 2)},
+            record("c", "dev", 5),  # a report written before speech was
+        ],
+        label="x",
+        date="2026-10-01",
+    )
+
+    (dev,) = lines
+    assert (dev["speech"]["backed"], dev["speech"]["made"]) == (4, 6)
+    assert dev["speech"]["families"] == {"capture": {"made": 6, "backed": 4}}
+
+
+def test_the_trend_carries_a_marked_speech_row():
+    history = [
+        {**line("dev", {"s": 5}, date="2026-10-01"), "speech": speech(10, 100)},
+        {**line("dev", {"s": 5}, date="2026-10-02"), "speech": speech(95, 100)},
+        line("dev", {"s": 5}, date="2026-10-03"),
+    ]
+
+    table = trend(history, "dev")
+
+    assert "| speech accuracy | 10/100 (10%) | 95/100 (95%)▲ | — |" in table
+
+
+def test_the_speech_flag_prints_the_families(tmp_path: Path, capsys):
+    path = tmp_path / "history.jsonl"
+    history = [
+        {
+            **line("dev", {"s": 5}),
+            "speech": speech(
+                1,
+                3,
+                capture={"made": 2, "backed": 1},
+                move={"made": 1, "backed": 0},
+            ),
+        }
+    ]
+    path.write_text("".join(json.dumps(h) + "\n" for h in history))
+
+    frontier_report.main(
+        ["--history", str(path), "trend", "--split", "dev", "--speech"]
+    )
+
+    out = capsys.readouterr().out
+    assert "| `capture` | 1/2 |" in out
+    assert "| `move` | 0/1 |" in out

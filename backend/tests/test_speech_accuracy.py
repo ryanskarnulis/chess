@@ -238,3 +238,66 @@ def test_summaries_merge_into_the_run_they_came_from():
             ]
         ).as_dict()
     )
+
+
+def test_a_partial_record_is_skipped_rather_than_scored():
+    """The harnesses' tracers can hold hand-built records with only the fields
+    a test needed; scoring must never be what breaks them."""
+    assert score_record({"kind": "turn", "route": "brain", "model_calls": 1}) is None
+    partial = _legacy("Game over.")
+    del partial["fen_after"]
+    assert score_record(partial) is None
+
+
+# --- where the scorer backs more than the guard (#367's first frontier run) -----
+
+
+# The late_game_review_undo_replay fixture's worst white move, as review_game
+# reported it on 2026-09-26: d3, 816 centipawns, Bxc4 was best.
+_REVIEW = (
+    "review_game",
+    {
+        "ok": True,
+        "critical": [
+            {
+                "move_number": 7,
+                "color": "white",
+                "san": "d3",
+                "classification": "blunder",
+                "cp_loss": 816,
+                "best": "Bxc4",
+            }
+        ],
+    },
+)
+
+
+def test_a_reviews_best_move_and_a_rounded_count_are_backed():
+    """Both of the run's unbacked lines, verbatim: true, and scored so."""
+    session = _session("e4")
+
+    score = score_record(
+        _record(
+            "You dropped like 800 centipawns there\u2014Bxc4 was the move. "
+            "lost like 800 centipawns on that one.",
+            session,
+            tools=[_REVIEW],
+        )
+    )
+
+    assert sorted(_counts(score)) == [
+        ("evaluation", True),
+        ("evaluation", True),
+        ("move", True),
+    ]
+
+
+def test_a_count_no_rounding_reaches_is_still_unbacked():
+    session = _session("e4")
+
+    score = score_record(
+        _record("That cost you 300 centipawns. Qh5 was best.", session, tools=[_REVIEW])
+    )
+
+    assert ("evaluation", False) in _counts(score)
+    assert ("move", False) in _counts(score)

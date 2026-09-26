@@ -94,6 +94,14 @@ Sampling and reporting knobs (defaults are a normal gate run):
 A 20-sample measurement campaign is `CHESSAPP_EVAL_RUNS=20
 CHESSAPP_EVAL_MAX_RUNS=20`.
 
+Every run also reports **speech accuracy** (#367). Each traced turn's draft is
+re-judged against its recorded facts. Each scenario prints an
+`[eval] scenario=… speech b/m (pct)` line, and the run closes with the suite's
+total and every unbacked line. The report carries the same numbers as
+`speech` on each `scenario` record and on the closing `suite` record. It is
+reported, never asserted; a gate run that changes prompts, context or the
+model quotes it beside the pass rates (`docs/speech-accuracy.md`).
+
 ### Measuring a planner change
 
 Two committed tools (`backend/scripts/`, Phase 0 of the knight-ask campaign,

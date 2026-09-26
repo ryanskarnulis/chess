@@ -72,6 +72,7 @@ from test_agent_evals import (
     _run_panel,
     _run_steps,
     _seam_name,
+    _SpeechTotals,
     _stays_a_model_eval,
     _step,
     _trajectory,
@@ -1101,3 +1102,42 @@ def test_the_harness_gives_the_narrator_the_same_facts_assembly_does(
         facts = wiring["narrator_facts"]()
         assert set(facts) == set(shipped["narrator_facts"]())
         assert facts["reply_owed"] is False
+
+
+# --- speech accuracy rides on the tracer (#367) -------------------------------------
+
+
+def _lying_turn() -> dict:
+    """A legacy-shaped record whose draft asserts a verbosity change no tool
+    made: the one family such a record can decide."""
+    return {
+        "kind": "turn",
+        "schema": 2,
+        "route": "brain",
+        "model_calls": 2,
+        "commentary": "Alright, more detail from now on.",
+        "guarded": False,
+        "suppressed": "",
+        "fen_after": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "engine_reply": None,
+        "tools": [],
+    }
+
+
+def test_every_traced_turn_is_scored_into_the_suite_and_the_scenario(monkeypatch):
+    import test_agent_evals
+
+    totals = _SpeechTotals()
+    monkeypatch.setattr(test_agent_evals, "_SPEECH", totals)
+    tracer = _CollectingTracer()
+
+    tracer.record(_lying_turn())
+    totals.begin_scenario()
+    tracer.record(_lying_turn())
+    tracer.record({"kind": "turn"})  # a partial record is skipped, not fatal
+
+    assert totals.suite.as_dict()["families"] == {
+        "verbosity_change": {"made": 2, "backed": 0}
+    }
+    assert totals.scenario.claims_made == 1
+    assert totals.scenario.summary().startswith("speech 0/1 (0.0%)")
