@@ -37,8 +37,48 @@ The captured text is printed exactly as captured. The headers and separators
 are the only things the watcher adds, and the decisions block is the only part
 it formats.
 
-`docker-compose.yml` does not set the variable. To capture from the deployed
-container, add it next to `CHESSAPP_TRACE_PATH` for that session only.
+## The deployed app
+
+CD deploys from a clean clone at `~/deploy/chess` and refuses to deploy over
+local edits there ("deploy clone is dirty", `.github/workflows/deploy.yml`).
+So don't add the variable to that clone's `docker-compose.yml`, where a
+forgotten edit stops every later deploy. Put it in an override file outside
+the clone and recreate the container with both files:
+
+```bash
+cat > /tmp/context-capture.override.yml <<'EOF'
+services:
+  app:
+    environment:
+      CHESSAPP_CONTEXT_PATH: /data/saves/context.jsonl
+EOF
+cd ~/deploy/chess
+docker compose -f docker-compose.yml -f /tmp/context-capture.override.yml up -d --no-build app
+```
+
+The live game survives the restart (`live.json`,
+`docs/persistence-and-identity.md`).
+
+The capture lands on the `chess-saves` volume next to the trace, and the host
+user can't read that volume. The watcher needs only the standard library, so
+run it inside the container, fed from this checkout (from the repo root):
+
+```bash
+docker exec -i chess-app-1 python -u - /data/saves/context.jsonl --trace /data/saves/turns.jsonl < backend/scripts/watch_context.py
+```
+
+Options go after the paths. For example, add `--from-start` to replay a
+session you have already played.
+
+To turn it off, recreate the container without the override. The next CD
+deploy does the same, since it runs `docker compose up` without it.
+
+```bash
+cd ~/deploy/chess && docker compose up -d --no-build app
+```
+
+The capture file stays on the volume until you delete it:
+`docker exec chess-app-1 rm /data/saves/context.jsonl`.
 
 ## What a record holds
 
