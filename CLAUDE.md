@@ -30,6 +30,7 @@ python scripts/watch_context.py /tmp/ctx.jsonl --trace /tmp/turns.jsonl   # watc
 CHESSAPP_AGENT_EVALS=1 pytest tests/test_agent_evals.py -v -s   # live-model evals (needs GPU)
 CHESSAPP_AGENT_FRONTIER=1 pytest tests/test_agent_frontier.py -v -s   # frontier: scored, never gated (docs/agent-frontier.md)
 python scripts/frontier_report.py trend                  # frontier history, per split
+python scripts/speech_report.py /tmp/turns.jsonl          # speech accuracy of a trace (docs/speech-accuracy.md)
 CHESSAPP_TRAJ_SEED=7 pytest tests/test_trajectories.py -k replay -s   # replay one composed walk
 ```
 
@@ -78,7 +79,9 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 Set `CHESSAPP_TRACE_PATH` and every interaction appends one JSONL record:
 utterance, route, tool trajectory, stop reason, FENs, guard decision, and
 cost. It is the first thing to reach for when a turn misbehaves, and a traced
-misfire is a ready-made eval scenario. To see exactly what a model call was
+misfire is a ready-made eval scenario. Each record also keeps the narrator's
+`draft` and the facts' `evidence`, so `scripts/speech_report.py` can re-judge
+what Glitch said, offline (`docs/speech-accuracy.md`). To see exactly what a model call was
 shown and what it said back (request, rendered prompt, raw response), set
 `CHESSAPP_CONTEXT_PATH` and run `scripts/watch_context.py`
 (`docs/context-capture.md`, which also covers the deployed container); it is

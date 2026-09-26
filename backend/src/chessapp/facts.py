@@ -372,7 +372,7 @@ def assemble(evidence: TurnEvidence) -> VerifiedFacts:
             for r in tool_results
         ),
         settings=dict(evidence.settings),
-        settings_changed=frozenset(_settings_changed(tool_results)),
+        settings_changed=frozenset(settings_changed_by(tool_results)),
         captures_by_move=_captures_by_move(boards, discussed),
         numbers=frozenset(analysis_numbers(tool_results)),
         # Board truth, and the one fact here no tool has to have run for: who
@@ -488,7 +488,7 @@ _SETTERS = {
 }
 
 
-def _settings_changed(tool_results: Sequence[dict[str, Any]]) -> set[str]:
+def settings_changed_by(tool_results: Sequence[dict[str, Any]]) -> set[str]:
     """The settings a tool really moved this turn.
 
     The live value answers "voice output is on"; only this answers "I'm
