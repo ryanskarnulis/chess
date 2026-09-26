@@ -19,6 +19,7 @@ import pytest
 
 from chessapp.honesty import (
     VerifiedFacts,
+    claims,
     claims_destructive_outcome,
     corrections,
     unlicensed_advice,
@@ -1525,3 +1526,41 @@ def test_every_new_class_has_a_fact_for_the_rewrite(claim):
     (line,) = corrections(found, PENDING)
     assert line.startswith('You wrote: "')
     assert "not" in line.split('"')[-1].lower(), "a fact, stated"
+
+
+# --- the whole reading, for the scorer (#367) -----------------------------------
+#
+# `claims` is what `unverified` filters: the scorer needs the backed claims as
+# well as the unbacked ones, counted on the guard's own rule.
+
+
+def test_claims_keep_the_backed_reading_beside_the_unbacked_one():
+    found = claims("I took your knight. You took my queen.", TOOK_A_KNIGHT)
+
+    assert [(c.claim, c.backed) for c in found] == [
+        ("capture", True),
+        ("capture", False),
+    ]
+    assert [
+        (u.claim, u.sentence)
+        for u in unverified("I took your knight. You took my queen.", TOOK_A_KNIGHT)
+    ] == [("capture", "You took my queen.")]
+
+
+def test_a_sentence_is_one_claim_per_class_unbacked_if_any_part_is():
+    facts = VerifiedFacts(moves=frozenset({"Nf3"}))
+
+    both = claims("Nf3 and Qh5.", facts)
+    one = claims("Nf3 and Nf3 again.", facts)
+
+    assert [(c.claim, c.said, c.backed) for c in both if c.claim == "move"] == [
+        ("move", "Qh5", False)
+    ]
+    assert [(c.claim, c.said, c.backed) for c in one if c.claim == "move"] == [
+        ("move", "Nf3", True)
+    ]
+
+
+def test_hedged_talk_is_no_claim_at_all():
+    assert claims("One more move and it's checkmate.", NOTHING) == ()
+    assert claims("I'll take your knight next.", NOTHING) == ()

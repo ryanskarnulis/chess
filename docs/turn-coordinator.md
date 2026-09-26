@@ -200,7 +200,7 @@ rewrite runs after the reply has been collected.
   once by construction. The window also owns the command's **board trail** —
   the position each mutating dispatch left behind — because chaining is
   exactly what puts boards between the command's two ends, and the honesty
-  guard checks its commentary against every one of them (`api._verified_facts`,
+  guard checks its commentary against every one of them (`facts.assemble`,
   audit finding 7).
 - **One question per command** (decided 2026-09-05): the first gated call in
   a command arms its op and its question; every later gated call in the same

@@ -688,7 +688,7 @@ def test_a_decline_narrated_as_a_draw_is_guarded():
 
 
 def test_the_verdicts_number_may_be_quoted_from_either_side():
-    """`_analysis_numbers` learns the offer's evaluation, both signs: an honest
+    """`facts.analysis_numbers` learns the offer's evaluation, both signs: an honest
     "up three" survives whichever side it is said from, an invented number
     does not."""
     from chessapp.brain import AgentResponse, ToolCall

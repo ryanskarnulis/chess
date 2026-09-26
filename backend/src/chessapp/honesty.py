@@ -181,8 +181,8 @@ def unlicensed_advice(
 # *operational* claims in the commentary to derive from it. Personality varies
 # the wording; it does not get to vary the facts.
 #
-# The evidence is assembled by the pipeline (`api._verified_facts`), because
-# that is where the tool results, the engine's reply and the board all are.
+# The evidence is assembled by `facts.assemble`, from the record the pipeline
+# keeps of the turn: the tool results, the engine's reply and the boards.
 # This module still owns only the reading of the string.
 
 
@@ -268,7 +268,7 @@ class VerifiedFacts:
     `unplayed_replies` is the engine's reply that has not happened yet: the
     moves the engine could play on the board the narrator spoke over, while
     the reply was still being computed, minus every one the turn accounts for
-    some other way (`api._verified_facts`). Empty unless a reply was owed as
+    some other way (`facts.assemble`). Empty unless a reply was owed as
     the narrator spoke. `moves` still holds them — they were legal — which is
     exactly why they need a class of their own.
 
@@ -980,6 +980,58 @@ _CLAIM_CLASSES = (
 
 
 @dataclass(frozen=True)
+class Claim:
+    """One operational claim a commentary made, and whether the facts back it.
+
+    The reading `unverified` filters, kept whole for the scorer
+    (`speech_accuracy`, #367): accuracy needs the claims that were true as
+    well as the ones that were not. One entry per class per sentence, on the
+    same rule the guard counts by — a sentence naming two moves makes one move
+    claim, unbacked if either move is. `said` is the span that decided it:
+    the first unbacked match, or the first match when every one was backed.
+    """
+
+    claim: str
+    sentence: str
+    said: str
+    backed: bool
+    match: re.Match[str] = field(compare=False, repr=False)
+
+
+def claims(text: str, facts: VerifiedFacts) -> tuple[Claim, ...]:
+    """Every operational claim in this commentary, backed or not.
+
+    Sentence by sentence and hedge by hedge, on the same bar the ending class
+    set: an assertion in its own sentence, never a mention. Trash talk, threats,
+    questions and hypotheticals are the whole point of the commentary, so a
+    class that cannot tell them from a report does not belong here.
+    """
+    found: list[Claim] = []
+    for sentence in _SENTENCES.split(text):
+        if _HEDGES.search(sentence):
+            continue
+        for claim in _CLAIM_CLASSES:
+            if claim.hedges is not None and claim.hedges.search(sentence):
+                continue
+            first: re.Match[str] | None = None
+            for match in claim.pattern.finditer(sentence):
+                first = first or match
+                if not claim.verified(match, facts):
+                    found.append(
+                        Claim(
+                            claim.name, sentence.strip(), match.group(0), False, match
+                        )
+                    )
+                    break  # one entry per class per sentence is one fact to fix
+            else:
+                if first is not None:
+                    found.append(
+                        Claim(claim.name, sentence.strip(), first.group(0), True, first)
+                    )
+    return tuple(found)
+
+
+@dataclass(frozen=True)
 class Unverified:
     """One claim the facts did not back: which class, the sentence carrying
     it, and the span that matched.
@@ -998,28 +1050,16 @@ class Unverified:
 
 
 def unverified(text: str, facts: VerifiedFacts) -> tuple[Unverified, ...]:
-    """Every operational claim in this commentary that the facts don't support.
+    """Every operational claim in this commentary that the facts don't support
+    (`claims`, the backed ones left out).
 
     Empty for commentary that claims nothing operational, which is most of it.
-    Sentence by sentence and hedge by hedge, on the same bar the ending class
-    set: an assertion in its own sentence, never a mention. Trash talk, threats,
-    questions and hypotheticals are the whole point of the commentary, so a
-    class that cannot tell them from a report does not belong here.
     """
-    found: list[Unverified] = []
-    for sentence in _SENTENCES.split(text):
-        if _HEDGES.search(sentence):
-            continue
-        for claim in _CLAIM_CLASSES:
-            if claim.hedges is not None and claim.hedges.search(sentence):
-                continue
-            for match in claim.pattern.finditer(sentence):
-                if not claim.verified(match, facts):
-                    found.append(
-                        Unverified(claim.name, sentence.strip(), match.group(0), match)
-                    )
-                    break  # one entry per class per sentence is one fact to fix
-    return tuple(found)
+    return tuple(
+        Unverified(item.claim, item.sentence, item.said, item.match)
+        for item in claims(text, facts)
+        if not item.backed
+    )
 
 
 def unverified_claims(text: str, facts: VerifiedFacts) -> tuple[str, ...]:
@@ -1106,7 +1146,7 @@ def _evaluation_fact(item: Unverified, facts: VerifiedFacts) -> str:
 def _material_fact(item: Unverified, facts: VerifiedFacts) -> str:
     if not facts.material:
         return "No material count is available this turn, so do not quantify material."
-    balance = facts.material[0]  # the board as it stands now (see `_verified_facts`)
+    balance = facts.material[0]  # the board as it stands now (see `facts.assemble`)
     if balance == 0:
         return "Material is level right now."
     pawns = f"{abs(balance)} pawn{'s' if abs(balance) != 1 else ''} of material"

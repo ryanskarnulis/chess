@@ -22,7 +22,6 @@ from chessapp.api import (
     _REFRESH_KEYS,
     _agent_state_dict,
     _narrator_state_dict,
-    _relative_outcome,
     _verified_facts,
     create_app,
     narrator_facts,
@@ -30,6 +29,7 @@ from chessapp.api import (
 )
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.engine import DEFAULT_TIER, CandidateMove, EnginePlayer
+from chessapp.facts import relative_outcome
 from chessapp.game import GameSession
 from chessapp.honesty import unverified_claims
 from chessapp.tools import ToolContext, build_registry
@@ -941,7 +941,7 @@ def _mated(player_color: str) -> ToolContext:
 
 def test_a_live_board_has_no_outcome():
     ctx = ToolContext(session=GameSession())
-    assert _relative_outcome(ctx.session) is None
+    assert relative_outcome(ctx.session) is None
     facts = _verified_facts(ctx, [], None, ctx.session.fen())
     assert (facts.ended, facts.winner, facts.termination) == (False, None, None)
 
@@ -951,7 +951,7 @@ def test_a_live_board_has_no_outcome():
 )
 def test_a_checkmate_is_read_from_the_players_side(player_color, winner):
     ctx = _mated(player_color)
-    assert _relative_outcome(ctx.session) == {
+    assert relative_outcome(ctx.session) == {
         "winner": winner,
         "termination": "checkmate",
     }

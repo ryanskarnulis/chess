@@ -164,7 +164,7 @@ Every operational claim in the narrator's text — an ending, a draw, who won
 and how, a check, a capture, a move, who played it, a save, a setting, an
 engine number, the material count — is checked against the board and the
 turn's tool results before it is spoken (`honesty.unverified`,
-`api._verified_facts`). A claim the
+`facts.assemble`). A claim the
 facts don't back used to be answered with one of three canned "Scratch that"
 lines in Glitch's place. It is now answered with **one more narrator call**
 (`Brain.rewrite`): the same persona prompt and conversation, no tools, and a
