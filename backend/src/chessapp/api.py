@@ -1099,29 +1099,6 @@ def _turn_evidence(
     )
 
 
-def _verified_facts(
-    ctx: ToolContext,
-    tool_results: Sequence[dict[str, Any]],
-    engine_reply: MoveResult | None,
-    fen_before: str,
-    fens_observed: Sequence[str] = (),
-    pending_reply_fen: str | None = None,
-) -> VerifiedFacts:
-    """What this turn may honestly say (audit item 13, the pipeline's half),
-    by way of the same evidence a trace record carries — so a turn re-judged
-    offline is judged on the facts the live turn had (#367)."""
-    return assemble(
-        _turn_evidence(
-            ctx,
-            tool_results,
-            engine_reply,
-            fen_before,
-            fens_observed,
-            pending_reply_fen,
-        )
-    )
-
-
 def _settle_question(
     ctx: ToolContext,
     origin: str,
@@ -1796,7 +1773,7 @@ def create_app(
     # order — or `None` between commands, which is every other road onto the
     # board (a drag, a button, the confirm endpoint) recording nothing.
     # `_command_window` owns it at both ends; the honesty guard reads it (see
-    # `_verified_facts`).
+    # `facts.assemble`).
     command_boards: list[str] | None = None
     # The request holding the mutation lock, timed (#290): opened by
     # `_mutation` before it waits, closed when it lets go, so there is at most
@@ -2175,6 +2152,8 @@ def create_app(
                 raise HTTPException(status_code=409, detail=result["error"])
             commentary = ""
             verdict = _Guarded("")
+            draft = ""
+            turn_evidence: TurnEvidence | None = None
             if beats.legal:
                 # The honesty guard, on this road too: a reaction that announces
                 # something the drag did not actually do goes back to the
@@ -2184,23 +2163,25 @@ def create_app(
                 # is nothing in it to guard and everything to lose by taking it
                 # back with the reaction. No advice licence: the board moved,
                 # so a move named here is a reaction to it.
+                draft = narration.text if narration is not None else ""
+                turn_evidence = _turn_evidence(
+                    ctx,
+                    beats.changes,
+                    beats.engine_reply,
+                    before["fen"],
+                    # A drag opens no command window, so there is no trail
+                    # to read: one dispatch, and the beats already know
+                    # which board they narrated from.
+                    [beats.observed_fen] if beats.observed_fen is not None else [],
+                    # The reaction was spoken before the reply existed.
+                    beats.observed_fen if beats.owed_reply else None,
+                )
                 guard_started = time.monotonic()
                 verdict = await _honest_words(
                     brain,
                     _offloop,
-                    narration.text if narration is not None else "",
-                    _verified_facts(
-                        ctx,
-                        beats.changes,
-                        beats.engine_reply,
-                        before["fen"],
-                        # A drag opens no command window, so there is no trail
-                        # to read: one dispatch, and the beats already know
-                        # which board they narrated from.
-                        [beats.observed_fen] if beats.observed_fen is not None else [],
-                        # The reaction was spoken before the reply existed.
-                        beats.observed_fen if beats.owed_reply else None,
-                    ),
+                    draft,
+                    assemble(turn_evidence),
                     None,
                     transcript,
                     {"move": move, "correlation_id": correlation_id},
@@ -2266,6 +2247,8 @@ def create_app(
                 engine_failure=beats.engine_failure,
                 reaction_late=beats.reaction_late,
                 clarification=asked_about,
+                draft=draft,
+                evidence=turn_evidence.as_trace() if turn_evidence else None,
                 **beats.cost.plus(verdict.cost).as_trace(),
             )
             return {
@@ -3312,7 +3295,7 @@ def create_app(
                 # order; the fast path names its observation board on top, because
                 # that route knows *which* position its words were written from.
                 # (The two overlap — a fast-path `make_move` is a dispatch like any
-                # other — and `_verified_facts` dedupes them.)
+                # other — and `facts.assemble` dedupes them.)
                 observed = list(command_boards or ())
                 if move_beats is not None and move_beats.observed_fen is not None:
                     observed.append(move_beats.observed_fen)
@@ -3353,19 +3336,25 @@ def create_app(
                         legal=legal,
                         evidence=frozenset(evidence),
                     )
+                # What the model said and what the turn can back, both kept
+                # for the trace: speech accuracy re-judges the one against the
+                # other offline (#367).
+                traced["draft"] = commentary
+                turn_evidence = _turn_evidence(
+                    ctx,
+                    tool_results,
+                    engine_reply,
+                    before["fen"],
+                    observed,
+                    narrated_before_reply,
+                )
+                traced["evidence"] = turn_evidence.as_trace()
                 guard_started = time.monotonic()
                 verdict = await _honest_words(
                     brain,
                     _offloop,
                     commentary,
-                    _verified_facts(
-                        ctx,
-                        tool_results,
-                        engine_reply,
-                        before["fen"],
-                        observed,
-                        narrated_before_reply,
-                    ),
+                    assemble(turn_evidence),
                     advice,
                     transcript,
                     {"text": text, "correlation_id": correlation_id},

@@ -98,7 +98,7 @@ def test_turn_record_is_versioned_and_says_what_it_is():
     """#317: a reader keys off `schema` rather than guessing from which fields
     are present, and `kind` lets other records share the file."""
     record = _record_fields()
-    assert record["schema"] == 2
+    assert record["schema"] == 3
     assert record["kind"] == "turn"
 
 
@@ -939,3 +939,14 @@ def test_a_brain_turn_records_the_budget_that_ended_it(trace_path):
     (record,) = read_records(trace_path)
     assert record["stop_reason"] == "budget"
     assert record["budget"] == "tool_calls"
+
+
+def test_turn_record_keeps_the_draft_and_the_evidence_for_rescoring():
+    """#367: the model's own words and the facts' evidence, so a turn's speech
+    can be re-judged offline; empty on a turn that never reached the guard."""
+    bare = _record_fields()
+    assert (bare["draft"], bare["evidence"]) == ("", None)
+
+    evidence = {"session": {"version": 1}, "fen_before": "8/8/8/8/8/8/8/8 w - - 0 1"}
+    kept = _record_fields(draft="Took your knight.", evidence=evidence)
+    assert (kept["draft"], kept["evidence"]) == ("Took your knight.", evidence)

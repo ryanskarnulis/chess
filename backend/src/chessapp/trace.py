@@ -33,8 +33,10 @@ from chessapp.brain import ModelCall
 # The record layout's version (#317). A reader keys off it rather than off
 # which fields happen to be present: 2 is the first version that says so, and
 # the first whose model cost is a list of phase-tagged `calls`. A record with no
-# `schema` is version 1. Bump it on any change a reader must branch on.
-TRACE_SCHEMA = 2
+# `schema` is version 1. 3 adds `draft` and `evidence`, which make a turn's
+# speech re-judgeable offline (#367). Bump it on any change a reader must
+# branch on.
+TRACE_SCHEMA = 3
 # What a record in the trace file is. A turn, or a `serving` manifest
 # (`serving.KIND_SERVING`), written at startup and whenever what serves the app
 # changes; the kind is on every record so a reader never mistakes one for the
@@ -111,6 +113,8 @@ def turn_record(
     rewrite: str = "",
     rewrite_claims: Sequence[str] = (),
     rewrite_suppressed: str = "",
+    draft: str = "",
+    evidence: dict[str, Any] | None = None,
     provider_failure: str = "",
     engine_failure: str = "",
     reaction_late: bool = False,
@@ -329,6 +333,16 @@ def turn_record(
     narration that announced something is re-judged against this, not against
     the planner's note: "took it back" under `performed: []` is the miss.
 
+    `draft` is the model's own words exactly as the honesty guard was handed
+    them: before the rewrite, and before the app composed its own lines (the
+    reply announcement, the move confirmation) around them. `commentary` is
+    what the player heard and `suppressed` only exists when the guard fired,
+    so neither is the thing speech accuracy scores (#367). `evidence` is the
+    `facts.TurnEvidence` the guard's facts were assembled from, less the tool
+    results `tools` already carries: `speech_accuracy` rebuilds the facts from
+    it and re-judges `draft`, so a turn is scored on the facts it really had.
+    Both are empty on a turn that never reached the guard.
+
     `clarification` is the origin's open question across the turn (#319,
     `clarification`): `open` — the id of the question standing as the turn
     began; `expired` — one this turn's read found gone (the board or the game
@@ -359,6 +373,8 @@ def turn_record(
         "rewrite": rewrite,
         "rewrite_claims": list(rewrite_claims),
         "rewrite_suppressed": rewrite_suppressed,
+        "draft": draft,
+        "evidence": evidence,
         "game_id": game_id,
         "interaction_id": interaction_id,
         "turn_id": turn_id,

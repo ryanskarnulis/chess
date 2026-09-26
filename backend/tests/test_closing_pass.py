@@ -33,6 +33,7 @@ from chessapp import api
 from chessapp.api import STUCK_REPLY, create_app
 from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.engine import CandidateMove
+from chessapp.facts import TurnEvidence, assemble
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain
 from chessapp.tools import (
@@ -716,7 +717,7 @@ def test_a_move_only_a_board_the_batch_never_held_makes_legal_is_guarded(trace_p
     assert last_turn(trace_path)["guarded"] is True
 
 
-def test_the_command_trail_holds_the_board_after_each_mutating_call(monkeypatch):
+def test_the_command_trail_holds_the_board_after_each_mutating_call():
     """The trail itself, read at the seam that consumes it: one FEN per call
     that moved the board, in the order the batch ran them.
 
@@ -727,14 +728,7 @@ def test_the_command_trail_holds_the_board_after_each_mutating_call(monkeypatch)
     ctx = ToolContext(session=GameSession(), engine=FakeEngine())
     for san in ("e4", "e5"):
         assert ctx.session.submit_move(san).legal
-    observed: list[list[str]] = []
-    real = api._verified_facts
-
-    def spy(ctx, tool_results, engine_reply, fen_before, fens_observed=(), *rest):
-        observed.append(list(fens_observed))
-        return real(ctx, tool_results, engine_reply, fen_before, fens_observed, *rest)
-
-    monkeypatch.setattr(api, "_verified_facts", spy)
+    turns = CollectedTurns()
     client, _, ctx = make_client(
         tool_calls_turn(
             ("undo", {}), ("make_move", {"move": "d4", "source": "said_the_move"})
@@ -742,6 +736,7 @@ def test_the_command_trail_holds_the_board_after_each_mutating_call(monkeypatch)
         text_turn("note: took it back and played d4"),
         text_turn("Queen's pawn instead."),
         ctx=ctx,
+        tracer=turns,
     )
     # What the two mutating calls leave behind: the board the takeback restores,
     # then the board d4 stands on. The engine's reply lands after, through the
@@ -755,29 +750,25 @@ def test_the_command_trail_holds_the_board_after_each_mutating_call(monkeypatch)
     client.post("/api/command", json={"text": "take that back and play d4"})
 
     assert ctx.session.move_history() == ["d4", "e5"]
-    assert observed == [[after_undo, after_d4]]
+    assert [t["evidence"]["fens_observed"] for t in turns.records] == [
+        [after_undo, after_d4]
+    ]
 
 
-def test_a_read_only_command_leaves_the_trail_empty(monkeypatch):
+def test_a_read_only_command_leaves_the_trail_empty():
     """Nothing moved, so there is no board between the two ends to remember."""
-    observed: list[list[str]] = []
-    real = api._verified_facts
-
-    def spy(ctx, tool_results, engine_reply, fen_before, fens_observed=(), *rest):
-        observed.append(list(fens_observed))
-        return real(ctx, tool_results, engine_reply, fen_before, fens_observed, *rest)
-
-    monkeypatch.setattr(api, "_verified_facts", spy)
+    turns = CollectedTurns()
     client, _, ctx = make_client(
         tool_calls_turn(("describe_position", {})),
         text_turn("note: described it"),
         text_turn("Even material, nothing developed."),
+        tracer=turns,
     )
 
     client.post("/api/command", json={"text": "what's the position?"})
 
     assert ctx.session.move_history() == []
-    assert observed == [[]]
+    assert [t["evidence"]["fens_observed"] for t in turns.records] == [[]]
 
 
 def consulted_client(narration: str, tracer=None):
@@ -1094,3 +1085,105 @@ def test_a_landed_ask_leaves_the_move_after_it_unplayed():
     assert record["handoff"]["performed"] == ["set_verbosity"]
     assert record["handoff"]["refused"] == ["make_move"]
     assert len(provider.calls) == 2, "one planner turn, then the narrator"
+
+
+# --- the trace re-judges what the guard judged (#367) ---------------------------
+#
+# Speech accuracy is scored offline from the trace: `draft` against the facts
+# `facts.assemble` rebuilds from `evidence`. That is only a measurement of the
+# live turn if the rebuilt facts are the facts the live guard had, so each
+# route's are compared here, the live ones caught at the one call they pass
+# through.
+
+
+def _judged(monkeypatch) -> list:
+    """Every `VerifiedFacts` the live guard is handed, in order."""
+    seen: list = []
+    real = api.assemble
+
+    def spy(evidence):
+        facts = real(evidence)
+        seen.append(facts)
+        return facts
+
+    monkeypatch.setattr(api, "assemble", spy)
+    return seen
+
+
+def _rebuilt(record: dict):
+    evidence = json.loads(json.dumps(record["evidence"]))
+    return assemble(TurnEvidence.from_trace(evidence, record["tools"]))
+
+
+def test_the_brain_routes_facts_rebuild_from_its_trace(monkeypatch):
+    seen = _judged(monkeypatch)
+    turns = CollectedTurns()
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci="d8d5"))
+    for san in ("e4", "d5"):
+        assert ctx.session.submit_move(san).legal
+    client, _, _ = make_client(
+        tool_calls_turn(
+            ("make_move", {"move": "exd5", "source": "said_the_move"}),
+            ("describe_position", {}),
+        ),
+        text_turn("note: took on d5"),
+        text_turn("You are up a pawn."),
+        ctx=ctx,
+        tracer=turns,
+    )
+
+    client.post("/api/command", json={"text": "take on d5 and describe it"})
+
+    (record,) = turns.records
+    assert record["draft"] == "You are up a pawn."
+    assert record["evidence"]["pending_reply_fen"] is not None
+    assert _rebuilt(record) == seen[0]
+
+
+def test_the_fast_paths_facts_rebuild_from_its_trace(monkeypatch):
+    seen = _judged(monkeypatch)
+    turns = CollectedTurns()
+    ctx = ToolContext(session=GameSession(player_color="black"), engine=FakeEngine())
+    assert ctx.session.submit_move("e4").legal  # the engine opened
+    client, _, _ = make_client(text_turn("The classic."), ctx=ctx, tracer=turns)
+
+    client.post("/api/command", json={"text": "e5"})
+
+    (record,) = turns.records
+    assert record["route"] == "fast_path"
+    assert record["draft"] == "The classic."
+    assert record["evidence"]["session"]["player_color"] == "black"
+    assert _rebuilt(record) == seen[0]
+
+
+def test_a_drags_facts_rebuild_from_its_trace(monkeypatch):
+    seen = _judged(monkeypatch)
+    turns = CollectedTurns()
+    client, _, _ = make_client(text_turn("Bold opening."), tracer=turns)
+
+    client.post("/api/game/move", json={"move": "e2e4"})
+
+    (record,) = turns.records
+    assert record["route"] == "board"
+    assert record["draft"] == "Bold opening."
+    assert record["evidence"]["fens_observed"]
+    assert _rebuilt(record) == seen[0]
+
+
+def test_a_finished_game_and_an_undo_rebuild_from_the_trace(monkeypatch):
+    seen = _judged(monkeypatch)
+    turns = CollectedTurns()
+    ctx = finished(ToolContext(session=GameSession(), engine=FakeEngine()))
+    client, _, _ = make_client(
+        tool_calls_turn(("undo", {"plies": 2})),
+        text_turn("took two back"),
+        text_turn("Back to where we were."),
+        ctx=ctx,
+        tracer=turns,
+    )
+
+    client.post("/api/command", json={"text": "take back two"})
+
+    (record,) = turns.records
+    assert _rebuilt(record) == seen[0]
+    assert seen[0].undone
