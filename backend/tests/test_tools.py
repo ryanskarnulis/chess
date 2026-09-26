@@ -626,7 +626,7 @@ def test_describe_position_offers_the_narrator_no_side_to_play_for(session):
     to pick from) — the three fields `_narrator_state_dict` deletes for the
     same reason.
 
-    And no top-level `san`: `api._verified_facts` reads that key off every tool
+    And no top-level `san`: `facts.assemble` reads that key off every tool
     result as a move the turn played, so the last ply rides under `last_move`,
     SAN only and with nobody's name on it.
     """

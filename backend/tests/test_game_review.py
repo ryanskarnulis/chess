@@ -20,8 +20,8 @@ from chessapp.analysis import (
     review_game,
     win_percent,
 )
-from chessapp.api import _analysis_numbers
 from chessapp.engine import EnginePlayer
+from chessapp.facts import analysis_numbers
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext, build_registry
 
@@ -191,7 +191,7 @@ def test_tool_numbers_back_the_honesty_guard(engine):
     session = play(GameSession(), *SCHOLARS_MATE)
     registry = build_registry(ToolContext(session=session, engine=engine))
     result = registry.dispatch("review_game", {})
-    numbers = _analysis_numbers([{"name": "review_game", "result": result}])
+    numbers = analysis_numbers([{"name": "review_game", "result": result}])
     for move in result["critical"]:
         assert str(move["cp_loss"]) in numbers
 

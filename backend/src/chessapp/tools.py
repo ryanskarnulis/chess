@@ -1543,7 +1543,7 @@ def build_registry(
             "material": {"player_advantage": session.material_balance()},
             "castling": castling,
             "in_check": session.is_check(),
-            # SAN and no mover, under a key that is not `san`: `_verified_facts`
+            # SAN and no mover, under a key that is not `san`: `facts.assemble`
             # reads a top-level `san` off every result as a move the turn
             # played, and naming who played the last ply would tell the
             # narrator whose move is next (#193) — which is the one thing this
