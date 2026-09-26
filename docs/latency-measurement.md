@@ -97,6 +97,40 @@ Before any run whose result is a latency, check that the GPU is idle
 (`/running` on llama-swap, and `nvidia-smi`). Contention from another app
 distorts the numbers unevenly, not by a constant.
 
+### Prefix reuse on the shared server
+
+`cached_tokens` on each call says how much of the prompt the server reused.
+Measured for #362 on 2026-09-26 (b9935 build, 40 scripted turns, each call
+joined to llama-server's slot-selection log from
+`/logs/stream/upstream` on llama-swap):
+
+- **Slots are not the problem.** The server has four slots and a unified KV
+  pool. Selection by prompt similarity kept the planner in one slot and the
+  narrator in another. Only cold calls, the first after a model load, fell
+  back to LRU. Pinning `id_slot` per phase would change nothing.
+- **Gemma's sliding-window layers are.** Reusing a prefix that stops short of
+  the slot's end means rewinding the cache. Past the attention window, that
+  needs a context checkpoint at or before the point where the prompts stop
+  matching. `--checkpoint-min-step` defaults to 8192, so a slot keeps a single
+  checkpoint below 8k tokens: about 517 tokens before the end of its first
+  prompt. A turn's first planner call therefore often reuses only up to that
+  checkpoint (the recurring `2535`), and re-prefills about 850 tokens (median).
+  When that checkpoint sits past where the prompts stop matching, nothing is
+  reused and the whole ~3.4k-token prompt is prefilled again (`cached_tokens`
+  0, about 4 s).
+- **`--checkpoint-min-step 0` was measured and rejected.** It cut the median
+  re-prefill on the first planner call from 847 to 610 tokens. But each
+  checkpoint costs about 100 ms, on every call: in a controlled A/B, 619 → 728
+  ms on a 618-token prefill and 175 → 277 ms on an append. The in-app run was
+  slower overall. `--cache-ram` stays off for the OOM recorded in the
+  llama-swap config.
+
+The lever that is left is the prompt's shape. The planner's prompt stops
+matching the previous turn's right after the system prompt and tools, where
+the transcript begins. A prompt whose history only appends would stop
+matching near its end, inside the window. #370 and #372 reshape that context,
+so they should keep it append-only.
+
 ### Reading the report
 
 - **Denominators.** Every percentile is printed next to its `n`. Percentiles

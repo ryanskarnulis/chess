@@ -124,6 +124,11 @@ It removes facts the planner should never have been reading.
 
 ## 2. The two phases probably evict each other's KV cache every turn
 
+> **Result (#362, measured 2026-09-26): the premise did not hold.** The server
+> has four slots, and the phases stay in their own slots. The prefix is lost
+> to Gemma's sliding-window checkpoints instead. Neither lever below applies.
+> See `latency-measurement.md`, "Prefix reuse on the shared server".
+
 **Read.** The planner prompt is `PLANNER_PROMPT` (~490 tokens) plus 17 tool
 schemas (~2,870 tokens). The narrator prompt is the Glitch prompt (~770 tokens)
 with no tools. They differ from the first token. A brain turn runs planner →
