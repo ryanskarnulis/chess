@@ -9,14 +9,14 @@ server's chat template rendered — the text the model tokenized — then the ra
 response body, thought block and tool-call text included. With `--trace`
 pointing at the `CHESSAPP_TRACE_PATH` file, the turn's decisions follow its
 calls once the turn record is written: the tools run and what they returned,
-the engine's reply, the honesty guard, and what the player was told.
+the engine's reply, what Glitch drafted, and what the player was told.
 
 The captured content is printed exactly as captured — no wrapping, no
 re-indenting, no pretty-printing. Separators and headers are the only
 additions, and the decisions block (read from the trace, which is already a
 summary) is the only formatted part.
 
-`--phase` follows one phase (planner, closer, reaction, rewrite, answer);
+`--phase` follows one phase (planner, closer, reaction, answer);
 `--json` prints the request body instead of the rendered prompt; `--from-start`
 replays the files from the top instead of waiting for new lines.
 """
@@ -142,12 +142,6 @@ def render_turn(record: dict[str, Any]) -> str:
     reply = record.get("engine_reply")
     if reply:
         lines.append(f"engine reply: {reply.get('san')}\n")
-    if record.get("guarded"):
-        claims = ", ".join(record.get("guarded_claims") or [])
-        lines.append(
-            f"guard: cut [{claims}] · rewrite {record.get('rewrite') or '-'}\n"
-        )
-        lines.append(f"guard suppressed: {record.get('suppressed', '')}\n")
     if record.get("reaction_late"):
         lines.append("reaction: late\n")
     if record.get("engine_failure"):

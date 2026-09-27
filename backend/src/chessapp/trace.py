@@ -34,9 +34,10 @@ from chessapp.brain import ModelCall
 # which fields happen to be present: 2 is the first version that says so, and
 # the first whose model cost is a list of phase-tagged `calls`. A record with no
 # `schema` is version 1. 3 adds `draft` and `evidence`, which make a turn's
-# speech re-judgeable offline (#367). Bump it on any change a reader must
-# branch on.
-TRACE_SCHEMA = 3
+# speech re-judgeable offline (#367). 4 drops the live honesty guard's
+# fields (`guarded`, `suppressed`, `rewrite`, …) with the guard itself (#368):
+# `draft` is what Glitch said. Bump it on any change a reader must branch on.
+TRACE_SCHEMA = 4
 # What a record in the trace file is. A turn, or a `serving` manifest
 # (`serving.KIND_SERVING`), written at startup and whenever what serves the app
 # changes; the kind is on every record so a reader never mistakes one for the
@@ -107,12 +108,6 @@ def turn_record(
     tool_results: list[dict[str, Any]],
     engine_reply: dict[str, Any] | None = None,
     outcome: dict[str, Any] | None = None,
-    guarded: bool = False,
-    guarded_claims: Sequence[str] = (),
-    suppressed: str = "",
-    rewrite: str = "",
-    rewrite_claims: Sequence[str] = (),
-    rewrite_suppressed: str = "",
     draft: str = "",
     evidence: dict[str, Any] | None = None,
     provider_failure: str = "",
@@ -159,7 +154,7 @@ def turn_record(
     or None on a live board. `fen_after` already says whether a board-ended
     game ended, but not who the player was and not whether anyone resigned,
     and those are exactly what a reviewer needs to re-judge a finished game's
-    commentary against the guard's winner and termination facts (#287).
+    commentary against its winner and termination facts (#287).
 
     `engine_failure` is the same fact about the *other* half of a turn: empty
     unless Stockfish died on the reply the player's move had already earned,
@@ -184,35 +179,11 @@ def turn_record(
     learned before it died, which is the point — the record a reviewer most
     wants is the one a half-finished turn used to leave nothing of.
 
-    `guarded` marks a turn whose first commentary asserted something the honesty
-    guard's facts did not back, `guarded_claims` names the classes, and
-    `suppressed` is that first text. `commentary` stays what the player actually
-    saw. `rewrite` says what became of the second try the guard then asked the
-    narrator for: `""` when none ran (nothing was guarded), `"spoken"` when the
-    rewrite passed and is the commentary, `"cut"` when it still asserted
-    something — `rewrite_claims` names what, `rewrite_suppressed` keeps its
-    text — and the player got the deterministic fallback, `"lost"` when the
-    provider died on it. A guarded turn is still a model miss whatever the
-    rewrite did, which is why `guarded` reads the first draft: the eval floor
-    measures the model's own discipline, and the rewrite is what spares the
-    player the miss.
-
-    The lie used to be dropped on purpose — the event was countable and that
-    read like enough. It is not. A false positive is now the guard's likelier
-    failure than a false negative (the classes have grown from one to twelve),
-    and when one fires there is nowhere left to read what tripped it: the
-    commentary is replaced, the transcript deliberately keeps it out
-    (`api._remembered_facts` — a canned correction fed back is a register the
-    model imitates), and the log put the classes in `extra`, which the default
-    formatter drops. Two live misfires were diagnosed by guessing at candidate
-    phrasings because of that. A guard nobody can debug gets loosened blindly,
-    which is the one way this one becomes worthless. The trace is opt-in and
-    off by default, so this costs nothing until somebody is already debugging.
-
     `calls` is every model round trip the turn made, one entry each in call
     order (#317): `seq` (its place in the turn — with `correlation_id`, the
-    attempt's identity), `phase` (`planner`, `closer`, `reaction`, `rewrite`,
-    `answer`, or `unknown` from a brain that does not tag its calls), `status`
+    attempt's identity), `phase` (`planner`, `closer`, `reaction`, `answer`
+    — older records also have `rewrite` — or `unknown` from a brain that does
+    not tag its calls), `status`
     (`ok`, `truncated`, `bad_args`, `failed` with the provider's `failure` kind,
     or `late` — still running when its caller stopped waiting, so its `ms` is
     the wait, censored at `budget_ms`), its wall clock in `ms`, and its tokens,
@@ -234,7 +205,7 @@ def turn_record(
     a gap. This is the number every context-shrinking cut is measured against.
     Every round trip the turn made is in `model_calls`, whichever phase made it
     and whether or not it raised (#290) — a reader that died, a reaction the
-    budget cut, a lost rewrite. `unmetered_calls` is how many of them reported
+    budget cut. `unmetered_calls` is how many of them reported
     no token usage (they raised, or the server sent none): the token totals are
     what was measured, so a non-zero count marks them as a lower bound rather
     than a measured total.
@@ -250,9 +221,8 @@ def turn_record(
     whole milliseconds per phase, a key present only for a phase that ran:
     `queue` (waiting for the mutation lock behind another request), `tool`
     (tool handlers, analysis included — Stockfish asked *by a tool* is tool
-    time), `engine` (collecting the engine's reply to the player's move),
-    `guard` (the honesty guard, less its rewrite's model time, which is already
-    in `model_ms`), and `total` (from asking for the lock to writing this
+    time), `engine` (collecting the engine's reply to the player's move), and
+    `total` (from asking for the lock to writing this
     record). Model time is `model_ms` and is not repeated here. Speech is not a
     span: text-to-speech is its own request, after the turn. `None` on a record
     built outside a request.
@@ -333,15 +303,14 @@ def turn_record(
     narration that announced something is re-judged against this, not against
     the planner's note: "took it back" under `performed: []` is the miss.
 
-    `draft` is the model's own words exactly as the honesty guard was handed
-    them: before the rewrite, and before the app composed its own lines (the
-    reply announcement, the move confirmation) around them. `commentary` is
-    what the player heard and `suppressed` only exists when the guard fired,
-    so neither is the thing speech accuracy scores (#367). `evidence` is the
-    `facts.TurnEvidence` the guard's facts were assembled from, less the tool
-    results `tools` already carries: `speech_accuracy` rebuilds the facts from
-    it and re-judges `draft`, so a turn is scored on the facts it really had.
-    Both are empty on a turn that never reached the guard.
+    `draft` is the model's own words exactly as he wrote them, before the app
+    composed its own lines (the reply announcement, the move confirmation)
+    around them. `commentary` is what the player heard, so it is not the thing
+    speech accuracy scores (#367). `evidence` is the `facts.TurnEvidence` the
+    turn's facts are assembled from, less the tool results `tools` already
+    carries: `speech_accuracy` rebuilds the facts from it and re-judges
+    `draft`, so a turn is scored on the facts it really had. Both are empty on
+    a turn whose words the model did not write (a deterministic route).
 
     `clarification` is the origin's open question across the turn (#319,
     `clarification`): `open` — the id of the question standing as the turn
@@ -367,12 +336,6 @@ def turn_record(
         "reaction_late": reaction_late,
         "error": error,
         "changed": changed,
-        "guarded": guarded,
-        "guarded_claims": list(guarded_claims),
-        "suppressed": suppressed,
-        "rewrite": rewrite,
-        "rewrite_claims": list(rewrite_claims),
-        "rewrite_suppressed": rewrite_suppressed,
         "draft": draft,
         "evidence": evidence,
         "game_id": game_id,

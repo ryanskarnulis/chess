@@ -206,8 +206,7 @@ def system_prompt_for(verbosity: str = "normal") -> str:
     the agent without a valid prompt.
 
     Hints take no layer here (the mode was retired 2026-09-01): a hint exists
-    only as the answer to an ask — the planner routes it to `get_best_moves`,
-    and the advice guard holds the commentary to moves a tool actually
-    reported — so there is no state in which Glitch is told to volunteer one.
+    only as the answer to an ask — the planner routes it to `get_best_moves` —
+    so there is no state in which Glitch is told to volunteer one.
     """
     return SYSTEM_PROMPT + _VERBOSITY_INSTRUCTIONS.get(verbosity, "")

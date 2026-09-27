@@ -5,7 +5,7 @@ confirmation, deterministic fast path, deterministic resignation, or the brain's
 tool loop) and until now recorded *which* nowhere — so a turn that went wrong
 left nothing to review. Every turn writes one JSONL record: the utterance, the
 route, the whole tool trajectory (name, args, result), the loop's stop reason,
-and whether the honesty guard had to suppress the commentary.
+and the model's own words beside the evidence they are judged against.
 
 Tracing is diagnostics, never a dependency: a tracer that fails must not cost
 the player their turn.
@@ -28,11 +28,16 @@ from chessapp.brain import (
     Narration,
     ToolCall,
 )
-from chessapp.engine import CandidateMove
 from chessapp.game import GameSession
 from chessapp.tools import Settings, ToolContext
 from chessapp.trace import JsonlTracer, turn_record
-from fakes import DyingEngine, FakeEngine, ScriptedBrain, scripted_app
+from fakes import (
+    DyingEngine,
+    FakeEngine,
+    ScriptedBrain,
+    scripted_app,
+    unbacked_claims,
+)
 
 
 def read_records(path):
@@ -98,7 +103,7 @@ def test_turn_record_is_versioned_and_says_what_it_is():
     """#317: a reader keys off `schema` rather than guessing from which fields
     are present, and `kind` lets other records share the file."""
     record = _record_fields()
-    assert record["schema"] == 3
+    assert record["schema"] == 4
     assert record["kind"] == "turn"
 
 
@@ -493,109 +498,34 @@ def test_a_confirmed_draw_claim_is_traced_as_one_mutation(trace_path):
     assert confirmed["changed"] is True
 
 
-def test_a_suppressed_claim_is_a_countable_event(trace_path):
-    """The guard sends the lie back for a rewrite, so `commentary` is what the
-    player saw — and the record keeps the event beside it. `guarded` reads the
-    first draft: whatever the rewrite did, the model's first answer invented a
-    fact, and that is the miss the eval floor counts."""
+def test_an_unbacked_claim_is_spoken_and_kept_for_the_scorer(trace_path):
+    """Nothing checks the words live (#368): `commentary` is what the player
+    heard, which is the model's draft, and the record keeps the draft and its
+    evidence so speech accuracy can count the miss offline (#367). No field
+    describes live guarding any more."""
     client, _ = make_client(trace_path, AgentResponse(text="Word. Game over."))
 
     client.post("/api/command", json={"text": "i'm bored of this"})
 
     (record,) = read_records(trace_path)
-    assert record["guarded"] is True
-    assert "Game over" not in record["commentary"]
+    assert record["commentary"] == record["draft"] == "Word. Game over."
+    assert unbacked_claims(record) == ["ending"]
+    for field in (
+        "guarded",
+        "guarded_claims",
+        "suppressed",
+        "rewrite",
+        "rewrite_claims",
+        "rewrite_suppressed",
+    ):
+        assert field not in record
 
 
-def test_a_suppressed_claim_records_what_it_was_and_why(trace_path):
-    """A guard that eats its own evidence is a guard nobody can debug. Twice now
-    a live misfire has been diagnosed by guessing, because the suppressed text
-    survived nowhere: not in `commentary` (replaced), not in the transcript
-    (`api._remembered_facts` keeps it out on purpose) and not in the log (the
-    classes rode in `extra`, which the default formatter drops). So the record
-    keeps both halves — what was said, and which classes the facts didn't
-    back."""
-    client, _ = make_client(trace_path, AgentResponse(text="Word. Game over."))
-
-    client.post("/api/command", json={"text": "i'm bored of this"})
-
-    (record,) = read_records(trace_path)
-    assert record["guarded_claims"] == ["ending"]
-    assert record["suppressed"] == "Word. Game over."
-
-
-def test_a_leaked_hint_records_what_it_was_too(trace_path):
-    """The advice guard is a suppression like any other, and it named nothing in
-    the record at all — a turn cut for leaking a move looked identical to one cut
-    for inventing a capture. The engine was consulted (it said Nc3), which is
-    what puts the guard in play at all."""
-    client, _ = make_client(
-        trace_path,
-        AgentResponse(
-            text="Easy: play Nf3 and thank me later.",
-            tool_calls=(ToolCall(name="get_best_moves", args={}),),
-        ),
-        engine=FakeEngine(
-            best_moves=(
-                CandidateMove(uci="b1c3", san="Nc3", score_cp=20, mate_in=None),
-            )
-        ),
-    )
-
-    client.post("/api/command", json={"text": "what should I play?"})
-
-    (record,) = read_records(trace_path)
-    assert record["guarded"] is True
-    assert record["guarded_claims"] == ["move_advice"]
-    assert record["suppressed"] == "Easy: play Nf3 and thank me later."
-
-
-def test_a_spoken_rewrite_is_recorded_beside_the_draft_it_replaced(trace_path):
-    """Both halves of the second try: what the first draft said, and that the
-    rewrite is what reached the player."""
-    ctx = ToolContext(session=GameSession(), engine=None)
-    brain = ScriptedBrain(
-        AgentResponse(text="Word. Game over."), rewrites=("Word. Your move.",)
-    )
-    app, _ = scripted_app(ctx, brain=brain, tracer=JsonlTracer(trace_path))
-
-    TestClient(app).post("/api/command", json={"text": "i'm bored of this"})
-
-    (record,) = read_records(trace_path)
-    assert record["guarded"] is True
-    assert record["guarded_claims"] == ["ending"]
-    assert record["suppressed"] == "Word. Game over."
-    assert record["rewrite"] == "spoken"
-    assert record["rewrite_claims"] == []
-    assert record["commentary"] == "Word. Your move."
-
-
-def test_a_cut_rewrite_is_recorded_with_what_it_still_claimed(trace_path):
-    ctx = ToolContext(session=GameSession(), engine=None)
-    brain = ScriptedBrain(
-        AgentResponse(text="Word. Game over."), rewrites=("Nah. Snagged your rook.",)
-    )
-    app, _ = scripted_app(ctx, brain=brain, tracer=JsonlTracer(trace_path))
-
-    TestClient(app).post("/api/command", json={"text": "i'm bored of this"})
-
-    (record,) = read_records(trace_path)
-    assert record["rewrite"] == "cut"
-    assert record["rewrite_claims"] == ["capture"]
-    assert record["rewrite_suppressed"] == "Nah. Snagged your rook."
-    assert "rook" not in record["commentary"]
-
-
-def test_an_ordinary_turn_is_not_guarded(trace_path):
+def test_an_ordinary_turn_claims_nothing_unbacked(trace_path):
     client, _ = make_client(trace_path)
     client.post("/api/command", json={"text": "e4"})
     (record,) = read_records(trace_path)
-    assert record["guarded"] is False
-    assert record["guarded_claims"] == []
-    assert record["suppressed"] == ""
-    assert record["rewrite"] == ""
-    assert record["rewrite_claims"] == []
-    assert record["rewrite_suppressed"] == ""
+    assert unbacked_claims(record) == []
 
 
 def test_trace_records_a_budget_stop(trace_path):
@@ -943,7 +873,8 @@ def test_a_brain_turn_records_the_budget_that_ended_it(trace_path):
 
 def test_turn_record_keeps_the_draft_and_the_evidence_for_rescoring():
     """#367: the model's own words and the facts' evidence, so a turn's speech
-    can be re-judged offline; empty on a turn that never reached the guard."""
+    can be re-judged offline; empty on a turn whose words the model did not
+    write."""
     bare = _record_fields()
     assert (bare["draft"], bare["evidence"]) == ("", None)
 

@@ -86,8 +86,8 @@ current game". Two exemptions, each because nothing the player owned is lost:
 
 A successful save reports `replaced: true|false`.
 
-`DESTRUCTIVE_TOOLS` stays the three game-ending ops: it is what the honesty
-guard certifies as "the game ended or restarted", and a confirmed resume or
+`DESTRUCTIVE_TOOLS` stays the three game-ending ops: it is what the ending
+claim class reads as "the game ended or restarted", and a confirmed resume or
 save must never read as "game over".
 
 ## Who may answer

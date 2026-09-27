@@ -1,14 +1,14 @@
 """What a turn can honestly say: the facts, assembled from the record of it.
 
-Speech is scored against these (#367), and until #368 the honesty guard checks
+Speech is scored against these (#367); until #368 a live honesty guard checked
 against them too. The assembly used to read the live `ToolContext` directly,
 which made a traced turn impossible to re-judge: the move history, the
 player's colour, the settings and the mid-turn boards never reached the trace.
 So the pipeline now writes down a `TurnEvidence` — everything the assembly
 reads, in a shape JSON holds — and `assemble` turns that into `VerifiedFacts`.
-The live path and the offline scorer (`speech_accuracy`) both go through
-`assemble`, so a turn re-judged from its trace is judged on exactly the facts
-the live turn had.
+The scorer (`speech_accuracy`) goes through `assemble` on the evidence the
+live turn wrote down, so a turn re-judged from its trace is judged on exactly
+the facts the live turn had.
 
 `honesty` owns the reading of the string; this module owns what is true.
 """
@@ -38,7 +38,7 @@ _PIECE_NAMES = {
 
 def relative_outcome(session: GameSession) -> dict[str, Any] | None:
     """The ending from the player's side, or None on a live board: the shape the
-    honesty guard checks a winner claim against (`VerifiedFacts.winner` is
+    outcome class reads a winner claim against (`VerifiedFacts.winner` is
     `"player"` / `"opponent"` / None) and the shape the trace records, so a
     traced turn on a finished game can be re-judged without knowing which
     color the player had (#287)."""
@@ -54,17 +54,12 @@ def relative_outcome(session: GameSession) -> dict[str, Any] | None:
 def analysis_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
     """The moves the turn's *analysis* tools named, in SAN: the engine's word.
 
-    This is the advice guard's evidence. Since 2026-09-10 the guard fires only
-    when this set is non-empty — the turn asked Stockfish and the reply names a
-    playable move Stockfish did not — because that is the one shape that is
-    an honesty problem rather than an opinion. A turn that ran no analysis and
-    names a move is Glitch speaking from his own chess ("play Bf4, that's the
-    London"), which is his to do, and which the old rule ("evidence is the
-    only licence") cut as a matter of policy: live it ate a correct opening
-    answer (2026-09-06) and a list of legal alternatives a refused move had
-    itself reported (2026-09-04). Hint asks still reach the engine — the
-    planner routes them to `get_best_moves` and the eval gate measures that —
-    so what this changes is whose word an *unasked* move is.
+    Part of what a turn reported (`reported_moves`), so a narrator repeating
+    the engine's moves is repeating a fact. It was also the retired advice
+    guard's evidence (2026-09-10 to #368): that guard held a reply to the
+    engine's moves once the turn had asked Stockfish, and before that to no
+    move at all without an analysis, which live ate a correct opening answer
+    (2026-09-06) and a refused move's own alternatives (2026-09-04).
     """
     reported: set[str] = set()
     for r in tool_results:
@@ -84,27 +79,26 @@ def reported_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
     """Every move a tool result this turn named, in SAN — the analysis moves
     and every other report a narrator may repeat.
 
-    The advice guard's licence, once its evidence exists (`analysis_moves`).
-    It is scoped to what the tools said rather than switched off wholesale:
-    live, the planner answered "what should I play here?" with
-    `evaluate_position` + `analyze_last_move` and the old boolean test read
-    that as permission, letting the narrator hand over a list of moves no tool
-    had mentioned (docs/agent-evals.md, 2026-07-25).
+    A move named here is one the turn can back, whatever position it was
+    legal in. (It was also the retired advice guard's licence, scoped to what
+    the tools said rather than to whether any analysis ran — docs/agent-evals.md,
+    2026-07-25.)
 
     `describe_position` is licensed for exactly the one move it names, the last
     one played. A description that ends "Last move: O-O." is a report, and the
     narrator repeating it is a fact — but castling is the one SAN both sides
     spell the same way, so when the other side can still castle the same
-    string is a currently legal move too, and the guard read the echo as advice
-    and ate the whole description. A quiet move cannot collide (its destination
-    is occupied once it has been played), so the licence costs nothing else.
+    string is a currently legal move too, and the old advice guard read the
+    echo as advice and ate the whole description. A quiet move cannot collide
+    (its destination is occupied once it has been played), so the licence
+    costs nothing else.
 
     A refused `make_move` reports `alternatives`, the legal moves it offered in
     place of the one it could not play, and `get_legal_moves` reports the list
     itself. Both are the tool's own words, and a narrator reading them back is
     reporting, not advising: live, "That move's cooked. You gotta pick from
     these instead: Ng5, Ne5, ..." was every one of the refusal's own
-    alternatives, and the guard cut it (2026-09-04).
+    alternatives, and the old guard cut it (2026-09-04).
     """
     reported = analysis_moves(tool_results)
     for r in tool_results:

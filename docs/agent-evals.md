@@ -98,9 +98,10 @@ Every run also reports **speech accuracy** (#367). Each traced turn's draft is
 re-judged against its recorded facts. Each scenario prints an
 `[eval] scenario=… speech b/m (pct)` line, and the run closes with the suite's
 total and every unbacked line. The report carries the same numbers as
-`speech` on each `scenario` record and on the closing `suite` record. It is
-reported, never asserted; a gate run that changes prompts, context or the
-model quotes it beside the pass rates (`docs/speech-accuracy.md`).
+`speech` on each `scenario` record and on the closing `suite` record. The
+suite-wide rate is reported, never asserted; a gate run that changes prompts,
+context or the model quotes it beside the pass rates
+(`docs/speech-accuracy.md`).
 
 ### Measuring a planner change
 
@@ -143,6 +144,20 @@ evidence of health. Infra deaths are retried, never scored. Don't lower a
 floor to get quiet — power depends on it. Evals never enter CI (decided
 2026-07-26): the suite needs the GPU and its value is a human reading the
 numbers next to their own change.
+
+**An unbacked claim fails its sample** (#368). The live honesty guard is
+retired, so nothing stops a false claim reaching the player; the gate is
+where one still turns red. Every scenario that reads the reply's words runs
+`_assert_speech_backed` on the turn's trace record: speech accuracy's own
+reading (`speech_accuracy.unbacked`) of the draft against the turn's
+evidence, and any scored claim it does not back fails that sample, which
+counts against the scenario's floor like any other miss. This replaces
+`_assert_not_guarded`, which failed a sample the live guard fired on, with
+the same reading minus the retired advice licence and plus the scorer's two
+widenings (a review's alternatives, rounded centipawns). The #340 baseline
+backed all 94 of its claims, so the new check changes no recorded result.
+Scenario names that say `survives_guard` keep their names for the report
+history; they now measure that a true line *scores* as backed.
 
 ## Scenarios
 
@@ -225,19 +240,20 @@ against the real engine.
 
 | Scenario | Utterance; setup | Pins | Kind |
 | --- | --- | --- | --- |
-| `offer_draw_routes` | "eh, wanna just call it a draw?"; the Ruy Lopez after 3...a6 | `offer_draw` attempted, `resign` and `claim_draw` not; the result is a decline (a middlegame with every piece on is `not_an_endgame` whatever the score); the game is not over, the board unchanged, nothing armed, **not guarded** — "game over"/"we drew" on a decline is the ending claim the guard exists for; `completed`, 3–5 calls | Lock |
-| `offer_draw_accepted` | "let's just call it a draw here, deal?"; a seeded rook-and-three-pawns endgame, two king moves played so the player has moved | `offer_draw` succeeded with `accepted: true`, no `resign`; the game ends by `agreement`; not guarded; `completed`, 3–5 calls | Lock |
+| `offer_draw_routes` | "eh, wanna just call it a draw?"; the Ruy Lopez after 3...a6 | `offer_draw` attempted, `resign` and `claim_draw` not; the result is a decline (a middlegame with every piece on is `not_an_endgame` whatever the score); the game is not over, the board unchanged, nothing armed, **every claim backed** — "game over"/"we drew" on a decline is an unbacked ending claim; `completed`, 3–5 calls | Lock |
+| `offer_draw_accepted` | "let's just call it a draw here, deal?"; a seeded rook-and-three-pawns endgame, two king moves played so the player has moved | `offer_draw` succeeded with `accepted: true`, no `resign`; the game ends by `agreement`; every claim backed; `completed`, 3–5 calls | Lock |
 
 ### The guard on a finished game (added 2026-09-18, floor 0.8)
 
-Astra audit F7, #287: the honesty guard's `outcome` class reads the winner and
-termination words against the session's outcome once the game is over. The
+Astra audit F7, #287: the `outcome` claim class reads the winner and
+termination words against the session's outcome once the game is over (the
+live guard that used it is retired, #368; the sample now fails on the reading). The
 hard spec is `test_honesty.py`'s labeled corpus; this scenario prices the
 misfire in live turns, the `advice_capture_survives_guard` precedent.
 
 | Scenario | Utterance; setup | Pins | Kind |
 | --- | --- | --- | --- |
-| `checkmate_reaction_survives_guard` | "queen takes f7"; after 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6, the player white | the fast path (`parse_move` settles `Qxf7#`, asserted in setup), one model call — the observe beat reacting from the finished board, with no reply owed and no result line beside it; the game is over with the player the winner; the record's `outcome` is `{"winner": "player", "termination": "checkmate"}`; the commentary is a reaction and not the app's own `Qxf7#. Game over: 1-0 (checkmate).`; **not guarded** | Lock |
+| `checkmate_reaction_survives_guard` | "queen takes f7"; after 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6, the player white | the fast path (`parse_move` settles `Qxf7#`, asserted in setup), one model call — the observe beat reacting from the finished board, with no reply owed and no result line beside it; the game is over with the player the winner; the record's `outcome` is `{"winner": "player", "termination": "checkmate"}`; the commentary is a reaction and not the app's own `Qxf7#. Game over: 1-0 (checkmate).`; **every claim backed** | Lock |
 
 ### Compositions (added 2026-09-05, floor 0.8 each)
 
@@ -249,12 +265,13 @@ best-move-read-then-act, and seeded history is never executed, so a multi-tool
 request sitting in `_LIVE_TRANSCRIPT` was not coverage. These are its twelve
 proposals, in its own order of expected information per GPU-minute. Every one
 asserts route, stop reason, model-call envelope, board end-state and a settings
-snapshot, plus the guard verdict wherever text reaches the player.
+snapshot, plus speech accuracy's verdict wherever text reaches the player
+(the guard verdict until #368).
 
 | Scenario | Utterance(s); seam | Pins | Kind |
 | --- | --- | --- | --- |
 | `undo_twice_and_replace` | (strengthened, not new) | Adds exactly four plies, the player to move, nothing armed, `completed`, 3–5 calls — a history *prefix* used to accept a turn that landed the position and kept working | Was a recorded miss (5/20, then 7–9/20 on the old `undo` text); the description rewrite measured 34/40 against 16/40 and the xfail is off |
-| `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, is **not guarded**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | Was a **measured miss** — the planner played one of the two knights instead of asking, 26 of 50 samples on both sides of the guard fix — until the planner procedure's duplicated `captures` sentence was deleted (2026-09-05): 17/20 against the old text's 8/20 in alternating blocks on one server, xfail off |
+| `ambiguous_knight_then_selection` | "move my kings knight" → "the one to f3"; panel | Step 1 mutates nothing, **every claim backed**, costs 2 calls; then one legal `make_move`, history `["Nf3", reply]`, 3–4 calls | Was a **measured miss** — the planner played one of the two knights instead of asking, 26 of 50 samples on both sides of the guard fix — until the planner procedure's duplicated `captures` sentence was deleted (2026-09-05): 17/20 against the old text's 8/20 in alternating blocks on one server, xfail off |
 | `move_save_resume_finishes_exchange` | "play e4 and save this as checkpoint" → "load the game named checkpoint" (then "yes"); panel | Move *before* save, the file loads; then — the live game being under way — a resume the gate refuses and arms (#291), the board standing; the panel yes restores history `["e4", reply]`, White to move, no illegal attempt | **Reproduced** audit finding 2 — 0/5 on the pre-fix main, 5/5 on the settled restore (#266) |
 | `save_then_new_game` | "save this as checkpoint and start a new game" (then "yes"); delegate | Save *before* an attempted reset the gate refuses; the file holds the game; `new_game` armed; the yes resets at **0 model calls** (verbosity `low`) | Lock |
 | `voice_setting_and_move` | "turn voice output off and play e4" | `set_voice_output` and one legal move; the whole settings snapshot with one key changed; 3–4 calls, thinking off | Lock |
@@ -289,6 +306,17 @@ Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Run 2026-09-27 on the retired-guard tree (#368, roadmap #366 step 4:
+the live honesty guard, its narrator rewrite and the advice licence removed;
+the gate's `_assert_not_guarded` replaced by `_assert_speech_backed`). Only
+the release blocker was run: `long_capture` 5/5 ×3 (fresh, live_like,
+poisoned), all ABOVE_FLOOR STABLE, 3 model calls a sample, speech 5/5 over 15
+turns, 31 s, idle GPU. The rest of the gate was not re-run, on purpose: the
+change touches no prompt, schema or planner input (the planner never saw the
+rewrite), speech accuracy already scored the pre-guard `draft`, and the
+guard fired on 0 samples of the #340 run below, so no recorded sample can
+change. The #340 numbers stand as the baseline.**
 
 **Run 2026-09-26, the pre-redesign snapshot (#340, roadmap #366 step 3), on
 `a5a924d` (no change: this is the reference the redesign is compared with;

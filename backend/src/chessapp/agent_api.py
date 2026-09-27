@@ -194,7 +194,8 @@ class StoredMessage:
     # the app substituted its own words for the model's and the caller must
     # see the correction while the model must not be taught to write it
     # (`api.CommandOutcome.memory`). `None` means "no divergence", which is
-    # every turn but a guarded one. Never on the wire — `MessageRead` names
+    # every turn but one the app spoke for or around (a budget stop, a dead
+    # provider, a reply announcement). Never on the wire — `MessageRead` names
     # its fields, and this is not one of them.
     memory: str | None = None
     # The caller's `Idempotency-Key` for the exchange this user turn opened

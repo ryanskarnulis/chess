@@ -26,10 +26,10 @@ python scripts/watch_context.py /tmp/context.jsonl --trace /tmp/turns.jsonl
 The watcher prints each call as it lands, grouped under its turn: the prompt
 the chat template rendered, then the raw response. When the turn record is
 written, the turn's decisions follow: tools and results, the engine's reply,
-the guard, and the commentary. Options:
+and the commentary. Options:
 
 - `--phase planner` follows one phase (`planner`, `closer`, `reaction`,
-  `rewrite`, `answer`).
+  `answer`; records from before #368 also have `rewrite`).
 - `--json` prints the request body instead of the rendered prompt.
 - `--from-start` replays the files from the top instead of waiting at the end.
 
@@ -88,7 +88,7 @@ The file gets one JSONL line per model call (`kind: "model_call"`,
 | field | what it is |
 | --- | --- |
 | `turn_id`, `correlation_id` | the interaction, the same ids the turn trace uses. `null` for a call made outside one (evals, probes) |
-| `phase` | `planner`, `closer`, `reaction`, `rewrite`, `answer`, or `unknown` |
+| `phase` | `planner`, `closer`, `reaction`, `answer`, or `unknown` (`rewrite` on records from before #368) |
 | `seq` | the call's place among the calls its interaction sent, counted when it was sent |
 | `started_at`, `ended_at`, `ms` | wall clock |
 | `url` | where the request went |

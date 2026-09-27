@@ -130,7 +130,7 @@ FIRST = ServerStamp(fingerprint="b9935-f2d1c2f39", server_ms=200)
 def test_a_fresh_manifest_names_the_server_unknown_rather_than_the_alias():
     record = manifest().record()
 
-    assert record["schema"] == 3
+    assert record["schema"] == 4
     assert record["kind"] == "serving"
     assert record["app"]["revision"] == "abc123"
     assert record["client"]["model"] == MODEL

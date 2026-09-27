@@ -639,7 +639,7 @@ class ToolContext:
 
 
 # The tools that throw a real game away: the reset, and the two ways a player
-# can end one deliberately. What the honesty guard certifies as "the game
+# can end one deliberately. What the ending claim class reads as "the game
 # ended or restarted" and what the evals count as a game-ending call — so it is
 # deliberately *not* the list of gated tools below.
 DESTRUCTIVE_TOOLS = ("new_game", "resign", "claim_draw")
@@ -722,9 +722,8 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
 
     `get_best_moves` used to be the third (audit item 11: withheld while hints
     were off). Hints mode was retired 2026-09-01 — a hint is on-request now, so
-    the tool that answers the ask is in the offer on every turn, and what keeps
-    advice honest is the pipeline's guard: commentary may name a legal move only
-    if an analysis tool reported it this turn.
+    the tool that answers the ask is in the offer on every turn, and whether a
+    hint ask reaches it is the planner's routing, which the eval gate measures.
 
     Callers with no state injection (the MCP server, the delegate wire,
     `/api/game/hint`) still get the full registry; a withheld tool stays
@@ -1169,7 +1168,7 @@ def _position_summary(
         sentences.append("Nothing has been played yet — the starting position.")
     else:
         # A session can be rooted on a FEN nobody played into (a resumed save,
-        # the guard's per-turn boards), so "nothing played" alone does not mean
+        # a turn's evidence boards), so "nothing played" alone does not mean
         # "the starting position" and this branch is what an unplayed custom
         # position gets.
         sentences.append(
@@ -1177,8 +1176,8 @@ def _position_summary(
         )
 
     # Material, phrased as "up N pawns" on purpose: that is the shape the
-    # honesty guard's material class reads, so an echo of this sentence is a
-    # claim the board can be made to back rather than one the guard has to eat.
+    # material claim class reads, so an echo of this sentence is a claim the
+    # board backs rather than one speech accuracy counts as a miss.
     balance = session.material_balance()
     if balance == 0:
         sentences.append("Material is level.")
@@ -1537,8 +1536,8 @@ def build_registry(
             # facts for everyone else.
             "summary": _position_summary(session, placement, castling),
             "pieces": placement,
-            # Positive means the *player* is ahead — the convention the honesty
-            # guard counts in (`VerifiedFacts.material`), so a claim read off
+            # Positive means the *player* is ahead — the convention the claim
+            # reading counts in (`VerifiedFacts.material`), so a claim read off
             # this result and a claim checked against the board agree on sign.
             "material": {"player_advantage": session.material_balance()},
             "castling": castling,

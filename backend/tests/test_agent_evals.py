@@ -161,7 +161,7 @@ from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.serving import ServingManifest, ServingProbe, app_revision
-from chessapp.speech_accuracy import Tally
+from chessapp.speech_accuracy import Tally, unbacked
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
     Settings,
@@ -493,7 +493,7 @@ class _CollectingTracer:
     `api._run_command` traces **every** route, so this is how the harness learns
     the things the HTTP answer does not carry: the real `stop_reason` on the
     panel seam (`/api/command` genuinely does not return one), plus `route`,
-    `mutations`, `guarded`, `model_calls` and `model_ms` on *both* seams. That is
+    `mutations`, `draft`, `model_calls` and `model_ms` on *both* seams. That is
     what lets an infra death be told from a behavioral miss with **zero**
     production change — the alternative was adding `stop_reason` to the panel
     response, which would put a production edit inside a harness slice, and the
@@ -919,10 +919,6 @@ def _measured(
     # reading that covers a died turn. `stop_reason` and `route` come from the
     # same record, so the attribution and the readings can never be from
     # different turns.
-    # A guard rewrite is one more narrator call (`trace.turn_record`'s
-    # `rewrite`), and the splitter needs to know or it hands the planner the
-    # first narrator round trip.
-    rewrites = 1 if traced.get("rewrite") else 0
     # The calls' own phase tags (#317), when the record has them: read before
     # the route-and-stop rule, which stays the fallback.
     phases = [call["phase"] for call in traced.get("calls", ())] or None
@@ -930,7 +926,6 @@ def _measured(
         traced.get("model_latencies_ms", ()),
         route=traced.get("route"),
         stop_reason=traced.get("stop_reason"),
-        rewrites=rewrites,
         phases=phases,
     )
     # Tokens come off the *call meter* rather than the trace, because the trace
@@ -943,7 +938,6 @@ def _measured(
         [(call.prompt_tokens, call.completion_tokens) for call in model_calls],
         route=traced.get("route"),
         stop_reason=traced.get("stop_reason"),
-        rewrites=rewrites,
         phases=phases,
     )
     tok_s = generation_rate(tokens.narrator_out, latencies.narrator_ms)
@@ -1098,16 +1092,21 @@ def _assert_route(run: EvalRun, expected: str | None) -> None:
     )
 
 
-def _assert_not_guarded(traced: dict[str, Any]) -> None:
-    """The player got what the model said, not a correction over it.
+def _assert_speech_backed(traced: dict[str, Any]) -> None:
+    """Everything the turn's words claimed, the turn backs (#368).
 
-    Six scenarios had this three-line read of the trace record copied out; the
-    composition family adds ten more, and the message is the whole value of it
-    — which claim class fired, and what the player would have been told.
+    The live honesty guard is retired, so a claim the board does not back
+    reaches the player; this is where the gate still catches it, through the
+    same offline reading speech accuracy scores (`speech_accuracy.unbacked`).
+    An unbacked claim fails its sample, which counts against the scenario's
+    floor like any other miss. The message names the family, the sentence and
+    what the player heard.
     """
-    assert traced.get("guarded") is not True, (
-        f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
-        f"{traced.get('suppressed')!r}"
+    missed = unbacked(traced)
+    assert not missed, (
+        "unbacked speech "
+        + "; ".join(f"[{claim.claim}] {claim.sentence!r}" for claim in missed)
+        + f" — said: {traced.get('draft')!r}"
     )
 
 
@@ -1304,11 +1303,10 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(engine: EnginePlayer) -> N
     free-form note, it came back "which rook and which square?" 20/20.
 
     The question has to *reach the player* to be worth anything, which is why
-    the guard verdict is asserted beside the board (audit 2026-09-05: this
-    scenario accepted any nonempty text, including the advice correction). A
-    clarifying question that names its candidates — "Rh3 or Rh2?" — is exactly
-    the shape the advice guard mistakes for unlicensed advice, so a green here
-    over a suppressed answer would be measuring the correction, not the ask.
+    what it says is asserted beside the board (audit 2026-09-05: this scenario
+    accepted any nonempty text, including the old advice guard's correction).
+    Since #368 nothing replaces it, and its words are held to what the turn
+    backs, like every scenario's (`_assert_speech_backed`).
 
     Sampled rather than single-shot since 2026-09-05. It was a hard scenario
     for as long as it passed, and the same-day control run passed it; the first
@@ -1346,11 +1344,7 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(engine: EnginePlayer) -> N
             assistant["content"], ("Ra2", "Ra3", "Rh2", "Rh3")
         )
         traced = app.tracer.last
-        assert traced.get("guarded") is not True, (
-            "the player got a correction, not a question "
-            f"({','.join(traced.get('guarded_claims') or ())}): "
-            f"{traced.get('suppressed')!r}"
-        )
+        _assert_speech_backed(traced)
         # The planner's ask plus the narrator's question, and the ask is a
         # parse: thinking stays off on the first call.
         assert len(app.provider.calls) == 2, (
@@ -1462,8 +1456,8 @@ def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:
     What the first ask has to *deliver* is asserted too (audit 2026-09-05: any
     nonempty text and any armed op used to pass). The armed op must be the reset
     the question is about — `live_pending`, so a stale arm from another board
-    cannot stand in for it — and the reply must not be a guard correction, since
-    a suppressed question is not a question the player can answer."""
+    cannot stand in for it — and the reply's words must be backed by the turn
+    (`_assert_speech_backed`)."""
     app = eval_app
     for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7"):
         assert app.ctx.session.submit_move(san).legal
@@ -1487,11 +1481,7 @@ def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:
         f"the reset must be armed for the yes, and what is armed is {pending!r}"
     )
     traced = app.tracer.last
-    assert traced.get("guarded") is not True, (
-        "the question was replaced by a correction, so there is nothing for the "
-        f"player to answer ({','.join(traced.get('guarded_claims') or ())}): "
-        f"{traced.get('suppressed')!r}"
-    )
+    _assert_speech_backed(traced)
 
     # The other half of the gate: the answer. Deterministic — no model call
     # stands between the player's yes and the reset. In the conversation the
@@ -2530,7 +2520,7 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
         assert app.ctx.settings.snapshot() == before["settings"], (
             "a resignation ask must not change a setting the player owns"
         )
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             "expected the planner's resign turn, its note and the narrator "
@@ -2578,7 +2568,7 @@ def test_eval_offer_draw_routes_and_the_decline_is_voiced_honestly(
     engine declines it, because a Ruy Lopez with every piece on is not an
     endgame whatever the score. The narration has to match that answer: the
     game is not over, so "game over" or "we drew" is an ending the board does
-    not back and the guard would replace it. Nothing on the board moves, no
+    not back and fails the sample. Nothing on the board moves, no
     question is armed (the offer is not gated), and the turn completes."""
     before: dict[str, Any] = {}
 
@@ -2612,7 +2602,7 @@ def test_eval_offer_draw_routes_and_the_decline_is_voiced_honestly(
         assert app.ctx.session.fen() == before["fen"]
         assert app.ctx.live_pending() is None, "an offer is not gated"
         assert app.ctx.settings.snapshot() == before["settings"]
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 5, (
             "expected the planner's offer turn, its note and the narrator "
@@ -2663,7 +2653,7 @@ def test_eval_offer_draw_accepted_in_a_dead_drawn_endgame(
         assert _attempted(assistant, "resign") == [], _trajectory(assistant)
         assert app.ctx.session.is_game_over()
         assert app.ctx.session.outcome().termination == "agreement"
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 5, (
             f"got {len(app.provider.calls)} model calls"
@@ -2692,8 +2682,8 @@ def test_eval_advice_is_engine_backed(engine: EnginePlayer) -> None:
     contract inverted with the mode's retirement: the old scenario pinned that
     the ask was *declined* — no engine consult, no SAN, no unasked hints flip —
     and its record stays in docs/agent-evals.md). The licensing half mirrors
-    the pipeline's advice guard, so what this measures is the model's own
-    discipline: how often the guard would have had to step in."""
+    the retired advice guard's rule, so what this measures is the model's own
+    discipline: how often he names a move the engine did not."""
     utterance = "what should I play here?"
 
     def setup(app: EvalApp) -> None:
@@ -2761,12 +2751,14 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
 
     So the position is one where the recapture is the move and nothing else is
     close: after 1.e4 d5 2.Nc3 dxe4, `Nxe4` is a pawn back and every candidate
-    the engine names is a capture. Whatever Glitch says about it, the guard
-    must not eat it.
+    the engine names is a capture. The guard is retired (#368), so nothing eats
+    the answer now; the name stays for the report history. What is left to
+    measure is the reading: a hint about a capture must score as backed, or
+    speech accuracy counts correct advice as a lie.
 
-    Scored on the pipeline's verdict rather than on wording — the trace record
-    says whether the guard fired, and which class — because *how* he offers a
-    capture is exactly the thing the suite must not pin."""
+    Scored on speech accuracy's reading of the trace rather than on wording,
+    because *how* he offers a capture is exactly the thing the suite must not
+    pin."""
     utterance = "what should I play here?"
 
     def setup(app: EvalApp) -> None:
@@ -2780,13 +2772,9 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         traced = app.tracer.last
-        assert traced.get("guarded") is not True, (
-            "the honesty guard ate a correct hint "
-            f"({','.join(traced.get('guarded_claims') or ())}): "
-            f"{traced.get('suppressed')!r}"
-        )
-        # And the player got advice, not an apology: the canned replacements
-        # all open the same way, and none of them is an answer to the ask.
+        _assert_speech_backed(traced)
+        # And the player got advice, not an apology: the old canned
+        # replacements all opened the same way.
         assert "scratch that" not in assistant["content"].lower()
 
     floor = _FLOORS["advice_capture_survives_guard"]
@@ -2798,7 +2786,7 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
         floor=floor,
         setup=setup,
         # A canned stuck line is not a surviving hint; it is a turn that never
-        # reached the narrator and so never tested the guard.
+        # reached the narrator and so has no words to score.
         requires_narrator=True,
     )
 
@@ -2808,13 +2796,13 @@ def test_eval_advice_capture_survives_guard(engine: EnginePlayer) -> None:
 def test_eval_checkmate_reaction_survives_guard(engine: EnginePlayer) -> None:
     """Glitch's reaction to being mated reaches the player.
 
-    The honesty guard's outcome class (astra audit F7, #287) reads "checkmate",
-    "you win" and "I lost" against the session's outcome on a finished game —
-    the first ending check that can fire on a game that really ended. The hard
-    spec is `test_honesty.py`'s labeled corpus; this scenario prices the
-    misfire in live turns the way `advice_capture_survives_guard` does for the
-    capture class: a truthful reaction to a real mate must not be sent back
-    for a rewrite.
+    The outcome class (astra audit F7, #287) reads "checkmate", "you win" and
+    "I lost" against the session's outcome on a finished game — the first
+    ending check that can fire on a game that really ended. The hard spec is
+    `test_honesty.py`'s labeled corpus; this scenario prices the misreading in
+    live turns the way `advice_capture_survives_guard` does for the capture
+    class: a truthful reaction to a real mate must score as backed. (The name
+    predates #368, when a misreading meant a rewrite.)
 
     The player delivers Scholar's mate. "queen takes f7" rides the fast path,
     so the narrator's observe beat is the turn's only words and it reacts
@@ -2838,12 +2826,12 @@ def test_eval_checkmate_reaction_survives_guard(engine: EnginePlayer) -> None:
         assert traced.get("outcome") == {"winner": "player", "termination": "checkmate"}
         assert traced.get("model_calls") == 1, "one narration, nothing else"
         # A reaction the narrator never produced degrades to the app's own
-        # move line, which would pass a guard check for never having been
-        # guarded; that sample measures nothing.
+        # move line, which would pass a speech check for having no words to
+        # judge; that sample measures nothing.
         assert assistant["content"] != "Qxf7#. Game over: 1-0 (checkmate).", (
-            "no reaction was produced, so the guard was not tested"
+            "no reaction was produced, so there was nothing to score"
         )
-        _assert_not_guarded(traced)
+        _assert_speech_backed(traced)
 
     floor = _FLOORS["checkmate_reaction_survives_guard"]
     result = _pass_rate(
@@ -2889,13 +2877,10 @@ def test_eval_verbosity_up_from_low(engine: EnginePlayer) -> None:
             f"the setting must actually move up, got {app.ctx.settings.verbosity}"
         )
         assert _board_mutations(assistant) == []
-        # And it is not narrated past a guard: an unbacked claim of the change
-        # is the other half of the same defect.
+        # And it is not narrated past the facts: an unbacked claim of the
+        # change is the other half of the same defect.
         traced = app.tracer.last
-        assert traced.get("guarded") is not True, (
-            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
-            f"{traced.get('suppressed')!r}"
-        )
+        _assert_speech_backed(traced)
 
     floor = _FLOORS["verbosity_up_from_low"]
     result = _pass_rate(
@@ -2957,10 +2942,7 @@ def test_eval_position_is_described_not_evaluated(engine: EnginePlayer) -> None:
             "a question turn must not change a setting the player owns"
         )
         traced = app.tracer.last
-        assert traced.get("guarded") is not True, (
-            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
-            f"{traced.get('suppressed')!r}"
-        )
+        _assert_speech_backed(traced)
 
     floor = _FLOORS["position_is_described"]
     result = _pass_rate(
@@ -2983,7 +2965,7 @@ def _refused_not_asked(
     before: dict[str, Any],
 ) -> Callable[[EvalApp, dict[str, Any]], None]:
     """The check both impossible-request scenarios share: nothing moved, nothing
-    was set, nothing was guarded, and the reply is not a clarifying question.
+    was set, every claim is backed, and the reply is not a clarifying question.
 
     This is the suite's first check that reads the model's *wording*, and it is
     deliberate: the defect here is a reply shape. The board is untouched either
@@ -3005,10 +2987,7 @@ def _refused_not_asked(
             "a refusal turn must not change a setting the player owns"
         )
         traced = app.tracer.last
-        assert traced.get("guarded") is not True, (
-            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
-            f"{traced.get('suppressed')!r}"
-        )
+        _assert_speech_backed(traced)
         content = assistant["content"]
         assert not (re.search(r"\bwhich\b", content, re.I) and "?" in content), (
             f"a request no piece can carry out is illegal, not ambiguous: {content!r}"
@@ -3103,7 +3082,7 @@ def test_eval_ordinal_with_nothing_asked_moves_nothing(engine: EnginePlayer) -> 
         assert _board_mutations(assistant) == []
         assert app.ctx.session.move_history() == []
         assert app.ctx.settings.snapshot() == before["settings"]
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
 
     result = _pass_rate(
         engine,
@@ -3121,8 +3100,8 @@ def _constraint_respected(
     before: dict[str, Any],
 ) -> Callable[[EvalApp, dict[str, Any]], None]:
     """The check both constraint scenarios share: no difficulty call landed,
-    every setting the player owns is where it was, nothing moved, nothing
-    guarded — never the wording of the reply, which is free to ask however
+    every setting the player owns is where it was, nothing moved, every claim
+    backed — never the wording of the reply, which is free to ask however
     Glitch likes."""
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
@@ -3141,10 +3120,7 @@ def _constraint_respected(
         )
         assert _board_mutations(assistant) == [], "an ask about strength is not a move"
         traced = app.tracer.last
-        assert traced.get("guarded") is not True, (
-            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
-            f"{traced.get('suppressed')!r}"
-        )
+        _assert_speech_backed(traced)
 
     return check
 
@@ -3244,7 +3220,7 @@ def test_eval_constraint_survives_a_live_thread(engine: EnginePlayer) -> None:
     tell 60% from 90%.
 
     What is asserted is the same as the fresh scenario's: no difficulty call,
-    every player-owned setting where it was, nothing moved, nothing guarded.
+    every player-owned setting where it was, nothing moved, every claim backed.
     """
     before: dict[str, Any] = {}
 
@@ -3316,10 +3292,7 @@ def test_eval_pgn_is_handed_over_not_recited(engine: EnginePlayer) -> None:
             "an export turn must not change a setting the player owns"
         )
         traced = app.tracer.last
-        assert traced.get("guarded") is not True, (
-            f"guarded ({','.join(traced.get('guarded_claims') or ())}): "
-            f"{traced.get('suppressed')!r}"
-        )
+        _assert_speech_backed(traced)
         content = assistant["content"]
         assert "[Event" not in content, "the headers are the app's to render"
         assert "1. e4" not in content, "the movetext is the app's to render"
@@ -3356,8 +3329,8 @@ def test_eval_pgn_is_handed_over_not_recited(engine: EnginePlayer) -> None:
 #
 # Every one of them asserts the five dimensions the audit found unpinned across
 # most of the suite — route, stop reason, model-call count, board end-state and
-# a settings snapshot — plus the guard verdict wherever text reaches the
-# player. The call envelopes are what the composition *costs*, not a timing
+# a settings snapshot — plus speech accuracy's verdict wherever text reaches
+# the player. The call envelopes are what the composition *costs*, not a timing
 # estimate: three is the floor for any brain-routed turn (the planner's tool
 # turn, its handoff note, the narrator), and the extra one is a second planner
 # iteration, which several of these legitimately need.
@@ -3428,8 +3401,8 @@ def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
     alternating blocks of five on one server, with `ambiguous_move` 20/20
     against 19/20 and `undo_and_replace` 20/20 against 18/20 beside it, so the
     xfail is off and the scenario is scored at the floor like the rest. The
-    guard half is pinned at the scripted boundary in `test_closing_pass.py` and
-    measured live by `ambiguous_move`.
+    guard half is gone with the guard (#368); the question's words are held to
+    the turn's facts like every other reply's.
 
     The panel seam, because the second utterance is a *reference*: `_run` opens
     a fresh delegate conversation per call, so "the one to f3" would arrive with
@@ -3461,7 +3434,7 @@ def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
         # player unsuppressed, which is the half PR 4 is about.
         _assert_route(ask["run"], ROUTE_BRAIN)
         _assert_completed(ask["traced"])
-        _assert_not_guarded(ask["traced"])
+        _assert_speech_backed(ask["traced"])
         assert _board_mutations(ask["assistant"]) == [], (
             "the ambiguous ask must not move a piece: "
             + (_trajectory(ask["assistant"]) or "no tool calls")
@@ -3487,7 +3460,7 @@ def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
         assert app.ctx.session.turn == app.ctx.session.player_color
         assert app.ctx.live_pending() is None
         assert app.ctx.settings.snapshot() == before["settings"]
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             "expected the planner's move turn, its note and the narrator, got "
@@ -3590,7 +3563,7 @@ def test_eval_move_save_resume_finishes_exchange(
             f"the load must be armed for the yes, and what is armed is {pending!r}"
         )
         assert _history(app.client) == move["history"], "the board must stand"
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             f"expected the resume turn, the note and the narrator, got "
@@ -3693,7 +3666,7 @@ def test_eval_save_then_new_game(engine: EnginePlayer, tmp_path: Any) -> None:
         assert app.ctx.settings.snapshot() == before["settings"], (
             "a save-and-reset ask must not change a setting the player owns"
         )
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             f"expected the save+reset turn, the note and the narrator, got "
@@ -3776,7 +3749,7 @@ def test_eval_voice_setting_and_move(engine: EnginePlayer) -> None:
             f"expected voice off and nothing else moved: {app.ctx.settings.snapshot()}"
         )
         assert app.ctx.live_pending() is None
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             f"expected the setter+move turn, the note and the narrator, got "
@@ -3853,7 +3826,7 @@ def test_eval_move_and_judgment(engine: EnginePlayer) -> None:
             "a move-and-read turn must not change a setting the player owns"
         )
         assert app.ctx.live_pending() is None
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         calls = app.provider.calls
         assert 3 <= len(calls) <= 4, (
@@ -3984,7 +3957,7 @@ def test_eval_resume_and_describe(engine: EnginePlayer, tmp_path: Any) -> None:
         assert app.ctx.settings.snapshot() == before["settings"], (
             "a restore-and-read turn must not change a setting the player owns"
         )
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             f"expected the resume+describe turn, the note and the narrator, got "
@@ -4056,7 +4029,7 @@ def test_eval_resume_mid_game_asks(engine: EnginePlayer, tmp_path: Any) -> None:
         )
         assert pending.args == {"name": "scholars"}, pending.args
         assert app.ctx.settings.snapshot() == before["settings"]
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             f"expected the resume turn, the note and the narrator, got "
@@ -4131,7 +4104,7 @@ def test_eval_save_over_existing_asks(engine: EnginePlayer, tmp_path: Any) -> No
             f"the overwrite must be armed for the yes, and what is armed is {pending!r}"
         )
         assert app.ctx.settings.snapshot() == before["settings"]
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             f"expected the save turn, the note and the narrator, got "
@@ -4222,7 +4195,7 @@ def test_eval_best_move_then_play(engine: EnginePlayer) -> None:
         assert app.ctx.settings.snapshot() == before["settings"], (
             "a read-and-play turn must not change a setting the player owns"
         )
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         calls = app.provider.calls
         assert 4 <= len(calls) <= 5, (
@@ -4328,7 +4301,7 @@ def test_eval_freeform_confirmation_answers(
         before["settings"] = app.ctx.settings.snapshot()
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         calls = len(app.provider.calls)
         assert app.ctx.live_pending() is None, (
@@ -4497,7 +4470,7 @@ def test_eval_late_game_tool_composition(
         )
         assert app.ctx.settings.snapshot() == before["settings"]
         assert app.ctx.live_pending() is None
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             f"expected the save+describe turn, the note and the narrator, got "
@@ -4571,7 +4544,7 @@ def test_eval_stt_knight_repair(
             "a move turn must not change a setting the player owns"
         )
         assert app.ctx.live_pending() is None
-        _assert_not_guarded(app.tracer.last)
+        _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
         assert 3 <= len(app.provider.calls) <= 4, (
             f"expected the move turn, the note and the narrator, got "

@@ -613,13 +613,13 @@ def test_an_accepted_offer_drops_an_armed_question():
 # arrive in the same command as a move, with the engine's reply owed.
 
 
-def pipeline_client(fixture, *responses, evaluation=LEVEL, reply_uci):
+def pipeline_client(fixture, *responses, evaluation=LEVEL, reply_uci, tracer=None):
     from fakes import scripted_app
 
     ctx = ToolContext(
         session=positioned(fixture), engine=FakeEngine(reply_uci, evaluation=evaluation)
     )
-    app, _ = scripted_app(ctx, *responses)
+    app, _ = scripted_app(ctx, *responses, tracer=tracer)
     return TestClient(app), ctx
 
 
@@ -667,12 +667,13 @@ def test_an_accepted_offer_beside_a_move_ends_the_game_with_no_reply():
     assert body["commentary"] == "Sure, half a point each."
 
 
-def test_a_decline_narrated_as_a_draw_is_guarded():
-    """The honesty guard: "we drew" on a decline is an ending the board does not
-    back. The rewrite is unscripted, so the fake repeats it and the turn is cut:
-    the player hears neither the draw nor the ending."""
+def test_a_decline_narrated_as_a_draw_is_unbacked():
+    """ "We drew" on a decline is an ending the board does not back. The player
+    hears it as said (#368); the trace reads both claims as unbacked."""
     from chessapp.brain import AgentResponse, ToolCall
+    from fakes import CollectedTurns, unbacked_claims
 
+    turns = CollectedTurns()
     client, ctx = pipeline_client(
         FLAT_MIDDLEGAME,
         AgentResponse(
@@ -680,20 +681,22 @@ def test_a_decline_narrated_as_a_draw_is_guarded():
             tool_calls=(ToolCall(name="offer_draw", args={}),),
         ),
         reply_uci="a6a5",
+        tracer=turns,
     )
-    body = client.post("/api/command", json={"text": "call it a draw?"}).json()
+    client.post("/api/command", json={"text": "call it a draw?"})
     assert not ctx.session.is_game_over()
-    assert "drew" not in body["commentary"]
-    assert "Game over" not in body["commentary"]
+    assert sorted(unbacked_claims(turns.records[-1])) == ["draw", "ending"]
 
 
 def test_the_verdicts_number_may_be_quoted_from_either_side():
     """`facts.analysis_numbers` learns the offer's evaluation, both signs: an honest
-    "up three" survives whichever side it is said from, an invented number
-    does not."""
+    "up three" is backed whichever side it is said from, an invented number
+    is not."""
     from chessapp.brain import AgentResponse, ToolCall
+    from fakes import CollectedTurns, unbacked_claims
 
-    def narrated(text: str) -> str:
+    def unbacked(text: str) -> list[str]:
+        turns = CollectedTurns()
         client, _ = pipeline_client(
             ENGINE_WINNING_ENDGAME,
             AgentResponse(
@@ -701,11 +704,11 @@ def test_the_verdicts_number_may_be_quoted_from_either_side():
             ),
             evaluation=Evaluation(score_cp=-300, mate_in=None),
             reply_uci="a1a2",
+            tracer=turns,
         )
-        return client.post("/api/command", json={"text": "draw?"}).json()["commentary"]
+        client.post("/api/command", json={"text": "draw?"})
+        return unbacked_claims(turns.records[-1])
 
-    mine = "Nope. I'm up 3.0 here, play on."
-    yours = "Nope. You're down 3.0, play on."
-    assert narrated(mine) == mine
-    assert narrated(yours) == yours
-    assert "7.0" not in narrated("Nope. I'm up 7.0 here, play on.")
+    assert unbacked("Nope. I'm up 3.0 here, play on.") == []
+    assert unbacked("Nope. You're down 3.0, play on.") == []
+    assert unbacked("Nope. I'm up 7.0 here, play on.") == ["evaluation"]

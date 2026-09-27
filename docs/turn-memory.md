@@ -29,18 +29,21 @@ brain:
 - **No model writes the summary.** Code copies the player's words; a
   model-written rollup would be an unguarded place to hallucinate, plus a
   third model phase per turn.
-- **What the app said is never remembered as Glitch's.** App lines (the
-  deterministic fallback after a cut guard rewrite, lost-brain lines, the stuck
-  line) and appended announcements are for the player, not the model's memory
-  — remembered as such, the narrator imitates the register (live, back when
-  the guard's fallback was a canned first-person apology: "I almost said
-  something that didn't happen") or completes the format (announcing a move
-  before the reply exists, #193). A move turn is remembered by the reaction
-  alone; a guard *rewrite* that passed is Glitch's own second draft and is
-  remembered like any reaction; a turn cut to the fallback is remembered by
-  what it *did* (the deterministic move confirmation) or an empty message,
-  which `condense` renders as the inert ack (chat templates must alternate
-  roles). Carriers: `api.CommandOutcome.memory`, `StoredMessage.memory`.
+- **What the app said is never remembered as Glitch's.** App lines
+  (lost-brain lines, the stuck line, a late close) and appended announcements
+  are for the player, not the model's memory — remembered as such, the
+  narrator imitates the register (live, back when the retired honesty guard's
+  fallback was a canned first-person apology: "I almost said something that
+  didn't happen") or completes the format (announcing a move before the reply
+  exists, #193). A turn is remembered by what Glitch himself said, exactly as
+  he said it: nothing checks or cuts his words any more (#368), so a
+  misstatement is remembered too, and fixed in what he is shown next rather
+  than edited out. A move turn is remembered by the reaction alone. A turn he
+  said nothing on (a budget stop, a dead provider, a silent low-verbosity
+  turn) is remembered by what it *did* (the deterministic move confirmation)
+  or an empty message, which `condense` renders as the inert ack (chat
+  templates must alternate roles). Carriers: `api.CommandOutcome.memory`,
+  `StoredMessage.memory`.
 
 ## What the digest cannot carry: an open question
 

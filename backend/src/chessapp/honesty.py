@@ -1,23 +1,20 @@
-"""The honesty guard: commentary may not announce an event that never happened.
+"""Reading commentary for the operational claims it makes, and whether the
+turn backs them.
 
-The house rule says the model never decides what deterministic state already
-knows. Commentary is where that rule leaks: the loop's closing turn is produced
-from a context ending in the new board, and it *still* invents the board it
-wanted — "Word. Game over." with no tool call and a live game, "you actually
-have me in checkmate" after a quiet rook move (trace review 2026-07-13, finding
-6). That is the worst failure the app has, because the player is *told* the game
-ended. A prompt rule is no defense: a 12B follows one about half the time.
+The model never decides what deterministic state already knows, and yet its
+commentary can *say* the board it wanted — "Word. Game over." with no tool
+call and a live game, "you actually have me in checkmate" after a quiet rook
+move (trace review 2026-07-13, finding 6). Until #368 a live guard checked
+every reply against the board and had the narrator rewrite a claim it could not
+back. That guard is retired: code owns actions, the model owns speech, and a
+misstatement is fixed in what the model was shown, not cut from what it said.
+What stays is the reading, which is how speech accuracy is measured offline
+(`speech_accuracy`, #367): `claims` finds every operational claim in a text and
+says whether a `VerifiedFacts` set backs it. Whether a thing happened is the
+turn's evidence (`facts.assemble`); this module owns only the string half.
 
-So the pipeline checks the claim against the board before it emits it. This
-module owns only the string half of that check — does this text *assert* an
-event? Whether it happened is the session's answer, and `api._honest_words` puts
-the two together. What it does with a claim the facts don't back is a second
-narrator call handed the true facts in plain words (`corrections`), never a
-canned line in Glitch's place: code decides what is true, the model decides how
-to say it, and a false positive costs one round trip instead of the reply.
-
-The ending is where the rule started and it is not where it stops (audit item
-13). `unverified_claims` takes the same shape to every operational fact a turn
+The ending is where the reading started and it is not where it stops (audit
+item 13). `claims` takes the same shape to every operational fact a turn
 produces — captures, check, draws, moves, saves, settings, engine numbers, the
 material count — against a `VerifiedFacts` set the pipeline assembles from the
 tool results, the engine's reply and the board. Personality varies the wording;
@@ -133,66 +130,6 @@ def claims_destructive_outcome(text: str) -> bool:
         and not _ENDING_FUTURE.search(sentence)
         for sentence in _SENTENCES.split(text)
     )
-
-
-# What a token sheds before it is compared against the legal list: the prose
-# punctuation and markdown a SAN move arrives wrapped in ("Nf3.", "`e4`").
-_TOKEN_WRAPPING = ".,!?`*()[]{}:;\"'—"
-
-
-def _named_moves(sentence: str, moves: Iterable[str]) -> set[str]:
-    """Which of `moves` this sentence names, the prose wrapping shed."""
-    wanted = set(moves)
-    return {
-        token
-        for raw in sentence.split()
-        for token in (raw.strip(_TOKEN_WRAPPING),)
-        if token in wanted
-    }
-
-
-def unlicensed_advice(
-    text: str, unlicensed_moves: Iterable[str], legal_moves: Iterable[str]
-) -> bool:
-    """True when the text hands over a playable move the turn never licensed.
-
-    The other honesty predicate's sibling, for the invented-advice leak
-    (audit item 11): the model can hand over a move it never checked with the
-    engine — and the payload of a hint is a SAN token from the current
-    position, whatever prose surrounds it. Which moves the turn's evidence
-    *licenses* (an analysis tool reported them) is the pipeline's half,
-    exactly as with `claims_destructive_outcome`; `unlicensed_moves` is what
-    is left of the legal list once that licence is spent.
-
-    Sentence by sentence, for the one shape that is not advice at all: a
-    question naming two or more legal moves is asking the player which one
-    they meant. "Do you mean Nf3 or Nh3?" after "move my kings knight" is the
-    right answer to an ambiguous request, and the old whole-text test replaced
-    it with the advice correction (audit finding 6, 2026-09-05) — a guard
-    firing on a correct answer, so the guard loosens.
-
-    Two moves is the line, because one is a recommendation however it is
-    punctuated ("Nf3?" is a suggestion with a hedge on it). A question is the
-    line, because a *statement* naming two still hands both over ("Nf3 or Nh3
-    both work"). And every other sentence is still judged on its own, so a
-    clarification with a recommendation stapled to it — "Which one — Nf3 or
-    Nh3? I'd go Nf3." — is advice again.
-
-    The count is over `legal_moves` rather than the unlicensed ones: a
-    question weighing a move the engine just reported against one it did not
-    is the same clarification, and which of the two carries a licence says
-    nothing about whether the sentence is asking or telling.
-    """
-    unlicensed = set(unlicensed_moves)
-    legal = set(legal_moves)
-    for sentence in _SENTENCES.split(text):
-        # A sentence's own closing mark, not any `?` in it: the question has to
-        # be the thing the sentence is doing.
-        if sentence.rstrip().endswith("?") and len(_named_moves(sentence, legal)) > 1:
-            continue
-        if _named_moves(sentence, unlicensed):
-            return True
-    return False
 
 
 # --- the verified facts, and the claims that must derive from them -------------
@@ -480,7 +417,7 @@ _SAVE = re.compile(
 # one changed this turn, and a value nothing ever set is a lie however
 # confidently it is announced. (Hints had a class here until the mode was
 # retired 2026-09-01 — with no setting to be right or wrong about, hint talk
-# is ordinary prose, and unbacked move advice is the pipeline's guard's job.)
+# is ordinary prose, and move advice is not a claim about the board.)
 _VOICE = re.compile(
     r"""
     \b voice (?: \s+ output )? \s+ (?: is | 's | are ) \s+ (?: now \s+ )?
@@ -1004,7 +941,7 @@ _CLAIM_CLASSES = (
 )
 
 
-# Every claim class, in the order the guard reads them: the families speech
+# Every claim class, in the order `claims` reads them: the families speech
 # accuracy is reported by (#367).
 CLAIM_NAMES = tuple(claim.name for claim in _CLAIM_CLASSES)
 
@@ -1013,11 +950,10 @@ CLAIM_NAMES = tuple(claim.name for claim in _CLAIM_CLASSES)
 class Claim:
     """One operational claim a commentary made, and whether the facts back it.
 
-    The reading `unverified` filters, kept whole for the scorer
-    (`speech_accuracy`, #367): accuracy needs the claims that were true as
-    well as the ones that were not. One entry per class per sentence, on the
-    same rule the guard counts by — a sentence naming two moves makes one move
-    claim, unbacked if either move is. `said` is the span that decided it:
+    Kept whole for the scorer (`speech_accuracy`, #367): accuracy needs the
+    claims that were true as well as the ones that were not. One entry per
+    class per sentence — a sentence naming two moves makes one move claim,
+    unbacked if either move is. `said` is the span that decided it:
     the first unbacked match, or the first match when every one was backed.
     """
 
@@ -1052,7 +988,7 @@ def claims(text: str, facts: VerifiedFacts) -> tuple[Claim, ...]:
                             claim.name, sentence.strip(), match.group(0), False, match
                         )
                     )
-                    break  # one entry per class per sentence is one fact to fix
+                    break  # one entry per class per sentence
             else:
                 if first is not None:
                     found.append(
@@ -1061,205 +997,11 @@ def claims(text: str, facts: VerifiedFacts) -> tuple[Claim, ...]:
     return tuple(found)
 
 
-@dataclass(frozen=True)
-class Unverified:
-    """One claim the facts did not back: which class, the sentence carrying
-    it, and the span that matched.
-
-    The span is what the correction is written about — "Rxe5" is the move to
-    name in the fact, "queen" the piece — and the sentence is what the model
-    is shown beside it, so it can find the words it has to change. Every
-    matching sentence is reported, one entry per class per sentence: a reply
-    that invents a capture twice in two sentences has two things to fix.
-    """
-
-    claim: str
-    sentence: str
-    said: str
-    match: re.Match[str] = field(compare=False, repr=False)
-
-
-def unverified(text: str, facts: VerifiedFacts) -> tuple[Unverified, ...]:
-    """Every operational claim in this commentary that the facts don't support
-    (`claims`, the backed ones left out).
-
-    Empty for commentary that claims nothing operational, which is most of it.
-    """
-    return tuple(
-        Unverified(item.claim, item.sentence, item.said, item.match)
-        for item in claims(text, facts)
-        if not item.backed
-    )
-
-
 def unverified_claims(text: str, facts: VerifiedFacts) -> tuple[str, ...]:
     """The claim classes this commentary asserts that the facts don't support,
-    each named once in the order first found.
-
-    The names are what the trace records (`guarded_claims`) and what a
-    reviewer reads: *which* fact the model invented is the thing worth knowing
-    when a guarded turn shows up. `unverified` is the same reading with the
-    sentences attached, for the rewrite.
-    """
-    return tuple(dict.fromkeys(item.claim for item in unverified(text, facts)))
-
-
-# --- the true facts, in words --------------------------------------------------
-#
-# A claim the facts don't back is sent back to the narrator with the fact that
-# contradicts it, one plain sentence per claim, and the narrator says it again.
-# The sentences are addressed to Glitch ("you" is him, "the player" is the
-# player) because that is who reads them; they state what is so and never what
-# he did wrong, since a rewrite is a second draft and not a reprimand — and
-# because on a false positive he has done nothing wrong at all, and the fact
-# still holds.
-
-
-def _list(items: Iterable[str]) -> str:
-    named = sorted(items)
-    return ", ".join(named) if named else "nothing"
-
-
-def _capture_fact(item: Unverified, facts: VerifiedFacts) -> str:
-    piece = (item.match.group("piece") or item.match.group("gone_piece") or "").lower()
-    piece = "knight" if piece == "horse" else piece
-    return (
-        f"The board does not show a {piece} taken the way that sentence says. "
-        f"Pieces the player has taken: {_list(facts.captured_by_player)}. "
-        f"Pieces you have taken: {_list(facts.captured_by_opponent)}."
+    each named once in the order first found (`claims`, the backed ones left
+    out). Empty for commentary that claims nothing operational, which is most
+    of it."""
+    return tuple(
+        dict.fromkeys(item.claim for item in claims(text, facts) if not item.backed)
     )
-
-
-def _move_fact(item: Unverified, facts: VerifiedFacts) -> str:
-    return f"{item.said.rstrip('+#')} was not a move on this board, so do not name it."
-
-
-def _owned_move_fact(item: Unverified, facts: VerifiedFacts) -> str:
-    san = item.match.group("san").rstrip("+#")
-    if item.match.group("subject").lower() == "i":  # Glitch
-        fact = f"You did not play {san}."
-        if _names(san, facts.moves_by_player):
-            fact += " The player did."
-        return fact
-    fact = f"The player did not play {san}."
-    if _names(san, facts.moves_by_opponent):
-        fact += " You did."
-    return fact
-
-
-def _setting_fact(key: str, label: str) -> Callable[[Unverified, VerifiedFacts], str]:
-    def fact(item: Unverified, facts: VerifiedFacts) -> str:
-        value = facts.settings.get(key)
-        if value is None:
-            return f"The {label} has no named level right now, so do not name one."
-        return f"The {label} is {value}."
-
-    return fact
-
-
-def _verbosity_change_fact(item: Unverified, facts: VerifiedFacts) -> str:
-    return (
-        "Verbosity was not changed this turn; it is still "
-        f"{facts.settings.get('verbosity', 'what it was')}."
-    )
-
-
-def _evaluation_fact(item: Unverified, facts: VerifiedFacts) -> str:
-    if facts.numbers:
-        return (
-            f"No engine gave the number {item.said}. The engine's numbers this "
-            f"turn were: {_list(facts.numbers)}."
-        )
-    return "No engine evaluation ran this turn, so there is no score to quote."
-
-
-def _material_fact(item: Unverified, facts: VerifiedFacts) -> str:
-    if not facts.material:
-        return "No material count is available this turn, so do not quantify material."
-    balance = facts.material[0]  # the board as it stands now (see `facts.assemble`)
-    if balance == 0:
-        return "Material is level right now."
-    pawns = f"{abs(balance)} pawn{'s' if abs(balance) != 1 else ''} of material"
-    if balance > 0:
-        return f"The player is up {pawns} right now, so you are down {pawns}."
-    return f"The player is down {pawns} right now, so you are up {pawns}."
-
-
-# How a game ends, in the words the narrator is handed. `game.py`'s ids are
-# the keys; anything unlisted (a python-chess termination the map never
-# named) reads as its id with the underscores taken out.
-_TERMINATION_WORDS = {
-    "checkmate": "checkmate",
-    "stalemate": "stalemate",
-    "agreement": "agreement",
-    "insufficient_material": "insufficient material",
-    "threefold_repetition": "repetition",
-    "fivefold_repetition": "repetition",
-    "fifty_moves": "the move-count rule",
-    "seventyfive_moves": "the move-count rule",
-}
-
-
-def _outcome_fact(item: Unverified, facts: VerifiedFacts) -> str:
-    """The ending as it actually stands. Only reached on a finished game (a
-    live board is the ending class's line), so the one unknown left is a
-    `new_game` that ran with no outcome behind it."""
-    if facts.termination is None:
-        return "A new game began; there is no result to report."
-    if facts.termination == "resignation":
-        if facts.winner == "player":
-            return "The game is over: you resigned, so the player won."
-        return "The game is over: the player resigned, so you won."
-    how = _TERMINATION_WORDS.get(facts.termination, facts.termination.replace("_", " "))
-    if facts.winner == "player":
-        return f"The game is over: the player won, by {how}; you lost."
-    if facts.winner == "opponent":
-        return f"The game is over: you won, by {how}; the player lost."
-    return f"The game ended in a draw, by {how}; nobody won."
-
-
-_FACTS: dict[str, Callable[[Unverified, VerifiedFacts], str]] = {
-    "ending": lambda item, facts: (
-        "The game is not over and no new game began; it is still being played."
-    ),
-    "draw": lambda item, facts: "The game has not been drawn.",
-    "outcome": _outcome_fact,
-    "check": lambda item, facts: "Nobody is in check.",
-    "capture": _capture_fact,
-    "move": _move_fact,
-    "owned_move": _owned_move_fact,
-    "unplayed_reply": lambda item, facts: (
-        f"{item.said.rstrip('+#')} has not been played. Your reply to the "
-        "player's move is not on the board yet; the app announces it after you "
-        "speak, so do not name it."
-    ),
-    "takeback": lambda item, facts: (
-        "Nothing was taken back this turn; every move is still on the board."
-    ),
-    "restart": lambda item, facts: (
-        "No new game was started this turn; the board was not reset."
-    ),
-    "save": lambda item, facts: "Nothing was saved or loaded this turn.",
-    "voice": _setting_fact("voice", "voice output"),
-    "difficulty": _setting_fact("difficulty", "difficulty"),
-    "verbosity": _setting_fact("verbosity", "verbosity"),
-    "verbosity_change": _verbosity_change_fact,
-    "evaluation": _evaluation_fact,
-    "material": _material_fact,
-}
-
-
-def corrections(found: Iterable[Unverified], facts: VerifiedFacts) -> tuple[str, ...]:
-    """The true fact behind each unbacked claim, as a line for the rewrite brief:
-    the sentence the model wrote, then what is actually so.
-
-    One line per entry, in order, duplicates dropped — two sentences inventing
-    the same capture get the same line once. Every claim class has a fact
-    here; a class without one would be a class the guard can cut but not
-    explain, and an unexplained cut is what the canned lines were.
-    """
-    lines = (
-        f'You wrote: "{item.sentence}" {_FACTS[item.claim](item, facts)}'
-        for item in found
-    )
-    return tuple(dict.fromkeys(lines))

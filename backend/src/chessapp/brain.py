@@ -40,11 +40,10 @@ from chessapp.handoff import Handoff
 # the route and the call order, which a budget stop or a provider death
 # silently breaks. The brain names the phases it runs itself (`planner`,
 # `closer`); the others are single-call seams whose *caller* knows which beat
-# it is (`reaction`, `rewrite`, `answer`), so the pipeline stamps them.
+# it is (`reaction`, `answer`), so the pipeline stamps them.
 PHASE_PLANNER = "planner"
 PHASE_CLOSER = "closer"
 PHASE_REACTION = "reaction"
-PHASE_REWRITE = "rewrite"
 PHASE_ANSWER = "answer"
 # A call from a brain that does not tag its own (a test double): known to have
 # happened, not known to have been which.
@@ -464,28 +463,6 @@ class Brain(Protocol):
         because the fast path is deliberately outside the loop; at verbosity=low
         even this is skipped for a canned confirmation, making a plain move
         zero-LLM."""
-        ...
-
-    def rewrite(
-        self,
-        commentary: str,
-        corrections: Sequence[str],
-        transcript: Sequence[dict[str, str]] = (),
-    ) -> Narration:
-        """Say `commentary` again with the facts in `corrections` right.
-
-        The honesty guard's second try. The pipeline checks every operational
-        claim in the narrator's text against the board and the tool results
-        (`honesty.unverified`); when one is not backed, this is what happens
-        next — the narrator is handed its own reply and one plain sentence
-        per unbacked claim saying what is actually so, and writes the reply
-        again. Same persona, same conversation, no tools, so the second draft
-        is Glitch's words and not the app's, and the phase still cannot act.
-
-        The pipeline checks the rewrite too and falls back to the
-        deterministic facts if it still asserts something the board does not
-        back; an implementation is never asked twice. A `ProviderError` here
-        costs the words and nothing else — the turn is already settled."""
         ...
 
     def read_answer(self, question: str, text: str) -> Answer:
