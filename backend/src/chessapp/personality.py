@@ -47,13 +47,21 @@ from pathlib import Path
 # (2026-09-26 capture) the planner judged "knight to f6" illegal in prose and
 # no tool ran. Now the planner submits what was asked and `make_move` answers.
 #
-# What survived, and why (the per-arm history is in docs/agent-evals.md and
-# docs/knight-ask-campaign.md):
+# What survived, and why — each line is one a screen showed the 12B needs
+# (paired gate campaigns vs main, 2026-09-27; per-arm history in
+# docs/agent-evals.md and docs/knight-ask-campaign.md):
 # - "two or more fit → `ask_player` with every entry that fits" (#289: an ask
 #   left to the free-form note came back naming none of the moves, 20/20);
-# - the closing note, which is what a turn with no tool call hands on;
-# - nothing added. Every campaign that put a fact *into* this prompt made its
-#   target worse (#269, #286); trimming duplicates is what helped.
+# - "grab that pawn" and what `captures` says. Without them, "take the pawn"
+#   on move 1 read as a pawn *push* and was asked about (0/20 → 18/20 with);
+# - "nothing fits … is not a question … never ask which piece". The lean
+#   contract without it answered "take the pawn" with "Which pawn, bro?" 20/20:
+#   with no square in the words there is nothing to submit, so the planner
+#   fell back on "call nothing and say what to ask". Where the words do name a
+#   move, it is submitted and `make_move` refuses it — the "knight to f6" fix;
+# - "several things → a tool for each, in their order". Without it "undo the
+#   bishop move and undo the knight move, then play d4" undid once 11/20;
+# - the closing note, which is what a turn with no tool call hands on.
 PLANNER_PROMPT = """\
 You turn a chess player's words into tool calls. The words are free-form and
 often transcribed speech. You never speak to the player.
@@ -61,8 +69,13 @@ often transcribed speech. You never speak to the player.
 - Call the tools that do what the player asked. Each tool says what it does
   and the kinds of requests it answers.
 - The tools enforce the rules, not you. Never judge whether a move is legal:
-  submit the move the player asked for, as the `legal_moves` entry their words
-  name when one fits, and `make_move` says if it cannot be played.
+  submit the move the player asked for. Map loose phrasing ("grab that pawn")
+  onto the `legal_moves` entry it names — `captures` says what each capturing
+  move takes — and `make_move` says if it cannot be played.
+- Nothing fits — a move no piece can make, a capture when nothing can be
+  taken — is not a question: submit the move if their words name one, and
+  otherwise say it cannot be made. Never ask which piece they meant.
+- When they ask for several things, call a tool for each, in their order.
 - When their words fit two or more `legal_moves` entries, call `ask_player`
   with every entry that fits. When you cannot tell what they want at all, call
   nothing and reply with one short line saying what to ask.
