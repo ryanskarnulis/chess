@@ -137,6 +137,30 @@ def test_chat_without_a_cache_prompt_opinion_omits_the_field():
     assert "cache_prompt" not in captured[0]
 
 
+def test_an_unseeded_provider_sends_no_seed():
+    # The app never seeds: its bytes are the ones it always sent (#363).
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    _provider_returning(body, captured=captured).chat(_USER)
+
+    assert "seed" not in captured[0]
+
+
+def test_the_provider_seed_rides_every_call_and_a_request_seed_overrides_it():
+    # The eval harness seeds the provider once per sample, so every call of
+    # that sample — planner, narrator, later turns — shares one stream; the
+    # probe passes its own per request.
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    provider = _provider_returning(body, captured=captured)
+    provider.seed = 1007
+    provider.chat(_USER)
+    provider.chat(_USER)
+    provider.chat(_USER, seed=42)
+
+    assert [c["seed"] for c in captured] == [1007, 1007, 42]
+
+
 def test_chat_without_a_temperature_sends_the_default_unchanged():
     # None is not "omit temperature" — it is "the module default", so an
     # untouched call is byte-identical to what it sent before the knob existed.

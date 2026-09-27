@@ -188,6 +188,7 @@ from evalstats import (
     VacuousRun,
     classify,
     generation_rate,
+    sample_seed,
     scenario_record,
     split_latencies,
     split_tokens,
@@ -274,6 +275,16 @@ _MAX_RUNS = int(os.environ.get("CHESSAPP_EVAL_MAX_RUNS", "20"))
 _INFRA_RETRIES = int(os.environ.get("CHESSAPP_EVAL_INFRA_RETRIES", "5"))
 _INFRA_BUDGET = int(os.environ.get("CHESSAPP_EVAL_INFRA_BUDGET", "25"))
 _REPORT_PATH = os.environ.get("CHESSAPP_EVAL_REPORT")
+# Paired arms (#363): with a base set, a scenario's `j`-th scored sample runs
+# with llama-server's sampling seed `base + j` on every model call, so the same
+# sample of two arms draws the same stream (`evalstats.sample_seed`). Unset —
+# the default — sends no seed, exactly as before. `eval_campaign.sh` sets it
+# per block; the frontier tier reads the same variable.
+_SEED_BASE = (
+    int(os.environ["CHESSAPP_EVAL_SEED"])
+    if os.environ.get("CHESSAPP_EVAL_SEED")
+    else None
+)
 # What served the run (#317): built from the first eval app's brain, probed off
 # the call path as the model answers, and written on the suite's closing line —
 # by when the model is warm and the probe has had its chance. The header
@@ -442,6 +453,7 @@ def _report_session() -> Generator[None, None, None]:
                 "max_runs": _MAX_RUNS,
                 "infra_retries": _INFRA_RETRIES,
                 "infra_budget": _INFRA_BUDGET,
+                "seed": _SEED_BASE,
             },
             "floors": _FLOORS,
         }
@@ -529,12 +541,13 @@ class EvalApp(NamedTuple):
     tracer: _CollectingTracer
 
 
-def _build_eval_app(engine: EnginePlayer) -> EvalApp:
+def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
     """A fresh app + game wired exactly like `build_app`, but returning the
     `ToolContext` so a scenario can set up a position (through the session,
     bypassing the engine reply) and read settings/end-state back, plus the
     `CountingProvider` wrapping the live wire so a scenario can assert how many
-    times the model was actually called."""
+    times the model was actually called. `seed` is the sampling seed every
+    model call of this app sends (#363); `None` sends none."""
     ctx = ToolContext(session=GameSession(), engine=engine, settings=Settings())
     # Mirror build_app: never leave the engine unconfigured — play at the
     # settings default so reported difficulty and real strength agree.
@@ -550,7 +563,9 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
     # The only departure from build_app: the real provider is wrapped so every
     # model round trip is counted and timed. create_llama_brain builds exactly
     # this provider when none is passed, so the wire itself is unchanged.
-    provider = CountingProvider(LlamaCppProvider(LLAMACPP_BASE_URL, LLAMACPP_MODEL))
+    provider = CountingProvider(
+        LlamaCppProvider(LLAMACPP_BASE_URL, LLAMACPP_MODEL, seed=seed)
+    )
 
     def offered_tools() -> list[dict[str, Any]]:
         # Exactly what build_app offers the brain, resolved live per command
@@ -1818,6 +1833,7 @@ def _sample(
     runner: Callable[[EvalApp, str, str], EvalRun],
     requires_narrator: bool,
     route: str | None,
+    seed: int | None = None,
 ) -> tuple[Outcome, EvalRun, BaseException | None]:
     """One sample on a fresh app, and what kind of sample it turned out to be.
 
@@ -1832,7 +1848,7 @@ def _sample(
     armed op and a real question, so a resignation check passes it on every
     sample while the model sits idle (audit finding 9).
     """
-    app = _build_eval_app(engine)
+    app = _build_eval_app(engine, seed)
     try:
         if setup is not None:
             setup(app)
@@ -1941,6 +1957,9 @@ def _pass_rate(
         block_runs = 0
         while block_runs < _BLOCK_RUNS:
             taken += 1
+            # Keyed on the scored position, so an infra retry re-takes the
+            # same seed and the pairs behind it stay aligned.
+            seed = sample_seed(_SEED_BASE, sum(r for _, r in blocks) + block_runs)
             outcome, run, error = _sample(
                 engine,
                 f"{scenario}[{taken}]",
@@ -1950,11 +1969,13 @@ def _pass_rate(
                 runner,
                 requires_narrator,
                 route,
+                seed,
             )
             _SUITE.samples += 1
             samples.append(
                 {
                     "outcome": str(outcome),
+                    "seed": seed,
                     "status_code": run.status_code,
                     "stop_reason": run.stop_reason,
                     "provider_failure": run.provider_failure,

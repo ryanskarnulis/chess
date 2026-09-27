@@ -28,6 +28,7 @@ Run from `backend/` with llama-swap up:
     python scripts/probe_planner.py --arm control --items knight_ask --n 20 --fresh
     python scripts/probe_planner.py --arm control --dry-run          # the exact payload
     python scripts/probe_planner.py --preflight-only                 # is the card free?
+    python scripts/probe_planner.py --arm control --arm twin --seed none   # unpaired
 
 Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `temperature=0.3`, `cache_prompt=false`, `model=<id>`, `tool_text=<tool>@file`,
@@ -39,9 +40,17 @@ from, or how the words chose it, scored as the app would check it) and `thinking
 `/unload` before the first sample so the session is new; it refuses while a
 slot is processing or another job holds the card (the shared-GPU rule).
 
+Arms are **paired** (#363): sample *i* sends llama-server the sampling seed
+`--seed + i` in every arm, so for a small change most pairs agree and the
+verdict lives in the pairs it flips. After the per-arm table the probe prints
+each later arm against the first — both pass, A-only, B-only, neither — with
+the exact McNemar p on the discordant pairs. Pairing is approximate (llama.cpp
+is not bit-reproducible across batch sizes or slots, ggml-org/llama.cpp#7052)
+but never worse than unpaired; `--seed none` sends no seed and prints no pairs.
+
 Every record carries what proves which agent and which server it measured:
 git HEAD, the sha of the prompt text and of the tool offer as sent, model,
-temperature, `cache_prompt`, llama-swap `/running`, whether the session was
+temperature, `cache_prompt`, the seed, llama-swap `/running`, whether the session was
 fresh, and the request ordinal since the probe's (un)load.
 
 It is a developer tool, not part of the app or the test suite; its pure parts
@@ -87,8 +96,14 @@ from chessapp.tools import (
     build_registry,
 )
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
+from evalstats import format_paired, paired_counts, sample_seed  # noqa: E402
+
 DEFAULT_BASE_URL = "http://127.0.0.1:8200/v1"
 DEFAULT_MODEL = "gemma-4-12b"
+# The first sample's seed; any fixed number pairs the arms, and a campaign
+# that wants fresh streams passes another.
+DEFAULT_SEED = 363
 
 # --- the corpus ---------------------------------------------------------------
 #
@@ -701,6 +716,55 @@ def format_summary(summary: dict[tuple[str, str], dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def paired_summary(
+    records: Sequence[dict[str, Any]],
+) -> list[tuple[str, str, str, tuple[int, int, int, int]]]:
+    """Each later arm against the first, per item: (item, A, B, counts) with
+    counts from `evalstats.paired_counts`. Two samples pair when they share the
+    sample index and a seed; an errored or unseeded sample pairs with nothing."""
+    arms: list[str] = []
+    cells: dict[tuple[str, str], dict[tuple[int, int], bool]] = {}
+    for record in records:
+        if record["arm"] not in arms:
+            arms.append(record["arm"])
+        if record.get("error") is not None or record.get("seed") is None:
+            continue
+        key = (record["sample"], record["seed"])
+        cells.setdefault((record["item"], record["arm"]), {})[key] = bool(
+            record["passed"]
+        )
+    rows = []
+    items = sorted({item for item, _ in cells})
+    for item in items:
+        base = cells.get((item, arms[0]), {})
+        for arm in arms[1:]:
+            other = cells.get((item, arm), {})
+            keys = sorted(base.keys() & other.keys())
+            if keys:
+                counts = paired_counts(
+                    [base[k] for k in keys], [other[k] for k in keys]
+                )
+                rows.append((item, arms[0], arm, counts))
+    return rows
+
+
+def format_paired_summary(
+    rows: Sequence[tuple[str, str, str, tuple[int, int, int, int]]],
+) -> str:
+    lines = ["item | A | B | both | paired", "--- | --- | --- | --- | ---"]
+    for item, a, b, (both, a_only, b_only, neither) in rows:
+        pairs = both + a_only + b_only + neither
+        lines.append(
+            f"{item} | {a} | {b} | {both} | {format_paired(a_only, b_only, pairs)}"
+        )
+    return "\n".join(lines)
+
+
+def parse_seed(value: str) -> int | None:
+    """`--seed`: a base seed, or `none` for unseeded (independent) samples."""
+    return None if value.lower() == "none" else int(value)
+
+
 # --- pre-flight: is the card ours to use? -------------------------------------
 
 # Processes that hold GPU memory without being a job: the desktop.
@@ -931,6 +995,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--ignore-gpu", action="store_true", help="skip the foreign-process check"
     )
+    parser.add_argument(
+        "--seed",
+        type=parse_seed,
+        default=DEFAULT_SEED,
+        help=f"sample i's seed is SEED+i in every arm (default {DEFAULT_SEED}); "
+        "'none' samples unseeded",
+    )
     parser.add_argument("--list", action="store_true", help="print the corpus and exit")
     args = parser.parse_args(argv)
 
@@ -975,6 +1046,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_tokens=_PLANNER_MAX_TOKENS,
                 temperature=arm.temperature,
                 cache_prompt=arm.cache_prompt,
+                seed=args.seed,
             )
             print(
                 f"# arm {arm.name}: prompt {prepared.prompt_sha} "
@@ -1016,6 +1088,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.n, [i.name for i in items], [a.name for a in arms]
         ):
             item, arm = by_item[item_name], by_arm[arm_name]
+            seed = sample_seed(args.seed, sample)
             model = arm.model or args.model
             provider = providers[model]
             prepared = prepare(item, arm, provider, args.base_url, model)
@@ -1033,6 +1106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_tokens=_PLANNER_MAX_TOKENS,
                     temperature=arm.temperature,
                     cache_prompt=arm.cache_prompt,
+                    seed=seed,
                 )
             except ProviderError as exc:
                 error = f"{type(exc).__name__}: {exc}"
@@ -1070,6 +1144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "model": model,
                 "temperature": arm.temperature,
                 "cache_prompt": arm.cache_prompt,
+                "seed": seed,
                 "state_view": arm.state_view,
                 "tool_schema": arm.tool_schema,
                 "thinking": arm.thinking,
@@ -1090,6 +1165,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print()
     print(format_summary(summarize(records)))
+    paired = paired_summary(records)
+    if paired:
+        print()
+        print(format_paired_summary(paired))
     return 0
 
 

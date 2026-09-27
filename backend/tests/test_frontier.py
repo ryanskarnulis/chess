@@ -59,9 +59,10 @@ START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 def scripted_factory(*turns):
     """An `app_factory` whose apps are the eval assembly over a scripted
-    provider (every sample replays `turns` from the start)."""
+    provider (every sample replays `turns` from the start). The seed a live
+    app would send is irrelevant to a script."""
 
-    def build() -> EvalApp:
+    def build(seed: int | None = None) -> EvalApp:
         ctx = ToolContext(session=GameSession(), engine=LegalEngine())
         coordinator = TurnCoordinator(ctx)
         registry = build_registry(ctx, coordinator, atomic_exchange=False)
@@ -317,6 +318,31 @@ def test_a_provider_death_is_retaken_then_counted_not_scored():
     )
 
     assert (result.runs, result.infra) == (0, 2)
+
+
+def test_a_retaken_sample_keeps_its_seed_and_variant():
+    # Paired arms (#363): the seed and the variant key on the scored position,
+    # so a death re-takes the same sample and sample j of two arms stays a pair.
+    seeds: list[int | None] = []
+    live = scripted_factory(*UNDO_D4_JUDGE)
+    dead = scripted_factory(ProviderError("server gone"))
+
+    def factory(seed: int | None) -> EvalApp:
+        seeds.append(seed)
+        return dead(seed) if len(seeds) == 2 else live(seed)
+
+    result = measure(
+        scenario(variant("a"), variant("b")),
+        runs=3,
+        split="dev",
+        app_factory=factory,
+        seed_base=500,
+    )
+
+    assert seeds == [500, 501, 501, 502]
+    assert [s["seed"] for s in result.samples] == [500, 501, 502]
+    assert [s["variant"] for s in result.samples] == ["a", "b", "a"]
+    assert result.infra == 1
 
 
 # --- the corpus's own rules ---------------------------------------------------------

@@ -51,7 +51,11 @@ from evalstats import (
     classify,
     decide,
     failure_signature,
+    format_paired,
     generation_rate,
+    mcnemar_exact,
+    paired_counts,
+    sample_seed,
     scenario_record,
     split_latencies,
     split_tokens,
@@ -975,3 +979,38 @@ def test_tokens_split_by_the_same_tags():
     assert tokens.attribution == Attribution.SPLIT
     assert tokens.planner_out is None  # the planner's one call reported nothing
     assert (tokens.narrator_in, tokens.narrator_out) == (1200, 80)
+
+
+# --- paired arms (#363) -----------------------------------------------------
+
+
+def test_paired_counts_split_aligned_samples_into_the_four_cells():
+    a = [True, True, False, False, True]
+    b = [True, False, True, False, True]
+    assert paired_counts(a, b) == (2, 1, 1, 1)
+
+
+def test_paired_counts_refuse_unaligned_arms():
+    with pytest.raises(ValueError, match="unaligned"):
+        paired_counts([True], [True, False])
+
+
+@pytest.mark.parametrize(
+    ("a_only", "b_only", "p"),
+    [(0, 0, 1.0), (0, 6, 0.03125), (6, 0, 0.03125), (1, 9, 0.021484375), (3, 3, 1.0)],
+)
+def test_mcnemar_exact_is_the_two_sided_binomial_on_discordant_pairs(
+    a_only: int, b_only: int, p: float
+) -> None:
+    assert mcnemar_exact(a_only, b_only) == pytest.approx(p)
+
+
+def test_concordant_pairs_do_not_move_the_verdict():
+    # 18 shared passes and one flip each way is no evidence: the p reads the
+    # discordant pairs alone, which is what makes the paired test sharp.
+    assert format_paired(1, 1, 20) == "pairs 20 · A-only 1 · B-only 1 · p=1"
+
+
+def test_sample_seed_is_keyed_on_the_scored_position():
+    assert sample_seed(None, 3) is None
+    assert [sample_seed(5000, j) for j in range(3)] == [5000, 5001, 5002]

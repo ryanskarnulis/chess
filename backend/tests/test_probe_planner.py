@@ -35,12 +35,16 @@ from probe_planner import (
     classify,
     corpus,
     foreign_gpu_processes,
+    format_paired_summary,
     format_summary,
     independent_agreement,
     lag1_agreement,
     lands,
+    main,
     outcome_label,
+    paired_summary,
     parse_arm,
+    parse_seed,
     passes,
     position,
     preflight_reasons,
@@ -597,3 +601,139 @@ def test_a_move_that_named_only_its_piece_lands_only_when_the_piece_has_one_move
         boxed,
     )
     assert not lands(pawn, None)  # no board to check against: refused
+
+
+# --- paired arms (#363) -----------------------------------------------------
+
+
+def _rec(item: str, arm: str, sample: int, passed: bool, **extra) -> dict:
+    return {
+        "item": item,
+        "arm": arm,
+        "sample": sample,
+        "seed": 363 + sample,
+        "passed": passed,
+        "error": None,
+        **extra,
+    }
+
+
+def test_later_arms_pair_with_the_first_on_sample_and_seed() -> None:
+    records = [
+        _rec("knight", "control", 0, True),
+        _rec("knight", "twin", 0, True),
+        _rec("knight", "control", 1, True),
+        _rec("knight", "twin", 1, False),
+        _rec("knight", "control", 2, False),
+        _rec("knight", "twin", 2, True),
+        _rec("knight", "control", 3, False),
+        _rec("knight", "twin", 3, False),
+        # An errored sample pairs with nothing, and neither does its partner.
+        _rec("knight", "control", 4, True),
+        _rec("knight", "twin", 4, None, error="ProviderRequestError: dead"),
+        # An unseeded sample is independent: never a pair.
+        {**_rec("knight", "control", 5, True), "seed": None},
+        {**_rec("knight", "twin", 5, True), "seed": None},
+    ]
+    rows = paired_summary(records)
+    assert rows == [("knight", "control", "twin", (1, 1, 1, 1))]
+    text = format_paired_summary(rows)
+    assert "knight | control | twin | 1 | pairs 4 · A-only 1 · B-only 1 · p=1" in text
+
+
+def test_an_unseeded_probe_prints_no_pairs() -> None:
+    records = [
+        {**_rec("knight", "control", 0, True), "seed": None},
+        {**_rec("knight", "twin", 0, False), "seed": None},
+    ]
+    assert paired_summary(records) == []
+
+
+def test_seed_flag_parses_a_base_or_none() -> None:
+    assert parse_seed("7") == 7
+    assert parse_seed("none") is None
+
+
+def test_a_dry_run_sends_the_seed_and_the_same_one_to_every_arm(capsys) -> None:
+    # Nothing listens on port 9: the pre-flight reads an empty server and the
+    # dry run makes no calls.
+    base = ["--dry-run", "--ignore-gpu", "--base-url", "http://127.0.0.1:9/v1"]
+    main([*base, "--arm", "control", "--arm", "twin", "--seed", "40"])
+    out = capsys.readouterr().out
+    assert out.count('"seed": 40') == 2
+
+    main([*base, "--arm", "control", "--seed", "none"])
+    assert '"seed"' not in capsys.readouterr().out
+
+
+def _seeded(name: str, outcomes: list[str], seed0: int, kind: str = "scenario") -> dict:
+    field = "whole" if kind == "frontier" else "outcome"
+    samples = [
+        {field: (o == "PASS") if kind == "frontier" else o, "seed": seed0 + j}
+        for j, o in enumerate(outcomes)
+    ]
+    passed = sum(o == "PASS" for o in outcomes)
+    return {
+        "kind": kind,
+        "scenario": name,
+        "passed": passed,
+        "runs": len(outcomes),
+        "samples": samples,
+    }
+
+
+def test_seeded_blocks_pair_by_block_and_seed_and_print_a_paired_column(
+    tmp_path: Path, capsys
+) -> None:
+    P, F = "PASS", "FAIL"
+    retaken = _seeded("knight", [P, P, P, P, P], 2000)
+    # An infra death re-taken at the same seed never scores or pairs.
+    retaken["samples"].insert(0, {"outcome": "INFRA", "seed": 2000})
+    files = {
+        "block-1-a.jsonl": _seeded("knight", [P, P, F, P, P], 1000),
+        "block-1-b.jsonl": _seeded("knight", [P, F, F, F, P], 1000),
+        # Block 2 ran the other order; its seeds are its own.
+        "block-2-b.jsonl": _seeded("knight", [F, P, F, P, F], 2000),
+        "block-2-a.jsonl": retaken,
+    }
+    specs = []
+    for name, record in files.items():
+        (tmp_path / name).write_text(json.dumps(record) + "\n")
+        specs.append(f"{name[8]}={tmp_path / name}")
+
+    campaign_report.main(specs)
+
+    # 10 pairs: A-only twice in block 1 and three times in block 2.
+    out = capsys.readouterr().out
+    assert out.startswith("scenario | a | b | a vs b\n")
+    assert (
+        "`knight` | 9/10 (4, 5) | 4/10 (2, 2) | "
+        "pairs 10 · A-only 5 · B-only 0 · p=0.0625"
+    ) in out
+
+
+def test_unseeded_or_unmatched_blocks_print_no_paired_column() -> None:
+    unseeded = _seeded("knight", ["PASS"], 0)
+    unseeded["samples"] = [{"outcome": "PASS", "seed": None}]
+    blocks = [
+        ("a", 1, [unseeded]),
+        ("b", 1, [_seeded("knight", ["PASS"], 7000)]),
+        ("a", 2, [_seeded("knight", ["PASS"], 2000)]),
+    ]
+    verdicts = campaign_report.paired(
+        campaign_report.sample_outcomes(blocks), ["a", "b"]
+    )
+    assert verdicts == {}
+    table = {"knight": {"a": {"passed": 1, "runs": 1, "blocks": [1]}}}
+    assert "vs" not in campaign_report.format_table(table, ["a", "b"], verdicts)
+
+
+def test_frontier_samples_pair_on_whole() -> None:
+    blocks = [
+        ("a", 1, [_seeded("undo", ["PASS", "PASS"], 1000, kind="frontier")]),
+        ("b", 1, [_seeded("undo", ["PASS", "FAIL"], 1000, kind="frontier")]),
+    ]
+    verdicts = campaign_report.paired(
+        campaign_report.sample_outcomes(blocks), ["a", "b"]
+    )
+    assert verdicts["undo"]["b"].startswith("pairs 2 · A-only 1 · B-only 0")
