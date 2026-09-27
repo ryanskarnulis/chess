@@ -50,6 +50,7 @@ from probe_planner import (
     preflight_reasons,
     prepare,
     question_records,
+    resolve,
     san_piece,
     schedule,
     sha,
@@ -750,3 +751,83 @@ def test_an_impossible_move_does_not_land_because_make_move_refuses_it():
     assert lands({"name": "make_move", "args": {"move": "e4"}}, None, start)
     # A move that lands elsewhere is still a move played, and still fails.
     assert lands({"name": "make_move", "args": {"move": "Nf3"}}, None, start)
+
+
+# --- parts arms (#371) ----------------------------------------------------------
+
+
+def _item(name: str):
+    return next(i for i in CORPUS if i.name == name)
+
+
+def _offer() -> list[dict]:
+    from chessapp.coordinator import TurnCoordinator
+    from chessapp.tools import (
+        Settings,
+        ToolContext,
+        brain_tool_definitions,
+        build_registry,
+    )
+
+    ctx = ToolContext(
+        session=position(_item("knight_ask")), engine=None, settings=Settings()
+    )
+    registry = build_registry(ctx, TurnCoordinator(ctx), atomic_exchange=False)
+    return brain_tool_definitions(registry, ctx)
+
+
+def test_the_exact_asks_each_name_every_move_that_fits() -> None:
+    for item in CORPUS:
+        if item.rule[0] == "asks_exactly":
+            assert set(item.rule[1]) <= set(position(item).legal_moves()), item.name
+
+
+def test_asks_exactly_wants_the_ask_with_that_set_and_nothing_wider() -> None:
+    rule = ("asks_exactly", ["Nf3", "Nh3"])
+    ask = {"name": "ask_player", "args": {"candidates": ["Nh3", "Nf3"]}}
+    wide = {"name": "ask_player", "args": {"candidates": ["Nh3", "Nf3", "Nc3"]}}
+    assert passes(rule, [ask])
+    assert not passes(rule, [wide])
+    assert not passes(rule, [])
+
+
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        (
+            {"name": "move_piece", "args": {"piece": "knight", "which": "kings"}},
+            {"name": "ask_player", "args": {"candidates": ["Nh3", "Nf3"]}},
+        ),
+        (
+            {"name": "move_piece", "args": {"piece": "pawn", "to": "e4"}},
+            {"name": "make_move", "args": {"move": "e4", "source": SAID}},
+        ),
+        (
+            {"name": "make_move", "args": {"piece": "pawn", "which": "e"}},
+            {"name": "ask_player", "args": {"candidates": ["e3", "e4"]}},
+        ),
+        (
+            {"name": "ask_player", "args": {"piece": "knight", "which": "queens"}},
+            {"name": "ask_player", "args": {"candidates": ["Nc3", "Na3"]}},
+        ),
+        ({"name": "move_piece", "args": {"piece": "bishop"}}, None),
+        ({"name": "move_piece", "args": {"piece": "knight", "which": "?"}}, None),
+    ],
+)
+def test_a_move_by_parts_resolves_as_the_app_would(call, expected) -> None:
+    assert resolve(call, position(_item("knight_ask"))) == expected
+
+
+def test_calls_that_name_their_move_are_not_resolved() -> None:
+    call = {"name": "make_move", "args": {"move": "e4", "source": SAID}}
+    ask = {"name": "ask_player", "args": {"candidates": ["e3", "e4"]}}
+    session = position(_item("knight_ask"))
+    assert resolve(call, session) is call
+    assert resolve(ask, session) is ask
+
+
+@pytest.mark.parametrize("schema", ["parts_tool", "parts_make_move", "parts_ask"])
+def test_a_parts_arm_keeps_ask_player_last(schema) -> None:
+    arm = parse_arm(f"a:tool_schema={schema}")
+    tools = arm.offer(_offer())
+    assert tools[-1]["function"]["name"] == "ask_player"

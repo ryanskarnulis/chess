@@ -35,7 +35,9 @@ Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `drop_tool=<tool>` (repeatable: the offer without that tool),
 `state_view=sorted|by_piece|joined` (the shape `legal_moves` is shown in),
 `tool_schema=provenance|form|square` (`make_move` says where its move came
-from, or how the words chose it, scored as the app would check it) and `thinking=on`.
+from, or how the words chose it, scored as the app would check it),
+`tool_schema=parts_tool|parts_make_move|parts_ask` (a move described by its
+parts, resolved to the moves that fit as the app would, #371) and `thinking=on`.
 `control` (no keys) is the shipped planner. `--fresh` calls llama-swap's
 `/unload` before the first sample so the session is new; it refuses while a
 slot is processing or another job holds the card (the shared-GPU rule).
@@ -112,6 +114,8 @@ DEFAULT_SEED = 363
 #   ("no_tool",)                         the model called nothing (asked/refused)
 #   ("asks",)                            nothing, or its first call is
 #                                        `ask_player` — the two ways to ask (#289)
+#   ("asks_exactly", [...])              the first call is `ask_player` with
+#                                        exactly these candidates (#371)
 #   ("no_move",)                         no `make_move` that would land: asking,
 #                                        replying and reading all pass (#351)
 #   ("first_call", name, constraints)    the first call is `name`; constraints:
@@ -240,6 +244,43 @@ CORPUS: tuple[Item, ...] = (
         ("e4", "e5"),
         ("asks",),
         note="four queen moves fit, none of them legal_moves[0] or [1] (#352)",
+    ),
+    # #371: the ask with exactly the moves that fit, not every move of the
+    # piece type (#348) and not one of them played (#357).
+    Item(
+        "knight_ask_exact",
+        "move my kings knight",
+        (),
+        ("asks_exactly", ["Nf3", "Nh3"]),
+        note="the g1 knight's two moves, not all four (#348)",
+    ),
+    Item(
+        "queen_knight_exact",
+        "move my queens knight",
+        (),
+        ("asks_exactly", ["Nc3", "Na3"]),
+        note="the b1 knight's two moves (#348)",
+    ),
+    Item(
+        "pawn_ask_exact",
+        "push my e pawn",
+        (),
+        ("asks_exactly", ["e3", "e4"]),
+        note="`pawn_ask` scored for the exact pair (#357)",
+    ),
+    Item(
+        "kingspawn_stt",
+        "push my kingspawn",
+        (),
+        ("asks_exactly", ["e3", "e4"]),
+        note="live 2026-09-26: asked with all 16 pawn moves",
+    ),
+    Item(
+        "light_bishop_ask",
+        "get my light-squared bishop out",
+        ("e4", "e5"),
+        ("asks_exactly", ["Be2", "Bd3", "Bc4", "Bb5", "Ba6"]),
+        note="frontier `undo_then_ambiguous_bishop`'s first turn, played 3/10",
     ),
     Item(
         "take_pawn",
@@ -506,6 +547,136 @@ TOOL_SCHEMAS: dict[str, Callable[[list[dict[str, Any]]], list[dict[str, Any]]]] 
 }
 
 
+# Parts arms (#371): the planner describes a move by its parts — the piece,
+# which one, where to — and code works out the legal moves that fit
+# (`GameSession.moves_fitting`). One fits: it is played. Several: the player is
+# asked with exactly those. None: refused. `resolve` applies that to what the
+# probe scores, so an arm is scored as the app would carry it out.
+MOVE_PIECE = "move_piece"
+_PARTS_PROPERTIES: dict[str, Any] = {
+    "piece": {
+        "type": "string",
+        "enum": ["king", "queen", "rook", "bishop", "knight", "pawn"],
+        "description": "The piece the player named.",
+    },
+    "which": {
+        "type": "string",
+        "description": (
+            "Which one, only if the player said: its square ('e2'), its file "
+            "('e'), the side it started on ('kings', 'queens'), or its square "
+            "colour ('light', 'dark')."
+        ),
+    },
+    "to": {
+        "type": "string",
+        "description": "The square it goes to, only if the player said one.",
+    },
+}
+_PARTS_TOOL_TEXT = (
+    "Move a piece the player names without naming the move: \"move my king's "
+    'knight", "push a pawn", "get my bishop out". Give the piece, and which '
+    "one and where only if they said. The app plays it when one legal move fits "
+    "and otherwise asks the player to choose among the moves that fit — never "
+    "pick one yourself."
+)
+_PARTS_MAKE_MOVE_TAIL = (
+    "\n\nWhen the player names a piece but not the move (\"move my king's "
+    'knight", "push a pawn"), leave out move and give piece, with which and '
+    "to only if they said: the app plays the one move that fits, or asks the "
+    "player to choose."
+)
+_PARTS_ASK_TEXT = (
+    "Ask the player to choose, when their words name a piece but not which of "
+    'its moves: "move my king\'s knight", "push a pawn". Give the piece, and '
+    "which one and where only if they said; the app works out the legal moves "
+    "that fit and asks with exactly those. Nothing moves."
+)
+
+
+def _parts_tool(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`move_piece` joins the offer just before `ask_player`, which stays last
+    (#393)."""
+    tool = {
+        "type": "function",
+        "function": {
+            "name": MOVE_PIECE,
+            "description": _PARTS_TOOL_TEXT,
+            "parameters": {
+                "type": "object",
+                "properties": copy.deepcopy(_PARTS_PROPERTIES),
+                "required": ["piece"],
+            },
+        },
+    }
+    names = [d["function"]["name"] for d in definitions]
+    at = names.index("ask_player") if "ask_player" in names else len(definitions)
+    return [*definitions[:at], tool, *definitions[at:]]
+
+
+def _parts_make_move(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for d in definitions:
+        function = d["function"]
+        if function["name"] != "make_move":
+            continue
+        function["description"] += _PARTS_MAKE_MOVE_TAIL
+        parameters = function["parameters"]
+        parameters["properties"].update(copy.deepcopy(_PARTS_PROPERTIES))
+        parameters["required"] = [
+            r for r in parameters.get("required", []) if r != "move"
+        ]
+    return definitions
+
+
+def _parts_ask(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for d in definitions:
+        function = d["function"]
+        if function["name"] != "ask_player":
+            continue
+        function["description"] = _PARTS_ASK_TEXT
+        function["parameters"] = {
+            "type": "object",
+            "properties": copy.deepcopy(_PARTS_PROPERTIES),
+            "required": ["piece"],
+        }
+    return definitions
+
+
+TOOL_SCHEMAS["parts_tool"] = _parts_tool
+TOOL_SCHEMAS["parts_make_move"] = _parts_make_move
+TOOL_SCHEMAS["parts_ask"] = _parts_ask
+
+
+def _by_parts(call: Call) -> bool:
+    name, args = call["name"], call["args"]
+    if "piece" not in args:
+        return False
+    return (
+        name == MOVE_PIECE
+        or (name == "make_move" and not args.get("move"))
+        or (name == "ask_player" and "candidates" not in args)
+    )
+
+
+def resolve(call: Call, session: GameSession) -> Call | None:
+    """`call` as the app would carry it out: a move described by its parts
+    becomes the one move that fits (played), an ask with the moves that fit, or
+    nothing (refused). Every other call is returned as it is."""
+    if not _by_parts(call):
+        return call
+    args = call["args"]
+    try:
+        fitting = session.moves_fitting(
+            str(args["piece"]), args.get("which") or None, args.get("to") or None
+        )
+    except ValueError:
+        return None
+    if not fitting:
+        return None
+    if len(fitting) == 1:
+        return {"name": "make_move", "args": {"move": fitting[0], "source": SAID}}
+    return {"name": "ask_player", "args": {"candidates": fitting}}
+
+
 def _read_at(value: str, *, what: str) -> str:
     if not value.startswith("@"):
         raise SystemExit(f"{what} must be a file reference (@path), got {value!r}")
@@ -587,6 +758,11 @@ def outcome_label(calls: Sequence[Call]) -> str:
             parts.append(f"make_move({args['move']}{source})")
         elif name == "undo" and "plies" in args:
             parts.append(f"undo(plies={args['plies']})")
+        elif name == MOVE_PIECE or (
+            name in ("make_move", "ask_player") and "piece" in args
+        ):
+            said = [str(args[k]) for k in ("piece", "which", "to") if args.get(k)]
+            parts.append(f"{name}[{','.join(said)}]")
         elif name == "ask_player" and "candidates" in args:
             parts.append(f"ask_player({','.join(map(str, args['candidates']))})")
         else:
@@ -637,6 +813,13 @@ def passes(rule: Rule, calls: Sequence[Call]) -> bool:
         return not any(call["name"] == "make_move" for call in calls)
     if kind == "asks":
         return not calls or calls[0]["name"] == "ask_player"
+    if kind == "asks_exactly":
+        _, wanted = rule
+        return (
+            bool(calls)
+            and calls[0]["name"] == "ask_player"
+            and set(calls[0]["args"].get("candidates", ())) == set(wanted)
+        )
     if kind == "first_call":
         _, name, constraints = rule
         if not calls or calls[0]["name"] != name:
@@ -917,6 +1100,7 @@ class Prepared:
     offer_sha: str
     fen: str
     fast_path: str | None
+    session: GameSession
 
 
 def question_records(
@@ -967,6 +1151,7 @@ def prepare(
         offer_sha=sha(json.dumps(tools, sort_keys=True)),
         fen=session.fen(),
         fast_path=parse_move(item.utterance, session.fen()),
+        session=session,
     )
 
 
@@ -1105,6 +1290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             error: str | None = None
             calls: list[Call] = []
             landed: list[Call] = []
+            resolved: list[Call] = []
             usage: dict[str, Any] | None = None
             try:
                 result = provider.chat(
@@ -1120,7 +1306,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 error = f"{type(exc).__name__}: {exc}"
             else:
                 calls = classify(result)
-                landed = [c for c in calls if lands(c, item.question, prepared.fen)]
+                resolved = [
+                    r for c in calls if (r := resolve(c, prepared.session)) is not None
+                ]
+                landed = [c for c in resolved if lands(c, item.question, prepared.fen)]
                 usage = result.usage.model_dump() if result.usage else None
                 if running_sha is None:
                     running_sha = sha(json.dumps(swap.running(), sort_keys=True))
@@ -1142,7 +1331,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "outcome": outcome_label(calls) if error is None else "error",
                 # Scored on what would land: a call the app refuses moves nothing.
                 "passed": passes(item.rule, landed) if error is None else None,
-                "refused": [c for c in calls if c not in landed],
+                "resolved": resolved,
+                "refused": [c for c in resolved if c not in landed]
+                + [c for c in calls if resolve(c, prepared.session) is None],
                 "error": error,
                 "latency_ms": round((time.monotonic() - started) * 1000),
                 "usage": usage,
