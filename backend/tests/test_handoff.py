@@ -167,6 +167,18 @@ def test_the_engines_reply_is_the_narrators_to_say():
         "you like."
     ) in brief
     assert "Your reply" not in render(build([MOVED]), "e4", [MOVED])
+    assert "and tell them your move, Nf6, your way." in brief
+
+
+def test_a_turn_with_no_reply_keeps_the_closing_sentence_as_it_was():
+    """Pinned so a turn with no move — the most common brain turn — measures
+    the prompt it always did."""
+    brief = render(build([MOVED]), "e4", [MOVED])
+    assert brief.endswith(
+        "Reply to the player in character. Say only what the record above "
+        "shows was done; if it shows nothing done, do not say anything was. "
+        "When the player has to choose, ask them, naming the options."
+    )
 
 
 def test_a_quiet_reply_is_just_the_move():

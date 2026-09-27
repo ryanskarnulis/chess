@@ -250,10 +250,16 @@ the two), is read once as the planner hands off: `player_color`, `in_check`,
 `captured` — and two about the engine's answer, both lifted into the handoff.
 `engine_reply` (`{san, capture, check}`) is the reply the coordinator just
 played, settled through the brain's `settle_reply` seam right before the facts
-are read (#365); the brief renders it as "Your reply, already on the board:
-Nf6, taking their knight, check. The player learns your move only from what
-you say; say it however you like." — the one prompt line #365 added, and the
-only thing that asks him to say it. `reply_owed` is left for the reply the
+are read (#365); the brief renders it in the record as "Your reply, already
+on the board: Nf6, taking their knight, check. The player learns your move
+only from what you say; say it however you like.", and the closing sentence
+names it again: "Reply to the player in character, and tell them your move,
+Nf6, your way." The second one is what does it. With the move only in the
+record he said it on 9 of 20 brain-route turns (0 of 16 before the record
+line was joined by any instruction); named in the closing sentence, 20 of 20,
+none unbacked. A paragraph of its own said it as often but sent a thinking
+narrator past the 60 s ceiling on 9 of 20 samples (a probe of interleaved
+arms, 2026-09-27; the numbers are in `docs/agent-evals.md`). `reply_owed` is left for the reply the
 engine died on: "Your reply to the player's move never came: the engine
 failed." No `history` (the refresh block's measured reason, one phase on) and
 no side to move.

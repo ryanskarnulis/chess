@@ -302,9 +302,19 @@ def render(
             "The planner's reading of what the player wants (not a record of "
             f"what happened):\n{handoff.note}"
         )
+    # The closing sentence carries the reply too (#365), because it is the
+    # sentence a 12B answers: with the move only in the record above, Glitch
+    # said it on 9 of 20 brain-route turns; named here, 20 of 20. A paragraph
+    # of its own said it as often but sent a thinking narrator past the
+    # stall ceiling on half its samples.
+    reply = (
+        f", and tell them your move, {handoff.engine_reply['san']}, your way"
+        if handoff.engine_reply
+        else ""
+    )
     parts.append(
-        "Reply to the player in character. Say only what the record above "
-        "shows was done; if it shows nothing done, do not say anything was. "
-        "When the player has to choose, ask them, naming the options."
+        f"Reply to the player in character{reply}. Say only what the record "
+        "above shows was done; if it shows nothing done, do not say anything "
+        "was. When the player has to choose, ask them, naming the options."
     )
     return "\n\n".join(parts)

@@ -318,6 +318,39 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-27 on the says-his-own-move tree (#365, roadmap #366 step 6:
+the engine's reply is settled before the narrator speaks and handed to him to
+say; the app's appended reply line is gone except as the no-words fallback).
+The whole gate, because the brief changed on every move turn: 54 passed in a
+single run, 16 m 33 s, idle GPU, infra 0. `long_capture` 5/5 ×3; the new
+`consecutive_move_reactions` 5/5, reply said 15/15. Speech accuracy 100%,
+110/110 over 294 turns, nothing unbacked; **reply said 86/87** (the new
+measure, `docs/speech-accuracy.md`; the one miss in
+`move_save_resume_finishes_exchange`).
+
+The first full run, with the reply only in the brief's record lines, passed
+53 of 54 and said the reply on 57 of 97 turns: 13/15 on the fast path but
+0/5 on `undo_and_replace`, 1/5 on `best_move_then_play`. (Its one failure,
+`advice_capture_survives_guard`, was the setup premise — Stockfish's best
+move came back `d3` after an earlier scenario, and alone the scenario passes
+5/5.) A probe of interleaved arms on two brain-route asks ("take that bishop
+move back and play d4 instead", "what's the best move? play it") then chose
+the wording, 10 rounds a case:
+
+| arm | reply said | past the 60 s ceiling | unbacked |
+| --- | ---: | ---: | ---: |
+| record line only (shipped first) | 0/16 | 0 | 0 |
+| closing sentence asks for "the move you replied with" | 9/20 | 0 | 1 (a misnamed reply) |
+| a paragraph of its own naming the move | 14/16, then 5/10 on the thinking ask | 5/10 | 0 |
+| **closing sentence names the move** (shipped) | **20/20** | **0** | **0** |
+
+The paragraph arms set a thinking narrator running past the stall ceiling on
+the "play it" ask, so the move went into the closing sentence instead.
+Latency: the gate's fast-path move turns took ~0.6 s end to end with the
+engine at the harness's default strength, so the engine's think time before
+the narration is not visible here; the #340 targets are checked against a
+live game on the deployed app.
+
 **Run 2026-09-27 on the one-narrator tree (#369, roadmap #366 step 5: the
 reaction speaks from the handoff brief the loop closes with, one budget
 policy, one `narrator` phase). Only what the change can move was run, on an

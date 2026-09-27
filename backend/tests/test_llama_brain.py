@@ -2189,9 +2189,10 @@ def test_the_loops_narration_brief_after_a_move_is_pinned():
         'The game now:\n{"player_color": "white"}\n\n'
         "The planner's reading of what the player wants (not a record of "
         "what happened):\nplay e4\n\n"
-        "Reply to the player in character. Say only what the record above "
-        "shows was done; if it shows nothing done, do not say anything was. "
-        "When the player has to choose, ask them, naming the options."
+        "Reply to the player in character, and tell them your move, e5, your "
+        "way. Say only what the record above shows was done; if it shows "
+        "nothing done, do not say anything was. When the player has to "
+        "choose, ask them, naming the options."
     )
 
 
