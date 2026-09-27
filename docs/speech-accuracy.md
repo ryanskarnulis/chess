@@ -182,3 +182,61 @@ build. The frontier tier trends its own per run (`frontier_report.py trend`);
 the first recorded row is #340's before-snapshot. The two-sample dev pass
 that checked the frontier plumbing (not recorded in the history) read 58/60
 before the widening above and 60/60 after it.
+
+### Pre-redesign snapshot (#340, 2026-09-26)
+
+The reference for roadmap #366's speech steps (#368, #369, #365, #372), taken
+on revision `a5a924d` (serving manifest `0e50ac87e9d5`).
+
+**The hands-free session (schema 3, 35 turns, 0 legacy):** 100%, 24/24.
+
+| family | made | backed |
+| --- | ---: | ---: |
+| `move` | 10 | 10 |
+| `unplayed_reply` | 10 | 10 |
+| `capture` | 2 | 2 |
+| `check` | 1 | 1 |
+| `takeback` | 1 | 1 |
+
+**The whole deployed trace (318 turns, 283 legacy):** 94.4%, 34/36. The two
+unbacked lines are still the 2026-09-04 "talk more" lies (`verbosity_change`),
+and every schema-3 claim is backed. Unscored on legacy records: `move` 56,
+`unplayed_reply` 56, `capture` 25, `outcome` 1.
+
+**How often the live guard fired:** never in the session (0/37 turns), and 7
+times in the whole trace (354 turns, 2026-09-04..26), one rewrite spoken.
+Hand-labelled:
+
+| date | family | line | label |
+| --- | --- | --- | --- |
+| 09-04 | `move_advice` | lists the legal moves after "redo two moves" | false positive |
+| 09-04 | `capture` ×3 | "Take the rook. Rxd1 is the move" (advice) | false positive (#250) |
+| 09-06 | `move_advice` | "Just play Bf4" on how to play the London | false positive (advice inversion) |
+| 09-06 | `ending` | "checkmate's looking real close for me" | false positive (hedge) |
+| 09-26 | `unplayed_reply` | "black played Nf6" before Black had moved | **true lie** (the #365 case) |
+
+So 1 of 7 firings caught a real misstatement. Every false-positive family has
+since been fixed at the reading. The scorer's two widenings (a review's `best`
+moves, rounded centipawns) are not in the guard, and the session provoked
+neither. The eval gate's schema-3 row for this revision is in
+`docs/agent-evals.md` (the #340 run): 94/94 over 284 turns.
+
+**Frontier, both splits (10 samples per scenario, label "pre-redesign
+snapshot (#340)" in `docs/frontier-history.jsonl`):** dev 95.3%, 327/343;
+held-out 97.7%, 340/348. The first frontier row, so a first look at the
+unbacked lines. All 24 were hand-labelled:
+
+| family | dev | held-out | line | label |
+| --- | ---: | ---: | --- | --- |
+| `ending` | 5 | 4 | "starting a new game will end this one" (the reset gate's question) | scorer error: a conditional, not a claim that the game ended |
+| `ending` | 3 | 1 | "you lost like 817 centipawns there" (a review) | scorer error: "lost" read as a result |
+| `owned_move` | 1 | 0 | "you shoulda played Bxc4" | scorer error: a counterfactual, not a claim that it was played |
+| `move` | 3 | 0 | "Nf3 Nc6, 3." reciting an opening in a study chat | not a claim about this game |
+| `unplayed_reply` | 4 | 3 | "I'm going with Nf6" before the engine had replied | **true misstatement**, the #365 case |
+
+Only the `unplayed_reply` lines are real. That is 7 of 24, all naming Glitch's
+own reply before it exists, which #365 removes. Discounting the other 17, the
+model's accuracy is 98.8% dev (339/343) and 99.1% held-out (345/348). The
+three scorer errors are #384, to fix in the reading before #368 leans on
+it. Until then, compare frontier speech rows as raw numbers, run to run on
+the same scorer.

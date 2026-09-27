@@ -160,3 +160,32 @@ warm, uncontended rows: `speech_end→transcript`, `command→first_board`,
 numbers, recording the sample size and the `manifest_id` they came from. A
 target set without the manifest that produced it can't be checked against
 anything later.
+
+### Pre-redesign targets (#340, 2026-09-26)
+
+The before-snapshot for roadmap #366, taken so each later step (#365, #372)
+and the end of the redesign have a reference. One hands-free voice game on the
+deployed app, 35 voice interactions (23 fast-path moves, 12 brain turns, one
+undo), on an idle GPU (all four slots free, no other client on the card).
+
+| segment | p50 (ms) | p95 target (ms) | n |
+| --- | ---: | ---: | ---: |
+| `speech_end→transcript` | 2,537 | 3,158 | 35 |
+| `command→first_board` | 13 | 4,301 | 30 |
+| `command→engine_reply` | 1,629 | 8,481 | 27 |
+| `start→first_audio` | 4,920 | 16,071 | 35 |
+
+- **Serving:** `manifest_id` `0e50ac87e9d5` (revision `a5a924d`, gemma-4-12B-it
+  QAT UD-Q4_K_XL, llama.cpp b9935-f2d1c2f39). A second manifest in the window,
+  `e2b04b712b1d`, is the unprobed startup record for the same revision; no call
+  ran under it.
+- **Warm, uncontended:** every model call in the window was `warm` (planner 26,
+  narrator 23, closer 12), and the only `+contended` turn was a no-model control
+  turn. The client segments are not split by condition, so every row above
+  covers the whole session.
+- **Thin tails:** p95 at n = 27–35 is the second- or third-largest reading, so
+  treat a change of one reading as noise. The session mixes two populations:
+  fast-path moves (turn total p50 1.5 s, p95 1.8 s, n 23) and brain turns (p50
+  6.4 s, n 12).
+- Command: `latency_report.py turns.jsonl --since 2026-09-26T22:57:09+00:00`.
+  A naive `--since` is read as local time.
