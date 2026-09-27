@@ -301,3 +301,25 @@ def test_a_count_no_rounding_reaches_is_still_unbacked():
 
     assert ("evaluation", False) in _counts(score)
     assert ("move", False) in _counts(score)
+
+
+def test_the_frontier_runs_misread_lines_are_scored_as_true():
+    """#384: three true lines the #340 frontier run scored unbacked, verbatim.
+    A conditional, a review's lost evaluation and a counterfactual are not an
+    ending or a move that was played."""
+    session = _session("e4")
+    name, review = _REVIEW
+    review = {**review, "critical": [{**review["critical"][0], "cp_loss": 817}]}
+
+    score = score_record(
+        _record(
+            "Yo, starting a new game will end this one. "
+            "you lost like 817 centipawns there. "
+            "you shoulda played Bxc4",
+            session,
+            tools=[(name, review)],
+        )
+    )
+
+    assert all(backed for _, backed in _counts(score))
+    assert not {"ending", "owned_move"} & {family for family, _ in _counts(score)}
