@@ -124,7 +124,7 @@
   },
   {
     "function": {
-      "description": "Play the player's move: the `legal_moves` entry their words name, as SAN\n('Nf3') or UCI ('g1f3'). Map loose phrasing and voice slips onto it (\"push the\nqueen's bishop pawn one square\" → 'c3', \"e 4\" → 'e4'). For \"e4\", \"knight to\nf3\", \"take the pawn\", \"castle\". A move that cannot be played is refused, and\nnothing moves.\n\nThe engine plays its reply inside the same call. If you proposed a\nmove and the player accepts (\"yes\"), call it now; announcing a move\nin words is not making it.",
+      "description": "Play the player's move: the `legal_moves` entry their words name, as SAN\n('Nf3') or UCI ('g1f3'). Map loose phrasing to the matching entry (\"push the\nqueen's bishop pawn one square\" → 'c3') and fix voice slips (\"e 4\" → 'e4').\nFor \"e4\", \"knight to f3\", \"take the pawn\", \"castle\". A move that cannot be\nplayed is refused, and nothing moves.\n\nThe engine plays its reply inside the same call. If you proposed a\nmove and the player accepts (\"yes\"), call it now; announcing a move\nin words is not making it.",
       "name": "make_move",
       "parameters": {
         "additionalProperties": false,

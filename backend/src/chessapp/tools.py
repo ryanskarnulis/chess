@@ -1374,10 +1374,10 @@ def pgn_headers(ctx: ToolContext, session: GameSession | None = None) -> dict[st
 # golden recorded; the wrapping is `inspect.getdoc`'s.
 _MAKE_MOVE_HOW = (
     "Play the player's move: the `legal_moves` entry their words name, as SAN\n"
-    "('Nf3') or UCI ('g1f3'). Map loose phrasing and voice slips onto it (\"push the\n"
-    'queen\'s bishop pawn one square" → \'c3\', "e 4" → \'e4\'). For "e4", "knight to\n'
-    'f3", "take the pawn", "castle". A move that cannot be played is refused, and\n'
-    "nothing moves."
+    "('Nf3') or UCI ('g1f3'). Map loose phrasing to the matching entry (\"push the\n"
+    "queen's bishop pawn one square\" → 'c3') and fix voice slips (\"e 4\" → 'e4').\n"
+    'For "e4", "knight to f3", "take the pawn", "castle". A move that cannot be\n'
+    "played is refused, and nothing moves."
 )
 
 _MAKE_MOVE_ATOMIC_TAIL = (
@@ -1455,7 +1455,8 @@ def _check_positional_pick(ctx: "ToolContext", move: str) -> None:
     if _san(ctx.session, move) not in record.candidates:
         raise ToolError(
             "a pick by position must be one of the moves the open question"
-            f" offered: {', '.join(record.candidates)}",
+            f" offered: {', '.join(record.candidates)} — resubmit the one the"
+            " player picked, exactly as written there, still picked_by_position",
             retry=RETRY_DIFFERENT_ARGS,
         )
 
@@ -2311,10 +2312,9 @@ def build_registry(
                 ),
             ],
         ) -> dict[str, Any]:
-            """Ask the player to choose, when their words fit two or more entries of
-            `legal_moves` ("move the rook" with several rook moves). Nothing moves:
-            the question goes to the player, and their answer comes back as the next
-            command."""
+            """Ask the player to choose, when their words fit two or more
+            entries of `legal_moves`. Nothing moves: the question goes to the
+            player, and their answer comes back as the next command."""
             if ctx.session.is_game_over():
                 raise ToolError(
                     "the game is over; there is no move to ask about",

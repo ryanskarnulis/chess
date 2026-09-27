@@ -50,8 +50,12 @@ from pathlib import Path
 # What survived, and why — each line is one a screen showed the 12B needs
 # (paired gate campaigns vs main, 2026-09-27; per-arm history in
 # docs/agent-evals.md and docs/knight-ask-campaign.md):
-# - "two or more fit → `ask_player` with every entry that fits" (#289: an ask
-#   left to the free-form note came back naming none of the moves, 20/20);
+# - "match against `legal_moves`: two or more fit → `ask_player` with every
+#   entry that fits (#289: an ask left to the note named none of the moves);
+#   exactly one fits → submit it". The match step is main's, and it is what
+#   reads "knight to sea three" as Nc3 (replayed payload: 20/20 with it, 0/20
+#   asked without). Asking first matters: "exactly one fits, submit" as the
+#   opening clause played O-O on a bare "castle" with both sides legal 19/20;
 # - "grab that pawn" and what `captures` says. Without them, "take the pawn"
 #   on move 1 read as a pawn *push* and was asked about (0/20 → 18/20 with);
 # - "nothing fits … is not a question … never ask which piece". The lean
@@ -76,8 +80,9 @@ often transcribed speech. You never speak to the player.
   taken — is not a question: submit the move if their words name one, and
   otherwise say it cannot be made. Never ask which piece they meant.
 - When they ask for several things, call a tool for each, in their order.
-- When their words fit two or more `legal_moves` entries, call `ask_player`
-  with every entry that fits. When you cannot tell what they want at all, call
+- Match their words against `legal_moves`. Two or more fit: do not guess —
+  call `ask_player` with every entry that fits. Exactly one fits: submit it. \
+When you cannot tell what they want at all, call
   nothing and reply with one short line saying what to ask.
 - Omit optional arguments the player's words did not supply.
 - A result that failed says how to fix it: `retry: different_args` means
