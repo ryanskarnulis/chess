@@ -85,6 +85,14 @@ class MoveResult:
     correct without a second round trip spent asking what is legal. Empty on a
     move that landed, and on one refused because the game is already over —
     there is no alternative to a finished game.
+
+    `correctable` says what kind of alternatives they are (#370). True when
+    they are the same piece to the same square the request named, so one of
+    them *is* the move asked for, spelled out (an ambiguous "Nd2", a wrong
+    origin): resubmitting it plays what the player said. False when they are
+    only the nearest thing the position offers: a move no piece can make has
+    no correct spelling, and playing an alternative in its place would be a
+    move the player never asked for.
     """
 
     legal: bool
@@ -95,6 +103,7 @@ class MoveResult:
     capture: str | None = None
     check: bool = False
     alternatives: tuple[str, ...] = ()
+    correctable: bool = False
 
 
 @dataclass(frozen=True)
@@ -740,10 +749,12 @@ class GameSession:
             if ambiguous
             else f"illegal move: {move_str}"
         )
+        alternatives, correctable = self._alternatives(move_str)
         return MoveResult(
             legal=False,
             reason=reason,
-            alternatives=tuple(self.move_alternatives(move_str)),
+            alternatives=tuple(alternatives),
+            correctable=ambiguous or correctable,
         )
 
     def move_alternatives(self, move_str: str) -> list[str]:
@@ -763,9 +774,15 @@ class GameSession:
         Capped throughout (`ALTERNATIVES_MAX`) — see the constant. Empty once
         the game is over, because `legal_moves` is.
         """
+        return self._alternatives(move_str)[0]
+
+    def _alternatives(self, move_str: str) -> tuple[list[str], bool]:
+        """`move_alternatives`, and whether they came from the first tier —
+        the named piece to the named square — which is what makes a rejection
+        `correctable` (`MoveResult`)."""
         legal = self.legal_moves()
         if not legal:
-            return []
+            return [], False
         squares = _SQUARE.findall(move_str)
         destination = squares[-1] if squares else None
         piece = self._requested_piece(move_str, squares)
@@ -788,8 +805,9 @@ class GameSession:
             if not (by_square or by_piece):
                 continue
             if found := matching(by_square=by_square, by_piece=by_piece):
-                return found[:ALTERNATIVES_MAX]
-        return legal[:ALTERNATIVES_MAX]
+                exact = by_square and by_piece
+                return found[:ALTERNATIVES_MAX], exact
+        return legal[:ALTERNATIVES_MAX], False
 
     def _requested_piece(
         self, move_str: str, squares: list[str]

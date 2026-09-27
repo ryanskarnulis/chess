@@ -449,6 +449,23 @@ def test_a_pick_by_position_may_be_spelled_in_uci():
     assert ctx.session.move_history() == ["Nh3", "e5"]
 
 
+def test_a_pick_by_position_off_the_offer_says_resubmit_it_as_written():
+    """ "c4 one" for a question offering Bc4: the planner sent "c4" labelled a
+    pick, and then — told only what was offered — switched the label and
+    played the c-pawn (#370, frontier `undo_then_ambiguous_bishop`). The
+    refusal now says the fix is the offered move, written as offered, still a
+    pick."""
+    client, provider, ctx, _ = _asked()
+
+    _pick(provider, "Nc3")
+    client.post("/api/command", json={"text": "the c3 one"})
+
+    assert ctx.session.move_history() == []
+    refused = _last_tool_result(provider)
+    assert refused["retry"] == "different_args"
+    assert "exactly as written there, still picked_by_position" in refused["error"]
+
+
 def test_a_pick_by_position_with_nothing_asked_moves_nothing():
     """The bug: "the first one" with no question played `legal_moves[0]`."""
     client, provider, ctx = make_client(ctx=None)[:3]

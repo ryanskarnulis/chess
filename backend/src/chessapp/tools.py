@@ -1372,11 +1372,13 @@ def pgn_headers(ctx: ToolContext, session: GameSession | None = None) -> dict[st
 # rule code owns does not also live in the prompt. Written out as constants (rather
 # than one template) so the atomic text stays byte-for-byte what the schema
 # golden recorded; the wrapping is `inspect.getdoc`'s.
-_MAKE_MOVE_HOW = """Submit the player's move: a string copied from the board state's
-`legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to
-the matching entry ("push the queen's bishop pawn one square" → 'c3')
-and fix voice slips ("e 4" → 'e4'); never invent a string that isn't in
-`legal_moves`."""
+_MAKE_MOVE_HOW = (
+    "Play the player's move: the `legal_moves` entry their words name, as SAN\n"
+    "('Nf3') or UCI ('g1f3'). Map loose phrasing to the matching entry (\"push the\n"
+    "queen's bishop pawn one square\" → 'c3') and fix voice slips (\"e 4\" → 'e4').\n"
+    'For "e4", "knight to f3", "take the pawn", "castle". A move that cannot be\n'
+    "played is refused, and nothing moves."
+)
 
 _MAKE_MOVE_ATOMIC_TAIL = (
     "The engine plays its reply inside the same call. If you proposed a\n"
@@ -1453,7 +1455,8 @@ def _check_positional_pick(ctx: "ToolContext", move: str) -> None:
     if _san(ctx.session, move) not in record.candidates:
         raise ToolError(
             "a pick by position must be one of the moves the open question"
-            f" offered: {', '.join(record.candidates)}",
+            f" offered: {', '.join(record.candidates)} — resubmit the one the"
+            " player picked, exactly as written there, still picked_by_position",
             retry=RETRY_DIFFERENT_ARGS,
         )
 
@@ -1520,12 +1523,9 @@ def build_registry(
 
     @registry.tool()
     def describe_position() -> dict[str, Any]:
-        """What is on the board right now, in words: where each side's pieces
-        stand, who is ahead in material and by how much, castling, check, and
-        the last move. This is how you answer a description ask — "what's the
-        position?", "what's on the board?", "where are my pieces?" — call it
-        rather than describing the board yourself. It is a description, not a
-        verdict: who is *winning* is `evaluate_position`."""
+        """What is on the board now, in words: where each side's pieces stand, material,
+        castling, check and the last move. For "what's the position?", "what's on the
+        board?", "where are my pieces?". Who is winning is `evaluate_position`."""
         session = ctx.session
         placement = session.piece_placement()
         castling = session.castling_status()
@@ -1556,12 +1556,9 @@ def build_registry(
 
     @registry.tool()
     def evaluate_position() -> dict[str, Any]:
-        """Stockfish's verdict on who is better, from White's point of view:
-        centipawns, or mate-in-N. This is how you answer a judgment question —
-        "who's winning?", "how am I doing?", "is this good for me?" — from the
-        result, never from a guess. It says nothing about what is on the board:
-        "what's the position?" is a description ask, which is
-        `describe_position`."""
+        """Stockfish's verdict on who is better, from White's point of view: centipawns
+        or mate-in-N. For "who's winning?", "how am I doing?", "is this good for
+        me?". What is on the board is `describe_position`."""
         evaluation = _require_engine(ctx).evaluate_position(ctx.session)
         return {
             "ok": True,
@@ -1580,8 +1577,8 @@ def build_registry(
             ),
         ] = 3,
     ) -> dict[str, Any]:
-        """Top n candidate moves from Stockfish (MultiPV), best first, with
-        SAN, UCI, and White-POV scores."""
+        """Stockfish's top n moves, best first, with scores. For a hint or advice: "what
+        should I play?", "any ideas?", "give me a hint"."""
         candidates = _require_engine(ctx).get_best_moves(ctx.session, n=n)
         return {
             "ok": True,
@@ -1600,14 +1597,11 @@ def build_registry(
     def analyze_last_move(
         color: Literal["white", "black"] | None = None,
     ) -> dict[str, Any]:
-        """Analyze a move: how it compares to Stockfish's best from the same
-        position — centipawn loss, verdict (good/inaccuracy/mistake/blunder),
-        and what was best. `played_captures`/`best_captures` name the piece
-        each of those moves takes, or are null for a quiet move — never name a
-        captured piece the result did not. This is how you answer "how good was
-        that move?" or "what was my mistake?" — from the result, never from a
-        guess. Defaults to the player's own last move (what 'my mistake'
-        means); pass a color to analyze that side's last move instead."""
+        """Judge one move against Stockfish's best from the same position: centipawn
+        loss, a verdict (good/inaccuracy/mistake/blunder), the best move, and what
+        each took. For "how good was that move?", "was that a mistake?", "what should
+        I have played?". Defaults to the player's own last move; pass a color for
+        that side's last move."""
         # Which move "my mistake" refers to is not a question for the model.
         # On the player's turn the last *ply* is always the engine's reply, so
         # the old no-args default analyzed the opponent's move every time
@@ -1631,11 +1625,10 @@ def build_registry(
 
     @registry.tool()
     def review_game() -> dict[str, Any]:
-        """Review the whole game so far: per-color accuracy scores, how
-        many moves each side played of each class
-        (good/inaccuracy/mistake/blunder), and each side's worst moves with
-        the move number, centipawn loss and the best alternative. A move not
-        listed lost less than every listed move of its side."""
+        """Review the whole game so far: each side's accuracy, how many good moves,
+        inaccuracies, mistakes and blunders each played, and each side's worst moves
+        with the better alternative. For "how did I play?", "review the game", "where
+        did I go wrong?"."""
         review = _review_game(_require_engine(ctx), ctx.session)
         # A summary and the moves worth talking about, never the per-ply table
         # (#288): that is one line per move into the planner's context, and the
@@ -1670,17 +1663,44 @@ def build_registry(
             result, reply = coordinator.apply_player_move(move), None
         if not result.legal:
             # Still `ok: True` — legality is the engine's answer, not a fault,
-            # and the whole app reads a rejected move as data. What it now
-            # carries is the way out: the legal moves that answer what was
-            # asked for, and the fact that a corrected call is worth making.
-            # Nothing to correct on a finished game, so that one says so.
-            retriable = bool(result.alternatives)
+            # and the whole app reads a rejected move as data. What it carries
+            # is the way out, and since the planner stopped judging legality
+            # itself (#370) it is the *only* place that way out is said: the
+            # planner submits what the player asked for, and this result says
+            # whether a corrected call can still be that move.
+            if result.correctable:
+                # The same piece to the same square, spelled out: one of these
+                # is the player's move. Which one is theirs to say when their
+                # words don't.
+                fix = (
+                    "more than one piece can make this move: resubmit the"
+                    " alternative the player's words name, or call ask_player"
+                    " with the alternatives if they don't say which"
+                    if (result.reason or "").startswith("ambiguous move")
+                    else "resubmit the alternative that is the move the player"
+                    " asked for"
+                )
+                retry = RETRY_DIFFERENT_ARGS
+            else:
+                # Nothing the player asked for can be played. The alternatives
+                # are what the position offers instead — information for the
+                # reply, never a substitute to play on the player's behalf.
+                # Nothing to correct on a finished game, so that says so too.
+                fix = (
+                    "nothing was played: the move the player asked for is not"
+                    " legal here — tell them so; never play an alternative in"
+                    " its place"
+                    if result.alternatives
+                    else "nothing was played: the game is over"
+                )
+                retry = RETRY_NEVER
             return {
                 "ok": True,
                 "legal": False,
                 "reason": result.reason,
+                "fix": fix,
                 "alternatives": list(result.alternatives),
-                "retry": RETRY_DIFFERENT_ARGS if retriable else RETRY_NEVER,
+                "retry": retry,
                 "board_version": ctx.board_version,
             }
         payload = {
@@ -1909,13 +1929,10 @@ def build_registry(
     def new_game(
         player_color: Literal["white", "black"] | None = None,
     ) -> dict[str, Any]:
-        """Reset to the starting position and begin a new game. Pass
-        `player_color` to put the player on that side ("let's play as black");
-        omitted, they keep the side they have. Call this as soon as the player
-        asks — do not ask them to confirm first. If a game is in progress the
-        result comes back refusing and asking you to confirm; relay that to the
-        player in your own words and stop, do not call again. When it returns
-        ok, the game really did reset."""
+        """Start a new game from the starting position. For "new game", "start over",
+        "let's play again". Pass `player_color` when they pick a side ("I'll play
+        black"). Call it right away: when a game is in progress the app asks the
+        player to confirm."""
         # The budget is checked before the gate, so a refused-for-budget call
         # neither arms an op nor overwrites one that is already armed: it did
         # not happen, and the player is owed no question about it.
@@ -1949,11 +1966,9 @@ def build_registry(
 
     @registry.tool()
     def resign(color: Literal["white", "black"] | None = None) -> dict[str, Any]:
-        """Resign the game. Defaults to the player's own side; pass a color to
-        resign for that side. Call this as soon as the player concedes — do not
-        ask them to confirm first. If a game is in progress the result comes
-        back refusing and asking you to confirm; relay that to the player and
-        stop, do not call again. When it returns ok, the game really did end."""
+        """Resign the game for the player, or for `color` when they name a side. For "I
+        resign", "I give up", "you win". Call it right away: when a game is in
+        progress the app asks the player to confirm."""
         # Whose resignation this is, is not a question for the model: an
         # unqualified "I resign" is the player's, and the session knows which
         # side that is. The old default — the side to move — was only
@@ -1981,11 +1996,9 @@ def build_registry(
 
     @registry.tool()
     def claim_draw() -> dict[str, Any]:
-        """Claim a draw by threefold repetition or the fifty-move rule. Call this
-        as soon as the player asks to claim a draw — do not ask them to confirm
-        first. If a game is in progress the result comes back refusing and asking
-        you to confirm; relay that to the player and stop, do not call again.
-        When it returns ok, the game really did end in a draw."""
+        """Claim a draw the rules allow: threefold repetition or the fifty-move rule.
+        For "claim a draw", "that's threefold". Call it right away: the app asks the
+        player to confirm. A draw by agreement is `offer_draw`."""
         coordinator.require_destructive_budget()
         # Whether a claim exists is board truth, and it is checked *before* the
         # gate for the same reason the budget is: a call that cannot run must not
@@ -2015,15 +2028,10 @@ def build_registry(
 
     @registry.tool()
     def offer_draw() -> dict[str, Any]:
-        """Offer the engine a draw on the player's behalf. Call this as soon as
-        the player offers or asks for a draw by agreement ("call it a draw?",
-        "split the point?") — do not decide the answer yourself and do not ask
-        them to confirm first. The result says whether the offer was accepted
-        and, if not, why (engine_ahead, player_ahead, not_an_endgame,
-        too_early); relay that answer and stop — never call it twice in one
-        turn. When accepted is true the game really did end in a draw; when it
-        is false nothing changed and the game goes on. A draw the rules already
-        allow claiming is `claim_draw`, not this."""
+        """Offer the engine a draw by agreement. The engine decides; the result says
+        whether it accepted and, if not, why. For "draw?", "call it a draw?", "split
+        the point?". Once per turn, and never answer for the engine. A draw the rules
+        allow claiming is `claim_draw`."""
         # Not gated (`docs/draw-offer.md`): a decline changes nothing, and an
         # acceptance ends only a position the rule has judged level and an
         # endgame — the outcome the player asked for. It does take the
@@ -2059,9 +2067,9 @@ def build_registry(
 
     @registry.tool()
     def export_pgn() -> dict[str, Any]:
-        """Export the game so far as PGN. The app shows the player the notation
-        itself, with a button to copy it, so the reply should say it is ready —
-        never recite the moves or the headers."""
+        """Export the game as PGN. For "export the game", "give me the PGN". The app
+        shows the player the notation with a copy button, so the reply only says it
+        is ready."""
         # The description above is a prompt change: live, the narrator read the
         # whole `[Event "?"] …` dump into the bubble and, with voice on, out
         # loud (2026-09-04 walkthrough). The notation is app-owned text now —
@@ -2073,11 +2081,9 @@ def build_registry(
     def save_game(
         name: Annotated[str, Field(pattern=SAVE_NAME_PATTERN)] = "autosave",
     ) -> dict[str, Any]:
-        """Save the current game under a name (default 'autosave'). Call this
-        as soon as the player asks. If a save with that name already exists
-        the result comes back refusing and asking you to confirm replacing
-        it; relay that to the player and stop, do not call again. The saves
-        that already exist are in the state you are given."""
+        """Save the game under a name (default 'autosave'). For "save the game", "save
+        this as opening". The saves that exist are in the state; replacing one asks
+        the player first."""
         path = _save_path(ctx, name)
         # Replacing a save the player made is the one thing here they could
         # lose, so it asks first (#291) — except `autosave`, the default slot
@@ -2139,11 +2145,9 @@ def build_registry(
     def resume_game(
         name: Annotated[str, Field(pattern=SAVE_NAME_PATTERN)] = "autosave",
     ) -> dict[str, Any]:
-        """Resume a previously saved game by name (default 'autosave'). Call
-        this as soon as the player asks — do not ask them to confirm first. If
-        a game is in progress the result comes back refusing and asking you to
-        confirm; relay that to the player and stop, do not call again. When it
-        returns ok, the saved game really is on the board."""
+        """Load a saved game by name (default 'autosave'). For "load my game", "resume
+        opening". Call it right away: when a game is in progress the app asks the
+        player to confirm."""
         path = _save_path(ctx, name)
         if not path.exists():
             # The saves that do exist ride along: the request was for a real
@@ -2274,17 +2278,17 @@ def build_registry(
 
     @registry.tool()
     def set_verbosity(verbosity: Literal["low", "normal", "high"]) -> dict[str, Any]:
-        """Set how much the app says back: low is one short line, normal is
-        the default, high adds a remark on the position. This is the only way
-        to change it — the setting persists across turns and the player owns
-        it, so any ask to talk more or less, be briefer, chattier, or quieter
-        is this call and not a change of style in one reply."""
+        """Set how much the app says back: low is one short line, normal is the default,
+        high adds a remark on the position. The player owns this setting and it
+        persists: any ask to talk more or less — "talk less", "be briefer", "chattier
+        please" — is this call, not a change of style in one reply."""
         ctx.settings.verbosity = verbosity
         return {"ok": True, "verbosity": verbosity}
 
     @registry.tool()
     def set_voice_output(enabled: bool) -> dict[str, Any]:
-        "Turn spoken (TTS) output on or off."
+        """Turn spoken (TTS) output on or off. For "read your replies out loud", "turn
+        the voice off"."""
         ctx.settings.voice_output = enabled
         return {"ok": True, "voice_output": enabled}
 

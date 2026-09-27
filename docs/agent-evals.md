@@ -345,6 +345,40 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-27 on the lean planner (#370, roadmap #366 step 8: a short
+`PLANNER_PROMPT` contract, tool descriptions that say what each tool does
+and which requests trigger it, and `make_move` refusals that say whether a
+corrected call can still be the player's move). Full gate: 54 passed,
+`long_capture` 5/5 ×3, speech 108/110 claims backed (the two misses are
+narrator lines, not planner routing). Opening planner prompt ~3.4k → ~2.9k
+tokens (contract ~491 → ~366, offer ~2,873 → ~2,485, chars/4).**
+
+How it was measured, all paired on the sampling seed (#363) against `main`:
+
+- The probe corpus: every item level except `pawn_forward_ask`, 0/20 → 20/20
+  asked (p=2e-6). The held-out `castle_both` was seen during design (it
+  caught an arm that played O-O 19/20), so it is no longer clean held-out.
+- Gate campaigns, 20 samples an arm, on the scenarios a text change can move.
+  The first lean contract dropped three of the old contract's lines and each
+  one mattered: `impossible_capture_is_refused_not_asked` 20/20 → 0/20
+  ("take the pawn" with nothing to take became "Which pawn, bro?"),
+  `undo_twice_and_replace` 18/20 → 9/20 (undid once). The shipped text keeps
+  them in the new shape (`personality.py` says which line fixed what); both
+  scenarios then measured level with `main`.
+- Frontier held-out, 10 samples a scenario: `noisy_thread` 10/10 (0/10 before
+  the match-first line came back), `knight_ask_long_chat_then_pick` 6 → 10/10;
+  **`undo_then_ambiguous_bishop` 8 → 2/10 (p=0.03), shipped as a known
+  regression**: after "c4 one" answers a bishop question, a refused
+  `make_move("c4", picked_by_position)` is followed by the c-pawn instead of
+  Bc4. The refusal now says to resubmit the offered move as written, which
+  moved it only partway; the fix belongs to #371 (piece asks narrowed by the
+  tools). `late_game_save_undo_resume` 10 → 7/10 (p=0.25, "three moves" read as
+  3 plies).
+- A cheap screen that worked where the probe could not: dump the exact planner
+  payload of a failing frontier turn and replay it with only the system prompt
+  swapped, 20 seeds an arm. The probe's hand-built context disagreed with the
+  app on "knight to sea three"; the replay reproduced it exactly.
+
 **Run 2026-09-27 on the says-his-own-move tree (#365, roadmap #366 step 6:
 the engine's reply is settled before the narrator speaks and handed to him to
 say; the app's appended reply line is gone except as the no-words fallback).

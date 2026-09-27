@@ -56,7 +56,7 @@
       "type": "function",
       "function": {
         "name": "describe_position",
-        "description": "What is on the board right now, in words: where each side's pieces\nstand, who is ahead in material and by how much, castling, check, and\nthe last move. This is how you answer a description ask — \"what's the\nposition?\", \"what's on the board?\", \"where are my pieces?\" — call it\nrather than describing the board yourself. It is a description, not a\nverdict: who is *winning* is `evaluate_position`.",
+        "description": "What is on the board now, in words: where each side's pieces stand, material,\ncastling, check and the last move. For \"what's the position?\", \"what's on the\nboard?\", \"where are my pieces?\". Who is winning is `evaluate_position`.",
         "parameters": {
           "properties": {},
           "title": "describe_positionArguments",
@@ -69,7 +69,7 @@
       "type": "function",
       "function": {
         "name": "evaluate_position",
-        "description": "Stockfish's verdict on who is better, from White's point of view:\ncentipawns, or mate-in-N. This is how you answer a judgment question —\n\"who's winning?\", \"how am I doing?\", \"is this good for me?\" — from the\nresult, never from a guess. It says nothing about what is on the board:\n\"what's the position?\" is a description ask, which is\n`describe_position`.",
+        "description": "Stockfish's verdict on who is better, from White's point of view: centipawns\nor mate-in-N. For \"who's winning?\", \"how am I doing?\", \"is this good for\nme?\". What is on the board is `describe_position`.",
         "parameters": {
           "properties": {},
           "title": "evaluate_positionArguments",
@@ -82,7 +82,7 @@
       "type": "function",
       "function": {
         "name": "get_best_moves",
-        "description": "Top n candidate moves from Stockfish (MultiPV), best first, with\nSAN, UCI, and White-POV scores.",
+        "description": "Stockfish's top n moves, best first, with scores. For a hint or advice: \"what\nshould I play?\", \"any ideas?\", \"give me a hint\".",
         "parameters": {
           "properties": {
             "n": {
@@ -104,7 +104,7 @@
       "type": "function",
       "function": {
         "name": "analyze_last_move",
-        "description": "Analyze a move: how it compares to Stockfish's best from the same\nposition — centipawn loss, verdict (good/inaccuracy/mistake/blunder),\nand what was best. `played_captures`/`best_captures` name the piece\neach of those moves takes, or are null for a quiet move — never name a\ncaptured piece the result did not. This is how you answer \"how good was\nthat move?\" or \"what was my mistake?\" — from the result, never from a\nguess. Defaults to the player's own last move (what 'my mistake'\nmeans); pass a color to analyze that side's last move instead.",
+        "description": "Judge one move against Stockfish's best from the same position: centipawn\nloss, a verdict (good/inaccuracy/mistake/blunder), the best move, and what\neach took. For \"how good was that move?\", \"was that a mistake?\", \"what should\nI have played?\". Defaults to the player's own last move; pass a color for\nthat side's last move.",
         "parameters": {
           "properties": {
             "color": {
@@ -134,7 +134,7 @@
       "type": "function",
       "function": {
         "name": "review_game",
-        "description": "Review the whole game so far: per-color accuracy scores, how\nmany moves each side played of each class\n(good/inaccuracy/mistake/blunder), and each side's worst moves with\nthe move number, centipawn loss and the best alternative. A move not\nlisted lost less than every listed move of its side.",
+        "description": "Review the whole game so far: each side's accuracy, how many good moves,\ninaccuracies, mistakes and blunders each played, and each side's worst moves\nwith the better alternative. For \"how did I play?\", \"review the game\", \"where\ndid I go wrong?\".",
         "parameters": {
           "properties": {},
           "title": "review_gameArguments",
@@ -147,7 +147,7 @@
       "type": "function",
       "function": {
         "name": "make_move",
-        "description": "Submit the player's move: a string copied from the board state's\n`legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to\nthe matching entry (\"push the queen's bishop pawn one square\" → 'c3')\nand fix voice slips (\"e 4\" → 'e4'); never invent a string that isn't in\n`legal_moves`.\n\nThe engine plays its reply inside the same call. If you proposed a\nmove and the player accepts (\"yes\"), call it now; announcing a move\nin words is not making it.",
+        "description": "Play the player's move: the `legal_moves` entry their words name, as SAN\n('Nf3') or UCI ('g1f3'). Map loose phrasing to the matching entry (\"push the\nqueen's bishop pawn one square\" → 'c3') and fix voice slips (\"e 4\" → 'e4').\nFor \"e4\", \"knight to f3\", \"take the pawn\", \"castle\". A move that cannot be\nplayed is refused, and nothing moves.\n\nThe engine plays its reply inside the same call. If you proposed a\nmove and the player accepts (\"yes\"), call it now; announcing a move\nin words is not making it.",
         "parameters": {
           "properties": {
             "move": {
@@ -198,7 +198,7 @@
       "type": "function",
       "function": {
         "name": "new_game",
-        "description": "Reset to the starting position and begin a new game. Pass\n`player_color` to put the player on that side (\"let's play as black\");\nomitted, they keep the side they have. Call this as soon as the player\nasks — do not ask them to confirm first. If a game is in progress the\nresult comes back refusing and asking you to confirm; relay that to the\nplayer in your own words and stop, do not call again. When it returns\nok, the game really did reset.",
+        "description": "Start a new game from the starting position. For \"new game\", \"start over\",\n\"let's play again\". Pass `player_color` when they pick a side (\"I'll play\nblack\"). Call it right away: when a game is in progress the app asks the\nplayer to confirm.",
         "parameters": {
           "properties": {
             "player_color": {
@@ -228,7 +228,7 @@
       "type": "function",
       "function": {
         "name": "resign",
-        "description": "Resign the game. Defaults to the player's own side; pass a color to\nresign for that side. Call this as soon as the player concedes — do not\nask them to confirm first. If a game is in progress the result comes\nback refusing and asking you to confirm; relay that to the player and\nstop, do not call again. When it returns ok, the game really did end.",
+        "description": "Resign the game for the player, or for `color` when they name a side. For \"I\nresign\", \"I give up\", \"you win\". Call it right away: when a game is in\nprogress the app asks the player to confirm.",
         "parameters": {
           "properties": {
             "color": {
@@ -258,7 +258,7 @@
       "type": "function",
       "function": {
         "name": "claim_draw",
-        "description": "Claim a draw by threefold repetition or the fifty-move rule. Call this\nas soon as the player asks to claim a draw — do not ask them to confirm\nfirst. If a game is in progress the result comes back refusing and asking\nyou to confirm; relay that to the player and stop, do not call again.\nWhen it returns ok, the game really did end in a draw.",
+        "description": "Claim a draw the rules allow: threefold repetition or the fifty-move rule.\nFor \"claim a draw\", \"that's threefold\". Call it right away: the app asks the\nplayer to confirm. A draw by agreement is `offer_draw`.",
         "parameters": {
           "properties": {},
           "title": "claim_drawArguments",
@@ -271,7 +271,7 @@
       "type": "function",
       "function": {
         "name": "offer_draw",
-        "description": "Offer the engine a draw on the player's behalf. Call this as soon as\nthe player offers or asks for a draw by agreement (\"call it a draw?\",\n\"split the point?\") — do not decide the answer yourself and do not ask\nthem to confirm first. The result says whether the offer was accepted\nand, if not, why (engine_ahead, player_ahead, not_an_endgame,\ntoo_early); relay that answer and stop — never call it twice in one\nturn. When accepted is true the game really did end in a draw; when it\nis false nothing changed and the game goes on. A draw the rules already\nallow claiming is `claim_draw`, not this.",
+        "description": "Offer the engine a draw by agreement. The engine decides; the result says\nwhether it accepted and, if not, why. For \"draw?\", \"call it a draw?\", \"split\nthe point?\". Once per turn, and never answer for the engine. A draw the rules\nallow claiming is `claim_draw`.",
         "parameters": {
           "properties": {},
           "title": "offer_drawArguments",
@@ -284,7 +284,7 @@
       "type": "function",
       "function": {
         "name": "export_pgn",
-        "description": "Export the game so far as PGN. The app shows the player the notation\nitself, with a button to copy it, so the reply should say it is ready —\nnever recite the moves or the headers.",
+        "description": "Export the game as PGN. For \"export the game\", \"give me the PGN\". The app\nshows the player the notation with a copy button, so the reply only says it\nis ready.",
         "parameters": {
           "properties": {},
           "title": "export_pgnArguments",
@@ -297,7 +297,7 @@
       "type": "function",
       "function": {
         "name": "save_game",
-        "description": "Save the current game under a name (default 'autosave'). Call this\nas soon as the player asks. If a save with that name already exists\nthe result comes back refusing and asking you to confirm replacing\nit; relay that to the player and stop, do not call again. The saves\nthat already exist are in the state you are given.",
+        "description": "Save the game under a name (default 'autosave'). For \"save the game\", \"save\nthis as opening\". The saves that exist are in the state; replacing one asks\nthe player first.",
         "parameters": {
           "properties": {
             "name": {
@@ -317,7 +317,7 @@
       "type": "function",
       "function": {
         "name": "resume_game",
-        "description": "Resume a previously saved game by name (default 'autosave'). Call\nthis as soon as the player asks — do not ask them to confirm first. If\na game is in progress the result comes back refusing and asking you to\nconfirm; relay that to the player and stop, do not call again. When it\nreturns ok, the saved game really is on the board.",
+        "description": "Load a saved game by name (default 'autosave'). For \"load my game\", \"resume\nopening\". Call it right away: when a game is in progress the app asks the\nplayer to confirm.",
         "parameters": {
           "properties": {
             "name": {
@@ -387,7 +387,7 @@
       "type": "function",
       "function": {
         "name": "set_verbosity",
-        "description": "Set how much the app says back: low is one short line, normal is\nthe default, high adds a remark on the position. This is the only way\nto change it — the setting persists across turns and the player owns\nit, so any ask to talk more or less, be briefer, chattier, or quieter\nis this call and not a change of style in one reply.",
+        "description": "Set how much the app says back: low is one short line, normal is the default,\nhigh adds a remark on the position. The player owns this setting and it\npersists: any ask to talk more or less — \"talk less\", \"be briefer\", \"chattier\nplease\" — is this call, not a change of style in one reply.",
         "parameters": {
           "properties": {
             "verbosity": {
@@ -413,7 +413,7 @@
       "type": "function",
       "function": {
         "name": "set_voice_output",
-        "description": "Turn spoken (TTS) output on or off.",
+        "description": "Turn spoken (TTS) output on or off. For \"read your replies out loud\", \"turn\nthe voice off\".",
         "parameters": {
           "properties": {
             "enabled": {
@@ -488,7 +488,7 @@
       "type": "function",
       "function": {
         "name": "describe_position",
-        "description": "What is on the board right now, in words: where each side's pieces\nstand, who is ahead in material and by how much, castling, check, and\nthe last move. This is how you answer a description ask — \"what's the\nposition?\", \"what's on the board?\", \"where are my pieces?\" — call it\nrather than describing the board yourself. It is a description, not a\nverdict: who is *winning* is `evaluate_position`.",
+        "description": "What is on the board now, in words: where each side's pieces stand, material,\ncastling, check and the last move. For \"what's the position?\", \"what's on the\nboard?\", \"where are my pieces?\". Who is winning is `evaluate_position`.",
         "parameters": {
           "properties": {},
           "title": "describe_positionArguments",
@@ -501,7 +501,7 @@
       "type": "function",
       "function": {
         "name": "evaluate_position",
-        "description": "Stockfish's verdict on who is better, from White's point of view:\ncentipawns, or mate-in-N. This is how you answer a judgment question —\n\"who's winning?\", \"how am I doing?\", \"is this good for me?\" — from the\nresult, never from a guess. It says nothing about what is on the board:\n\"what's the position?\" is a description ask, which is\n`describe_position`.",
+        "description": "Stockfish's verdict on who is better, from White's point of view: centipawns\nor mate-in-N. For \"who's winning?\", \"how am I doing?\", \"is this good for\nme?\". What is on the board is `describe_position`.",
         "parameters": {
           "properties": {},
           "title": "evaluate_positionArguments",
@@ -514,7 +514,7 @@
       "type": "function",
       "function": {
         "name": "get_best_moves",
-        "description": "Top n candidate moves from Stockfish (MultiPV), best first, with\nSAN, UCI, and White-POV scores.",
+        "description": "Stockfish's top n moves, best first, with scores. For a hint or advice: \"what\nshould I play?\", \"any ideas?\", \"give me a hint\".",
         "parameters": {
           "properties": {
             "n": {
@@ -536,7 +536,7 @@
       "type": "function",
       "function": {
         "name": "analyze_last_move",
-        "description": "Analyze a move: how it compares to Stockfish's best from the same\nposition — centipawn loss, verdict (good/inaccuracy/mistake/blunder),\nand what was best. `played_captures`/`best_captures` name the piece\neach of those moves takes, or are null for a quiet move — never name a\ncaptured piece the result did not. This is how you answer \"how good was\nthat move?\" or \"what was my mistake?\" — from the result, never from a\nguess. Defaults to the player's own last move (what 'my mistake'\nmeans); pass a color to analyze that side's last move instead.",
+        "description": "Judge one move against Stockfish's best from the same position: centipawn\nloss, a verdict (good/inaccuracy/mistake/blunder), the best move, and what\neach took. For \"how good was that move?\", \"was that a mistake?\", \"what should\nI have played?\". Defaults to the player's own last move; pass a color for\nthat side's last move.",
         "parameters": {
           "properties": {
             "color": {
@@ -566,7 +566,7 @@
       "type": "function",
       "function": {
         "name": "review_game",
-        "description": "Review the whole game so far: per-color accuracy scores, how\nmany moves each side played of each class\n(good/inaccuracy/mistake/blunder), and each side's worst moves with\nthe move number, centipawn loss and the best alternative. A move not\nlisted lost less than every listed move of its side.",
+        "description": "Review the whole game so far: each side's accuracy, how many good moves,\ninaccuracies, mistakes and blunders each played, and each side's worst moves\nwith the better alternative. For \"how did I play?\", \"review the game\", \"where\ndid I go wrong?\".",
         "parameters": {
           "properties": {},
           "title": "review_gameArguments",
@@ -579,7 +579,7 @@
       "type": "function",
       "function": {
         "name": "make_move",
-        "description": "Submit the player's move: a string copied from the board state's\n`legal_moves` list — SAN ('Nf3') or UCI ('g1f3'). Map loose phrasing to\nthe matching entry (\"push the queen's bishop pawn one square\" → 'c3')\nand fix voice slips (\"e 4\" → 'e4'); never invent a string that isn't in\n`legal_moves`.\n\nThe engine answers as soon as your move lands, without being asked.\nIf you proposed a move and the player accepts (\"yes\"), call it now;\nannouncing a move in words is not making it.",
+        "description": "Play the player's move: the `legal_moves` entry their words name, as SAN\n('Nf3') or UCI ('g1f3'). Map loose phrasing to the matching entry (\"push the\nqueen's bishop pawn one square\" → 'c3') and fix voice slips (\"e 4\" → 'e4').\nFor \"e4\", \"knight to f3\", \"take the pawn\", \"castle\". A move that cannot be\nplayed is refused, and nothing moves.\n\nThe engine answers as soon as your move lands, without being asked.\nIf you proposed a move and the player accepts (\"yes\"), call it now;\nannouncing a move in words is not making it.",
         "parameters": {
           "properties": {
             "move": {
@@ -647,7 +647,7 @@
       "type": "function",
       "function": {
         "name": "new_game",
-        "description": "Reset to the starting position and begin a new game. Pass\n`player_color` to put the player on that side (\"let's play as black\");\nomitted, they keep the side they have. Call this as soon as the player\nasks — do not ask them to confirm first. If a game is in progress the\nresult comes back refusing and asking you to confirm; relay that to the\nplayer in your own words and stop, do not call again. When it returns\nok, the game really did reset.",
+        "description": "Start a new game from the starting position. For \"new game\", \"start over\",\n\"let's play again\". Pass `player_color` when they pick a side (\"I'll play\nblack\"). Call it right away: when a game is in progress the app asks the\nplayer to confirm.",
         "parameters": {
           "properties": {
             "player_color": {
@@ -677,7 +677,7 @@
       "type": "function",
       "function": {
         "name": "resign",
-        "description": "Resign the game. Defaults to the player's own side; pass a color to\nresign for that side. Call this as soon as the player concedes — do not\nask them to confirm first. If a game is in progress the result comes\nback refusing and asking you to confirm; relay that to the player and\nstop, do not call again. When it returns ok, the game really did end.",
+        "description": "Resign the game for the player, or for `color` when they name a side. For \"I\nresign\", \"I give up\", \"you win\". Call it right away: when a game is in\nprogress the app asks the player to confirm.",
         "parameters": {
           "properties": {
             "color": {
@@ -707,7 +707,7 @@
       "type": "function",
       "function": {
         "name": "claim_draw",
-        "description": "Claim a draw by threefold repetition or the fifty-move rule. Call this\nas soon as the player asks to claim a draw — do not ask them to confirm\nfirst. If a game is in progress the result comes back refusing and asking\nyou to confirm; relay that to the player and stop, do not call again.\nWhen it returns ok, the game really did end in a draw.",
+        "description": "Claim a draw the rules allow: threefold repetition or the fifty-move rule.\nFor \"claim a draw\", \"that's threefold\". Call it right away: the app asks the\nplayer to confirm. A draw by agreement is `offer_draw`.",
         "parameters": {
           "properties": {},
           "title": "claim_drawArguments",
@@ -720,7 +720,7 @@
       "type": "function",
       "function": {
         "name": "offer_draw",
-        "description": "Offer the engine a draw on the player's behalf. Call this as soon as\nthe player offers or asks for a draw by agreement (\"call it a draw?\",\n\"split the point?\") — do not decide the answer yourself and do not ask\nthem to confirm first. The result says whether the offer was accepted\nand, if not, why (engine_ahead, player_ahead, not_an_endgame,\ntoo_early); relay that answer and stop — never call it twice in one\nturn. When accepted is true the game really did end in a draw; when it\nis false nothing changed and the game goes on. A draw the rules already\nallow claiming is `claim_draw`, not this.",
+        "description": "Offer the engine a draw by agreement. The engine decides; the result says\nwhether it accepted and, if not, why. For \"draw?\", \"call it a draw?\", \"split\nthe point?\". Once per turn, and never answer for the engine. A draw the rules\nallow claiming is `claim_draw`.",
         "parameters": {
           "properties": {},
           "title": "offer_drawArguments",
@@ -733,7 +733,7 @@
       "type": "function",
       "function": {
         "name": "export_pgn",
-        "description": "Export the game so far as PGN. The app shows the player the notation\nitself, with a button to copy it, so the reply should say it is ready —\nnever recite the moves or the headers.",
+        "description": "Export the game as PGN. For \"export the game\", \"give me the PGN\". The app\nshows the player the notation with a copy button, so the reply only says it\nis ready.",
         "parameters": {
           "properties": {},
           "title": "export_pgnArguments",
@@ -746,7 +746,7 @@
       "type": "function",
       "function": {
         "name": "save_game",
-        "description": "Save the current game under a name (default 'autosave'). Call this\nas soon as the player asks. If a save with that name already exists\nthe result comes back refusing and asking you to confirm replacing\nit; relay that to the player and stop, do not call again. The saves\nthat already exist are in the state you are given.",
+        "description": "Save the game under a name (default 'autosave'). For \"save the game\", \"save\nthis as opening\". The saves that exist are in the state; replacing one asks\nthe player first.",
         "parameters": {
           "properties": {
             "name": {
@@ -766,7 +766,7 @@
       "type": "function",
       "function": {
         "name": "resume_game",
-        "description": "Resume a previously saved game by name (default 'autosave'). Call\nthis as soon as the player asks — do not ask them to confirm first. If\na game is in progress the result comes back refusing and asking you to\nconfirm; relay that to the player and stop, do not call again. When it\nreturns ok, the saved game really is on the board.",
+        "description": "Load a saved game by name (default 'autosave'). For \"load my game\", \"resume\nopening\". Call it right away: when a game is in progress the app asks the\nplayer to confirm.",
         "parameters": {
           "properties": {
             "name": {
@@ -836,7 +836,7 @@
       "type": "function",
       "function": {
         "name": "set_verbosity",
-        "description": "Set how much the app says back: low is one short line, normal is\nthe default, high adds a remark on the position. This is the only way\nto change it — the setting persists across turns and the player owns\nit, so any ask to talk more or less, be briefer, chattier, or quieter\nis this call and not a change of style in one reply.",
+        "description": "Set how much the app says back: low is one short line, normal is the default,\nhigh adds a remark on the position. The player owns this setting and it\npersists: any ask to talk more or less — \"talk less\", \"be briefer\", \"chattier\nplease\" — is this call, not a change of style in one reply.",
         "parameters": {
           "properties": {
             "verbosity": {
@@ -862,7 +862,7 @@
       "type": "function",
       "function": {
         "name": "set_voice_output",
-        "description": "Turn spoken (TTS) output on or off.",
+        "description": "Turn spoken (TTS) output on or off. For \"read your replies out loud\", \"turn\nthe voice off\".",
         "parameters": {
           "properties": {
             "enabled": {

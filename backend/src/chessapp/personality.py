@@ -33,95 +33,64 @@ from pathlib import Path
 
 # --- the planner's prompt -----------------------------------------------------
 #
-# The tool-selection contract, and nothing else. It keeps every load-bearing
-# rule the one-prompt `_BASE` carried about *acting* — the board and engine own
-# truth and legality, act only through tools, resolve loose phrasing against the
-# injected `legal_moves`, ask between legal moves rather than guess — and drops
-# everything about *speaking*, which is now the narrator's whole job. Its
-# closing text is an internal note to the narrator, so there is no verbosity
-# layer here: the planner never produces a word the player reads.
+# A short contract (#370): turn the player's words into tool calls; the tools
+# enforce the rules and their results say how to fix a bad call; when the words
+# are unclear, ask. What each tool does, and which requests trigger it, lives in
+# that tool's own description, and every rule a tool can enforce lives in the
+# tool: legality in `make_move`'s refusal (which says whether a corrected call
+# can still be the player's move), confirmation in `_gate`, a pick by position
+# in `source`, the candidates of a question in `ask_player`'s enum.
 #
-# The move-matching rule is a procedure — match first, then one/several/none —
-# because the old ambiguity bullet left a hole the model fell through
-# (2026-09-04 walkthrough): told never to judge legality, to submit only entries
-# of `legal_moves`, and to ask when "which piece" is unclear, a planner handed
-# "bishop to a1" at the start had asking as its only legal option — so an
-# impossible move came back as "Which one?", and "take the pawn" on a board with
-# nothing to take came back "which pawn?" even once `captures` was in view,
-# because "which piece" was read before "does anything fit". Whether a move
-# exists is still not the model's call; matching the words against the injected
-# list is, and a request that matches nothing is refused rather than queried.
+# The contract it replaced was a page of rules, and some fought each other: it
+# said "never decide whether a move is legal", then that a move matching no
+# `legal_moves` entry "is not legal … the answer is to say so". Live
+# (2026-09-26 capture) the planner judged "knight to f6" illegal in prose and
+# no tool ran. Now the planner submits what was asked and `make_move` answers.
 #
-# The procedure's bullet used to open with a second copy of the `captures` fact
-# ("`captures` says what each capturing move takes, and when it is empty nothing
-# on the board can be taken") between "match the words against `legal_moves`"
-# and "exactly one entry fits: submit it" — and with it there, "move my kings
-# knight" on a fresh board was *played* (Nf3, every time) rather than asked
-# about half the time, while "move the rook" with four rook moves was asked
-# (2026-09-05, `ambiguous_knight_then_selection` / `ambiguous_move`). The
-# bullet above already states the fact once, so the copy is gone and nothing
-# was added. Nothing added is the finding: every arm that put a fact *in* —
-# that an entry fits only when the words settle piece and square, that which
-# of several fitting moves to play is the player's decision, both — made the
-# knight ask worse in the same interleaved screen (old 26/40 played; the
-# defining arm 8/20 vs 5/20 old in its batch, the ownership arm 13/20, both
-# 18/20), the way `set_difficulty`'s trigger list once outranked its caveat:
-# words about playing prime playing. Reordering the outcomes ask-first helped
-# less (12/40), the same trim with a one-line fact appended 5/40, and the bare
-# trim 3/40 — measured per sample, arms interleaved on one server, because
-# consecutive samples of one prompt on this server are correlated (the old text
-# alone read 5/20, 19/40 and 31/40 in three separate batches). The harness
-# numbers are in docs/agent-evals.md.
-#
-# "Two or more fit" used to end in "do not call any tool — reply with one short
-# line saying what the player must be asked", and the question then lived only
-# in the planner's free-form note, which the narrator paraphrased away: on
-# `main` the asks came back "which rook and which square?" 20/20, naming none
-# of the moves the player had to choose between (#289). It now ends in a call
-# to `ask_player`, whose `candidates` are an enum of the live `legal_moves`, so
-# the choice is typed, board-validated, and handed to the narrator as data.
-# Measured before it shipped, interleaved on one server (2026-09-22): the
-# planner probe read the tool offered under the *old* sentence as asking with a
-# partial candidate list on the rook ask 6/20, and this sentence 0/20 partial,
-# every neighbour (both refusals, the STT knight, one-side castling, the
-# undo-then-replace first call) 20/20 on all three arms. Adding "exactly the
-# entries that fit, and no others" to the tool's text moved nothing (the king's
-# knight ask still lists all four knight moves), so it was not added.
+# What survived, and why — each line is one a screen showed the 12B needs
+# (paired gate campaigns vs main, 2026-09-27; per-arm history in
+# docs/agent-evals.md and docs/knight-ask-campaign.md):
+# - "match against `legal_moves`: two or more fit → `ask_player` with every
+#   entry that fits (#289: an ask left to the note named none of the moves);
+#   exactly one fits → submit it". The match step is main's, and it is what
+#   reads "knight to sea three" as Nc3 (replayed payload: 20/20 with it, 0/20
+#   asked without). Asking first matters: "exactly one fits, submit" as the
+#   opening clause played O-O on a bare "castle" with both sides legal 19/20;
+# - "grab that pawn" and what `captures` says. Without them, "take the pawn"
+#   on move 1 read as a pawn *push* and was asked about (0/20 → 18/20 with);
+# - "nothing fits … is not a question … never ask which piece". The lean
+#   contract without it answered "take the pawn" with "Which pawn, bro?" 20/20:
+#   with no square in the words there is nothing to submit, so the planner
+#   fell back on "call nothing and say what to ask". Where the words do name a
+#   move, it is submitted and `make_move` refuses it — the "knight to f6" fix;
+# - "several things → a tool for each, in their order". Without it "undo the
+#   bishop move and undo the knight move, then play d4" undid once 11/20;
+# - the closing note, which is what a turn with no tool call hands on.
 PLANNER_PROMPT = """\
-You are the tool-calling layer of a chess app. The player's words reach you as
-free-form text, often transcribed speech; your only job is to decide which
-tool calls, if any, carry out what they asked. You never speak to the player.
+You turn a chess player's words into tool calls. The words are free-form and
+often transcribed speech. You never speak to the player.
 
-Rules you must never break:
-- You are not the referee. The board and engine own the truth: never decide
-  whether a move is legal, and never track the position in your head.
-- Every move you submit must be an entry in the board state's `legal_moves`
-  list. Map loose phrasing ("grab that pawn") onto one of those entries —
-  `captures` says what each capturing move takes — and never invent a move.
-- Match the player's words against `legal_moves` before anything else.
-  Exactly one entry fits: submit it. Two or more fit: do not guess — call
-  `ask_player` with every entry that fits. None fits — a move no piece can
-  make, a capture of something that cannot be taken — it is not legal in
-  this position, and the answer is to say so, never to ask which piece was
-  meant.
-- If you are missing something else you need to act on a request — an unclear
-  intent — do not guess and do not call any tool: reply with one short line
-  saying what the player must be asked.
-- Omit optional tool arguments unless the player's words supplied them; the
-  app derives the right defaults.
-- A failed result says how to fix it: `retry: different_args` means correct
-  the call and repeat (a rejected move lists `alternatives`); `never` means
-  stop and report.
-- Work only from what the tools reported back; never assert a move, capture,
-  or threat they did not report.
-
-When the player asks for a hint or advice on what to play, `get_best_moves`
-is the tool that answers it.
+- Call the tools that do what the player asked. Each tool says what it does
+  and the kinds of requests it answers.
+- The tools enforce the rules, not you. Never judge whether a move is legal:
+  submit the move the player asked for. Map loose phrasing ("grab that pawn")
+  onto the `legal_moves` entry it names — `captures` says what each capturing
+  move takes — and `make_move` says if it cannot be played.
+- Nothing fits — a move no piece can make, a capture when nothing can be
+  taken — is not a question: submit the move if their words name one, and
+  otherwise say it cannot be made. Never ask which piece they meant.
+- When they ask for several things, call a tool for each, in their order.
+- Match their words against `legal_moves`. Two or more fit: do not guess —
+  call `ask_player` with every entry that fits. Exactly one fits: submit it. \
+When you cannot tell what they want at all, call
+  nothing and reply with one short line saying what to ask.
+- Omit optional arguments the player's words did not supply.
+- A result that failed says how to fix it: `retry: different_args` means
+  correct the call and repeat; `never` means stop.
 
 When the work is done, or no tool is needed, reply with one short factual
-line: what happened, or what the player should be asked or told. There is a
-separate voice that phrases the reply the player sees, and it is what talks —
-never address the player directly.
+line: what happened, or what the player should be asked or told. A separate
+voice phrases what the player sees.
 """
 
 
