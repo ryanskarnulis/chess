@@ -598,10 +598,14 @@ def lands(call: Call, question: Question | None, fen: str | None = None) -> bool
     """Whether the app would carry `call` out, as far as the provenance check
     goes: a move claimed as an answer lands only on a question that stands and
     only as one of its candidates, and a move whose words named only the piece
-    lands only when that piece has a single legal move on `fen`. Every other
-    call is the shipped behavior."""
+    lands only when that piece has a single legal move on `fen`, and no move
+    lands that is not legal on `fen` — `make_move` refuses it, so a planner that
+    submits an impossible move has refused it, not played it (#370). Every
+    other call is the shipped behavior."""
     if call["name"] != "make_move":
         return True
+    if fen is not None and not _legal_on(fen, call["args"]):
+        return False
     if call["args"].get("source") == PIECE_ONLY:
         return fen is not None and _only_move_of_its_piece(fen, call["args"])
     if call["args"].get("source") not in CHECKED_SOURCES:
@@ -609,6 +613,10 @@ def lands(call: Call, question: Question | None, fen: str | None = None) -> bool
     if question is None or question.stale:
         return False
     return call["args"].get("move") in question.candidates
+
+
+def _legal_on(fen: str, args: dict[str, Any]) -> bool:
+    return GameSession(fen).submit_move(str(args.get("move"))).legal
 
 
 def _only_move_of_its_piece(fen: str, args: dict[str, Any]) -> bool:

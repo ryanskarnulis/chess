@@ -63,8 +63,10 @@ class TestRejectedMove:
         assert result["legal"] is False
         # The player meant e5; the legal way to reach it from the start is e4's
         # follow-up, so nothing does — but the pawn's own moves are the near
-        # miss worth naming, not the whole opening book.
-        assert result["retry"] == RETRY_DIFFERENT_ARGS
+        # miss worth naming, not the whole opening book. None of them is the
+        # move asked for, so none may be played in its place (#370).
+        assert result["retry"] == RETRY_NEVER
+        assert "never play an alternative" in result["fix"]
         assert "e5" not in result["alternatives"]
         assert result["alternatives"]  # never an empty gesture
 
@@ -75,7 +77,7 @@ class TestRejectedMove:
         result = registry.dispatch("make_move", {"move": "Bf3"})
 
         assert result["legal"] is False
-        assert result["retry"] == RETRY_DIFFERENT_ARGS
+        assert result["retry"] == RETRY_NEVER
         assert sorted(result["alternatives"]) == ["Nf3", "f3"]
 
     def test_ambiguous_move_returns_the_candidates(self, ctx, registry):
@@ -87,6 +89,17 @@ class TestRejectedMove:
         assert "ambiguous" in result["reason"]
         assert sorted(result["alternatives"]) == ["Nbd2", "Nfd2"]
         assert result["retry"] == RETRY_DIFFERENT_ARGS
+        assert "ask_player" in result["fix"]
+
+    def test_the_named_piece_to_the_named_square_is_a_spelling_fix(self, registry):
+        # A wrong origin for a real move: the knight's move to f3 exists, from
+        # g1 — resubmitting it plays exactly what was asked (#370).
+        result = registry.dispatch("make_move", {"move": "b1f3"})
+
+        assert result["legal"] is False
+        assert result["alternatives"] == ["Nf3"]
+        assert result["retry"] == RETRY_DIFFERENT_ARGS
+        assert "resubmit" in result["fix"]
 
     def test_alternatives_are_capped(self, registry):
         # Nothing about the string narrows it, so the fallback is the position's
@@ -119,6 +132,7 @@ class TestRejectedMove:
         assert result["legal"] is False
         assert result["retry"] == RETRY_NEVER
         assert result["alternatives"] == []
+        assert "game is over" in result["fix"]
 
 
 class TestDispatchErrors:

@@ -737,3 +737,16 @@ def test_frontier_samples_pair_on_whole() -> None:
         campaign_report.sample_outcomes(blocks), ["a", "b"]
     )
     assert verdicts["undo"]["b"].startswith("pairs 2 · A-only 1 · B-only 0")
+
+
+def test_an_impossible_move_does_not_land_because_make_move_refuses_it():
+    # The lean planner submits what the player asked for and lets `make_move`
+    # refuse it (#370), so "bishop to a1" submitted as Ba1 is a refusal, and
+    # it passes the impossible items' `no_tool` rule as calling nothing does.
+    start = position(next(i for i in CORPUS if i.name == "bishop_a1")).fen()
+    impossible = {"name": "make_move", "args": {"move": "Ba1", "source": SAID}}
+    assert not lands(impossible, None, start)
+    assert passes(("no_tool",), [c for c in [impossible] if lands(c, None, start)])
+    assert lands({"name": "make_move", "args": {"move": "e4"}}, None, start)
+    # A move that lands elsewhere is still a move played, and still fails.
+    assert lands({"name": "make_move", "args": {"move": "Nf3"}}, None, start)

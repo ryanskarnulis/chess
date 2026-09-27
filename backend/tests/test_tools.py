@@ -199,13 +199,14 @@ def _flat(description: str) -> str:
 
 
 def test_make_move_anchors_moves_to_provided_legal_moves(registry):
-    # The move string must come from the board state's legal_moves list, never
-    # be invented — and what reaches the model is looser than notation, so the
-    # description carries descriptive examples ("queen's bishop pawn" → c3).
-    desc = _description(registry, "make_move")
+    # The move string is the legal_moves entry the words name — and what
+    # reaches the model is looser than notation, so the description carries
+    # descriptive examples ("queen's bishop pawn" → c3). A move that fits no
+    # entry is still submitted and refused by the tool (#370), not judged.
+    desc = _flat(_description(registry, "make_move"))
     assert "legal_moves" in desc
-    assert "never invent" in desc.lower()
     assert "queen's bishop pawn" in desc  # a descriptive example, from real traces
+    assert "refused" in desc
 
 
 def test_make_move_leaves_the_mutation_limit_to_code(session):
@@ -267,7 +268,7 @@ def test_evaluate_position_hands_the_description_ask_over(registry):
     position?" is the ambiguity that produced the miss."""
     desc = _flat(_description(registry, "evaluate_position"))
     assert "`describe_position`" in desc
-    assert "It says nothing about what is on the board" in desc
+    assert "What is on the board is `describe_position`" in desc
 
 
 def test_analyze_last_move_routes_how_good_was_that_move(registry):
@@ -293,13 +294,14 @@ def test_set_difficulty_is_named_as_the_only_lever(registry):
     assert "go easy" not in desc
 
 
-def test_destructive_tools_carry_the_call_then_relay_dance(registry):
-    # The gate owns the confirmation (tools.py `_gate`); the tool's job is only
-    # to tell the model not to pre-ask, and to relay the refusal when it comes.
-    for name in ("new_game", "resign", "claim_draw"):
-        desc = _description(registry, name).lower()
+def test_destructive_tools_say_call_now_the_app_confirms(registry):
+    # The gate owns the confirmation (tools.py `_gate`), and its refusal says
+    # what to do with it; the description's only job is to tell the model not
+    # to pre-ask (#370: no rule the tool enforces itself).
+    for name in ("new_game", "resign", "claim_draw", "resume_game"):
+        desc = _flat(_description(registry, name)).lower()
+        assert "right away" in desc
         assert "confirm" in desc
-        assert "relay" in desc
 
 
 def test_register_duplicate_name_raises():

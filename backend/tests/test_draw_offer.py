@@ -511,7 +511,7 @@ def test_a_declined_offer_with_a_turn_open_leaves_the_reply_owed():
     assert reply is not None and reply.san == "a5"
 
 
-def test_the_description_carries_the_relay_and_never_twice_guidance():
+def test_the_description_carries_its_triggers_and_the_once_per_turn_guidance():
     registry = build_registry(ToolContext(session=GameSession()))
     for d in registry.definitions():
         if d["function"]["name"] == "offer_draw":
@@ -519,10 +519,11 @@ def test_the_description_carries_the_relay_and_never_twice_guidance():
             break
     else:
         raise AssertionError("offer_draw not registered")
-    assert "as soon as the player offers" in desc
-    assert "do not decide the answer yourself" in desc
-    assert "relay" in desc
-    assert "never call it twice" in desc
+    # What it does and what triggers it (#370), plus the two things only the
+    # description can say: the engine answers, and one offer a turn.
+    assert "call it a draw?" in desc
+    assert "never answer for the engine" in desc
+    assert "once per turn" in desc
     assert "claim_draw" in desc
     parameters = d["function"]["parameters"]
     assert parameters["properties"] == {}, "no arguments: the answer is the rule's"
