@@ -251,6 +251,15 @@ references to earlier calls. The second change alters the offer, so it runs the
 eval gate. It strips no schema key, so it is consistent with the standing
 prohibition on schema minimization.
 
+**Done (#370).** Both changes shipped. A test pins the offer order with
+`ask_player` last, and `claim_draw` is always offered and refused in its
+handler (its refusal also points a draw offer at `offer_draw`). Merging the
+setters into `set_option` (#342) and `describe_position`/`evaluate_position`
+were costed and not done: about 85 and 75 tokens of offer each, against a
+ripple through the MCP server, the REST mute route, `facts.py` and
+`clarification.py`. #342's own trigger, token pressure, is not met now that
+the lean planner cut the opening prompt from ~3.4k to ~2.9k tokens.
+
 ## 6. The "done" round trip (measure before changing)
 
 **Read.** A plain brain-route move is three calls. The second is a planner call
@@ -274,6 +283,14 @@ effectively never after a successful `make_move`-only batch (the phase machine
 already refuses a second player move), end planning there and let the handoff's
 own record stand in for the note. Otherwise, leave it alone once #2 has made it
 cheap.
+
+**Measured (#370): leave it alone.** In the deployed trace (2026-09-24..27),
+17 of 17 brain turns whose first batch was a legal `make_move` ended at the
+second planner call, which cost ~430 ms warm (3,382 of 3,486 prompt tokens
+cached). The gate needs the call, though: `move_and_judgment` ("play e4, and
+how am I doing?") runs `make_move`, then `evaluate_position` in the next
+iteration, 5/5. An early exit after a move-only batch would cut that ask off,
+and code cannot tell the two apart without reading the words.
 
 ---
 

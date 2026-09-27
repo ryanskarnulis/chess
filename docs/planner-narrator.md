@@ -169,7 +169,11 @@ the trace records the swap as `offer_refreshes` (a subset of
   (or the game is over), rather than calling the player's moves illegal.
 - **Availability rides along.** Under two legal moves `ask_player` is withheld,
   so a takeback can bring it back or take it away mid-command, and a withheld
-  tool is an unknown to the loop, the way `claim_draw` is.
+  tool is an unknown to the loop. It is the last tool offered, pinned there
+  by `test_tool_registry_schema.py`, so it is the only schema that follows the
+  board. Everything before it is byte-stable across boards; `claim_draw` is
+  always offered and refused by its handler when nothing can be claimed
+  ("mask, don't remove", #364 folded into #370).
 - **Swapped only when different.** The tools render ahead of the conversation,
   so a new list costs the planner a re-read of its whole prompt; an identical
   one is left as it was. Command-entry schemas are unchanged (the fixed-board

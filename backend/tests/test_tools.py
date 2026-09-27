@@ -135,33 +135,33 @@ def test_the_brain_offer_always_carries_describe_position(session):
     assert "describe_position" not in BOARD_STATE_TOOLS
 
 
-def test_the_brain_offer_withholds_claim_draw_until_a_draw_is_claimable(session):
-    """The tool exists only when the rules allow the claim, so the model is
-    never asked to judge whether one is available — and the schema it plans
-    against is unchanged on every turn where none is."""
-    ctx = ToolContext(session=session)
-    assert "claim_draw" in brain_tool_exclusions(ctx)
-
-    for san in REPETITION * 2:
-        session.submit_move(san)
-
-    assert "claim_draw" not in brain_tool_exclusions(ctx)
-
-
-def test_a_claimable_draw_adds_claim_draw_to_the_offer_and_nothing_else(session):
-    """Byte-for-byte, the offer gains exactly one tool: the schema the planner
-    reads is measurably sensitive to churn, so a claim must not reshuffle it."""
+def test_the_brain_offer_masks_claim_draw_rather_than_withholding_it(session):
+    """Mask, don't remove (#364, folded into #370): `claim_draw` is offered
+    whether or not a claim exists, so a claim appearing never reshuffles the
+    schema the planner reads, and the handler says when there is nothing to
+    claim — the model is still never the judge of it."""
     ctx = ToolContext(session=session)
     registry = build_registry(ctx)
+    assert "claim_draw" not in brain_tool_exclusions(ctx)
     before = registry.definitions(exclude=brain_tool_exclusions(ctx))
 
     for san in REPETITION * 2:
         session.submit_move(san)
-    after = registry.definitions(exclude=brain_tool_exclusions(ctx))
 
-    added = [d for d in after if d not in before]
-    assert [d["function"]["name"] for d in added] == ["claim_draw"]
-    assert [d for d in before if d not in after] == []
+    assert registry.definitions(exclude=brain_tool_exclusions(ctx)) == before
+
+
+def test_claim_draw_with_nothing_to_claim_refuses_and_arms_nothing(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    session.submit_move("e4")
+
+    result = registry.dispatch("claim_draw", {})
+
+    assert result["ok"] is False
+    assert result["retry"] == "never"
+    assert "offer_draw" in result["error"], "points a draw offer at its tool"
+    assert ctx.pending is None, "a claim that cannot run must not arm a question"
 
 
 def test_definitions_are_openai_style_and_json_serializable(registry):
