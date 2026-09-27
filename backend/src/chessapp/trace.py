@@ -272,8 +272,9 @@ def turn_record(
       healthy move turn, and a mutating turn that goes on to decide again with
       nothing here is the bug this field exists to make visible.
     - `offer_refreshes` is the subset of those versions at which the planner's
-      tool offer changed with the board (#315) — `ask_player`'s candidates
-      re-narrowed to the new menu, or a tool withheld or restored. Each one is
+      tool offer changed with the board (#315) — a tool withheld or restored
+      (`ask_player`, whose schema is otherwise the same on every board since
+      it asks by parts, #371). Each one is
       a prompt the planner re-read from the top, so a slow undo composition
       reads here.
 

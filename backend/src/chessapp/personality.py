@@ -39,7 +39,8 @@ from pathlib import Path
 # that tool's own description, and every rule a tool can enforce lives in the
 # tool: legality in `make_move`'s refusal (which says whether a corrected call
 # can still be the player's move), confirmation in `_gate`, a pick by position
-# in `source`, the candidates of a question in `ask_player`'s enum.
+# in `source`, the moves a question offers in `ask_player`, which works them
+# out from the parts the planner names (#371).
 #
 # The contract it replaced was a page of rules, and some fought each other: it
 # said "never decide whether a move is legal", then that a move matching no

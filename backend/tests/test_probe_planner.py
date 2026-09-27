@@ -796,7 +796,7 @@ def test_asks_exactly_wants_the_ask_with_that_set_and_nothing_wider() -> None:
     [
         (
             {"name": "move_piece", "args": {"piece": "knight", "which": "kings"}},
-            {"name": "ask_player", "args": {"candidates": ["Nh3", "Nf3"]}},
+            {"name": "ask_player", "args": {"candidates": ["Nf3", "Nh3"]}},
         ),
         (
             {"name": "move_piece", "args": {"piece": "pawn", "to": "e4"}},
@@ -808,7 +808,7 @@ def test_asks_exactly_wants_the_ask_with_that_set_and_nothing_wider() -> None:
         ),
         (
             {"name": "ask_player", "args": {"piece": "knight", "which": "queens"}},
-            {"name": "ask_player", "args": {"candidates": ["Nc3", "Na3"]}},
+            {"name": "ask_player", "args": {"candidates": ["Na3", "Nc3"]}},
         ),
         ({"name": "move_piece", "args": {"piece": "bishop"}}, None),
         ({"name": "move_piece", "args": {"piece": "knight", "which": "?"}}, None),

@@ -115,6 +115,9 @@ class Handoff:
     note: str = ""
     # The legal moves the player must choose between, on a `clarify` turn.
     candidates: tuple[str, ...] = ()
+    # On an ask too wide to read out (`tools.ASK_WIDE`), the pieces those
+    # moves belong to ("pawn on e2"), so the question can be which piece (#371).
+    pieces: tuple[str, ...] = ()
 
     def trace(self) -> dict[str, Any]:
         """The handoff as the turn record keeps it: enough to re-judge a
@@ -128,6 +131,7 @@ class Handoff:
             "reply_owed": self.reply_owed,
             "engine_reply": self.engine_reply.get("san") if self.engine_reply else None,
             "candidates": list(self.candidates),
+            "pieces": list(self.pieces),
         }
 
 
@@ -170,10 +174,12 @@ def build(
     refused: list[Entry] = []
     consulted: list[Entry] = []
     candidates: list[str] = []
+    pieces: list[str] = []
     for ref, entry in enumerate(tool_results, start=1):
         name, result = entry["name"], entry["result"]
         if name == _ASK and not _refused(result):
             candidates.extend(result.get("candidates", ()))
+            pieces.extend(result.get("pieces", ()))
         elif _refused(result):
             refused.append(Entry(ref, name, _refusal_reason(result)))
         elif name in READ_TOOLS:
@@ -201,6 +207,7 @@ def build(
         facts=dict(facts or {}),
         note=note,
         candidates=tuple(dict.fromkeys(candidates)),
+        pieces=tuple(dict.fromkeys(pieces)),
     )
 
 
@@ -277,7 +284,17 @@ def render(
         )
     if handoff.consulted:
         record.append(f"Looked up: {_refs(handoff.consulted)}.")
-    if handoff.candidates:
+    if handoff.pieces:
+        # Too many moves to read out: live, sixteen pawn moves took about 12 s
+        # of speech (#371). The moves stay in the record, so any of them
+        # answers the question.
+        record.append(
+            "The player has to choose between: "
+            + ", ".join(handoff.candidates)
+            + ". That is too many moves to read out: ask which piece they "
+            "mean — " + ", ".join(handoff.pieces) + " — without listing the moves."
+        )
+    elif handoff.candidates:
         record.append(
             "The player has to choose between: "
             + ", ".join(handoff.candidates)

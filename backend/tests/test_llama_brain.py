@@ -62,7 +62,12 @@ from chessapp.provider import (
     ToolCallArgumentsError,
     Usage,
 )
-from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
+from chessapp.tools import (
+    ASK_PLAYER_PARAMETERS,
+    ToolContext,
+    brain_tool_definitions,
+    build_registry,
+)
 from fakes import (
     BlockingNarratorProvider,
     FakeEngine,
@@ -3048,22 +3053,7 @@ def test_the_factory_wires_the_narrator_facts():
 
 # --- ask_player ends the planning phase (#289, PR 2) ------------------------
 
-ASK_TOOL = _fn(
-    "ask_player",
-    "Ask the player to choose.",
-    {
-        "type": "object",
-        "properties": {
-            "candidates": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["Nf3", "Nh3", "e4"]},
-                "minItems": 2,
-            }
-        },
-        "required": ["candidates"],
-        "additionalProperties": False,
-    },
-)
+ASK_TOOL = _fn("ask_player", "Ask the player to choose.", ASK_PLAYER_PARAMETERS)
 
 
 def test_an_ask_that_landed_ends_the_planner_and_hands_off_a_clarification():
@@ -3071,7 +3061,7 @@ def test_an_ask_that_landed_ends_the_planner_and_hands_off_a_clarification():
         {"ask_player": {"ok": True, "candidates": ["Nf3", "Nh3"]}}
     )
     brain, provider = make_brain(
-        tool_calls_turn(("ask_player", {"candidates": ["Nf3", "Nh3"]})),
+        tool_calls_turn(("ask_player", {"piece": "knight", "which": "kings"})),
         text_turn("Nf3 or Nh3?"),  # the narrator — no second planner turn
         dispatcher=dispatcher,
         tool_definitions=[*TOOLS, ASK_TOOL],
@@ -3089,10 +3079,10 @@ def test_an_ask_that_landed_ends_the_planner_and_hands_off_a_clarification():
     )
 
 
-def test_a_candidate_off_the_enum_is_a_schema_correction_not_a_question():
+def test_a_part_off_its_enum_is_a_schema_correction_not_a_question():
     dispatcher = FakeDispatcher()
     brain, provider = make_brain(
-        tool_calls_turn(("ask_player", {"candidates": ["Nf3", "Qh5"]})),
+        tool_calls_turn(("ask_player", {"piece": "dragon"})),
         text_turn("note"),
         text_turn("reply"),
         dispatcher=dispatcher,
@@ -3119,7 +3109,7 @@ SETTING_TOOL = _fn(
         "additionalProperties": False,
     },
 )
-ASK = ("ask_player", {"candidates": ["Nf3", "Nh3"]})
+ASK = ("ask_player", {"piece": "knight", "which": "kings"})
 
 
 def _ask_brain(*calls, dispatcher=None):
@@ -3219,9 +3209,9 @@ def test_a_refused_ask_does_not_stop_the_batch():
     assert _NOT_RUN not in [r["result"].get("error") for r in resp.tool_results]
 
 
-def test_an_ask_off_the_enum_does_not_stop_the_batch():
+def test_an_ask_off_the_schema_does_not_stop_the_batch():
     resp, dispatcher, _ = _ask_brain(
-        ("ask_player", {"candidates": ["Nf3", "Qh5"]}),
+        ("ask_player", {"piece": "dragon"}),
         ("make_move", {"move": "Nf3"}),
     )
 
@@ -3239,8 +3229,8 @@ def _offered_brain(ctx, *turns):
     """A real `LlamaBrain` over the app's own wiring — split registry, one
     coordinator, the offer and the refresh resolved through the seams app
     assembly hands it — with a scripted provider. The shape the #315 repro
-    was found in, and the only one where the offer can go stale: the enum
-    comes from `brain_tool_definitions`, the board from `planner_board_refresh`.
+    was found in: the offer comes from `brain_tool_definitions`, the board
+    from `planner_board_refresh`.
     """
     coordinator = TurnCoordinator(ctx)
     registry = build_registry(ctx, coordinator, atomic_exchange=False)
@@ -3252,15 +3242,11 @@ def _offered_brain(ctx, *turns):
     )
 
 
-def _ask_enum(call) -> list[str] | None:
-    """The `ask_player` candidate enum one recorded call offered, or None when
-    the tool was not offered at all."""
-    for tool in call["tools"] or ():
-        if tool["function"]["name"] == "ask_player":
-            return tool["function"]["parameters"]["properties"]["candidates"]["items"][
-                "enum"
-            ]
-    return None
+def _offers_ask(call) -> bool:
+    """Whether one recorded call offered `ask_player` at all. Since it asks by
+    parts (#371) its schema is the same on every board; what follows the board
+    is whether there is anything to choose between."""
+    return any(tool["function"]["name"] == "ask_player" for tool in call["tools"] or ())
 
 
 def _after_e4_e5() -> ToolContext:
@@ -3277,7 +3263,7 @@ def test_after_an_undo_the_restored_boards_moves_can_be_asked_about():
     brain, provider = _offered_brain(
         ctx,
         tool_calls_turn(("undo", {})),
-        tool_calls_turn(("ask_player", {"candidates": ["e3", "e4"]})),
+        tool_calls_turn(("ask_player", {"piece": "pawn", "which": "e"})),
         text_turn("e3 or e4?"),
     )
 
@@ -3288,9 +3274,10 @@ def test_after_an_undo_the_restored_boards_moves_can_be_asked_about():
     assert resp.tool_results[1]["result"] == {"ok": True, "candidates": ["e3", "e4"]}
     assert resp.handoff.kind == "clarify"
     assert resp.handoff.candidates == ("e3", "e4")
-    assert resp.state_refreshes == resp.offer_refreshes == (ctx.board_version,)
-    assert "e4" not in _ask_enum(provider.calls[0])
-    assert _ask_enum(provider.calls[1]) == ctx.session.legal_moves()
+    # The board is re-shown; the offer, the same on every board, is not.
+    assert resp.state_refreshes == (ctx.board_version,)
+    assert resp.offer_refreshes == ()
+    assert provider.calls[0]["tools"] == provider.calls[1]["tools"]
 
 
 def test_after_an_undo_a_move_the_undo_took_away_is_a_correction():
@@ -3298,8 +3285,9 @@ def test_after_an_undo_a_move_the_undo_took_away_is_a_correction():
     brain, _ = _offered_brain(
         ctx,
         tool_calls_turn(("undo", {})),
-        # Bc4 was legal before the takeback and is not on the starting board.
-        tool_calls_turn(("ask_player", {"candidates": ["Bc4", "Nf3"]})),
+        # The bishop could move before the takeback and cannot on the
+        # starting board: the ask is answered off the board it is made on.
+        tool_calls_turn(("ask_player", {"piece": "bishop"})),
         text_turn("note"),
         text_turn("reply"),
     )
@@ -3307,7 +3295,7 @@ def test_after_an_undo_a_move_the_undo_took_away_is_a_correction():
     resp = brain.get_agent_response(board_state={"fen": "x"}, command="undo, bishop")
 
     assert resp.tool_results[1]["result"]["ok"] is False
-    assert "is not one of" in resp.tool_results[1]["result"]["error"]
+    assert "no legal move fits" in resp.tool_results[1]["result"]["error"]
     assert resp.handoff.kind != "clarify"
 
 
@@ -3361,11 +3349,10 @@ def test_every_planner_request_is_offered_the_menu_it_was_last_shown(
     assert resp.tool_results[0]["result"]["ok"] is True, resp.tool_results[0]
     after = ctx.session.legal_moves()
     assert before != after
-    assert _ask_enum(provider.calls[0]) == before
     shown = _refreshes(provider.calls[1])
     assert [b["legal_moves"] for b in shown] == [after]
-    assert _ask_enum(provider.calls[1]) == after
-    assert resp.offer_refreshes == (ctx.board_version,)
+    assert provider.calls[0]["tools"] == provider.calls[1]["tools"]
+    assert resp.offer_refreshes == ()
 
 
 def test_a_board_with_one_move_left_withdraws_the_ask_and_a_takeback_restores_it():
@@ -3377,14 +3364,14 @@ def test_a_board_with_one_move_left_withdraws_the_ask_and_a_takeback_restores_it
     brain, provider = _offered_brain(
         ctx,
         tool_calls_turn(("undo", {})),
-        tool_calls_turn(("ask_player", {"candidates": ["Ra4", "Ra5"]})),
+        tool_calls_turn(("ask_player", {"piece": "rook"})),
         text_turn("Ra4 or Ra5?"),
     )
 
     resp = brain.get_agent_response(board_state={"fen": "x"}, command="undo, rook")
 
-    assert _ask_enum(provider.calls[0]) is None
-    assert "Ra4" in _ask_enum(provider.calls[1])
+    assert not _offers_ask(provider.calls[0])
+    assert _offers_ask(provider.calls[1])
     assert resp.handoff.kind == "clarify"
 
 
@@ -3395,36 +3382,35 @@ def test_a_takeback_to_a_single_move_withdraws_the_ask():
     brain, provider = _offered_brain(
         ctx,
         tool_calls_turn(("undo", {})),
-        tool_calls_turn(("ask_player", {"candidates": ["Kh2", "Kg1"]})),
+        tool_calls_turn(("ask_player", {"piece": "king"})),
         text_turn("note"),
         text_turn("reply"),
     )
 
     resp = brain.get_agent_response(board_state={"fen": "x"}, command="undo, king")
 
-    assert _ask_enum(provider.calls[0]) is not None
-    assert _ask_enum(provider.calls[1]) is None
+    assert _offers_ask(provider.calls[0])
+    assert not _offers_ask(provider.calls[1])
     # Withheld means unknown to the loop, the way `claim_draw` is.
     assert resp.tool_results[1]["result"]["ok"] is False
     assert resp.handoff.kind != "clarify"
 
 
 def test_while_a_reply_is_owed_the_offer_stays_on_the_players_board():
-    """No refresh mid-exchange, so no re-resolve: an enum narrowed then would
-    be the engine's menu. The handler is what says there is nothing to ask."""
+    """No refresh mid-exchange, so no re-resolve. The handler is what says
+    there is nothing to ask."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine())
     brain, provider = _offered_brain(
         ctx,
         tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
-        tool_calls_turn(("ask_player", {"candidates": ["d4", "c4"]})),
+        tool_calls_turn(("ask_player", {"piece": "pawn", "which": "d"})),
         text_turn("note"),
         text_turn("reply"),
     )
-    opening = ctx.session.legal_moves()
 
     resp = brain.get_agent_response(board_state={"fen": "x"}, command="e4 then ask")
 
-    assert _ask_enum(provider.calls[0]) == _ask_enum(provider.calls[1]) == opening
+    assert provider.calls[0]["tools"] == provider.calls[1]["tools"]
     assert resp.state_refreshes == resp.offer_refreshes == ()
     refused = resp.tool_results[1]["result"]
     assert refused["ok"] is False

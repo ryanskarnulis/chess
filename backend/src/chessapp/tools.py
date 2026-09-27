@@ -68,6 +68,7 @@ from chessapp.engine import (
     EnginePlayer,
 )
 from chessapp.game import GameSession, MoveResult
+from chessapp.move_parts import PartsError
 
 logger = logging.getLogger(__name__)
 
@@ -738,6 +739,63 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
 
 # The planner's clarification tool (`build_registry`, the split registry only).
 ASK_PLAYER = "ask_player"
+
+# `ask_player`'s schema, exactly as the #371 probe screened it (arm
+# `parts_ask5`): every part optional, the handler asks for at least one.
+ASK_PLAYER_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "piece": {
+            "type": "string",
+            "enum": ["king", "queen", "rook", "bishop", "knight", "pawn"],
+            "description": "The piece the player named.",
+        },
+        "which": {
+            "type": "string",
+            "description": (
+                "Which one, only if the player said: its square ('e2'), its file "
+                "('e'), the side it started on ('kings', 'queens'), or its square "
+                "colour ('light', 'dark')."
+            ),
+        },
+        "to": {
+            "type": "string",
+            "description": "The square it goes to, only if the player said one.",
+        },
+        "takes": {
+            "type": "string",
+            "enum": ["queen", "rook", "bishop", "knight", "pawn"],
+            "description": (
+                "The piece it captures, only if the player said to take one."
+            ),
+        },
+        "castle": {
+            "type": "boolean",
+            "description": "True when the player asked to castle.",
+        },
+    },
+}
+
+# Past this many moves an ask is too long to read out: live, "push my
+# kingspawn" was asked with all sixteen pawn moves, about 12 s of speech.
+# Beyond it the result also says which pieces the moves belong to, so the
+# narrator can ask which piece first (#371).
+ASK_WIDE = 4
+
+
+def _pieces_moving(session: "GameSession", moves: Sequence[str]) -> list[str]:
+    """The distinct pieces that make `moves`, as "knight on g1", in order."""
+    board = chess.Board(session.fen())
+    pieces: list[str] = []
+    for san in moves:
+        square = board.parse_san(san).from_square
+        name = chess.piece_name(board.piece_type_at(square) or chess.PAWN)
+        piece = f"{name} on {chess.square_name(square)}"
+        if piece not in pieces:
+            pieces.append(piece)
+    return pieces
+
+
 MAKE_MOVE = "make_move"
 MOVE_SOURCE = "source"
 
@@ -746,18 +804,16 @@ def brain_tool_definitions(
     registry: "ToolRegistry", ctx: ToolContext
 ) -> list[dict[str, Any]]:
     """What the brain is offered this command: the registry minus
-    `brain_tool_exclusions`, with `ask_player`'s candidates narrowed to the
-    live legal moves. Resolved at the start of each command and again each time
-    the loop re-shows the planner a board (#315), so the enum is always the
-    menu the planner was last handed.
+    `brain_tool_exclusions`, with `make_move`'s `source` required. Resolved at
+    the start of each command and again each time the loop re-shows the
+    planner a board (#315).
 
-    An enum rather than a free string because the list it names is the one the
-    planner already holds: a candidate outside it is a schema correction in the
-    loop, before anything reaches the narrator, so a clarification can only
-    ever offer moves the board allows. With fewer than two legal moves there is
-    nothing to choose between and the tool is withheld — which shifts nothing,
-    because it is the last tool offered. app assembly, the eval harness and the
-    planner probe all build the offer here, so the measured agent is the
+    `ask_player` once carried an enum of the live `legal_moves` here; since it
+    asks by parts (#371) the moves come from code, and its schema no longer
+    changes with the board. With fewer than two legal moves there is nothing
+    to choose between and the tool is withheld — which shifts nothing,
+    because it is the last tool offered. app assembly, the eval harness and
+    the planner probe all build the offer here, so the measured agent is the
     shipped one.
     """
     legal = ctx.session.legal_moves()
@@ -779,13 +835,6 @@ def brain_tool_definitions(
                 "description": _MOVE_SOURCE_DESCRIPTION,
             }
             parameters["required"] = [*parameters.get("required", []), MOVE_SOURCE]
-            function["parameters"] = parameters
-        if function["name"] == ASK_PLAYER:
-            parameters = json.loads(json.dumps(function["parameters"]))
-            parameters["properties"]["candidates"]["items"] = {
-                "type": "string",
-                "enum": legal,
-            }
             function["parameters"] = parameters
     return offered
 
@@ -2298,25 +2347,37 @@ def build_registry(
         # The planner's typed clarification (#289, PR 2). Registered only on the
         # app's own registry: it is a handoff to the narrator, and the MCP
         # server's caller has no narrator behind the call — it asks its own
-        # user. `brain_tool_definitions` narrows `candidates` to an enum of the
-        # live `legal_moves` for each board the planner is shown (#315); the
-        # handler re-checks against the board anyway, because `dispatch`
-        # validates against the static schema — and because mid-exchange the
-        # offer is deliberately left on the player's last board, so only the
-        # handler can say there is nothing to ask until the engine replies.
-        @registry.tool()
+        # user. The handler checks the board as well as the parts, because
+        # mid-exchange the offer is deliberately left on the player's last
+        # board, so only the handler can say there is nothing to ask until the
+        # engine replies.
+        #
+        # By parts, not by a list of moves (#371). With a list the 12B asked
+        # "move my king's knight" with all four knight moves (#348), asked
+        # "castle" by playing O-O, and played "move my king's pawn forward" as
+        # e4. With the parts it describes what the player said — the piece,
+        # which one, where to, what it takes, castling — and code works out the
+        # moves that fit (`GameSession.moves_fitting`). Planner probe, arms
+        # paired, 20 samples in each of two sessions (docs/agent-evals.md):
+        # the knight asks, exact, 0 → 20 and 0 → 20; castle with both sides
+        # open 0 → 20; king's pawn forward 0 → 20 and 19; every other item
+        # level, held-out ones included. Arms that kept the list beside the
+        # parts, or had parts without `takes` and `castle`, each broke a
+        # neighbour. The schema is the screened one, verbatim.
+        @registry.tool(parameters=ASK_PLAYER_PARAMETERS)
         def ask_player(
-            candidates: Annotated[
-                list[str],
-                Field(
-                    min_length=2,
-                    description="Every legal_moves entry the player's words fit.",
-                ),
-            ],
+            piece: str | None = None,
+            which: str | None = None,
+            to: str | None = None,
+            takes: str | None = None,
+            castle: bool | None = None,
         ) -> dict[str, Any]:
-            """Ask the player to choose, when their words fit two or more
-            entries of `legal_moves`. Nothing moves: the question goes to the
-            player, and their answer comes back as the next command."""
+            """Ask the player to choose, when their words fit more than one
+            legal move. Nothing moves; the question goes to the player. Give
+            only the parts they said and the app asks with exactly the moves
+            that fit: "move my king's knight" is piece and which; "push the e
+            pawn" is piece and which; "take the pawn" is takes, with no piece;
+            "castle" is castle."""
             if ctx.session.is_game_over():
                 raise ToolError(
                     "the game is over; there is no move to ask about",
@@ -2328,15 +2389,33 @@ def build_registry(
                     " until it replies",
                     retry=RETRY_NEVER,
                 )
-            legal = set(ctx.session.legal_moves())
-            chosen = list(dict.fromkeys(candidates))
-            unknown = [san for san in chosen if san not in legal]
-            if unknown or len(chosen) < 2:
+            if not any((piece, which, to, takes, castle)):
                 raise ToolError(
-                    "candidates must be two or more entries of legal_moves"
-                    + (f"; not legal here: {', '.join(unknown)}" if unknown else ""),
+                    "give the parts of the move the player said: piece, which,"
+                    " to, takes or castle",
                     retry=RETRY_DIFFERENT_ARGS,
                 )
-            return {"ok": True, "candidates": chosen}
+            try:
+                fitting = ctx.session.moves_fitting(
+                    piece, which, to, takes, bool(castle)
+                )
+            except PartsError as exc:
+                raise ToolError(str(exc), retry=RETRY_DIFFERENT_ARGS) from exc
+            if not fitting:
+                raise ToolError(
+                    "no legal move fits what the player said, so there is"
+                    " nothing to ask",
+                    retry=RETRY_NEVER,
+                )
+            if len(fitting) == 1:
+                raise ToolError(
+                    f"only {fitting[0]} fits, so there is nothing to ask —"
+                    f" submit it with make_move",
+                    retry=RETRY_DIFFERENT_ARGS,
+                )
+            payload: dict[str, Any] = {"ok": True, "candidates": fitting}
+            if len(fitting) > ASK_WIDE:
+                payload["pieces"] = _pieces_moving(ctx.session, fitting)
+            return payload
 
     return registry

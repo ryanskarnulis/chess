@@ -129,9 +129,9 @@ def fits(
 ) -> list[str]:
     """SAN of every legal move of the side to move that fits every part given:
     it moves `piece` (a name from `PIECES`), one `which` picks out, to `to`,
-    capturing a `takes`, castling when `castle` — in `board.legal_moves`
-    order. A part left out narrows nothing. Castling is the king's move to its
-    square."""
+    capturing a `takes`, castling when `castle` — sorted, so a question
+    names them in a stable order (Ba6, Bb5, Bc4 …). A part left out narrows
+    nothing. Castling is the king's move to its square."""
     kind = _piece_type(piece, "piece") if piece else None
     victim = _piece_type(takes, "takes") if takes else None
     if which and kind is None:
@@ -156,7 +156,7 @@ def fits(
         if castle and not board.is_castling(move):
             continue
         fitting.append(board.san(move))
-    return fitting
+    return sorted(fitting)
 
 
 def _piece_type(name: str, what: str) -> chess.PieceType:

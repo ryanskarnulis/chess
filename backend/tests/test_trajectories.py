@@ -257,15 +257,10 @@ def test_the_clarification_check_fires_on_a_move_after_an_ask() -> None:
         check_clarification_moves_nothing(observed)
 
 
-def test_the_offer_check_fires_on_a_stale_enum() -> None:
-    ask = {
-        "function": {
-            "name": "ask_player",
-            "parameters": {
-                "properties": {"candidates": {"items": {"enum": ["d4", "Nf3"]}}}
-            },
-        }
-    }
+def test_the_offer_check_fires_on_an_ask_over_a_board_with_one_move() -> None:
+    """The board the planner was last shown has one legal move: an offer that
+    still carries `ask_player` is the stale one."""
+    ask = {"function": {"name": "ask_player", "parameters": {"properties": {}}}}
     observed = _observed(
         command(),
         provider_calls=[
@@ -280,7 +275,7 @@ def test_the_offer_check_fires_on_a_stale_enum() -> None:
                     {
                         "role": "user",
                         "content": "Board state after those tool calls:\n"
-                        '{"legal_moves": ["e4", "d4"]}',
+                        '{"legal_moves": ["Kh2"]}',
                     },
                 ],
             }

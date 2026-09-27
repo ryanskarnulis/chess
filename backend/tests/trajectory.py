@@ -104,6 +104,7 @@ _ARMED = "confirmation required"
 
 # A move no position has: SAN-shaped, on a square that does not exist.
 _NEVER_LEGAL = "Qz9"
+_ASK_PIECES = ("king", "queen", "rook", "bishop", "knight", "pawn")
 
 # Where the conversation endpoints live, and the surfaces a walk speaks from:
 # the web panel and two delegate threads, so a question asked in one can be
@@ -429,9 +430,14 @@ def _planner_call(
     if choice == "move" and legal:
         return "make_move", {"move": rng.choice(list(legal))}
     if choice == "ask" and len(legal) >= 2:
-        return "ask_player", {"candidates": rng.sample(list(legal), 2)}
+        # By parts (#371): a piece, sometimes narrowed by a destination. Some
+        # of these fit one move or none, and the tool refuses them.
+        args: dict[str, Any] = {"piece": rng.choice(_ASK_PIECES)}
+        if rng.random() < 0.3:
+            args["to"] = rng.choice(chess.SQUARE_NAMES)
+        return "ask_player", args
     if choice == "ask_off_menu" and legal:
-        return "ask_player", {"candidates": [rng.choice(list(legal)), _NEVER_LEGAL]}
+        return "ask_player", {"piece": "knight", "which": _NEVER_LEGAL}
     if choice == "undo":
         return "undo", ({} if rng.random() < 0.5 else {"plies": rng.choice([1, 2])})
     if choice == "read":
@@ -883,25 +889,25 @@ def check_question_is_its_askers(observed: Observed) -> None:
 
 
 def check_offer_follows_board(observed: Observed) -> None:
-    """#315: every planner request offers `ask_player` over exactly the menu of
-    the last board it shows — never the board before an undo."""
+    """#315: every planner request offers `ask_player` exactly when the last
+    board it shows has something to choose between — never on the board
+    before an undo. Its schema is the same on every board since it asks by
+    parts (#371), so whether it is offered is what follows the board."""
     for index, call in enumerate(observed.provider_calls):
         tools = call.get("tools")
         if not tools:
             continue  # a narrator call: offered nothing
-        ask = next((t for t in tools if t["function"]["name"] == "ask_player"), None)
-        if ask is None:
-            continue
+        offered = any(t["function"]["name"] == "ask_player" for t in tools)
         board = _latest_board(call["messages"])
         if board is None:
             raise InvariantBreach(f"planner call {index} shows no board")
-        enum = ask["function"]["parameters"]["properties"]["candidates"]["items"][
-            "enum"
-        ]
-        if sorted(enum) != sorted(board["legal_moves"]):
+        choices = len(board["legal_moves"]) >= 2
+        # Mid-exchange the offer stays on the player's last board (#315), and
+        # the board shown is that one too, so the two still agree.
+        if offered != choices:
             raise InvariantBreach(
-                f"planner call {index}: ask_player offers {sorted(enum)} over a "
-                f"board whose legal_moves are {sorted(board['legal_moves'])}"
+                f"planner call {index}: ask_player offered={offered} over a board "
+                f"with {len(board['legal_moves'])} legal moves"
             )
 
 

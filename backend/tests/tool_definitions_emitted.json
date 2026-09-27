@@ -883,25 +883,46 @@
       "type": "function",
       "function": {
         "name": "ask_player",
-        "description": "Ask the player to choose, when their words fit two or more\nentries of `legal_moves`. Nothing moves: the question goes to the\nplayer, and their answer comes back as the next command.",
+        "description": "Ask the player to choose, when their words fit more than one\nlegal move. Nothing moves; the question goes to the player. Give\nonly the parts they said and the app asks with exactly the moves\nthat fit: \"move my king's knight\" is piece and which; \"push the e\npawn\" is piece and which; \"take the pawn\" is takes, with no piece;\n\"castle\" is castle.",
         "parameters": {
-          "properties": {
-            "candidates": {
-              "description": "Every legal_moves entry the player's words fit.",
-              "items": {
-                "type": "string"
-              },
-              "minItems": 2,
-              "title": "Candidates",
-              "type": "array"
-            }
-          },
-          "required": [
-            "candidates"
-          ],
-          "title": "ask_playerArguments",
           "type": "object",
-          "additionalProperties": false
+          "properties": {
+            "piece": {
+              "type": "string",
+              "enum": [
+                "king",
+                "queen",
+                "rook",
+                "bishop",
+                "knight",
+                "pawn"
+              ],
+              "description": "The piece the player named."
+            },
+            "which": {
+              "type": "string",
+              "description": "Which one, only if the player said: its square ('e2'), its file ('e'), the side it started on ('kings', 'queens'), or its square colour ('light', 'dark')."
+            },
+            "to": {
+              "type": "string",
+              "description": "The square it goes to, only if the player said one."
+            },
+            "takes": {
+              "type": "string",
+              "enum": [
+                "queen",
+                "rook",
+                "bishop",
+                "knight",
+                "pawn"
+              ],
+              "description": "The piece it captures, only if the player said to take one."
+            },
+            "castle": {
+              "type": "boolean",
+              "description": "True when the player asked to castle."
+            }
+          }
         }
       }
     }

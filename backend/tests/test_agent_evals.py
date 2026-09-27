@@ -3521,6 +3521,12 @@ def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
             "expected the planner's decline plus the narrator's question, got "
             f"{ask['model_calls']} model calls"
         )
+        # Exactly the g1 knight's two moves, never all four knight moves:
+        # the ask names its parts and code works out what fits (#348, #371).
+        asks = [t for t in ask["traced"]["tools"] if t["name"] == "ask_player"]
+        assert asks, "the ambiguous ask must be asked with ask_player"
+        offered = set(asks[-1]["result"].get("candidates") or ())
+        assert offered == {"Nf3", "Nh3"}, f"asked with {sorted(offered)}"
         _assert_names_every_candidate(ask["assistant"]["content"], ("Nf3", "Nh3"))
         # The selection.
         assert len(_legal_moves(assistant)) == 1, (
