@@ -290,6 +290,21 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-26, the pre-redesign snapshot (#340, roadmap #366 step 3), on
+`a5a924d` (no change: this is the reference the redesign is compared with;
+serving manifest `10b9704cb0e7`, gemma-4-12B-it QAT UD-Q4_K_XL, llama.cpp
+b9935, planner 0.3). Result: 53 passed in a single run, 14 m 40 s, 230
+samples, infra 0, idle GPU. 43 of 45 pass-rate scenarios 5/5 ABOVE_FLOOR STABLE;
+`ambiguous_move` 4/5, the miss a question that offered two of the four rook
+moves (`ask_player(candidates=["Rh3","Rh2"])`); `pgn_is_handed_over_not_recited`
+8/10 after escalation (3/5 + 5/5), the misses the known recited headers.
+`long_capture` 5/5 ×3. Speech accuracy (schema 3): 100%, 94/94 claims backed
+over 284 turns, nothing unscored (`move` 31, `unplayed_reply` 19, `ending` 13,
+`save` 13, `capture` 7, `outcome` 3, `draw` 2, `owned_move` 2, `difficulty` 2,
+`verbosity_change` 1, `evaluation` 1).**
+
+Previous baseline:
+
 **Run 2026-09-24 on the positional-pick tree (#351: `make_move` carries a
 `source` — `said_the_move` or `picked_by_position` — required in the planner's
 offer, and code refuses a pick by position unless the conversation's question
@@ -945,9 +960,12 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
   runaway narrations overlap almost entirely, so a cap either misses the tail
   or clips real commentary. The runaway is bounded by `max_tokens`
   (planner 2048 / narrator 4096) instead.
-- **`play_as_black` run-order confound is unresolved** (2026-07-26): the
-  recorded mid-suite dip did not reproduce, but the isolated arm shared the
-  GPU with a second pytest — re-run cleanly before trusting either number.
+- **`play_as_black` has no run-order effect** (resolved 2026-09-26, #340/#341):
+  on an idle GPU, one server, one sitting, it measured 20/20 alone, 20/20 run
+  directly after the long-transcript block (explicit node IDs, so pytest keeps
+  that order; the nine long-transcript cases 20/20 each), and 5/5 mid-suite in
+  the full gate. Wilson lower bound 0.88 on both 20-sample arms. The 2026-07-26
+  mid-suite dip (0/5) was not an order effect this build still has.
 - **Speech accuracy is scored offline** (2026-09-26, #367): the guard's own
   reading, re-run over traced drafts and their recorded evidence, counted per
   family as claims made and backed (`scripts/speech_report.py`,
