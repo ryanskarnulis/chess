@@ -193,10 +193,6 @@ class TurnCoordinator:
         # request's `engine` span (#290). Assigned by `create_app`, like
         # `on_phase`.
         self.on_engine_time: Callable[[int], None] | None = None
-        # Told once a settle has put the engine's reply on the board, so the
-        # board reaches every client before the narrator says a word about it
-        # (#365). `create_app` points it at the state broadcast.
-        self.on_reply_played: Callable[[], None] | None = None
 
     @property
     def phase(self) -> TurnPhase:
@@ -520,8 +516,6 @@ class TurnCoordinator:
             elapsed = max(0, round((time.monotonic() - started) * 1000))
             self._tell(self.on_engine_time, elapsed)
         self._settlement = settlement
-        if settlement.reply is not None:
-            self._tell(self.on_reply_played)
         return settlement
 
     @staticmethod
