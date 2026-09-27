@@ -86,10 +86,13 @@ settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
 `settle_owed_reply()` is the close beat, in one place for every route: it
 collects the reply the engine has been computing since the player's move
 landed (a background thread over a board copy; only the collecting thread ever
-submits a move), completes the turn, tells `on_reply_played` — which
-`create_app` points at the state broadcast, so every client sees the engine's
-move before a word is said about it — and keeps the result
+submits a move), completes the turn and keeps the result
 (`ReplySettlement`: the reply, or what killed it) until `take_settlement`.
+The reply is game truth from that moment, but it is **not broadcast** then:
+clients see it when the turn closes, together with Glitch's words, so the move
+and the voice land at once rather than the board a few seconds ahead of him.
+Nothing publishes while he writes — the turn holds the mutation lock, and
+`GET /api/state` serves the last published document without waiting on it.
 Then Glitch speaks, and the engine's move is in his brief as his own to say
 (`narrator_facts`' `engine_reply`, rendered by `handoff.render` as "Your
 reply, already on the board: …"). The fast path and a drag settle in

@@ -801,9 +801,7 @@ def test_without_an_engine_the_player_moves_both_sides(session):
 
 def test_settling_plays_the_reply_closes_the_turn_and_keeps_the_result(ctx):
     coordinator = TurnCoordinator(ctx)
-    played: list[str] = []
     waited: list[int] = []
-    coordinator.on_reply_played = lambda: played.append(ctx.session.fen())
     coordinator.on_engine_time = waited.append
     coordinator.apply_player_move("e4")
 
@@ -813,7 +811,6 @@ def test_settling_plays_the_reply_closes_the_turn_and_keeps_the_result(ctx):
     assert settled.failure == ""
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
     assert coordinator.turn_id == 2
-    assert played == [ctx.session.fen()], "told once the reply is on the board"
     assert len(waited) == 1 and waited[0] >= 0
     assert coordinator.settlement is settled
     assert coordinator.take_settlement() is settled
@@ -830,8 +827,6 @@ def test_settling_with_nothing_owed_does_nothing(ctx):
 def test_a_settle_the_engine_died_on_names_it_and_leaves_the_reply_owed(session):
     ctx = ToolContext(session=session, engine=FailEngine())
     coordinator = TurnCoordinator(ctx)
-    played: list[int] = []
-    coordinator.on_reply_played = lambda: played.append(1)
     coordinator.apply_player_move("e4")
 
     settled = coordinator.settle_owed_reply()
@@ -839,7 +834,6 @@ def test_a_settle_the_engine_died_on_names_it_and_leaves_the_reply_owed(session)
     assert settled is not None and settled.reply is None
     assert settled.failure == "ValueError: engine died"
     assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
-    assert played == [], "no reply reached the board"
 
 
 def test_a_new_command_forgets_a_settlement_nobody_took(ctx):
@@ -858,7 +852,6 @@ def test_an_observer_that_raises_costs_nothing(ctx):
     def broken(*_args):
         raise RuntimeError("socket gone")
 
-    coordinator.on_reply_played = broken
     coordinator.on_engine_time = broken
     coordinator.apply_player_move("e4")
 

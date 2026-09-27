@@ -1598,10 +1598,10 @@ def create_app(
 
     progress.bind(_publish_progress)
     coordinator.on_phase = progress.phase
-    # The engine's reply reaches every client the moment it is played, before
-    # the narrator says a word about it (#365), and the wait on it is charged
-    # to the request that settled it (#290).
-    coordinator.on_reply_played = _publish_state
+    # The wait on the engine's reply is charged to the request that settled it
+    # (#290). The reply itself is *not* published here: the narrator is handed
+    # it first, and the board shows it when the turn closes, with his words
+    # (#365) — nothing publishes under the lock while he writes them.
     coordinator.on_engine_time = lambda elapsed_ms: _add_span("engine", elapsed_ms)
     registry.on_tool = progress.tool
     # The mutation chokepoint, pointed at the same emitter: the player's move
@@ -1802,8 +1802,8 @@ def create_app(
 
         The order is the whole point. `make_move` applies the player's move and
         stops, and the engine starts thinking the moment it lands. Then the
-        reply is collected, the turn closed and the board published, and only
-        then does Glitch speak — about both moves, because the second one is
+        reply is collected and the turn closed, and only then does Glitch
+        speak — about both moves, because the second one is
         his and the player learns it from what he says (#365). Until #365 the
         reaction ran while the engine thought and the app appended the reply
         in its own words; a narrator that could not see the reply named one
@@ -1830,8 +1830,9 @@ def create_app(
         # including one *this* call did not open, left owing by a route that
         # raised, which is settled here rather than left to wedge the machine.
         # Stockfish has been thinking since the move landed; the reply goes on
-        # the board and out to every client now, so the board never waits on
-        # the words, and the narrator is handed the move it is about to say.
+        # the session now and the narrator is handed the move it is about to
+        # say. Clients see it when the turn closes, with his words: the board
+        # and the voice land together rather than the move a beat ahead.
         settlement = coordinator.settle_owed_reply()
         owed_reply = settlement is not None
         engine_reply = settlement.reply if settlement is not None else None

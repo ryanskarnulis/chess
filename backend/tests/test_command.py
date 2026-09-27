@@ -746,10 +746,15 @@ def test_the_observation_is_handed_the_facts_about_the_move():
     assert result["check"] is False
 
 
-def test_the_reply_is_on_the_board_and_published_before_he_speaks():
-    """#365: the board never waits on the words. By the time the narrator is
-    asked, the engine's move is on the board and every client has been sent
-    it."""
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [("/api/command", {"text": "e4"}), ("/api/game/move", {"move": "e2e4"})],
+)
+def test_the_reply_is_shown_with_his_words_not_before(path, body):
+    """#365: the engine picks its move and Glitch is handed it, but the board
+    shows it only when the turn closes, with his words — not a few seconds
+    ahead of him. While he writes, the move is game truth (the session has
+    it, so what he is told is true) and no client has been sent it."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
     seen: list[tuple[list[str], list[str]]] = []
 
@@ -762,9 +767,15 @@ def test_the_reply_is_on_the_board_and_published_before_he_speaks():
     app, _ = scripted_app(ctx, brain=Watching(narrations=("e5, mirror.",)))
     client = TestClient(app)
 
-    client.post("/api/command", json={"text": "e4"})
+    with client.websocket_connect("/ws") as ws:
+        receive_state(ws)  # the snapshot on connect
+        response = client.post(path, json=body).json()
+        boards = [receive_state(ws)["state"]["history"] for _ in range(2)]
 
-    assert seen == [(["e4", "e5"], ["e4", "e5"])]
+    assert seen == [(["e4", "e5"], ["e4"])], "his move is held back while he talks"
+    assert boards == [["e4"], ["e4", "e5"]], "the player's move, then both"
+    assert response["state"]["history"] == ["e4", "e5"]
+    assert client.get("/api/state").json()["history"] == ["e4", "e5"]
 
 
 def test_nothing_is_appended_to_his_words():
