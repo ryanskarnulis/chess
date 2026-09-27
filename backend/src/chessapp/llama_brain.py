@@ -117,12 +117,13 @@ Model-specific quirks, split across the two layers:
   would strand a batch half-done. The loop dispatches them, goes on to the
   next iteration, and treats the `content` fragment beside them as no handoff
   note at all (audit 2026-09-05, decided).
-- The two narrator phases carry a wall-clock ceiling; the planner does not.
-  A token cap bounds generation, not queueing or a stalled server. `narrate`
-  hangs up at `_NARRATE_TIMEOUT`, because its caller has already decided how
-  long it will wait (`api._REACTION_BUDGET_S`, #283). The loop's own closer
-  stops *waiting* at `_CLOSING_BUDGET_S` when the engine's reply is ready and
-  held behind it, and at `_CLOSING_CEILING_S` otherwise (#316); the plan's
+- The narrator carries a wall-clock ceiling; the planner does not. A token
+  cap bounds generation, not queueing or a stalled server. `narrate` hangs up
+  at `_NARRATE_TIMEOUT`, because its caller has already decided how long it
+  will wait (`deadline.NARRATION_BUDGET_S`, #283). The loop's own narration
+  stops *waiting* at the same budget when the engine's reply is ready and
+  held behind it, and at `deadline.NARRATION_CEILING_S` otherwise (#316); the
+  plan's
   record comes back without the words, and the socket hangs up a margin later
   so the abandoned generation frees its llama-server slot. The planner is
   bounded between round trips (`planning_deadline_s`), never during one: its
@@ -148,9 +149,8 @@ from chessapp.brain import (
     CANCEL,
     CONFIRM,
     PHASE_ANSWER,
-    PHASE_CLOSER,
+    PHASE_NARRATOR,
     PHASE_PLANNER,
-    PHASE_REACTION,
     RETRY_DIFFERENT_ARGS,
     RETRY_NEVER,
     UNRELATED,
@@ -163,9 +163,13 @@ from chessapp.brain import (
     _RunState,
 )
 from chessapp.context_capture import model_phase
-from chessapp.deadline import LateReaction, within_budget
+from chessapp.deadline import (
+    NARRATION_BUDGET_S,
+    NARRATION_CEILING_S,
+    LateReaction,
+    within_budget,
+)
 from chessapp.handoff import build as build_handoff
-from chessapp.handoff import narrator_result_view
 from chessapp.handoff import render as render_handoff
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING
@@ -247,48 +251,21 @@ _PLANNER_TEMPERATURE = 0.3
 _ANSWER_MAX_TOKENS = 16
 
 # How long one `narrate` round trip may take before the socket is closed on it.
-# The *pipeline* is what gives up first: `api._REACTION_BUDGET_S` stops waiting
-# for the reaction at 10 s and plays the reply Stockfish already computed, so
-# ordinary slowness is always that budget's call and never this one. This is the
-# backstop underneath it — without it the abandoned generation keeps a
+# The *pipeline* is what gives up first: it stops waiting for the reaction at
+# `deadline.NARRATION_BUDGET_S` and plays the reply Stockfish already computed,
+# so ordinary slowness is always that budget's call and never this one. This is
+# the backstop underneath it — without it the abandoned generation keeps a
 # llama-server slot until the 300 s read timeout and the next turn's planner
 # queues behind words nobody will ever hear. Sized just above the budget so the
 # two cannot race. The planner sends none: it legitimately runs 30 s and more
 # with thinking on (`docs/agent-evals.md`), and its calls are the record of what
-# ran. The loop's own closer has budgets of its own, below.
+# ran. The loop's own narration waits by the same policy, below.
 _NARRATE_TIMEOUT = 15.0
 
-# How long the loop's closing narration may take when the engine's reply is
-# already owed and waiting behind it and the closer is not thinking (#316). This
-# is the brain route's version of the observe beat: the planner played the
-# player's move, Stockfish started on the answer the moment it landed, and until
-# the closer returns that answer cannot be played — nor can anything else, since
-# the command holds the mutation lock. Measured, not derived: across the 31
-# brain-route closers in the deployed trace that spoke before a reply
-# (2026-09-04 → 09-18) the call took 0.8–2.0 s, median 1.3 s. The same 10 s the
-# pipeline gives the observe beat clears every one of them by 5×, so the budget
-# only fires on a model that is stuck, never on one that is merely talking. A
-# *thinking* closer is not held to it even with a reply owed: after an analysis
-# tool the closer reasons before it speaks, and on the gate's move-plus-analysis
-# scenarios (`move_and_judgment`, `best_move_then_play`, 2026-09-23) that took
-# 6–10 s and more — half the samples were cut at 10 s. Those get
-# `_CLOSING_CEILING_S`.
-_CLOSING_BUDGET_S = 10.0
-
-# The closer's ceiling when no reply is waiting, or when the closer thinks
-# (#316): a question, an analysis, a setting, a move played on the engine's
-# advice. This is a stall backstop and not a budget — sized so it never cuts a
-# thoughtful answer. The slowest such closer in the deployed trace took 15 s
-# and thinking-on evals reach 30 s and more; 60 s is the planning phase's own
-# wall clock
-# (`_DEFAULT_PLANNING_DEADLINE_S`), so a turn at worst waits as long for its
-# words as it may spend deciding what to do.
-_CLOSING_CEILING_S = 60.0
-
-# How far past a closer's budget the socket stays open, so the brain's own
+# How far past a narration's budget the socket stays open, so the brain's own
 # deadline is always what fires first and the read timeout only frees the
 # llama-server slot the abandoned generation holds. The same 5 s gap
-# `_NARRATE_TIMEOUT` keeps above `api._REACTION_BUDGET_S`.
+# `_NARRATE_TIMEOUT` keeps above `deadline.NARRATION_BUDGET_S`.
 _HANG_UP_MARGIN_S = 5.0
 
 # The whole prompt for that phase. No persona and no board — the question is
@@ -409,12 +386,12 @@ class LlamaBrain:
     # `narrate` carries one, because it is the only phase whose caller has
     # already decided it will not wait; `None` disables it.
     narrate_timeout: float | None = _NARRATE_TIMEOUT
-    # How long the loop's closer is waited for (#316; see the module
-    # constants): `closing_budget_s` when the engine's reply is owed and held
+    # How long the loop's narration is waited for (#316, #369; see
+    # `deadline`): `closing_budget_s` when the engine's reply is owed and held
     # behind the words, `closing_ceiling_s` when nothing is. `None` waits for
     # as long as the provider does.
-    closing_budget_s: float | None = _CLOSING_BUDGET_S
-    closing_ceiling_s: float | None = _CLOSING_CEILING_S
+    closing_budget_s: float | None = NARRATION_BUDGET_S
+    closing_ceiling_s: float | None = NARRATION_CEILING_S
     # Wall clock for the per-call latencies the trace records. Injected so the
     # timing is testable, and read *here* rather than in the provider because a
     # round trip that raises has a latency too — and only the caller of a raising
@@ -855,19 +832,28 @@ class LlamaBrain:
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
         transcript: Sequence[dict[str, str]] = (),
+        *,
+        command: str = "",
     ) -> Narration:
-        # The fast path's narrator turn: it reads the new board and what
-        # changed, never the raw utterance. Same phase as the loop's closer —
-        # same prompt, same absence of tools — with its own brief, because here
-        # the move is already on the board and there is no planner note.
-        # Timed here rather than in `_speak` for the same reason the loop times
-        # its own calls: latency belongs wherever the call is *accounted for*,
-        # and this route's accounting is the `Narration` itself.
+        # The narrator for a turn the loop never ran: the fast path, a board
+        # drag, a confirmed op or a resignation. One narrator (#369): the same
+        # phase, prompt and brief as the loop's own narration — the handoff
+        # built from what changed, with the caller's facts (the same
+        # `narrator_facts` view the loop reads, `reply_owed` lifted out of it
+        # the same way) — and no planner note, because no planner ran. Timed
+        # here rather than in `_speak` for the same reason the loop times its
+        # own calls: latency
+        # belongs wherever the call is *accounted for*, and this route's
+        # accounting is the `Narration` itself.
+        facts = dict(board_state)
+        handoff = build_handoff(
+            changes, reply_owed=bool(facts.pop("reply_owed", False)), facts=facts
+        )
         self._report(BRAIN_NARRATING)
         started = self.clock()
-        with model_phase(PHASE_REACTION):
+        with model_phase(PHASE_NARRATOR):
             narration = self._speak(
-                _fast_path_brief(board_state, changes),
+                render_handoff(handoff, command, changes),
                 transcript,
                 thinking=self.enable_thinking,
                 timeout=self.narrate_timeout,
@@ -986,7 +972,7 @@ class LlamaBrain:
         try:
             # Set before `within_budget` copies the context, so the bounded
             # thread's call is tagged too.
-            with model_phase(PHASE_CLOSER):
+            with model_phase(PHASE_NARRATOR):
                 if wait is None:
                     narration = self._speak(brief, transcript, thinking=thinking)
                 else:
@@ -1011,7 +997,7 @@ class LlamaBrain:
             logger.warning("closing_narration_late budget=%.1fs", wait)
             run.count_call(
                 ModelCall(
-                    PHASE_CLOSER,
+                    PHASE_NARRATOR,
                     CALL_LATE,
                     self._elapsed_ms(started),
                     budget_ms=_budget_ms(wait),
@@ -1026,7 +1012,7 @@ class LlamaBrain:
             # conversation, so it is the longest prompt of the turn.
             run.count_call(
                 ModelCall(
-                    PHASE_CLOSER,
+                    PHASE_NARRATOR,
                     CALL_FAILED,
                     self._elapsed_ms(started),
                     failure=str(exc.failure),
@@ -1038,7 +1024,7 @@ class LlamaBrain:
             metered = not narration.unmetered_calls
             run.count_call(
                 ModelCall(
-                    PHASE_CLOSER,
+                    PHASE_NARRATOR,
                     narration.status,
                     self._elapsed_ms(started),
                     narration.prompt_tokens if metered else None,
@@ -1356,50 +1342,6 @@ def _exchange_key(
         name,
         json.dumps(args, sort_keys=True, default=str),
         json.dumps(result, sort_keys=True, default=str),
-    )
-
-
-# Whose move the narrator is about to react to. The brief used to open "You
-# just acted on the player's behalf", and a 12B reads that as "I moved": live,
-# Glitch narrated the player's capture as his own. Who moved is deterministic
-# state, so the brief says it outright instead of leaving it to be inferred
-# from move-history parity.
-#
-# It says that and nothing more, deliberately. The first cut also named each
-# side's color, and that was an identity the narrator *used*: it reacts
-# mid-turn, from a board where it is the engine's move, so "you are playing
-# black" turned the reaction beat into a move-selection beat — every reaction
-# in the 2026-07-28 game announced a reply ("i'll go with d6", then Bb4 was
-# played) that Stockfish was still computing. The attribution the
-# misattribution fix needed was purely negative — whose move the results are
-# NOT — and the narrator must be offered no side to play for. Cutting the
-# prose alone did not finish the job: the state block still said the same
-# thing in data (`turn` beside `player_color`, the engine's `legal_moves` as
-# the menu) and the next game announced replies all the same ("My turn.
-# ...Be6."), so the app now withholds those fields from the narrator's view
-# too (`api._narrator_state_dict`, #193).
-_ATTRIBUTION = (
-    "The player just made their own move, and you carried it out for them: "
-    "the moves in these results are the player's moves, not yours."
-)
-
-
-def _fast_path_brief(board_state: dict[str, Any], changes: list[dict[str, Any]]) -> str:
-    """The narrator's brief for a move the loop never saw (the fast path). The
-    board here *is* fresh — the caller read it after the move landed.
-
-    The changes go through the same projection the closing brief's results do
-    (`handoff.narrator_result_view`): a confirmed `new_game` or a resign beat
-    narrates from results that carry `fen`/`turn`, and the state view beside
-    them withholding those keys was no use while the results handed them over.
-    """
-    shown = [narrator_result_view(change) for change in changes]
-    return (
-        f"{_ATTRIBUTION}\n\nHere is what happened "
-        f"(each entry is a tool call and its result):\n{json.dumps(shown)}"
-        f"\n\nNew board state:\n{json.dumps(board_state)}\n\n"
-        "React with a short, in-character comment for the player, based "
-        "only on these results and the new board. Do not call any tools."
     )
 
 

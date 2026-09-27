@@ -38,12 +38,12 @@ from chessapp.handoff import Handoff
 # Which phase of a turn made a model round trip (#317). The trace used to hold
 # one unlabelled latency per call and left a reader to infer the phase from
 # the route and the call order, which a budget stop or a provider death
-# silently breaks. The brain names the phases it runs itself (`planner`,
-# `closer`); the others are single-call seams whose *caller* knows which beat
-# it is (`reaction`, `answer`), so the pipeline stamps them.
+# silently breaks. `planner` and `narrator` are the brain's two phases;
+# `answer` is the confirmation reader. One `narrator` for every turn (#369):
+# records before it say `closer` for the loop's narration and `reaction` for
+# the others, and the readers of old traces keep both names.
 PHASE_PLANNER = "planner"
-PHASE_CLOSER = "closer"
-PHASE_REACTION = "reaction"
+PHASE_NARRATOR = "narrator"
 PHASE_ANSWER = "answer"
 # A call from a brain that does not tag its own (a test double): known to have
 # happened, not known to have been which.
@@ -449,19 +449,20 @@ class Brain(Protocol):
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
         transcript: Sequence[dict[str, str]] = (),
+        *,
+        command: str = "",
     ) -> Narration:
-        """Commentary on a move the loop did not make: the deterministic fast
-        path (`parse_move` → `make_move`) skips the planner entirely, so there
-        is no turn for the narrator to close. This is the narrator phase on its
-        own — the *new* board plus `changes` (each a `{"name", "result"}` tool
-        result), no tools offered, no access to the raw utterance. What the
-        board view contains is the caller's policy, and the app deliberately
-        hands a view with no side to play for — no turn, no legal moves, no
-        FEN (`api._narrator_state_dict`): the beat runs while the engine's
-        reply is still being computed, and a narrator that can see whose move
-        it is announces one. It exists
-        because the fast path is deliberately outside the loop; at verbosity=low
-        even this is skipped for a canned confirmation, making a plain move
+        """The narrator for a turn the loop did not run: the deterministic
+        fast path (`parse_move` → `make_move`), a board drag, a confirmed
+        destructive op or a resignation. The same narrator phase and brief the
+        loop closes with (#369), fed the same shape: `command` is the player's
+        words (empty for a drag), `changes` the turn's record (each a
+        `{"name", "result"}` tool result), and `board_state` the game view,
+        `api.narrator_facts` — no side to play for, since the beat can run
+        while the engine's reply is still being computed and a narrator that
+        can see whose move it is announces one, and a `reply_owed` flag the
+        brain turns into the line saying so. No tools offered. At
+        verbosity=low this is skipped for a canned line, making a plain move
         zero-LLM."""
         ...
 

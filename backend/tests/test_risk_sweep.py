@@ -344,7 +344,7 @@ def test_the_delegate_wire_observes_the_player_move_before_the_reply():
     exchange = say(client, conversation_on(client), "e4")
 
     state, changes = brain.narrate_calls[0]
-    assert state["history"] == ["e4"], "the engine has not replied yet"
+    assert state["reply_owed"] is True, "the engine has not replied yet"
     assert "engine_move" not in changes[0]["result"]
     assert exchange["assistant_message"]["content"] == "Bold.\n\ne5."
     assert ctx.session.move_history() == ["e4", "e5"]

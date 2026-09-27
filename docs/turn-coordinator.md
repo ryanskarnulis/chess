@@ -99,7 +99,7 @@ that the reaction could be *skipped*; a narrator that was merely slow still held
 a reply that was already computed, kept the turn in `agent_observing`, and —
 the command runs under the mutation lock — parked every other road onto the
 board behind it. Every `Brain.narrate` call now runs under
-`api._REACTION_BUDGET_S` (10 s, through `api._narrate` → `_within_budget`): when
+`deadline.NARRATION_BUDGET_S` (10 s, through `api._narrate` → `_within_budget`): when
 it expires the ready reply is applied, the turn closes on the deterministic
 announcement, the lock is released, and the words that arrive afterwards are
 dropped rather than spoken a beat behind the board they were about. The late
@@ -122,10 +122,11 @@ pipeline's budget could not see. The bound lives in the brain
 (`LlamaBrain._close`), around the tool-free speech call alone, so the thread
 that can act always returns on time with the plan's complete record and only a
 thread that can produce nothing but words is ever left behind. Two numbers,
-chosen by what the closer is doing: `_CLOSING_BUDGET_S` (10 s) when the reply
+chosen by what the closer is doing (the one narration policy since #369):
+`deadline.NARRATION_BUDGET_S` (10 s) when the reply
 is owed and the closer is only reacting — the 31 such closers in the deployed
 trace took 0.8–2.0 s, so it only fires on a stuck model — and
-`_CLOSING_CEILING_S` (60 s) otherwise. A closer that thinks is putting an
+`deadline.NARRATION_CEILING_S` (60 s) otherwise. A closer that thinks is putting an
 evaluation into words, the answer the player asked for, so it gets the ceiling
 even with a reply owed: on the gate's move-plus-analysis scenarios it took
 6–10 s and more, and a first cut at 10 s sent both below their floor. A

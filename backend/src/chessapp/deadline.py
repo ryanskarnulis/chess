@@ -1,9 +1,11 @@
 """Waiting on optional words for a bounded time (#283, #316).
 
 Shared by the pipeline, which bounds the observe beat and the other `narrate`
-sites (`api._REACTION_BUDGET_S`), and by the brain, which bounds its own
-closing narration (`llama_brain._close`). A module of its own so the brain can
-use it without importing the app.
+sites, and by the brain, which bounds its own closing narration
+(`llama_brain._close`). Both wait by one
+policy (#369): `NARRATION_BUDGET_S` when something computed or locked waits on
+the words and the narrator is not thinking, `NARRATION_CEILING_S` otherwise. A
+module of its own so the brain can use it without importing the app.
 """
 
 import contextvars
@@ -12,6 +14,35 @@ import threading
 from collections.abc import Callable
 
 from chessapp.provider import ProviderError
+
+# How long Glitch's words may take when something is waiting on them: a
+# computed engine reply held behind the observe beat or the brain route's
+# closer, or the mutation lock a confirmed-op or resign beat holds. Measured,
+# not derived from the token cap (which bounds generation, not queueing or a
+# dead server). Across 58 observe beats in the deployed trace (routes
+# `fast_path` and `board`, one thinking-off call each) the reaction took
+# 0.7–2.1 s, median ~1.5 s, with a single 7.5 s outlier; across the 31
+# brain-route closers that spoke before a reply (2026-09-04 → 09-18) it took
+# 0.8–2.0 s, median 1.3 s. Ten seconds clears every one of them with room for
+# the shared GPU having a bad minute, so it fires on a model that is stuck,
+# never on one that is merely talking, and it is still far below the point
+# where a player decides the board is frozen. A cold llama-swap load (~100 s to
+# first byte, first move after a reboot) is over it and loses that one
+# narration to the app's own line; hanging up does not unload the upstream, so
+# the next turn is warm (#283, #316).
+NARRATION_BUDGET_S = 10.0
+
+# The wait when nothing is held, or when the narrator thinks: a question, an
+# analysis, a setting, a move played on the engine's advice. A stall backstop
+# and not a budget, sized so it never cuts a thoughtful answer. After an
+# analysis tool the narrator reasons before it speaks, and on the gate's
+# move-plus-analysis scenarios (`move_and_judgment`, `best_move_then_play`,
+# 2026-09-23) that took 6–10 s and more, so half the samples were cut at 10 s.
+# The slowest such narration in the deployed trace took 15 s and thinking-on
+# evals reach 30 s and more; 60 s is the planning phase's own wall clock
+# (`llama_brain._DEFAULT_PLANNING_DEADLINE_S`), so a turn at worst waits as
+# long for its words as it may spend deciding what to do (#316).
+NARRATION_CEILING_S = 60.0
 
 
 class LateReaction(ProviderError):

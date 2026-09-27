@@ -27,9 +27,8 @@ from chessapp.brain import (
     CANCEL,
     CONFIRM,
     PHASE_ANSWER,
-    PHASE_CLOSER,
+    PHASE_NARRATOR,
     PHASE_PLANNER,
-    PHASE_REACTION,
     PHASE_UNKNOWN,
     RETRY_DIFFERENT_ARGS,
     RETRY_NEVER,
@@ -38,13 +37,14 @@ from chessapp.brain import (
 )
 from chessapp.context_capture import current_phase
 from chessapp.coordinator import TurnCoordinator
+from chessapp.deadline import NARRATION_BUDGET_S, NARRATION_CEILING_S
 from chessapp.game import GameSession
+from chessapp.handoff import build as build_handoff
+from chessapp.handoff import render as render_handoff
 from chessapp.llama_brain import (
     _ANSWER_MAX_TOKENS,
     _BUDGET_NOTE,
     _CHARS_PER_TOKEN,
-    _CLOSING_BUDGET_S,
-    _CLOSING_CEILING_S,
     _HANG_UP_MARGIN_S,
     _NO_PROGRESS_NOTE,
     _NOT_RUN,
@@ -52,7 +52,6 @@ from chessapp.llama_brain import (
     _REFRESH_LABEL,
     LlamaBrain,
     _estimate_tokens,
-    _fast_path_brief,
     create_llama_brain,
 )
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
@@ -1700,7 +1699,7 @@ def test_narrate_carries_the_narrator_cap():
 
 # A token cap bounds generation; it says nothing about queueing or a server
 # that stopped answering. The observe beat is the one phase whose caller has
-# already decided it will not wait (`api._REACTION_BUDGET_S`), so it is the one
+# already decided it will not wait (`deadline.NARRATION_BUDGET_S`), so it is the one
 # phase that also carries a wall-clock ceiling — and hanging up is what stops an
 # abandoned reaction holding a slot the next turn needs (#283).
 
@@ -1743,7 +1742,7 @@ def owed(reply_owed: bool):
 
 @pytest.mark.parametrize(
     ("reply_owed", "wait"),
-    [(True, _CLOSING_BUDGET_S), (False, _CLOSING_CEILING_S)],
+    [(True, NARRATION_BUDGET_S), (False, NARRATION_CEILING_S)],
 )
 def test_the_closer_hangs_up_a_margin_past_its_wait(reply_owed, wait):
     brain, provider = make_brain(
@@ -1774,15 +1773,15 @@ def test_the_closer_budget_clears_every_measured_closer_with_a_reply_waiting():
     # 31 brain-route closers that spoke before a reply in the deployed trace
     # (2026-09-04 → 09-18) took 0.8–2.0 s. The budget exists for a stuck
     # model, never for a talkative one.
-    assert _CLOSING_BUDGET_S >= 5 * 2.0
+    assert NARRATION_BUDGET_S >= 5 * 2.0
 
 
 def test_the_closer_ceiling_never_cuts_a_thoughtful_answer():
     # Thinking-on closers reach 30 s and more in the evals, the trace's
     # slowest no-reply closer took 15 s; the ceiling is a stall backstop and
     # must clear both, as well as the tight budget it stands in for.
-    assert _CLOSING_CEILING_S >= 2 * 30.0
-    assert _CLOSING_CEILING_S > _CLOSING_BUDGET_S
+    assert NARRATION_CEILING_S >= 2 * 30.0
+    assert NARRATION_CEILING_S > NARRATION_BUDGET_S
 
 
 def late_brain(*, reply_owed: bool, **kwargs):
@@ -2109,49 +2108,85 @@ def test_narrate_null_content_becomes_empty_string():
     assert brain.narrate(board_state={}, changes=[]).text == ""
 
 
-# --- the fast path's brief says whose move it is reacting to ------------------
+# --- one narrator (#369): a reaction reads the same brief the loop closes with -
 #
-# The brief used to open "You just acted on the player's behalf", which a 12B
-# reads as "I moved": live, Glitch narrated the player's capture as his own. The
-# opener now states the attribution outright — and states *only* that. The first
-# version also named each side's color, and that was an identity the narrator
-# used: reacting mid-turn from a board where it is the engine's move, with the
-# engine's legal moves in the state block, "you are playing black" turned the
-# reaction beat into a move-selection beat — every reaction in the 2026-07-28
-# game announced a reply ("i'll go with d6") the narrator had no way to know,
-# since Stockfish was still computing it. The attribution the fix needed was
-# purely negative: whose move the results are NOT.
-
-FAST_PATH_STATE = {"fen": "8/8/8/8", "turn": "black", "player_color": "white"}
+# The fast path, a board drag, a confirmed op and a resignation used to speak
+# from a brief of their own, which opened "The player just made their own
+# move" whatever had happened — including a confirmed `new_game`. They now get
+# the handoff: the player's words, the sorted record, the game view. What
+# #193 needed stays true: the narrator is offered no side to play for, and a
+# move the player made is never read as the narrator's.
 
 
-def test_fast_path_brief_does_not_say_the_narrator_acted():
-    assert "on the player's behalf" not in _fast_path_brief(FAST_PATH_STATE, [])
+def _brief(provider) -> str:
+    return provider.calls[-1]["messages"][-1]["content"]
 
 
-def test_fast_path_brief_attributes_the_move_to_the_player():
-    brief = _fast_path_brief(FAST_PATH_STATE, [])
-    assert "the player's move" in brief
-    assert "not yours" in brief
+def test_a_reaction_speaks_from_the_same_brief_the_loop_closes_with():
+    changes = [{"name": "make_move", "result": {"ok": True, "san": "exd5"}}]
+    facts = {"player_color": "white", "game_over": False}
+    brain, provider = make_brain(text_turn("nice"))
 
-
-def test_fast_path_brief_gives_the_narrator_no_side_to_play():
-    # Naming the narrator's color handed it a move to choose. The brief carries
-    # no color for either side, whichever the player has.
-    for color in ("white", "black"):
-        brief = _fast_path_brief({**FAST_PATH_STATE, "player_color": color}, [])
-        assert "is playing" not in brief
-        assert "you are playing" not in brief
-
-
-def test_fast_path_brief_keeps_its_structure():
-    brief = _fast_path_brief(
-        FAST_PATH_STATE, [{"name": "make_move", "result": {"san": "exd5"}}]
+    brain.narrate(
+        board_state={**facts, "reply_owed": True},
+        changes=changes,
+        command="pawn takes d5",
     )
-    assert "exd5" in brief, "the results still reach the narrator"
-    assert "8/8/8/8" in brief, "so does the new board"
-    assert "in-character" in brief
-    assert "Do not call any tools." in brief
+
+    handoff = build_handoff(changes, reply_owed=True, facts=facts)
+    assert _brief(provider) == render_handoff(handoff, "pawn takes d5", changes)
+    assert "The player said:\npawn takes d5" in _brief(provider)
+    assert "has not played its reply" in _brief(provider)
+    assert '"reply_owed"' not in _brief(provider), "lifted out of the facts"
+
+
+def test_a_confirmed_new_game_is_not_narrated_as_the_players_move():
+    changes = [
+        {"name": "new_game", "result": {"ok": True, "fen": "x w", "turn": "white"}}
+    ]
+    brain, provider = make_brain(text_turn("fresh board"))
+
+    brain.narrate(board_state={"player_color": "white"}, changes=changes, command="yes")
+
+    brief = _brief(provider)
+    assert "own move" not in brief
+    assert "Done this turn: #1 new_game." in brief
+    assert '"fen"' not in brief and '"turn"' not in brief
+
+
+def test_a_board_drag_says_the_player_acted_without_words():
+    changes = [{"name": "make_move", "result": {"ok": True, "san": "e4"}}]
+    brain, provider = make_brain(text_turn("nice"))
+
+    brain.narrate(board_state={"player_color": "black"}, changes=changes)
+
+    brief = _brief(provider)
+    assert "The player said" not in brief
+    assert "the player did" in brief
+    assert "is playing" not in brief and "you are playing" not in brief
+
+
+def test_the_loops_narration_brief_is_unchanged_by_the_merge():
+    """The brain route's bytes are pinned: #369 changed only what a reaction
+    reads, so the gate's brain-route scenarios measure the same prompt."""
+    results = [{"name": "make_move", "result": {"ok": True, "san": "e4"}}]
+    handoff = build_handoff(
+        results, note="play e4", reply_owed=True, facts={"player_color": "white"}
+    )
+    assert render_handoff(handoff, "e4 please", results) == (
+        "The player said:\ne4 please\n\n"
+        "What the tools reported this turn:\n"
+        '#1 {"name": "make_move", "result": {"ok": true, "san": "e4"}}\n\n'
+        "Done this turn: #1 make_move.\n"
+        "The engine has not played its reply to the player's move yet; "
+        "the app announces it after you speak.\n\n"
+        'The game now:\n{"player_color": "white"}\n\n'
+        "The planner's reading of what the player wants (not a record of "
+        "what happened):\nplay e4\n\n"
+        "Reply to the player in character. Say only what the record above "
+        "shows was done; if it shows nothing done, do not say anything was. "
+        "When the player has to choose, ask them, naming the options."
+    )
 
 
 # --- recovery: a provider failure mid-turn (audit item 20) ------------------
@@ -2952,15 +2987,6 @@ def test_a_budget_stop_with_nothing_done_carries_no_handoff():
     assert resp.handoff is None
 
 
-def test_the_fast_path_brief_projects_its_changes():
-    changes = [
-        {"name": "new_game", "result": {"ok": True, "fen": "x w", "turn": "white"}}
-    ]
-    brief = _fast_path_brief({"player_color": "white"}, changes)
-    assert '"fen"' not in brief and '"turn"' not in brief
-    assert '"new_game"' in brief
-
-
 def test_the_factory_wires_the_narrator_facts():
     seam = dict
     brain = create_llama_brain(
@@ -3420,7 +3446,7 @@ def test_each_call_is_tagged_with_its_phase_and_its_totals_are_their_sum():
     )
     resp = brain.get_agent_response(board_state={}, command="e4")
 
-    assert _tags(resp) == [("planner", "ok"), ("planner", "ok"), ("closer", "ok")]
+    assert _tags(resp) == [("planner", "ok"), ("planner", "ok"), ("narrator", "ok")]
     assert [call.ms for call in resp.calls] == [1000, 500, 2000]
     assert resp.model_latencies_ms == (1000, 500, 2000)
     assert resp.prompt_tokens == sum(call.prompt_tokens for call in resp.calls)
@@ -3471,7 +3497,7 @@ def test_a_late_closer_is_tagged_late_and_censored_at_its_budget():
         resp = brain.get_agent_response(board_state={}, command="play e4")
     finally:
         provider.release.set()
-    assert _tags(resp)[-1] == ("closer", "late")
+    assert _tags(resp)[-1] == ("narrator", "late")
     assert resp.calls[-1].budget_ms == 50
     assert resp.calls[-1].prompt_tokens is None
 
@@ -3483,7 +3509,7 @@ def test_a_dead_closer_is_a_failed_closer_call():
         ProviderRequestError("gone", ProviderFailure.UNREACHABLE),
     )
     resp = brain.get_agent_response(board_state={}, command="e4")
-    assert _tags(resp)[-1] == ("closer", "failed")
+    assert _tags(resp)[-1] == ("narrator", "failed")
     assert resp.calls[-1].failure == "unreachable"
 
 
@@ -3577,7 +3603,7 @@ def test_the_loop_tags_its_planner_and_closer_calls(closing_budget_s):
         closing_budget_s=closing_budget_s,
     )
     brain.get_agent_response(board_state={}, command="play e4")
-    assert provider.phases == [PHASE_PLANNER, PHASE_PLANNER, PHASE_CLOSER]
+    assert provider.phases == [PHASE_PLANNER, PHASE_PLANNER, PHASE_NARRATOR]
     assert current_phase() == PHASE_UNKNOWN, "the tag does not leak past the call"
 
 
@@ -3585,4 +3611,4 @@ def test_the_single_call_seams_tag_their_calls():
     brain, provider = phase_brain(text_turn("confirm"))
     brain.narrate(board_state={}, changes=[])
     brain.read_answer("Resign?", "yes")
-    assert provider.phases == [PHASE_REACTION, PHASE_ANSWER]
+    assert provider.phases == [PHASE_NARRATOR, PHASE_ANSWER]

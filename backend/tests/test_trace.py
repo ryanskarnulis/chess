@@ -20,7 +20,7 @@ from chessapp.brain import (
     CALL_FAILED,
     CALL_LATE,
     CONFIRM,
-    PHASE_CLOSER,
+    PHASE_NARRATOR,
     PHASE_PLANNER,
     AgentResponse,
     Answer,
@@ -91,7 +91,7 @@ def test_turn_record_carries_model_cost_when_given():
         calls=(
             ModelCall(PHASE_PLANNER, ms=100, prompt_tokens=2000, completion_tokens=40),
             ModelCall(PHASE_PLANNER, ms=100, prompt_tokens=800, completion_tokens=6),
-            ModelCall(PHASE_CLOSER, ms=100, prompt_tokens=41, completion_tokens=50),
+            ModelCall(PHASE_NARRATOR, ms=100, prompt_tokens=41, completion_tokens=50),
         )
     )
     assert record["model_calls"] == 3
@@ -115,7 +115,7 @@ def test_turn_record_tags_each_call_and_derives_every_total_from_them():
         calls=(
             ModelCall(PHASE_PLANNER, ms=400, prompt_tokens=900, completion_tokens=12),
             ModelCall(PHASE_PLANNER, CALL_FAILED, ms=1200, failure="unreachable"),
-            ModelCall(PHASE_CLOSER, CALL_LATE, ms=10000, budget_ms=10000),
+            ModelCall(PHASE_NARRATOR, CALL_LATE, ms=10000, budget_ms=10000),
         ),
         planning={"elapsed_ms": 1600, "deadline_ms": 60000, "overrun_ms": 0},
     )
@@ -148,7 +148,7 @@ def test_turn_record_tags_each_call_and_derives_every_total_from_them():
         },
         {
             "seq": 2,
-            "phase": "closer",
+            "phase": "narrator",
             "status": "late",
             "ms": 10000,
             "prompt_tokens": None,
@@ -258,7 +258,7 @@ def test_turn_record_times_each_model_call_and_sums_them():
     """Per-call latency is what tells a slow narrator from a slow planner; the
     total is derived here, so the two can never disagree in a record."""
     record = _record_fields(
-        calls=(ModelCall(PHASE_PLANNER, ms=120), ModelCall(PHASE_CLOSER, ms=900))
+        calls=(ModelCall(PHASE_PLANNER, ms=120), ModelCall(PHASE_NARRATOR, ms=900))
     )
     assert record["model_latencies_ms"] == [120, 900]
     assert record["model_ms"] == 1020

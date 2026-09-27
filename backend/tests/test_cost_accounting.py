@@ -155,7 +155,7 @@ def test_a_dead_observe_beat_is_one_call_on_the_fast_path(trace_path):
     assert record["prompt_tokens"] == 0
     assert len(record["model_latencies_ms"]) == 1
     (call,) = record["calls"]
-    assert (call["phase"], call["status"]) == ("reaction", "failed")
+    assert (call["phase"], call["status"]) == ("narrator", "failed")
     # The beat was bounded, so the call says by what, even though it died
     # rather than ran out.
     assert call["budget_ms"] is not None

@@ -28,7 +28,20 @@ not asking one call to do both jobs. The split cured the release-blocking
   one phase that may think (when analysis landed). Being structurally unable
   to act is the enforcement of "react from results, never the raw utterance";
   `tests/test_closing_pass.py` pins it route by route. `Brain.narrate` (the
-  fast path's commentary call) is the same code path with a different brief.
+  fast path, a board drag, a confirmed op and a resignation) is the same
+  narrator with the same brief and budget policy (#369, below).
+
+**One narrator** (#369, 2026-09-27). There used to be two: the loop's closer
+spoke from the typed handoff, and the reaction (`Brain.narrate`) from a brief
+of its own that opened "The player just made their own move" whatever had
+happened — a confirmed `new_game` included. Now every narration is the handoff
+(`handoff.render`): the player's words (a board drag has none, and the brief
+says the player acted on the board), the turn's record, and `narrator_facts`.
+A reaction has no planner note. One phase name, `narrator`, in the trace and
+the context capture (records before it say `closer` and `reaction`, and the
+readers keep both); one budget policy, `deadline.NARRATION_BUDGET_S` when
+something waits on the words and the narrator is not thinking,
+`NARRATION_CEILING_S` otherwise.
 
 A budget stop speaks from what ran (#288). The planning phase is bounded by
 model turns (`max_iterations` 4), malformed calls (`max_corrections` 2),
@@ -51,8 +64,8 @@ start inside it and finish past it. The trace's `planning` field (#317) records
 this: the phase's `elapsed_ms`, the configured `deadline_ms`, and `overrun_ms`,
 which is how far past the deadline it finished. The trace's `calls` list has
 one entry per model round trip. Each entry records which phase made the call
-(`planner`, `closer`, `reaction`, `answer`; `rewrite` on records from before
-#368), how it ended (`ok`,
+(`planner`, `narrator`, `answer`; `closer`/`reaction` on records from before
+#369, `rewrite` from before #368), how it ended (`ok`,
 `truncated`, `bad_args`, `failed`, `late`), how long it took, and its tokens,
 which are `null` when unknown. A `late` call's `ms` is the time the turn waited
 before giving up, with the limit it was held to in `budget_ms`. The call may
@@ -244,8 +257,8 @@ and `captures` from every result a narrator reads, on both briefs — `undo`,
 `new_game` and `resume_game` answer with `fen`/`turn`, and they reached the
 narrator through the closing brief and through the fast path's confirmed-op
 and resign beats while the state view beside them withheld the same keys. The
-trace keeps the full results; a test pins that the projection and
-`_narrator_state_dict` delete the same four keys.
+trace keeps the full results; a test pins that the projection deletes the
+four keys and `narrator_facts` carries none of them.
 
 **Claim classes for the handoff** (`honesty.py`), measured before they shipped (the
 #287 rule; corpus in `test_honesty.py`, deployed sweep in
@@ -326,11 +339,11 @@ The trace's `clarification` field records each turn's view of it — `open`,
 ## What the narrator is not given
 
 - **A stale board.** The brain route's facts are read as the planner hands
-  off (above), after every tool of the turn has run; the fast path hands a
-  freshly read post-move board because it has one. Neither carries history.
+  off (above), after every tool of the turn has run; a reaction reads the same
+  facts after its change landed. Neither carries history (#369).
 - **A side to play for** (#188/#193): the observe beat runs while the reply is
   still computing, so `turn`, `legal_moves`, and the FEN are withheld
-  (`api._narrator_state_dict`, and `handoff.narrator_result_view` on every
+  (`api.narrator_facts`, and `handoff.narrator_result_view` on every
   result), the split `make_move` result carries no mid-exchange `fen`/`turn`,
   and a move turn is remembered by the reaction alone (`docs/turn-memory.md`)
   — every leak of "it is your move" produced narrators announcing moves of
@@ -360,14 +373,14 @@ single-fit ask over-asked (2026-09-17, #286, `docs/knight-ask-campaign.md`).
 `CHESSAPP_PLANNER_TEMPERATURE` overrides it; the eval harness resolves the
 number through the same function the app does, and pins that it did.
 
-Both narrator phases have a wall clock; the planner does not. A token cap
+The narrator has a wall clock; the planner does not. A token cap
 bounds generation, not queueing or a stalled server. The pipeline drops the
-observe beat's reaction at `api._REACTION_BUDGET_S` and plays the reply
+observe beat's reaction at `deadline.NARRATION_BUDGET_S` and plays the reply
 Stockfish computed during it (#283, `docs/turn-coordinator.md`), and
 `_NARRATE_TIMEOUT` hangs up just above that so the abandoned generation stops
 holding a server slot. The loop's closer is bounded inside the brain (#316):
-`_CLOSING_BUDGET_S` when the engine's reply is owed and held behind words that
-are only a reaction, `_CLOSING_CEILING_S` — a stall backstop, never a cut on a
+the same budget when the engine's reply is owed and held behind words that
+are only a reaction, `deadline.NARRATION_CEILING_S` — a stall backstop, never a cut on a
 thinking answer — when nothing is held or the closer thinks; either way only the tool-free speech thread is left behind,
 and the plan's record comes back as `narration_late` with no text. The planner
 sends no ceiling: it legitimately runs 30 s and more with thinking on, its

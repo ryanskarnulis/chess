@@ -87,7 +87,8 @@ def test_a_drag_reaches_glitch_and_the_engine_answers():
 
     assert brain.calls == [], "a drag is a move, not an utterance for the planner"
     state, changes = brain.narrate_calls[0]
-    assert state["history"] == ["e4"], "the engine has not replied yet"
+    assert state["reply_owed"] is True, "the engine has not replied yet"
+    assert brain.narrate_commands == [""], "a drag has no words"
     assert changes[0]["name"] == "make_move"
     assert changes[0]["result"]["san"] == "e4"
     assert body["commentary"] == "Bold opener.\n\ne5."

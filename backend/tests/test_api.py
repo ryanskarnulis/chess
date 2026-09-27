@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 from chessapp.api import (
     _REFRESH_KEYS,
     _agent_state_dict,
-    _narrator_state_dict,
     _turn_evidence,
     create_app,
     narrator_facts,
@@ -31,6 +30,7 @@ from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.engine import DEFAULT_TIER, CandidateMove, EnginePlayer
 from chessapp.facts import assemble, relative_outcome
 from chessapp.game import GameSession
+from chessapp.handoff import NARRATOR_HIDDEN_KEYS
 from chessapp.honesty import unverified_claims
 from chessapp.tools import ToolContext, build_registry
 from fakes import FakeEngine
@@ -839,7 +839,7 @@ def test_the_narrator_facts_hold_no_side_to_move_and_no_history():
         "captured": ctx.session.captured_pieces(),
         "reply_owed": False,
     }
-    assert set(facts) - {"reply_owed", "outcome"} <= set(_narrator_state_dict(ctx))
+    assert not set(facts) & set(NARRATOR_HIDDEN_KEYS)
 
 
 def test_the_narrator_facts_say_when_a_reply_is_owed():

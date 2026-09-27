@@ -27,7 +27,6 @@ from typing import Any
 from fastapi import FastAPI
 
 from chessapp.api import (
-    _REACTION_BUDGET_S,
     create_app,
     narrator_facts,
     planner_board_refresh,
@@ -35,6 +34,7 @@ from chessapp.api import (
 from chessapp.brain import Brain
 from chessapp.context_capture import ContextCapture, JsonlContextCapture
 from chessapp.coordinator import TurnCoordinator
+from chessapp.deadline import NARRATION_BUDGET_S
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import _PLANNER_TEMPERATURE, create_llama_brain
@@ -209,7 +209,7 @@ def build_app(
                 base_url=llama_base_url,
                 client={
                     **(settings() if settings is not None else {}),
-                    "reaction_budget_s": _REACTION_BUDGET_S,
+                    "reaction_budget_s": NARRATION_BUDGET_S,
                 },
                 revision=app_revision(),
                 experiment=os.environ.get("CHESSAPP_EXPERIMENT", ""),

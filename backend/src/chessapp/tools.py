@@ -695,7 +695,7 @@ BOARD_STATE_TOOLS = (
 # `describe_position` is a read too, and is deliberately *not* in that tuple.
 # The four above are withheld because their answers already sit in the planner's
 # prompt; this one's consumer is the **narrator**, which is handed no board at
-# all (`api._narrator_state_dict`, #193). Its result is the only route by which
+# all (`api.narrator_facts`, #193). Its result is the only route by which
 # a description of the position reaches the phase that speaks — withhold it and
 # a "what's the position?" turn has nothing to describe from, which is how the
 # ask came back as an eval ("You're cooked") in the 2026-09-04 walkthrough.
@@ -1145,7 +1145,7 @@ def _position_summary(
     The same argument as `_move_summary`, one step further. That one exists
     because a 12B misreads structured data about a single move; this one exists
     because the narrator — the phase that actually speaks — is handed no board
-    at all (`api._narrator_state_dict`, #193), so until this tool there was no
+    at all (`api.narrator_facts`, #193), so until this tool there was no
     result whose content was a *description*. The structured keys stay on the
     payload for every other reader; this is the same facts in the one form the
     narrator cannot misread.
