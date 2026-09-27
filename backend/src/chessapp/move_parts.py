@@ -118,19 +118,21 @@ def _origin_filter(
 
 
 def fits(
-    board: chess.Board, piece: str, which: str | None = None, to: str | None = None
+    board: chess.Board,
+    piece: str | None = None,
+    which: str | None = None,
+    to: str | None = None,
+    takes: str | None = None,
 ) -> list[str]:
-    """SAN of every legal move of the side to move that moves `piece` (a name
-    from `PIECES`), from the one(s) `which` picks out, to `to` when given — in
-    `board.legal_moves` order. Castling is the king's move to its square."""
-    kind = PIECES.get(piece.strip().lower())
-    if kind is None:
-        raise PartsError(f"piece must be one of {', '.join(PIECES)}; got {piece!r}")
-    origins = (
-        _origin_filter(board, kind, which)
-        if which
-        else set(board.pieces(kind, board.turn))
-    )
+    """SAN of every legal move of the side to move that fits every part given:
+    it moves `piece` (a name from `PIECES`), one `which` picks out, to `to`,
+    capturing a `takes` — in `board.legal_moves` order. A part left out
+    narrows nothing. Castling is the king's move to its square."""
+    kind = _piece_type(piece, "piece") if piece else None
+    victim = _piece_type(takes, "takes") if takes else None
+    if which and kind is None:
+        raise PartsError("which needs the piece it picks out")
+    origins = _origin_filter(board, kind, which) if which and kind is not None else None
     target: chess.Square | None = None
     if to:
         try:
@@ -139,9 +141,28 @@ def fits(
             raise PartsError(f"to must be a square; got {to!r}") from None
     fitting = []
     for move in board.legal_moves:
-        if move.from_square not in origins:
+        if kind is not None and board.piece_type_at(move.from_square) != kind:
+            continue
+        if origins is not None and move.from_square not in origins:
             continue
         if target is not None and move.to_square != target:
             continue
+        if victim is not None and _captured(board, move) != victim:
+            continue
         fitting.append(board.san(move))
     return fitting
+
+
+def _piece_type(name: str, what: str) -> chess.PieceType:
+    kind = PIECES.get(name.strip().lower())
+    if kind is None:
+        raise PartsError(f"{what} must be one of {', '.join(PIECES)}; got {name!r}")
+    return kind
+
+
+def _captured(board: chess.Board, move: chess.Move) -> chess.PieceType | None:
+    if board.is_en_passant(move):
+        return chess.PAWN
+    if board.is_castling(move):
+        return None
+    return board.piece_type_at(move.to_square)

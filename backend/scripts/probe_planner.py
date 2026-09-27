@@ -283,6 +283,13 @@ CORPUS: tuple[Item, ...] = (
         note="frontier `undo_then_ambiguous_bishop`'s first turn, played 3/10",
     ),
     Item(
+        "take_pawn_two_ways",
+        "take the pawn",
+        ("e4", "e5", "Nf3", "Nc6", "d4", "exd4"),
+        ("asks_exactly", ["Nxd4", "Qxd4"]),
+        note="two captures of the one pawn: asked with both (#371)",
+    ),
+    Item(
         "take_pawn",
         "take the pawn",
         (),
@@ -641,14 +648,71 @@ def _parts_ask(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return definitions
 
 
+# `parts_ask2` adds what the move captures and makes every part optional, so a
+# capture ask ("take the pawn" with two ways to take it) can be put in parts,
+# and one on a board with nothing to take resolves to nothing (refused).
+# `parts_ask3` keeps the candidate list beside the parts for an ask that is not
+# about one piece ("castle" with both sides open).
+_PARTS2_PROPERTIES: dict[str, Any] = {
+    **copy.deepcopy(_PARTS_PROPERTIES),
+    "takes": {
+        "type": "string",
+        "enum": ["queen", "rook", "bishop", "knight", "pawn"],
+        "description": "The piece it captures, only if the player said to take one.",
+    },
+}
+_PARTS2_ASK_TEXT = (
+    "Ask the player to choose, when their words fit more than one legal move: "
+    '"move my king\'s knight", "push a pawn", "take the pawn". Give the '
+    "parts they said — the piece, which one, where to, what it takes — and "
+    "nothing they did not; the app works out the legal moves that fit and asks "
+    "with exactly those. Nothing moves."
+)
+_PARTS3_CANDIDATES: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "string"},
+    "minItems": 2,
+    "description": (
+        "Instead of parts, when the choice is not about one piece: every "
+        "legal_moves entry the player's words fit."
+    ),
+}
+
+
+def _parts_ask_v(with_candidates: bool):
+    def apply(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for d in definitions:
+            function = d["function"]
+            if function["name"] != "ask_player":
+                continue
+            properties = copy.deepcopy(_PARTS2_PROPERTIES)
+            if with_candidates:
+                candidates = copy.deepcopy(_PARTS3_CANDIDATES)
+                enum = function["parameters"]["properties"]["candidates"]["items"]
+                candidates["items"] = copy.deepcopy(enum)
+                properties["candidates"] = candidates
+            function["description"] = _PARTS2_ASK_TEXT
+            function["parameters"] = {"type": "object", "properties": properties}
+        return definitions
+
+    return apply
+
+
 TOOL_SCHEMAS["parts_tool"] = _parts_tool
+TOOL_SCHEMAS["parts_ask2"] = _parts_ask_v(with_candidates=False)
+TOOL_SCHEMAS["parts_ask3"] = _parts_ask_v(with_candidates=True)
 TOOL_SCHEMAS["parts_make_move"] = _parts_make_move
 TOOL_SCHEMAS["parts_ask"] = _parts_ask
 
 
+_PARTS = ("piece", "which", "to", "takes")
+
+
 def _by_parts(call: Call) -> bool:
     name, args = call["name"], call["args"]
-    if "piece" not in args:
+    if name == "ask_player" and "candidates" not in args:
+        return True
+    if not any(args.get(part) for part in _PARTS):
         return False
     return (
         name == MOVE_PIECE
@@ -664,10 +728,11 @@ def resolve(call: Call, session: GameSession) -> Call | None:
     if not _by_parts(call):
         return call
     args = call["args"]
+    parts = {part: str(args[part]) for part in _PARTS if args.get(part)}
+    if not parts:
+        return None
     try:
-        fitting = session.moves_fitting(
-            str(args["piece"]), args.get("which") or None, args.get("to") or None
-        )
+        fitting = session.moves_fitting(**parts)
     except ValueError:
         return None
     if not fitting:
@@ -759,9 +824,11 @@ def outcome_label(calls: Sequence[Call]) -> str:
         elif name == "undo" and "plies" in args:
             parts.append(f"undo(plies={args['plies']})")
         elif name == MOVE_PIECE or (
-            name in ("make_move", "ask_player") and "piece" in args
+            name in ("make_move", "ask_player")
+            and "candidates" not in args
+            and any(args.get(k) for k in _PARTS)
         ):
-            said = [str(args[k]) for k in ("piece", "which", "to") if args.get(k)]
+            said = [f"{k}={args[k]}" for k in _PARTS if args.get(k)]
             parts.append(f"{name}[{','.join(said)}]")
         elif name == "ask_player" and "candidates" in args:
             parts.append(f"ask_player({','.join(map(str, args['candidates']))})")

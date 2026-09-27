@@ -109,3 +109,25 @@ def test_the_session_answers_off_its_own_history():
         assert session.submit_move(san).legal
     assert all(san.startswith("N") for san in session.moves_fitting("knight", "kings"))
     assert "Nb5" not in session.moves_fitting("knight", "kings")
+
+
+def test_takes_narrows_to_captures_of_that_piece():
+    board = _board("e4", "e5", "Nf3", "Nc6", "d4", "exd4")
+    assert sorted(fits(board, takes="pawn")) == ["Nxd4", "Qxd4"]
+    assert fits(board, "knight", takes="pawn") == ["Nxd4"]
+    assert fits(board, takes="knight") == []
+    assert fits(chess.Board(), "pawn", takes="pawn") == []
+
+
+def test_en_passant_takes_a_pawn():
+    board = _board("e4", "a6", "e5", "d5")
+    assert "exd6" in fits(board, "pawn", takes="pawn")
+
+
+def test_which_needs_a_piece():
+    with pytest.raises(PartsError):
+        fits(chess.Board(), which="kings")
+
+
+def test_no_parts_is_every_legal_move():
+    assert len(fits(chess.Board())) == 20

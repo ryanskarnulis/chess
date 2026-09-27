@@ -529,15 +529,20 @@ class GameSession:
         return [self._board.san(move) for move in self._board.legal_moves]
 
     def moves_fitting(
-        self, piece: str, which: str | None = None, to: str | None = None
+        self,
+        piece: str | None = None,
+        which: str | None = None,
+        to: str | None = None,
+        takes: str | None = None,
     ) -> list[str]:
         """The legal moves, in SAN, of a move described by its parts
-        (`move_parts.fits`): the piece, which one, where to. Raises
+        (`move_parts.fits`): the piece, which one, where to, what it
+        takes. Raises
         `move_parts.PartsError` for an argument that is not a board term.
         Empty once the game is over, as `legal_moves` is."""
         if self.is_game_over():
             return []
-        return move_parts.fits(self._board, piece, which, to)
+        return move_parts.fits(self._board, piece, which, to, takes)
 
     def legal_captures(self) -> dict[str, str]:
         """What each legal capturing move takes, by SAN: `{"exd5": "pawn"}`.
