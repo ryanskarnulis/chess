@@ -307,6 +307,23 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-27 on the one-narrator tree (#369, roadmap #366 step 5: the
+reaction speaks from the handoff brief the loop closes with, one budget
+policy, one `narrator` phase). Only what the change can move was run, on an
+idle GPU: the brain route's brief is byte-identical (pinned by
+`test_the_loops_narration_brief_is_unchanged_by_the_merge`), so the gate's
+brain-route scenarios measure the same prompt. `long_capture` 5/5 ×3
+(fresh, live_like, poisoned), ABOVE_FLOOR STABLE, speech 3/3; the
+reaction scenarios `checkmate_reaction_survives_guard` 5/5 (reactions
+262–699 ms, median 373 ms), `fast_path_move_costs_one_call_when_chatty`
+passed (one cold-load sample, 5.5 s), `freeform_confirmation_answers` 5/5
+×3, `destructive_op_asks_before_acting` passed; speech 7/7 over 38 turns.
+The confirmed-op reaction the change was filed for has no gate scenario
+(they run at verbosity=low), so it was checked live on a scratch server with
+context capture: a drag, a spoken move, a confirmed `new_game` ("bet. fresh
+board, let's go.") and a resignation, reactions 876–1026 ms against the
+~1.1 s baseline. The #340 numbers stand as the baseline.**
+
 **Run 2026-09-27 on the retired-guard tree (#368, roadmap #366 step 4:
 the live honesty guard, its narrator rewrite and the advice licence removed;
 the gate's `_assert_not_guarded` replaced by `_assert_speech_backed`). Only
