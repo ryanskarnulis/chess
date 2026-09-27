@@ -1372,11 +1372,13 @@ def pgn_headers(ctx: ToolContext, session: GameSession | None = None) -> dict[st
 # rule code owns does not also live in the prompt. Written out as constants (rather
 # than one template) so the atomic text stays byte-for-byte what the schema
 # golden recorded; the wrapping is `inspect.getdoc`'s.
-_MAKE_MOVE_HOW = """Play the player's move: the `legal_moves` entry their words name, as SAN
-('Nf3') or UCI ('g1f3'). Map loose phrasing and voice slips onto it ("push the
-queen's bishop pawn one square" → 'c3', "e 4" → 'e4'). For "e4", "knight to
-f3", "take the pawn", "castle". A move that cannot be played is refused, and
-nothing moves."""
+_MAKE_MOVE_HOW = (
+    "Play the player's move: the `legal_moves` entry their words name, as SAN\n"
+    "('Nf3') or UCI ('g1f3'). Map loose phrasing and voice slips onto it (\"push the\n"
+    'queen\'s bishop pawn one square" → \'c3\', "e 4" → \'e4\'). For "e4", "knight to\n'
+    'f3", "take the pawn", "castle". A move that cannot be played is refused, and\n'
+    "nothing moves."
+)
 
 _MAKE_MOVE_ATOMIC_TAIL = (
     "The engine plays its reply inside the same call. If you proposed a\n"

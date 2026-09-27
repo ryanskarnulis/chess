@@ -13,11 +13,14 @@ not asking one call to do both jobs. The split cured the release-blocking
 
 - **The planner** is the bounded tool loop (`max_iterations` 4, separate
   correction budget, results fed back as `role: "tool"`, schema validation
-  before dispatch, domain rejections as results). It runs on a compact,
-  persona-free contract: the acting rules (board/engine own truth, map
-  phrasing onto `legal_moves`, ask between the legal moves that fit and refuse
-  a move no entry fits, omit optional args, read `retry` semantics, advice asks
-  route to `get_best_moves`). Its first
+  before dispatch, domain rejections as results). It runs on a short,
+  persona-free contract (#370): turn the player's words into tool calls; the
+  tools enforce the rules, and a failed result says how to fix it (`retry`);
+  never judge legality, submit the move asked for; ask between the legal moves
+  that fit (`ask_player`) or, when the intent is unclear, say what to ask; omit
+  optional args. What each tool does and which requests trigger it are in the
+  tool's own description, and `make_move`'s refusal says whether a corrected
+  call can still be the player's move (`fix`, `retry`). Its first
   tool-free turn ends the loop and is an internal handoff note — the planner
   never speaks to the player. Thinking stays off: picking a tool is a parse.
 - **The narrator** is one further call on the full Glitch prompt
@@ -100,8 +103,8 @@ it only *appends* — the assistant turn and one `role: "tool"` message per call
 so the KV prefix holds. Which meant that inside one command the planner's
 second decision was made against the first decision's `legal_moves`: "undo that
 and play e4 instead" asked it to submit a move its own list could not contain,
-while its contract says a move no entry fits is illegal and the answer is to
-say so. No tool result could close the gap — a mutation reports
+while its contract (before #370) said a move no entry fits is illegal and the
+answer is to say so. No tool result could close the gap — a mutation reports
 `fen`/`turn`/`engine_move` and never the menu, and it must not report the menu,
 because the same results are what the narrator speaks from (the reason
 `save_game` answers with a bare `board_version`).
