@@ -236,7 +236,19 @@ unbacked lines. All 24 were hand-labelled:
 
 Only the `unplayed_reply` lines are real. That is 7 of 24, all naming Glitch's
 own reply before it exists, which #365 removes. Discounting the other 17, the
-model's accuracy is 98.8% dev (339/343) and 99.1% held-out (345/348). The
-three scorer errors are #384, to fix in the reading before #368 leans on
-it. Until then, compare frontier speech rows as raw numbers, run to run on
-the same scorer.
+model's accuracy is 98.8% dev (339/343) and 99.1% held-out (345/348).
+
+The three scorer errors are fixed in the reading (#384), so the guard and the
+scorer still read alike: the ending class takes a spelled-out future (`will`,
+`gonna`, `going to`, never `'ll`) as a hedge, a won or lost *amount* ("lost
+like 817 centipawns", "won a pawn") is not a result, and `shoulda`/`coulda`/
+`woulda` hedge like `should`. Each line is in `test_honesty.py` verbatim. The
+recital stays scored as it is: telling "Nf3 Nc6, 3." from a report would take
+a parser for move-number notation, for three lines in one scenario.
+
+The frontier traces were not kept, so the snapshot is not re-run. On the
+fixed scorer the same run reads **dev 98.0% (336/343), held-out 99.1%
+(345/348)** by the labels above: 9 and 5 lines fewer unbacked. A frontier row
+from before #384 reads low by that much; compare later rows against these
+numbers, not the raw ones. The deployed trace rescores identically on both
+scorers (94.4%, 34/36, the two `verbosity_change` lies still unbacked).

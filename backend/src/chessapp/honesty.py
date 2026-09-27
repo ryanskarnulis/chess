@@ -35,17 +35,28 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 
+# What a won or lost *thing* looks like after the verb: an amount of material or
+# evaluation, not a game. "You lost like 817 centipawns there" is a review line
+# and "I won a pawn" is a trade; read as results, both were false endings in the
+# #340 frontier run (#384). "You lost." and "you lost that one" still are.
+_NOT_A_RESULT = r"""
+    (?! \s+ (?: (?: like | about | around | almost | nearly | over | roughly ) \s+ )?
+        (?: \d | an? \s | your \b | my \b | some \b | material \b | centipawns? \b
+          | (?: the \s+ )? (?: pawn | knight | bishop | rook | queen | exchange
+                             | tempo ) s? \b ) )
+"""
+
 # Unhedged assertions that the game just ended, or that a new one just began.
 # `resign` counts when it is inflected ("resigning now", "you resigned") or owned
 # by somebody ("I resign") — all of those report an event. A bare, unowned
 # "resign" is just the word, as in "want to resign?" or "never resign a won game".
 _CLAIMS = re.compile(
-    r"""
+    rf"""
     \b(?: game \s+ over
         | game \s+ (?: is |'s ) \s+ over
         | checkmate
         | (?: it | that ) (?: 's | \s+ is ) \s+ mate
-        | (?: i | you ) \s+ (?: win | won | lose | lost )
+        | (?: i | you ) \s+ (?: win | won | lose | lost ) \b {_NOT_A_RESULT}
         | resign (?: s | ed | ing )
         | (?: i | you ) \s+ resign
         | new \s+ game
@@ -61,6 +72,9 @@ _HEDGES = re.compile(
     \? | n't
     | \b(?: if | unless | when | once | almost | nearly | close \s+ to
           | not | no | never | yet | maybe | might | could | would | should
+          # The spoken counterfactuals: "you shoulda played Bxc4" is advice
+          # after the fact, and read as a report of the move (#384).
+          | shoulda | coulda | woulda
           | want | wanna | threat | threats | threatening | one \s+ more
           | about \s+ to | next \s+ move | avoid | prevent
           # Evaluative talk about how a position *looks*. A live position
@@ -98,6 +112,11 @@ _FUTURE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# The one tense the ending class does read: a spelled-out future. "Starting a
+# new game will end this one" is the reset gate's question, not a report that
+# the game ended (#384). `'ll` stays out, for the reason above.
+_ENDING_FUTURE = re.compile(r"\b(?: will | gonna | going \s+ to )\b", re.I | re.X)
+
 _SENTENCES = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -109,7 +128,9 @@ def claims_destructive_outcome(text: str) -> bool:
     while "oh shit. you actually have me in checkmate." claims plenty.
     """
     return any(
-        _CLAIMS.search(sentence) and not _HEDGES.search(sentence)
+        _CLAIMS.search(sentence)
+        and not _HEDGES.search(sentence)
+        and not _ENDING_FUTURE.search(sentence)
         for sentence in _SENTENCES.split(text)
     )
 
@@ -867,8 +888,9 @@ class _ClaimClass:
     """One kind of operational claim: how to spot it, and what makes it true.
 
     `hedges` is per class rather than global: the ending class is pinned to
-    the behavior the traces demanded of it and reads no tense at all (see
-    `_FUTURE`), and the capture class has a wrinkle of its own. The shared
+    the behavior the traces demanded of it and reads only a spelled-out future
+    (`_ENDING_FUTURE`, not `_FUTURE`), and the capture class has a wrinkle of
+    its own. The shared
     `_HEDGES` apply to every class on top of these.
     """
 
@@ -885,10 +907,11 @@ class _ClaimClass:
 # game — where who won and how are deterministic. The named groups are what
 # `_outcome_matches` reads: a termination word, or a subject and what it did.
 _OUTCOME = re.compile(
-    r"""
+    rf"""
     \b(?: (?P<kind> checkmate | stalemate )
         | (?: it | that ) (?: 's | \s+ is ) \s+ (?P<mate> mate )
         | (?P<subject> i | you ) \s+ (?P<verb> win | won | lose | lost )
+            \b {_NOT_A_RESULT}
         | (?P<resigner> i | you ) \s+ (?P<resign> resign (?: ed | s )? )
         | (?P<resigned> resign (?: s | ed | ing ) )
     )\b
@@ -945,7 +968,9 @@ def _outcome_matches(match: re.Match[str], facts: VerifiedFacts) -> bool:
 # finished-game commentary and the deployed-trace sweep in docs/agent-evals.md —
 # taken before it shipped.
 _CLAIM_CLASSES = (
-    _ClaimClass("ending", _CLAIMS, lambda match, facts: facts.ended, hedges=None),
+    _ClaimClass(
+        "ending", _CLAIMS, lambda match, facts: facts.ended, hedges=_ENDING_FUTURE
+    ),
     _ClaimClass("draw", _DRAW, lambda match, facts: facts.drawn),
     _ClaimClass("outcome", _OUTCOME, _outcome_matches),
     _ClaimClass("capture", _CAPTURE, _capture_happened, hedges=_CAPTURE_HEDGES),

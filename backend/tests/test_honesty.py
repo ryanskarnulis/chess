@@ -47,6 +47,9 @@ from chessapp.honesty import (
         "Fresh board. New game.",
         "Alright, I've started a new game.",
         "the game is over",
+        # A result with its object still reads as one (#384 narrowed the verb).
+        "You lost.",
+        "you lost the game, bro",
     ],
 )
 def test_an_asserted_ending_is_a_claim(text):
@@ -85,6 +88,11 @@ def test_a_near_miss_spoken_as_a_distance_is_not_a_claim(text):
         "Not checkmate yet.",
         "This is not game over — you still have the exchange.",
         "Mate threats everywhere, but you're not dead.",
+        # The #340 frontier run, verbatim (#384): the reset gate's question, a
+        # review's lost evaluation, and a trade.
+        "Yo, starting a new game will end this one.",
+        "you lost like 817 centipawns there",
+        "I won a pawn, you lost the exchange.",
         "",
     ],
 )
@@ -809,6 +817,8 @@ def test_an_unattributed_move_mention_is_still_the_wider_set():
         "I'm going to play Nf3.",
         "You could have played Nc6.",
         "You should have played Nc6.",
+        # The #340 frontier run, verbatim (#384).
+        "you shoulda played Bxc4",
         "Did you play Nf3?",
         "If I play Nf3 you're in trouble.",
     ],
