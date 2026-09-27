@@ -184,14 +184,17 @@ CORPUS: tuple[Item, ...] = (
         "rook_ask",
         "move the rook",
         ("a4", "a5", "h4", "h5"),
-        ("asks",),
+        ("asks_exactly", ["Ra2", "Ra3", "Rh2", "Rh3"]),
         note="four rook moves fit; `ambiguous_move`'s position",
     ),
     Item(
         "bishop_ask",
         "move the bishop",
         ("e4", "e5", "d4", "d5"),
-        ("asks",),
+        (
+            "asks_exactly",
+            ["Ba6", "Bb5+", "Bc4", "Bd2", "Bd3", "Be2", "Be3", "Bf4", "Bg5", "Bh6"],
+        ),
         held_out=True,
         note="both bishops mobile; held out of arm design",
     ),
@@ -199,7 +202,7 @@ CORPUS: tuple[Item, ...] = (
         "castle_both",
         "castle",
         _CASTLE_BOTH,
-        ("asks",),
+        ("asks_exactly", ["O-O", "O-O-O"]),
         held_out=True,
         note="O-O and O-O-O both legal; held out of arm design",
     ),
@@ -214,21 +217,21 @@ CORPUS: tuple[Item, ...] = (
         "king_pawn_ask",
         "move the pawn in front of my king",
         (),
-        ("asks",),
+        ("asks_exactly", ["e3", "e4"]),
         note="e3 and e4 fit; the heldout wording of `pawn_ask`",
     ),
     Item(
         "pawn_forward_ask",
         "move my king's pawn forward",
         (),
-        ("asks",),
+        ("asks_exactly", ["e3", "e4"]),
         note="the same pawn ask with a direction word: e4 10/10 on control",
     ),
     Item(
         "pawn_advance_ask",
         "advance the pawn on e2",
         (),
-        ("asks",),
+        ("asks_exactly", ["e3", "e4"]),
         note="the same pawn ask naming its square: e3 10/10 on control",
     ),
     Item(
@@ -242,7 +245,7 @@ CORPUS: tuple[Item, ...] = (
         "queen_ask",
         "move my queen",
         ("e4", "e5"),
-        ("asks",),
+        ("asks_exactly", ["Qe2", "Qf3", "Qg4", "Qh5"]),
         note="four queen moves fit, none of them legal_moves[0] or [1] (#352)",
     ),
     # #371: the ask with exactly the moves that fit, not every move of the
@@ -698,6 +701,55 @@ def _parts_ask_v(with_candidates: bool):
     return apply
 
 
+# Round 3. `parts_ask4` is v3 with a description that says which form each
+# kind of ask takes: a named piece in parts, castling or a capture as a list.
+# `parts_ask5` is parts only, with a castling part, and says what to give for
+# a capture ("take the pawn" is takes, no piece).
+_PARTS4_ASK_TEXT = (
+    "Ask the player to choose, when their words fit more than one legal move. "
+    "Nothing moves; the question goes to the player.\n"
+    '- They named a piece but not its move ("move my king\'s knight", '
+    '"push the e pawn", "get my bishop out"): give only the parts they '
+    "said — piece, which one, where to — and the app asks with exactly the "
+    "moves that fit.\n"
+    '- Castling or a capture ("castle", "take the pawn"): give '
+    "`candidates`, every legal_moves entry that fits."
+)
+_PARTS5_ASK_TEXT = (
+    "Ask the player to choose, when their words fit more than one legal move. "
+    "Nothing moves; the question goes to the player. Give only the parts they "
+    "said and the app asks with exactly the moves that fit: \"move my king's "
+    'knight" is piece and which; "push the e pawn" is piece and which; '
+    '"take the pawn" is takes, with no piece; "castle" is castle.'
+)
+_CASTLE_PART = {
+    "type": "boolean",
+    "description": "True when the player asked to castle.",
+}
+
+
+def _parts_ask4(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    definitions = _parts_ask_v(with_candidates=True)(definitions)
+    for d in definitions:
+        function = d["function"]
+        if function["name"] == "ask_player":
+            function["description"] = _PARTS4_ASK_TEXT
+            function["parameters"]["properties"].pop("takes", None)
+    return definitions
+
+
+def _parts_ask5(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    definitions = _parts_ask_v(with_candidates=False)(definitions)
+    for d in definitions:
+        function = d["function"]
+        if function["name"] == "ask_player":
+            function["description"] = _PARTS5_ASK_TEXT
+            function["parameters"]["properties"]["castle"] = copy.deepcopy(_CASTLE_PART)
+    return definitions
+
+
+TOOL_SCHEMAS["parts_ask4"] = _parts_ask4
+TOOL_SCHEMAS["parts_ask5"] = _parts_ask5
 TOOL_SCHEMAS["parts_tool"] = _parts_tool
 TOOL_SCHEMAS["parts_ask2"] = _parts_ask_v(with_candidates=False)
 TOOL_SCHEMAS["parts_ask3"] = _parts_ask_v(with_candidates=True)
@@ -705,7 +757,7 @@ TOOL_SCHEMAS["parts_make_move"] = _parts_make_move
 TOOL_SCHEMAS["parts_ask"] = _parts_ask
 
 
-_PARTS = ("piece", "which", "to", "takes")
+_PARTS = ("piece", "which", "to", "takes", "castle")
 
 
 def _by_parts(call: Call) -> bool:
@@ -728,7 +780,11 @@ def resolve(call: Call, session: GameSession) -> Call | None:
     if not _by_parts(call):
         return call
     args = call["args"]
-    parts = {part: str(args[part]) for part in _PARTS if args.get(part)}
+    parts: dict[str, Any] = {
+        part: args[part] if part == "castle" else str(args[part])
+        for part in _PARTS
+        if args.get(part)
+    }
     if not parts:
         return None
     try:

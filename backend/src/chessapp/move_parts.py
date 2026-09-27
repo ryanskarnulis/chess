@@ -88,7 +88,9 @@ def _origin_filter(
 ) -> set[chess.Square]:
     """The squares of the player's `piece`s that `which` picks out."""
     own = board.pieces(piece, board.turn)
-    which = which.strip().lower()
+    # The side's own spelling, apostrophe or not ("king's" is `kings`): the
+    # tool's vocabulary, not the player's words.
+    which = which.strip().lower().replace("'", "").replace("\u2019", "")
     if which in (KINGS_SIDE, QUEENS_SIDE):
         started = starting_squares(board) if board.move_stack else {}
         return {
@@ -123,11 +125,13 @@ def fits(
     which: str | None = None,
     to: str | None = None,
     takes: str | None = None,
+    castle: bool = False,
 ) -> list[str]:
     """SAN of every legal move of the side to move that fits every part given:
     it moves `piece` (a name from `PIECES`), one `which` picks out, to `to`,
-    capturing a `takes` — in `board.legal_moves` order. A part left out
-    narrows nothing. Castling is the king's move to its square."""
+    capturing a `takes`, castling when `castle` — in `board.legal_moves`
+    order. A part left out narrows nothing. Castling is the king's move to its
+    square."""
     kind = _piece_type(piece, "piece") if piece else None
     victim = _piece_type(takes, "takes") if takes else None
     if which and kind is None:
@@ -148,6 +152,8 @@ def fits(
         if target is not None and move.to_square != target:
             continue
         if victim is not None and _captured(board, move) != victim:
+            continue
+        if castle and not board.is_castling(move):
             continue
         fitting.append(board.san(move))
     return fitting

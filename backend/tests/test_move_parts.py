@@ -131,3 +131,17 @@ def test_which_needs_a_piece():
 
 def test_no_parts_is_every_legal_move():
     assert len(fits(chess.Board())) == 20
+
+
+def test_castle_is_the_castling_moves():
+    board = _board(
+        "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "d3", "d6",
+        "Be3", "Be6", "Nc3", "Nf6", "Qd2", "Qd7",
+    )  # fmt: skip
+    assert sorted(fits(board, castle=True)) == ["O-O", "O-O-O"]
+    assert fits(chess.Board(), castle=True) == []
+
+
+def test_the_side_may_be_spelled_with_its_apostrophe():
+    assert sorted(fits(chess.Board(), "knight", "king's")) == ["Nf3", "Nh3"]
+    assert sorted(fits(chess.Board(), "pawn", "Queen’s")) == ["d3", "d4"]

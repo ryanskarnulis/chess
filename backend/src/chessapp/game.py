@@ -534,15 +534,16 @@ class GameSession:
         which: str | None = None,
         to: str | None = None,
         takes: str | None = None,
+        castle: bool = False,
     ) -> list[str]:
         """The legal moves, in SAN, of a move described by its parts
         (`move_parts.fits`): the piece, which one, where to, what it
-        takes. Raises
+        takes, whether it castles. Raises
         `move_parts.PartsError` for an argument that is not a board term.
         Empty once the game is over, as `legal_moves` is."""
         if self.is_game_over():
             return []
-        return move_parts.fits(self._board, piece, which, to, takes)
+        return move_parts.fits(self._board, piece, which, to, takes, castle)
 
     def legal_captures(self) -> dict[str, str]:
         """What each legal capturing move takes, by SAN: `{"exd5": "pawn"}`.
