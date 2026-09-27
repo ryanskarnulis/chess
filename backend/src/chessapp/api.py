@@ -101,14 +101,14 @@ from chessapp.brain import (
     CANCEL,
     CONFIRM,
     PHASE_ANSWER,
-    PHASE_REACTION,
+    PHASE_NARRATOR,
     PHASE_UNKNOWN,
     Brain,
     ModelCall,
     Narration,
 )
 from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
-from chessapp.deadline import LateReaction
+from chessapp.deadline import NARRATION_BUDGET_S, LateReaction
 from chessapp.deadline import within_budget as _within_budget
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.facts import (
@@ -568,35 +568,6 @@ def _agent_settings_dict(ctx: ToolContext) -> dict[str, Any]:
     }
 
 
-def _narrator_state_dict(ctx: ToolContext) -> dict[str, Any]:
-    """The view the narrator speaks from: the agent view minus every spelling
-    of "it is your move" — no `turn`, no `legal_moves`, and no `fen`, whose
-    string itself names the side to move.
-
-    The narrator reacts mid-turn, from the board the player's move just left —
-    a board where it is the engine's move and the legal moves are the engine's
-    options. Handed that as data, it treats the reaction beat as a
-    move-selection beat: #188 cut "you are playing black" from the brief and
-    the next game announced a reply all the same ("My turn. ...Be6.", #193),
-    because `turn` beside `player_color` says the same thing in JSON and
-    `legal_moves` is the menu to pick from. What commentary actually uses
-    stays: the game so far, which color the player is (capture talk needs its
-    direction), the captures, the outcome once there is one, and the saves and
-    settings it may be asked about. The planner keeps the full view — mapping
-    an utterance onto a move is what `legal_moves` exists for.
-
-    Derived by deletion rather than built up, so the two views cannot drift
-    apart on the facts they share; the deletion list is the invariant.
-    """
-    state = _agent_state_dict(ctx)
-    # `captures` goes with `legal_moves`: it is the same menu, narrowed to the
-    # moves that take something, and a menu is exactly what the narrator must
-    # not be handed.
-    for key in ("fen", "turn", "legal_moves", "captures"):
-        del state[key]
-    return state
-
-
 # What a mid-command refresh carries: the menu, and the facts that say whose it
 # is and whether there is one. Named against `_agent_state_dict`'s keys rather
 # than re-derived from the session, so the block that supersedes the opening one
@@ -685,7 +656,7 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
     narrator's words will be spoken over. Until this existed the brain route's
     narrator had no board at all, only whatever the tool results carried.
 
-    A subset of `_narrator_state_dict`, and deliberately a small one. No side
+    The agent view cut down, and deliberately a small one. No side
     to move, for #193's reason. No `history`, for the refresh block's reason
     one phase earlier: a history the turn's own undo has just shortened reads
     to a 12B as the ask being finished, and every move this turn made is in
@@ -925,24 +896,16 @@ def _engine_lost_words(commentary: str) -> str:
 
 
 # How long the app waits for Glitch's *optional* words before going on without
-# them (#283). The reaction is optional by construction — the coordinator starts
-# Stockfish the moment the player's move lands and collecting the reply is legal
-# with or without a narration — but until this it was only optional in the sense
-# that it could be *skipped*, never that it could be *late*: the reply was
-# applied after the words came back, so a stalled narrator held an answer already
+# them (#283): `deadline.NARRATION_BUDGET_S`, the one narration budget (#369),
+# because every beat that narrates here holds something — a computed engine
+# reply, or the mutation lock a confirmed op or resignation holds. The
+# reaction is optional by construction — the coordinator starts Stockfish the
+# moment the player's move lands and collecting the reply is legal with or
+# without a narration — but until #283 it was only optional in the sense that
+# it could be *skipped*, never that it could be *late*: the reply was applied
+# after the words came back, so a stalled narrator held an answer already
 # sitting in memory and, with it, the mutation lock every other road onto the
-# board waits on.
-#
-# Measured rather than derived from the token cap, which bounds generation and
-# not queueing or a dead server. Across 58 observe beats in the deployed trace
-# (routes `fast_path` and `board`, one thinking-off narrator call each) the
-# reaction took 0.7–2.1 s, median ~1.5 s, with a single 7.5 s outlier. Ten
-# seconds is above every reaction ever observed with room for the shared GPU
-# having a bad minute, and still far below the point where a player decides the
-# board is frozen. A cold llama-swap load (~100 s to first byte, first move
-# after a reboot) is over it and loses that one reaction to the app's own line;
-# hanging up does not unload the upstream, so the next turn is warm.
-_REACTION_BUDGET_S = 10.0
+# board waits on. The measurements behind the number live with it.
 
 
 def _failure_name(exc: BaseException) -> str:
@@ -1022,7 +985,7 @@ class _MoveBeats:
     record's way of saying "did not die" rather than "not recorded", the same
     as the trace's `provider_failure`.
 
-    `reaction_late` marks the beat the budget cut (`_REACTION_BUDGET_S`): the
+    `reaction_late` marks the beat the budget cut (`deadline.NARRATION_BUDGET_S`): the
     words were still being written when the turn went on without them. False
     on a beat that spoke, on one a provider failure killed, and on one that
     never ran — the player hears the same deterministic line on three of those
@@ -1458,7 +1421,7 @@ def create_app(
     tracer: Tracer | None = None,
     coordinator: TurnCoordinator | None = None,
     progress: ProgressReporter | None = None,
-    reaction_budget: float = _REACTION_BUDGET_S,
+    reaction_budget: float = NARRATION_BUDGET_S,
     serving_identity: Callable[[], dict[str, str]] | None = None,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
@@ -1481,7 +1444,7 @@ def create_app(
     the brain's own two phases go unheard.
 
     `reaction_budget` is how many seconds Glitch's optional words get before the
-    turn goes on without them (`_REACTION_BUDGET_S`, and see `_narrate`). A
+    turn goes on without them (`deadline.NARRATION_BUDGET_S`, and see `_narrate`). A
     parameter so a test can hand it a fraction of a second instead of sleeping
     through the real one.
 
@@ -1677,8 +1640,13 @@ def create_app(
         changes: list[dict[str, Any]],
         transcript: Sequence[dict[str, str]],
         correlation_id: str,
+        command: str = "",
     ) -> Narration:
         """Glitch's words for one beat, or `LateReaction` if they are late.
+
+        `board_state` is `narrator_facts`, the view the loop's own narration
+        reads, and `command` the player's words when there were any (a board
+        drag has none): one narrator, one input shape (#369).
 
         Every narration in the app goes through here, so the budget is a rule
         rather than a special case at the one site that exposed it: the observe
@@ -1695,7 +1663,9 @@ def create_app(
         assert brain is not None  # every narration site is agent-mode only
         try:
             return _within_budget(
-                lambda: brain.narrate(board_state, changes, transcript),
+                lambda: brain.narrate(
+                    board_state, changes, transcript, command=command
+                ),
                 reaction_budget,
             )
         except LateReaction:
@@ -1809,7 +1779,10 @@ def create_app(
             broadcaster.disconnect(websocket)
 
     def _play_move(
-        move: str, transcript: Sequence[dict[str, str]], correlation_id: str
+        move: str,
+        transcript: Sequence[dict[str, str]],
+        correlation_id: str,
+        command: str = "",
     ) -> _MoveBeats:
         """One move through the coordinator's beats: apply, observe, close.
 
@@ -1857,9 +1830,13 @@ def create_app(
             started = time.monotonic()
             try:
                 narration = _narrate(
-                    _narrator_state_dict(ctx), changes, transcript, correlation_id
+                    narrator_facts(ctx, coordinator),
+                    changes,
+                    transcript,
+                    correlation_id,
+                    command,
                 )
-                cost = _ModelCost.of(narration, PHASE_REACTION)
+                cost = _ModelCost.of(narration, PHASE_NARRATOR)
                 # Kept only once something was actually said from it: this is
                 # "the board the reaction was written from", and a beat the
                 # provider killed wrote no reaction. Read off the session,
@@ -1875,11 +1852,11 @@ def create_app(
                 # one or a skipped one.
                 reaction_late = True
                 cost = _ModelCost.failed(
-                    started, PHASE_REACTION, exc, budget_s=reaction_budget
+                    started, PHASE_NARRATOR, exc, budget_s=reaction_budget
                 )
             except ProviderError as exc:
                 cost = _ModelCost.failed(
-                    started, PHASE_REACTION, exc, budget_s=reaction_budget
+                    started, PHASE_NARRATOR, exc, budget_s=reaction_budget
                 )
                 logger.warning(
                     "observe_narration_failed",
@@ -2836,10 +2813,11 @@ def create_app(
                             try:
                                 narration = await _offloop(
                                     _narrate,
-                                    _narrator_state_dict(ctx),
+                                    narrator_facts(ctx, coordinator),
                                     tool_results,
                                     transcript,
                                     correlation_id,
+                                    text,
                                 )
                             except ProviderError as exc:
                                 # Late words and lost words cost the same thing
@@ -2850,7 +2828,7 @@ def create_app(
                                 cost = cost.plus(
                                     _ModelCost.failed(
                                         started,
-                                        PHASE_REACTION,
+                                        PHASE_NARRATOR,
                                         exc,
                                         budget_s=reaction_budget,
                                     )
@@ -2865,7 +2843,7 @@ def create_app(
                             else:
                                 commentary = narration.text
                                 cost = cost.plus(
-                                    _ModelCost.of(narration, PHASE_REACTION)
+                                    _ModelCost.of(narration, PHASE_NARRATOR)
                                 )
                     else:
                         # Declined: nothing ran, so there is nothing to narrate from.
@@ -2875,7 +2853,7 @@ def create_app(
                     # what differs between the two routes, never the sequencing.
                     route = ROUTE_FAST_PATH
                     move_beats = await _offloop(
-                        _play_move, fast_san, transcript, correlation_id
+                        _play_move, fast_san, transcript, correlation_id, text
                     )
                     tool_results.extend(move_beats.changes)
                     tool_args.append({"move": fast_san})
@@ -2919,10 +2897,11 @@ def create_app(
                         try:
                             narration = await _offloop(
                                 _narrate,
-                                _narrator_state_dict(ctx),
+                                narrator_facts(ctx, coordinator),
                                 tool_results,
                                 transcript,
                                 correlation_id,
+                                text,
                             )
                         except ProviderError as exc:
                             # Same deal as the confirmed op above: the
@@ -2932,7 +2911,7 @@ def create_app(
                             cost = cost.plus(
                                 _ModelCost.failed(
                                     started,
-                                    PHASE_REACTION,
+                                    PHASE_NARRATOR,
                                     exc,
                                     budget_s=reaction_budget,
                                 )
@@ -2944,7 +2923,7 @@ def create_app(
                             )
                         else:
                             commentary = narration.text
-                            cost = cost.plus(_ModelCost.of(narration, PHASE_REACTION))
+                            cost = cost.plus(_ModelCost.of(narration, PHASE_NARRATOR))
                 else:
                     route = ROUTE_BRAIN
                     response = await _offloop(

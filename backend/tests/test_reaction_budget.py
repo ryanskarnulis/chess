@@ -31,7 +31,6 @@ from fastapi.testclient import TestClient
 
 from chessapp import api
 from chessapp.api import (
-    _REACTION_BUDGET_S,
     PROVIDER_LOST_TURN_STANDS,
     STUCK_REPLY,
     _late_close_words,
@@ -39,6 +38,7 @@ from chessapp.api import (
 )
 from chessapp.brain import AgentResponse, Narration
 from chessapp.coordinator import TurnCoordinator, TurnPhase
+from chessapp.deadline import NARRATION_BUDGET_S
 from chessapp.game import GameSession, MoveResult
 from chessapp.llama_brain import _NARRATE_TIMEOUT, LlamaBrain
 from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
@@ -76,7 +76,7 @@ class SlowNarrator(ScriptedBrain):
         self.release = threading.Event()
         self.finished = threading.Event()
 
-    def narrate(self, board_state, changes, transcript=()):
+    def narrate(self, board_state, changes, transcript=(), *, command=""):
         self.narrate_calls.append((board_state, changes))
         self.entered.set()
         self.release.wait(timeout=PATIENCE)
@@ -238,12 +238,12 @@ def test_a_reaction_inside_the_budget_is_spoken_exactly_as_ever():
 
 
 def test_the_budget_clears_every_reaction_the_deployed_app_has_measured():
-    """The number is measured, not guessed (`api._REACTION_BUDGET_S`): across 58
+    """The number is measured, not guessed (`deadline.NARRATION_BUDGET_S`): across 58
     observe beats in the deployed trace the reaction took 0.7–2.1 s, median
     ~1.5 s, with one 7.5 s outlier. The floor this may never sink under is that
     worst observed beat — cutting a healthy reaction is the failure this fix is
     not allowed to trade for."""
-    assert _REACTION_BUDGET_S >= 7.5
+    assert NARRATION_BUDGET_S >= 7.5
 
 
 def test_the_narrators_own_read_ceiling_clears_the_pipelines_budget():
@@ -251,7 +251,7 @@ def test_the_narrators_own_read_ceiling_clears_the_pipelines_budget():
     stops waiting and plays the reply; the brain's socket ceiling is the
     backstop underneath it that ends the abandoned round trip, so a
     llama-server slot is not held for words nobody will hear."""
-    assert _NARRATE_TIMEOUT > _REACTION_BUDGET_S
+    assert _NARRATE_TIMEOUT > NARRATION_BUDGET_S
 
 
 # --- the record -------------------------------------------------------------
@@ -308,7 +308,7 @@ def test_a_late_reaction_is_still_a_call_on_the_turn(tmp_path, slow):
     # #317: the call says which beat it was, that it was cut rather than
     # failed, and what its censored reading was censored at.
     (call,) = record["calls"]
-    assert call["phase"] == "reaction"
+    assert call["phase"] == "narrator"
     assert call["status"] == "late"
     assert call["budget_ms"] == round(BUDGET * 1000)
     assert call["failure"] == ""
@@ -532,7 +532,7 @@ def test_the_trace_records_one_late_brain_turn(tmp_path, blocked):
     assert [(c["phase"], c["status"]) for c in record["calls"]] == [
         ("planner", "ok"),
         ("planner", "ok"),
-        ("closer", "late"),
+        ("narrator", "late"),
     ]
     assert record["calls"][-1]["budget_ms"] == round(BUDGET * 1000)
     assert record["planning"]["deadline_ms"] is not None

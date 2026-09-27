@@ -171,6 +171,7 @@ class ScriptedBrain:
         self.narrate_calls: list[tuple[dict, list]] = []
         self.transcripts: list[list] = []
         self.narrate_transcripts: list[list] = []
+        self.narrate_commands: list[str] = []
 
     def get_agent_response(
         self, board_state: dict, command: str, transcript=()
@@ -196,8 +197,11 @@ class ScriptedBrain:
         # the cost fields the trace reads.
         return scripted if isinstance(scripted, Answer) else Answer(verdict=scripted)
 
-    def narrate(self, board_state: dict, changes: list, transcript=()) -> Narration:
+    def narrate(
+        self, board_state: dict, changes: list, transcript=(), *, command: str = ""
+    ) -> Narration:
         self.narrate_calls.append((board_state, changes))
+        self.narrate_commands.append(command)
         self.narrate_transcripts.append(list(transcript))
         scripted = self._narrations.pop(0) if self._narrations else "(commentary)"
         if isinstance(scripted, Exception):

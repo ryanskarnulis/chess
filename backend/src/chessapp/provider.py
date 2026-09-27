@@ -305,7 +305,7 @@ class ChatProvider(Protocol):
 
     `timeout` is the same shape of per-request override for how long this one
     call may take: a phase whose words the app will stop waiting for
-    (`api._REACTION_BUDGET_S`) has no use for a round trip that outlives the
+    (`deadline.NARRATION_BUDGET_S`) has no use for a round trip that outlives the
     turn it was for, and hanging up is what frees the server's slot for the
     next one. `None` is the client's configured read timeout, which is what
     every phase that is worth waiting for still sends.

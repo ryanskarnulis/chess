@@ -26,8 +26,8 @@ those `candidates`. A turn that called nothing at all is `reply`.
 every narrator brief. `undo`, `new_game` and `resume_game` answer with `fen`
 and `turn` — right for the planner, which decides from the board — and a
 narrator handed `turn` beside `player_color` treats its reaction as a
-move-selection beat (#193). The fast path's state view already withheld those
-keys (`api._narrator_state_dict`); the results did not, on either route.
+move-selection beat (#193). The narrator's state view already withheld those
+keys (`api.narrator_facts`); the results did not, on either route.
 
 Pure: no session, no I/O. Everything here is decided from its arguments.
 """
@@ -40,8 +40,8 @@ from typing import Any, Literal
 # What the narrator is never handed, in a state view or in a tool result: every
 # spelling of "it is your move". `turn` and `fen` name the side to move (the
 # FEN string does it in its second field), and `legal_moves` / `captures` are
-# the menu to pick from. `api._narrator_state_dict` deletes the same four, and
-# a test pins that the two lists agree.
+# the menu to pick from. `api.narrator_facts` carries none of the four, and
+# a test pins that.
 NARRATOR_HIDDEN_KEYS = ("fen", "turn", "legal_moves", "captures")
 
 # The tools that only read. Anything else that answers `ok: true` changed
@@ -217,7 +217,9 @@ def _refs(entries: Sequence[Entry]) -> str:
 def render(
     handoff: Handoff, command: str, tool_results: Sequence[Mapping[str, Any]]
 ) -> str:
-    """The narrator's brief for a turn the planner just finished.
+    """The narrator's brief, for every turn (#369): one the planner just
+    finished, and one the loop never ran (a fast-path move, a board drag, a
+    confirmed op), which has no note and may have no words.
 
     The results come first and carry ids, and the sorted lines point at them:
     "Done this turn" is the record of what changed, and when nothing did it
@@ -225,7 +227,15 @@ def render(
     what it is. The closing instruction speaks from the record and the facts;
     the note is context for understanding the ask, not a source of claims.
     """
-    parts = [f"The player said:\n{command}"]
+    # A board drag has no words. Said outright, because "Done this turn" with
+    # no ask above it reads to a 12B as "I did" — live, Glitch once narrated
+    # the player's capture as his own (#193).
+    parts = [
+        f"The player said:\n{command}"
+        if command
+        else "The player acted on the board without saying anything: "
+        "what was done this turn, the player did."
+    ]
     if tool_results:
         listed = "\n".join(
             f"#{ref} {json.dumps(narrator_result_view(entry))}"

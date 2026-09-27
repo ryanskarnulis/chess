@@ -604,7 +604,7 @@ def test_new_game_rejects_invalid_player_color():
 # --- piece placement and castling: the derivations a description reads ----
 #
 # Both feed `tools.describe_position`, which is the only route a description of
-# the board takes to the phase that speaks (`api._narrator_state_dict` hands the
+# the board takes to the phase that speaks (`api.narrator_facts` hands the
 # narrator no FEN). So they are board truth like everything else here: read off
 # the position, or replayed off the move stack — never tracked alongside it.
 

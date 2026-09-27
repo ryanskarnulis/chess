@@ -4,6 +4,7 @@ the brief it renders. Pure functions over result dicts — no brain, no app."""
 import pytest
 
 from chessapp import api
+from chessapp.coordinator import TurnCoordinator
 from chessapp.game import GameSession
 from chessapp.handoff import (
     NARRATOR_HIDDEN_KEYS,
@@ -95,12 +96,12 @@ def test_every_registered_tool_is_classified_as_a_read_or_not():
 
 
 def test_the_projection_hides_what_the_state_view_hides():
-    """One deletion list for both narrator views: the fast path's state dict
-    and every result a narrator reads (#193, #289)."""
+    """One list of what a narrator never reads: in the facts every narration
+    is handed, and in every result it reads (#193, #289, #369)."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine())
-    agent = api._agent_state_dict(ctx)
-    narrator = api._narrator_state_dict(ctx)
-    assert set(agent) - set(narrator) == set(NARRATOR_HIDDEN_KEYS)
+    facts = api.narrator_facts(ctx, TurnCoordinator(ctx))
+    assert set(NARRATOR_HIDDEN_KEYS) <= set(api._agent_state_dict(ctx))
+    assert not set(facts) & set(NARRATOR_HIDDEN_KEYS)
 
 
 def test_the_projection_drops_the_side_to_move_and_keeps_the_rest():

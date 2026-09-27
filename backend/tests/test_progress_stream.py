@@ -296,7 +296,9 @@ class BlockingBrain:
         assert self.release.wait(5), "test never released the brain"
         return AgentResponse(text="Done.")
 
-    def narrate(self, board_state, changes, transcript=()):  # pragma: no cover
+    def narrate(
+        self, board_state, changes, transcript=(), *, command=""
+    ):  # pragma: no cover
         raise AssertionError("this route never narrates")
 
     def read_answer(self, question, text):  # pragma: no cover

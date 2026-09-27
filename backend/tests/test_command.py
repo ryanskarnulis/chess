@@ -543,9 +543,10 @@ def test_fast_path_narrates_from_the_new_state():
     client, brain, _ = make_fast_client(narrations=("Classic.",))
     body = client.post("/api/command", json={"text": "e4"}).json()
     state, changes = brain.narrate_calls[0]
-    assert state["history"] == ["e4"]
+    assert state["reply_owed"] is True
     assert state["player_color"] == "white"
     assert changes == body["tool_results"]
+    assert brain.narrate_commands == ["e4"], "the player's words reach it (#369)"
 
 
 def test_low_verbosity_fast_move_is_a_zero_llm_turn():
@@ -670,7 +671,7 @@ def test_the_observation_reacts_to_the_player_move_alone():
 
     assert len(brain.narrate_calls) == 1
     state, changes = brain.narrate_calls[0]
-    assert state["history"] == ["e4"], "the engine has not replied yet"
+    assert state["reply_owed"] is True, "the engine has not replied yet"
     result = changes[0]["result"]
     assert result["san"] == "e4"
     assert "engine_move" not in result

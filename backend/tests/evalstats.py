@@ -461,12 +461,13 @@ _WHOLE_TURN = slice(None)
 
 # The phase tags a schema-2 trace puts on each call (`brain.PHASE_*`, #317),
 # restated here as strings because this module reads records, not the app. The
-# narrator's phases are the closer, a narrate route's reaction and, on records
-# from before #368, the honesty guard's rewrite — the same persona call. The
+# narrator's phase is `narrator` (#369); records from before it say `closer`
+# for the loop's narration and `reaction` for a narrate route's, and records
+# from before #368 add the honesty guard's `rewrite` — the same persona call. The
 # reader (`answer`) is neither phase, which is exactly the call the positional
 # rule could never place.
 _PLANNER_PHASE = "planner"
-_NARRATOR_PHASES = frozenset({"closer", "reaction", "rewrite"})
+_NARRATOR_PHASES = frozenset({"narrator", "closer", "reaction", "rewrite"})
 _KNOWN_PHASES = _NARRATOR_PHASES | {_PLANNER_PHASE, "answer"}
 
 # Which calls belong to a phase: a slice when derived from call positions, the

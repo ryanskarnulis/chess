@@ -586,7 +586,7 @@ def test_get_move_history_and_captures(session):
 # --- describe_position: the board in words ----------------------------------
 #
 # The read whose result *is* a description. It exists because the phase that
-# speaks is handed no board (`api._narrator_state_dict`, #193), so "what's the
+# speaks is handed no board (`api.narrator_facts`, #193), so "what's the
 # position?" had nothing to answer from and came back as an eval ("You're
 # cooked") twice in the 2026-09-04 walkthrough. Engine-free on purpose — the
 # `registry` fixture below has no Stockfish and every test here still runs.
@@ -623,7 +623,7 @@ def test_describe_position_offers_the_narrator_no_side_to_play_for(session):
     """The invariant the whole tool is shaped around (#193): a narrator that
     can see whose move it is announces one, so this result carries no `turn`,
     no `fen` (the string names the side to move) and no `legal_moves` (the menu
-    to pick from) — the three fields `_narrator_state_dict` deletes for the
+    to pick from) — the three fields `api.narrator_facts` leaves out for the
     same reason.
 
     And no top-level `san`: `facts.assemble` reads that key off every tool
