@@ -487,8 +487,8 @@ def test_the_canned_stuck_line_is_not_a_narrator_answer() -> None:
     pipeline fills the empty reply with `api.STUCK_REPLY`. So `completed` plus
     nonempty text was not enough to prove an answer was tested: every negative
     commentary check in the suite passes over "I lost the thread on that one",
-    and `advice_capture_survives_guard` passes it happily (no guard fired, and
-    the line does not say "scratch that")."""
+    and `advice_capture_survives_guard` passes it happily (it claims nothing,
+    and the line does not say "scratch that")."""
     with pytest.raises(VacuousRun, match="canned stuck line"):
         _assert_reached_narrator(_finished_run(content=STUCK_REPLY))
 

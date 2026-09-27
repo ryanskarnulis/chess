@@ -190,37 +190,6 @@ def test_a_dead_narration_of_a_confirmed_op_is_one_call(trace_path):
     assert record["unmetered_calls"] == 1
 
 
-def test_a_lost_rewrite_is_a_call_beside_the_draft_it_was_asked_to_fix(
-    trace_path,
-):
-    brain = ScriptedBrain(
-        AgentResponse(
-            text="Word. Game over.",
-            model_calls=2,
-            prompt_tokens=500,
-            model_latencies_ms=(300, 700),
-        ),
-        rewrites=(ProviderError("llama-server is gone"),),
-    )
-    client, _ = client_for(trace_path, brain)
-
-    client.post("/api/command", json={"text": "i'm bored of this"})
-
-    (record,) = read_records(trace_path)
-    assert record["rewrite"] == "lost"
-    assert record["model_calls"] == 3
-    assert record["unmetered_calls"] == 1
-    assert record["prompt_tokens"] == 500
-    assert len(record["model_latencies_ms"]) == 3
-    assert [(c["phase"], c["status"]) for c in record["calls"]] == [
-        ("unknown", "ok"),
-        ("unknown", "ok"),
-        ("rewrite", "failed"),
-    ]
-    assert [c["seq"] for c in record["calls"]] == [0, 1, 2]
-    assert record["calls"][0]["ms"] == 300
-
-
 # --- a call with no usage is unknown, not free ------------------------------
 
 

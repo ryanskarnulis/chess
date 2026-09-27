@@ -1,17 +1,17 @@
 """Speech accuracy: how often what Glitch says is true, scored offline (#367).
 
-The honesty guard reads a narration's operational claims — a capture, a check,
-a move, a saved game, a setting, an engine number — and checks each against
-what the turn can back (`honesty.claims`, `facts.assemble`). Live, that verdict
-decides what the player hears. Here the same reading is a *measurement*: every
-traced turn is re-judged from its own record and the answers are counted, per
-family, as claims made and claims backed. Nothing in this module runs on the
-player's turn, and nothing it returns changes what anyone hears.
+The reading finds a narration's operational claims — a capture, a check, a
+move, a saved game, a setting, an engine number — and checks each against what
+the turn can back (`honesty.claims`, `facts.assemble`). Until #368 a live guard
+ran that reading on every reply and cut what it could not back; now nothing
+checks the words live, and the reading is only a *measurement*: every traced
+turn is re-judged from its own record and the answers are counted, per family,
+as claims made and claims backed. Nothing in this module runs on the player's
+turn, and nothing it returns changes what anyone hears.
 
-A turn is re-judged from two trace fields (schema 3): `draft`, the model's own
-words as the guard was handed them, and `evidence`, the `facts.TurnEvidence`
-the live facts were assembled from. The facts come from the same `assemble`
-the guard calls, so a scored turn is scored on exactly the facts it had.
+A turn is re-judged from two trace fields (schema 3 and later): `draft`, the
+model's own words, and `evidence`, the `facts.TurnEvidence` the turn's facts
+are assembled from, so a scored turn is scored on exactly the facts it had.
 
 **Scorer errors are not model errors.** A family the reading cannot score
 reliably — one whose claims it cannot tell from a correct line — is reported
@@ -142,8 +142,8 @@ _CENTIPAWN_STEPS = (10, 50, 100)
 def _widened(
     facts: VerifiedFacts, tool_results: Iterable[Mapping[str, Any]]
 ) -> VerifiedFacts:
-    """The guard's facts, plus two things the reading gets wrong on correct
-    lines, which the scorer backs and the live guard does not (#367).
+    """The turn's facts, plus two things the reading gets wrong on correct
+    lines, which the scorer backs (#367).
 
     Found by hand-labelling the first schema-3 frontier run: both unbacked
     lines of `late_game_review_undo_replay` were true.
@@ -156,8 +156,8 @@ def _widened(
       816 is the number, said the way people say numbers; the evaluation
       class accepts exact counts and pawn tenths only.
 
-    Scorer-only on purpose: widening the guard's facts would change what the
-    player hears, and the guard is retired in #368 anyway.
+    Scorer-only: they were kept out of the live guard's facts while it ran,
+    and the guard is retired (#368).
     """
     reviewed = {
         move[key]
@@ -177,7 +177,7 @@ def _widened(
 def score_record(record: Mapping[str, Any]) -> TurnScore | None:
     """The turn re-judged, or None when the record holds no words of the
     model's to judge (another kind of record, a route the model does not speak
-    on, a turn that never reached the guard)."""
+    on, a turn whose words the model did not write)."""
     if not _is_turn(record) or "tools" not in record:
         return None  # not a turn, or a partial record a test fake wrote
     if record.get("evidence"):
@@ -193,7 +193,7 @@ def score_record(record: Mapping[str, Any]) -> TurnScore | None:
             legacy=False,
         )
     if record.get("schema", 1) >= 3:
-        return None  # a current record with no evidence never reached the guard
+        return None  # a current record with no evidence has no model words
     draft = _legacy_draft(record)
     if draft is None or "fen_after" not in record:
         return None
@@ -206,6 +206,23 @@ def score_record(record: Mapping[str, Any]) -> TurnScore | None:
         _meaningful(claims(draft, facts), facts, reply_pending=None),
         unscored,
         legacy=True,
+    )
+
+
+def unbacked(record: Mapping[str, Any]) -> tuple[Claim, ...]:
+    """The scored claims this turn's words made that its facts do not back.
+
+    Empty on a turn with nothing to judge. The eval gate fails a sample on any
+    of these (#368), and a pipeline test reads a turn's speech the same way:
+    with the live guard retired, this is the one place a misstatement shows.
+    """
+    score = score_record(record)
+    if score is None:
+        return ()
+    return tuple(
+        claim
+        for claim in score.claims
+        if not claim.backed and claim.claim not in score.unscored
     )
 
 

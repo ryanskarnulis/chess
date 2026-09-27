@@ -16,6 +16,7 @@ from chessapp.speech_accuracy import (
     merge,
     score_record,
     tally,
+    unbacked,
 )
 from chessapp.trace import turn_record
 
@@ -323,3 +324,29 @@ def test_the_frontier_runs_misread_lines_are_scored_as_true():
 
     assert all(backed for _, backed in _counts(score))
     assert not {"ending", "owned_move"} & {family for family, _ in _counts(score)}
+
+
+# --- one turn's misses, for the eval gate and pipeline tests (#368) -------------
+
+
+def test_unbacked_is_the_scored_misses_and_nothing_else():
+    session = _session("e4", "d5", "exd5")
+
+    record = _record("You took my pawn. You took my queen.", session)
+
+    assert [(c.claim, c.sentence) for c in unbacked(record)] == [
+        ("capture", "You took my queen.")
+    ]
+    assert unbacked(_record("You took my pawn.", session)) == ()
+
+
+def test_unbacked_leaves_out_what_the_scorer_does_not_score():
+    """An unscored family is the scorer's doubt, not the model's miss, so it
+    never fails a sample either: an older record cannot decide a capture."""
+    record = _legacy("Took your queen. Alright, more detail from now on.")
+
+    assert [c.claim for c in unbacked(record)] == ["verbosity_change"]
+
+
+def test_a_record_with_no_words_to_judge_has_nothing_unbacked():
+    assert unbacked({"kind": "serving", "schema": 4}) == ()

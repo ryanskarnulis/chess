@@ -28,7 +28,14 @@ from chessapp.engine import DEFAULT_TIER, CandidateMove, Evaluation
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
 from chessapp.tools import CONFIRM_QUESTIONS, ToolContext
-from fakes import FakeEngine, ScriptedBrain, receive_state, scripted_app
+from fakes import (
+    CollectedTurns,
+    FakeEngine,
+    ScriptedBrain,
+    receive_state,
+    scripted_app,
+    unbacked_claims,
+)
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -644,11 +651,12 @@ def observing_client(
     narrations: tuple = (),
     verbosity: str = "normal",
     reply_uci: str = "e7e5",
+    tracer=None,
 ):
     ctx = ToolContext(session=GameSession(), engine=FakeEngine(reply_uci))
     ctx.settings.verbosity = verbosity
     brain = ScriptedBrain(*responses, narrations=narrations)
-    app, _ = scripted_app(ctx, brain=brain)
+    app, _ = scripted_app(ctx, brain=brain, tracer=tracer)
     return TestClient(app), brain, ctx
 
 
@@ -843,18 +851,20 @@ def test_an_undo_inside_the_turn_abandons_the_owed_reply():
     assert body["commentary"] == "Fine, taken back.", "no reply to announce"
 
 
-def test_a_false_ending_in_the_observation_is_still_guarded():
-    """The guard runs on the reaction against the boards this turn held, so one
-    that invents an ending is caught on the new road too — and takes only itself
-    with it. The rewrite is unscripted, so the fake repeats the lie and the
-    reaction is cut; the move turn's deterministic line survives, because the
-    player still needs to know what the engine played."""
-    client, _, ctx = observing_client(narrations=("That's the game. Game over.",))
+def test_a_false_ending_in_the_observation_is_scored_on_the_new_road_too():
+    """The reaction is read against the boards this turn held, so one that
+    invents an ending shows up on the fast path too. The player hears it as
+    said (#368), and the app's line announcing the reply follows it."""
+    turns = CollectedTurns()
+    client, _, ctx = observing_client(
+        narrations=("That's the game. Game over.",), tracer=turns
+    )
 
     body = client.post("/api/command", json={"text": "e4"}).json()
 
     assert not ctx.session.is_game_over()
-    assert body["commentary"] == "e4. e5."
+    assert body["commentary"] == "That's the game. Game over.\n\ne5."
+    assert unbacked_claims(turns.records[-1]) == ["ending"]
 
 
 # --- The destructive-op confirmation gate, at the pipeline.
@@ -880,13 +890,11 @@ def make_developed_client(
     *responses: AgentResponse,
     narrations: tuple[str, ...] = (),
     answers: tuple[str, ...] = (),
-    rewrites: tuple[str, ...] = (),
+    tracer=None,
 ):
     ctx = developed(ToolContext(session=GameSession()))
-    brain = ScriptedBrain(
-        *responses, narrations=narrations, answers=answers, rewrites=rewrites
-    )
-    app, brain = scripted_app(ctx, brain=brain)
+    brain = ScriptedBrain(*responses, narrations=narrations, answers=answers)
+    app, brain = scripted_app(ctx, brain=brain, tracer=tracer)
     return TestClient(app), brain, ctx
 
 
@@ -997,12 +1005,12 @@ def make_drawish_client(
     *responses: AgentResponse,
     narrations: tuple[str, ...] = (),
     verbosity: str = "normal",
-    rewrites: tuple[str, ...] = (),
+    tracer=None,
 ):
     ctx = drawish(ToolContext(session=GameSession()))
     ctx.settings.verbosity = verbosity
     app, brain = scripted_app(
-        ctx, brain=ScriptedBrain(*responses, narrations=narrations, rewrites=rewrites)
+        ctx, brain=ScriptedBrain(*responses, narrations=narrations), tracer=tracer
     )
     return TestClient(app), brain, ctx
 
@@ -1128,70 +1136,36 @@ def test_the_command_window_closes_so_the_buttons_still_work():
     assert ctx.session.player_color == "black"
 
 
-# --- The honesty guard: the player is never told something that didn't happen.
+# --- Speech is the model's: what Glitch says is what the player hears (#368).
 #
-# The deepest version of the house rule. The closing turn is produced from a
-# context ending in the new board and it still invents endings — "Word. Game
-# over." on a live board (trace review, finding 6). The board knows whether the
-# game ended, so the board, not the model, gets the last word on whether it may
-# be said — and the model keeps the last word on *how*: a claim the facts don't
-# back goes back to the narrator with the true fact in plain words, and the
-# rewrite is what the player hears (decided 2026-09-10; before that, three
-# canned "Scratch that" lines spoke in Glitch's place). Only a rewrite that
-# still asserts the unbacked thing is cut, and then the turn says what the app
-# already says when the model has nothing usable.
+# The closing turn can still invent things — "Word. Game over." on a live board
+# (trace review, finding 6). Until #368 a live honesty guard checked every reply
+# against the board and had the narrator say a claim it could not back again,
+# then cut it. Code owns actions, not speech: the board decides whether the
+# game ended, and the player hears the model's words whatever they claim. A
+# misstatement is fixed in what the model was shown, and measured offline —
+# `unbacked_claims` is speech accuracy's reading of the traced turn (#367), so
+# these tests pin that the reading still sees the miss the player now hears.
 
 
-def corrections_asked(brain: ScriptedBrain) -> str:
-    """Every fact the guard handed the narrator for its second draft."""
-    return "\n".join(line for _, lines in brain.rewrite_calls for line in lines)
-
-
-def test_an_ending_that_never_happened_is_said_again_with_the_facts():
+def test_an_ending_that_never_happened_reaches_the_player_as_said():
+    turns = CollectedTurns()
     client, brain, ctx = make_developed_client(
-        AgentResponse(text="Word. Game over."),
-        rewrites=("Word. Still your move, though.",),
+        AgentResponse(text="Word. Game over."), tracer=turns
     )
 
     response = client.post("/api/command", json={"text": "i'm done with this"}).json()
 
     assert not ctx.session.is_game_over(), "the board never ended the game"
-    assert response["commentary"] == "Word. Still your move, though."
-    (first_draft, facts) = brain.rewrite_calls[0]
-    assert first_draft == "Word. Game over."
-    assert facts == [
-        'You wrote: "Game over." The game is not over and no new game '
-        "began; it is still being played."
-    ]
-
-
-def test_a_rewrite_that_still_claims_the_ending_is_cut():
-    """The fallback. Nothing else was said and no move was played, so the turn
-    says what a turn with no usable answer says — never the invented ending,
-    and never a canned apology for a sentence the player did not hear."""
-    client, brain, _ = make_developed_client(
-        AgentResponse(text="Word. Game over."), rewrites=("Yeah. Game over.",)
-    )
-
-    response = client.post("/api/command", json={"text": "i'm done with this"}).json()
-
-    assert response["commentary"] == STUCK_REPLY
-    assert len(brain.rewrite_calls) == 1, "one second draft, never a third"
-
-
-def test_a_rewrite_is_asked_once_and_the_first_draft_is_what_it_is_asked_about():
-    """Unscripted, the fake says the first draft again word for word — the
-    pipeline's rule is one rewrite, and a second lie is a cut, not a loop."""
-    client, brain, _ = make_developed_client(AgentResponse(text="Word. Game over."))
-
-    client.post("/api/command", json={"text": "i'm done with this"})
-
-    assert [draft for draft, _ in brain.rewrite_calls] == ["Word. Game over."]
+    assert response["commentary"] == "Word. Game over."
+    (record,) = turns.records
+    assert unbacked_claims(record) == ["ending"]
 
 
 def test_a_real_ending_is_narrated_as_it_stands():
-    """The guard checks the board, not the vocabulary: the same words are fine
-    when they are true."""
+    """The reading checks the board, not the vocabulary: the same words are
+    backed when they are true."""
+    turns = CollectedTurns()
     ctx = ToolContext(session=GameSession())
     for san in ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"):
         ctx.session.submit_move(san)
@@ -1202,6 +1176,7 @@ def test_a_real_ending_is_narrated_as_it_stands():
                 text="Checkmate. Game over.",
                 tool_calls=(ToolCall(name="make_move", args={"move": "Qxf7#"}),),
             ),
+            tracer=turns,
         )[0]
     )
 
@@ -1210,76 +1185,75 @@ def test_a_real_ending_is_narrated_as_it_stands():
 
     assert ctx.session.is_game_over()
     assert response["commentary"] == "Checkmate. Game over."
+    assert unbacked_claims(turns.records[-1]) == []
 
 
 def test_a_confirmed_resignation_may_say_the_game_is_over():
-    """A destructive op that really ran licenses the claim even though it is the
+    """A destructive op that really ran backs the claim even though it is the
     tool, not the board's checkmate detection, that ended things."""
-    client, _, ctx = make_developed_client(narrations=("Done. Game over.",))
+    turns = CollectedTurns()
+    client, _, ctx = make_developed_client(
+        narrations=("Done. Game over.",), tracer=turns
+    )
     client.post("/api/command", json={"text": "i resign"})
 
     response = client.post("/api/command", json={"text": "yes"}).json()
 
     assert ctx.session.is_game_over()
     assert response["commentary"] == "Done. Game over."
+    assert unbacked_claims(turns.records[-1]) == []
 
 
 # --- ...and, on a game that really ended, who won and how (astra audit F7, #287).
 #
-# `ended` licensed the words; it could not tell "I win" from the mate the player
-# just delivered. The outcome class reads the same words against the session's
-# outcome, only over a finished game, and the correction it hands back is the
-# ending as it stands — so the narrator says it again with the right side up.
+# `ended` backs the words; it cannot tell "I win" from the mate the player just
+# delivered. The outcome class reads the same words against the session's
+# outcome, only over a finished game.
 
 
-def scholars_mate_client(*, narration: str, rewrites: tuple[str, ...] = ()):
+def scholars_mate_client(*, narration: str):
     """White (the player) to move with Qxf7# on the board; the brain plays it and
     speaks `narration` as its closing turn."""
     ctx = ToolContext(session=GameSession())
     for san in ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"):
         ctx.session.submit_move(san)
+    turns = CollectedTurns()
     brain = ScriptedBrain(
         AgentResponse(
             text=narration,
             tool_calls=(ToolCall(name="make_move", args={"move": "Qxf7#"}),),
         ),
-        rewrites=rewrites,
     )
-    app, brain = scripted_app(ctx, brain=brain)
-    return TestClient(app), brain, ctx
+    app, brain = scripted_app(ctx, brain=brain, tracer=turns)
+    return TestClient(app), turns, ctx
 
 
-def test_the_wrong_winner_on_a_real_ending_is_said_again_with_the_result():
-    client, brain, ctx = scholars_mate_client(
-        narration="Checkmate. I win, bro.",
-        rewrites=("Checkmate. You win, bro.",),
-    )
+def test_the_wrong_winner_on_a_real_ending_is_scored_unbacked():
+    client, turns, ctx = scholars_mate_client(narration="Checkmate. I win, bro.")
 
     response = client.post("/api/command", json={"text": "finish him"}).json()
 
     assert ctx.session.is_game_over()
     assert ctx.session.outcome().winner == ctx.session.player_color
-    assert response["commentary"] == "Checkmate. You win, bro."
-    assert corrections_asked(brain) == (
-        'You wrote: "I win, bro." The game is over: the player won, by '
-        "checkmate; you lost."
-    )
+    assert response["commentary"] == "Checkmate. I win, bro."
+    assert unbacked_claims(turns.records[-1]) == ["outcome"]
 
 
 def test_the_right_winner_on_a_real_ending_is_narrated_as_it_stands():
-    client, brain, ctx = scholars_mate_client(narration="Checkmate. You win, bro.")
+    client, turns, ctx = scholars_mate_client(narration="Checkmate. You win, bro.")
 
     response = client.post("/api/command", json={"text": "finish him"}).json()
 
     assert ctx.session.is_game_over()
     assert response["commentary"] == "Checkmate. You win, bro."
-    assert brain.rewrite_calls == []
+    assert unbacked_claims(turns.records[-1]) == []
 
 
 def test_a_confirmed_resignation_may_say_who_resigned():
     """The player resigned, so "you resigned" is the fact and "I win" is too."""
-    client, brain, ctx = make_developed_client(
-        narrations=("You resigned. I win — take the L.",)
+    turns = CollectedTurns()
+    client, _, ctx = make_developed_client(
+        narrations=("You resigned. I win — take the L.",), tracer=turns
     )
     client.post("/api/command", json={"text": "i resign"})
 
@@ -1288,26 +1262,25 @@ def test_a_confirmed_resignation_may_say_who_resigned():
     assert ctx.session.outcome().termination == "resignation"
     assert ctx.session.outcome().winner != ctx.session.player_color
     assert response["commentary"] == "You resigned. I win — take the L."
-    assert brain.rewrite_calls == []
+    assert unbacked_claims(turns.records[-1]) == []
 
 
-def test_a_confirmed_resignation_called_a_checkmate_is_corrected():
-    client, brain, ctx = make_developed_client(
-        narrations=("Checkmate. You lose.",), rewrites=("You resigned. You lose.",)
+def test_a_confirmed_resignation_called_a_checkmate_is_scored_unbacked():
+    turns = CollectedTurns()
+    client, _, _ = make_developed_client(
+        narrations=("Checkmate. You lose.",), tracer=turns
     )
     client.post("/api/command", json={"text": "i resign"})
 
     response = client.post("/api/command", json={"text": "yes"}).json()
 
-    assert response["commentary"] == "You resigned. You lose."
-    assert corrections_asked(brain) == (
-        'You wrote: "Checkmate." The game is over: the player resigned, so you won.'
-    )
+    assert response["commentary"] == "Checkmate. You lose."
+    assert unbacked_claims(turns.records[-1]) == ["outcome"]
 
 
 def test_a_confirmed_draw_claim_may_say_the_game_is_a_draw():
     """The draw class is its own fact, and a claimed draw is exactly the case it
-    has to license: the board says drawn, so the narrator may say so."""
+    has to back: the board says drawn, so the narrator may say so."""
     client, _, ctx = make_drawish_client(
         destructive("claim_draw"), narrations=("That's a draw. Game over.",)
     )
@@ -1321,105 +1294,96 @@ def test_a_confirmed_draw_claim_may_say_the_game_is_a_draw():
 
 def test_an_armed_claim_is_not_a_draw_yet():
     """The other side of the same fact: the gate only *asked*, so nothing was
-    drawn and commentary saying otherwise is the invention the guard exists for
-    (the same rule an armed-but-unconfirmed resignation gets)."""
-    client, brain, ctx = make_drawish_client(
+    drawn and commentary saying otherwise is unbacked (the same rule an
+    armed-but-unconfirmed resignation gets)."""
+    turns = CollectedTurns()
+    client, _, ctx = make_drawish_client(
         AgentResponse(
             text="That's a draw. Game over.",
             tool_calls=(ToolCall(name="claim_draw", args={}),),
         ),
-        rewrites=("Draw? Only if you say yes. Until then we play.",),
+        tracer=turns,
     )
 
     response = client.post("/api/command", json={"text": "draw?"}).json()
 
     assert not ctx.session.is_game_over()
-    assert response["commentary"] == "Draw? Only if you say yes. Until then we play."
-    assert "The game has not been drawn." in corrections_asked(brain)
-    assert "is still being played" in corrections_asked(brain)
+    assert response["commentary"] == "That's a draw. Game over."
+    assert unbacked_claims(turns.records[-1]) == ["draw", "ending"]
 
 
-# --- ...and the board it is checked against is one the turn actually had.
+# --- ...and the board it is judged against is one the turn actually had.
 #
 # The observation beat gives the narrator the position after the player's move,
-# while Stockfish is still computing its answer. The guard runs after that
-# answer lands. So the reaction is written from one board and judged from the
-# next, and a recapture flips the count between them: live, ordinary trades
-# guarded ordinary commentary, which is how the canned correction got into the
-# transcript and taught Glitch to apologise for things he never said.
-#
-# The fix is not to loosen the classes but to check them against every board the
-# turn really held. An invented fact is still invented from all of them.
+# while Stockfish is still computing its answer; the reply lands after. So the
+# reaction is written from one board and the turn ends on the next, and a
+# recapture flips the count between them. Live, reading only the last board
+# called ordinary trades lies. The fix was not to loosen the classes but to
+# read them against every board the turn really held, and an invented fact is
+# still invented from all of them.
 
 
-def traded_client(narration: str, rewrites: tuple[str, ...] = ()):
+def traded_client(narration: str):
     """A turn that trades: the player takes on c6, the engine recaptures. +3 to
-    the reaction, level again by the time the guard sees it."""
+    the reaction, level again by the time the reply lands."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine("d7c6"))
     for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
         ctx.session.submit_move(san)
-    brain = ScriptedBrain(narrations=(narration,), rewrites=rewrites)
-    app, _ = scripted_app(ctx, brain=brain)
-    return TestClient(app), ctx
+    turns = CollectedTurns()
+    brain = ScriptedBrain(narrations=(narration,))
+    app, _ = scripted_app(ctx, brain=brain, tracer=turns)
+    return TestClient(app), ctx, turns
 
 
-def test_a_count_from_the_board_the_narrator_saw_survives_the_guard():
-    client, ctx = traded_client("Word, you're up a piece.")
+def test_a_count_from_the_board_the_narrator_saw_is_backed():
+    client, ctx, turns = traded_client("Word, you're up a piece.")
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
     assert ctx.session.material_balance() == 0, "the recapture levelled it again"
     assert body["commentary"] == "Word, you're up a piece.\n\ndxc6."
+    assert unbacked_claims(turns.records[-1]) == []
 
 
-def test_a_move_only_the_engine_could_play_mid_reply_is_guarded():
+def test_a_move_only_the_engine_could_play_mid_reply_is_unbacked():
     """Bb4 is Black's, playable only on the board the reaction was written
-    from — the board where the engine's reply was still being computed. That
-    used to survive: the guard is wide on purpose (it catches invention, not
-    tense), and the position was real. But a reaction naming a move only the
-    engine could play there is announcing a reply that does not exist yet, the
-    #193 shape, and since #289 that is its own class. The rewrite is asked
-    with the fact, and a rewrite that drops the move is spoken."""
-    client, _ = traded_client(
-        "Bb4 and you're fine, dude.", rewrites=("You're fine, dude.",)
-    )
+    from — the board where the engine's reply was still being computed. A
+    reaction naming a move only the engine could play there is announcing a
+    reply that does not exist yet, the #193 shape (#365 is the fix)."""
+    client, _, turns = traded_client("Bb4 and you're fine, dude.")
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"] == "You're fine, dude.\n\ndxc6."
+    assert body["commentary"] == "Bb4 and you're fine, dude.\n\ndxc6."
+    assert unbacked_claims(turns.records[-1]) == ["unplayed_reply"]
 
 
-def test_the_direction_no_board_this_turn_backs_is_still_guarded():
-    client, _ = traded_client(
-        "Ight, you're down a piece.", rewrites=("Ight, we traded. Level.",)
-    )
+def test_the_direction_no_board_this_turn_backs_is_unbacked():
+    client, _, turns = traded_client("Ight, you're down a piece.")
 
-    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+    client.post("/api/command", json={"text": "Bxc6"})
 
-    assert body["commentary"] == "Ight, we traded. Level.\n\ndxc6."
+    assert unbacked_claims(turns.records[-1]) == ["material"]
 
 
-def test_a_move_no_board_this_turn_makes_legal_is_still_guarded():
+def test_a_move_no_board_this_turn_makes_legal_is_unbacked():
     """Widening to every board the turn held is not the same as waving moves
-    through: Rxe5 is playable on none of them — and a rewrite that names it
-    again is cut, leaving the deterministic move turn."""
-    client, _ = traded_client("Rxe5 wins on the spot.")
+    through: Rxe5 is playable on none of them."""
+    client, _, turns = traded_client("Rxe5 wins on the spot.")
 
-    body = client.post("/api/command", json={"text": "Bxc6"}).json()
+    client.post("/api/command", json={"text": "Bxc6"})
 
-    assert body["commentary"] == "Bxc6. dxc6."
+    assert unbacked_claims(turns.records[-1]) == ["move"]
 
 
 # --- ...and what the app says in Glitch's place is never remembered as his.
 #
-# The second half of the same live failure. Every canned correction was written
-# in the first person — "Scratch that — I said something the board doesn't back
-# up" — and the pipeline recorded the *substituted* text as the assistant's
-# turn. `condense` hands the last few turns to the narrator verbatim, so Glitch
-# read his own apology as something he had said and started producing the
-# register himself ("I almost said something that didn't happen. That's my
-# bad."), on turns where nothing was guarded at all. Each imitation was recorded
-# too, so the voice outlived the window that seeded it.
+# Every canned correction the old guard spoke was in the first person —
+# "Scratch that — I said something the board doesn't back up" — and the
+# pipeline recorded the *substituted* text as the assistant's turn. `condense`
+# hands the last few turns to the narrator verbatim, so Glitch read his own
+# apology as something he had said and started producing the register himself
+# ("I almost said something that didn't happen. That's my bad.").
 #
 # The rule: what the app says — substituted *for* what the model said, or
 # *appended* around it — is for the player, not for the model's memory. The
@@ -1429,7 +1393,7 @@ def test_a_move_no_board_this_turn_makes_legal_is_still_guarded():
 # line, the narrator completed the pattern at the beat where the reply does not
 # exist yet — announcing a move of his own one line before the real one. So a
 # turn is remembered by what Glitch himself said, and the deterministic facts
-# stand in only where he said nothing worth keeping (a substitution, a silent
+# stand in only where he said nothing (a budget stop, a dead provider, a silent
 # turn).
 
 
@@ -1437,35 +1401,24 @@ def assistant_turns(ctx):
     return [m["content"] for m in ctx.transcript.to_dict() if m["role"] == "assistant"]
 
 
-def test_a_cut_turn_remembers_the_facts_not_the_lie():
-    client, ctx = traded_client("Rxe5 wins on the spot.")
+def test_an_unbacked_reaction_is_remembered_as_he_said_it():
+    """Nothing substitutes for his words any more, so nothing but his words is
+    remembered — a miss included. It is fixed in what he is shown next, not
+    edited out of what he said (#368)."""
+    client, ctx, _ = traded_client("Rxe5 wins on the spot.")
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"] == "Bxc6. dxc6.", "the player hears the facts"
-    assert assistant_turns(ctx) == ["Bxc6. dxc6."], "and so does the memory"
+    assert body["commentary"] == "Rxe5 wins on the spot.\n\ndxc6."
+    assert assistant_turns(ctx) == ["Rxe5 wins on the spot."]
 
 
-def test_a_spoken_rewrite_is_remembered_as_glitchs_own_words():
-    """The second draft is his, so it is remembered like any reaction — and
-    the first draft, which the player never heard, is remembered by nobody."""
-    client, ctx = traded_client(
-        "Rxe5 wins on the spot.", rewrites=("Traded down. Still cooking you.",)
-    )
-
-    body = client.post("/api/command", json={"text": "Bxc6"}).json()
-
-    assert body["commentary"] == "Traded down. Still cooking you.\n\ndxc6."
-    assert assistant_turns(ctx) == ["Traded down. Still cooking you."]
-
-
-def test_a_cut_ending_claim_is_not_remembered_either():
+def test_an_ending_claim_is_remembered_as_said_too():
     client, _, ctx = make_developed_client(AgentResponse(text="Word. Game over."))
 
     client.post("/api/command", json={"text": "i'm done with this"})
 
-    assert "Game over" not in "".join(assistant_turns(ctx))
-    assert assistant_turns(ctx) == [""], "nothing happened, so nothing is remembered"
+    assert assistant_turns(ctx) == ["Word. Game over."]
 
 
 def test_a_budget_stop_is_not_remembered_as_something_glitch_said():
@@ -1493,46 +1446,6 @@ def test_a_provider_death_is_not_remembered_as_something_glitch_said():
     assert assistant_turns(ctx) == ["e4. e5."]
 
 
-# --- ...and the guard only ever takes back the model's half of the turn.
-#
-# The reaction is the model's; the line announcing what answered it is the
-# app's, and it is deterministic truth by construction. Replacing both because
-# one of them lied costs the player the move the engine just played — the one
-# thing on a guarded turn they cannot afford to miss, since the board moved
-# under them and the correction says nothing about how.
-
-
-def test_a_cut_turn_still_tells_the_player_what_the_engine_played():
-    client, ctx = traded_client("Rxe5 wins on the spot.")
-
-    body = client.post("/api/command", json={"text": "Bxc6"}).json()
-
-    assert body["commentary"] == "Bxc6. dxc6."
-    assert ctx.session.move_history()[-1] == "dxc6", "which is what really happened"
-
-
-def test_a_cut_brain_turn_keeps_its_reply_line_too():
-    """Same rule off the loop's own closing narration, not just the fast path:
-    the reaction is gone, the app's announcement of the reply is not."""
-    ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
-    app, _ = scripted_app(ctx, move("e4", text="Took your rook. Cooked."))
-
-    body = TestClient(app).post("/api/command", json={"text": "play e4"}).json()
-
-    assert body["commentary"] == "e5."
-
-
-def test_a_cut_turn_with_no_reply_owed_says_the_stuck_line():
-    """Nothing to append when nothing answered: a turn that moved nothing has no
-    announcement, and an empty bubble would read as a crash — so it is the
-    line a loop that ran out of budget gets, which is the same situation."""
-    client, _, _ = make_developed_client(AgentResponse(text="Took your queen. Easy."))
-
-    body = client.post("/api/command", json={"text": "how's it look?"}).json()
-
-    assert body["commentary"] == STUCK_REPLY
-
-
 def test_a_capture_claim_is_held_to_what_the_named_move_takes():
     """Walkthrough #5. The capture record spans the whole game, so a queen the
     player really did take twenty moves ago verifies "that queen" attached to
@@ -1546,32 +1459,37 @@ def test_a_capture_claim_is_held_to_what_the_named_move_takes():
         assert session.submit_move(san).legal
     assert "q" in session.captured_pieces()["white"], "a real queen, earlier"
     ctx = ToolContext(session=session, engine=FakeEngine(reply_uci="g7h6"))
+    turns = CollectedTurns()
     app, _ = scripted_app(
         ctx,
         AgentResponse(
             text="You've taken that queen with Bxh6.",
             tool_calls=(ToolCall(name="make_move", args={"move": "Bxh6"}),),
         ),
+        tracer=turns,
     )
 
-    body = TestClient(app).post("/api/command", json={"text": "grab that h6 pawn"})
+    TestClient(app).post("/api/command", json={"text": "grab that h6 pawn"})
 
-    assert "queen" not in body.json()["commentary"]
+    assert unbacked_claims(turns.records[-1]) == ["capture"]
     assert session.move_history()[-2] == "Bxh6", "and the move itself still stands"
 
 
-def test_a_narrated_verbosity_change_without_the_call_is_guarded():
+def test_a_narrated_verbosity_change_without_the_call_is_unbacked():
     """Walkthrough #3: "talk more" answered by talking more. The setting stayed
     `low` on disk, the next turn was terse again, and the player was told
     otherwise. The live value cannot catch it — the sentence names no level —
     so the fact is whether the turn actually called the setter."""
     ctx = ToolContext(session=GameSession())
     ctx.settings.verbosity = "low"
-    app, _ = scripted_app(ctx, AgentResponse(text="Alright, more detail from now on."))
+    turns = CollectedTurns()
+    app, _ = scripted_app(
+        ctx, AgentResponse(text="Alright, more detail from now on."), tracer=turns
+    )
 
-    body = TestClient(app).post("/api/command", json={"text": "talk more"}).json()
+    TestClient(app).post("/api/command", json={"text": "talk more"})
 
-    assert body["commentary"] == STUCK_REPLY
+    assert unbacked_claims(turns.records[-1]) == ["verbosity_change"]
     assert ctx.settings.verbosity == "low", "and the setting really did not move"
 
 
@@ -1601,7 +1519,7 @@ def test_a_move_turn_is_remembered_by_the_reaction_alone():
     "\\n\\ne5." (#193) — so the player still hears both, and the model is given
     back only its own words. The engine's move is not lost to it: the state
     block's `history` carries every move, fresh, every turn."""
-    client, ctx = traded_client("Word, you're up a piece.")
+    client, ctx, _ = traded_client("Word, you're up a piece.")
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
@@ -1622,19 +1540,15 @@ def test_a_brain_routed_move_turn_is_remembered_by_its_own_words_too():
     assert assistant_turns(ctx) == ["King's pawn, obviously."]
 
 
-# --- The advice guard: once the engine has spoken, no other move is handed over.
+# --- Moves Glitch names reach the player: advice is his to give.
 #
-# Audit item 11's second half, inverted on 2026-09-10. The old rule was that
-# evidence is the only licence — a move the model named had to trace to an
-# analysis tool's report, and a turn with no analysis could name no move at
-# all. Live that cut a correct opening answer ("play Bf4, that's the London")
-# and a refused move's own list of alternatives, and the two live fires that
-# caught an actual invented hint both date from before the planner learned to
-# route hint asks to `get_best_moves` (the eval gate measures that routing).
-# The rule now is the honesty rule proper: when the turn *asked the engine*,
-# the reply may not hand over a playable move the engine did not name. With no
-# analysis in the turn, a move Glitch names is his opinion, and opinions are
-# his to give — the player asked a chess player, not a lookup table.
+# Audit item 11's second half had a live advice guard: first every named move
+# needed an analysis tool's licence, then (2026-09-10) only a turn that asked
+# the engine was held to the engine's moves. Live, it cut a correct opening
+# answer ("play Bf4, that's the London") and a refused move's own list of
+# alternatives. It is retired with the honesty guard (#368): whether a hint
+# ask reaches `get_best_moves` is the planner's routing, which the eval gate
+# measures, and a move Glitch names is his to name.
 
 
 def test_a_move_named_with_no_analysis_in_the_turn_is_an_opinion():
@@ -1663,7 +1577,7 @@ def test_the_london_answer_reaches_the_player():
 
 
 def test_analysis_the_player_asked_for_keeps_its_moves():
-    """The guard checks evidence, not vocabulary: a move a successful analysis
+    """The reading checks evidence, not vocabulary: a move a successful analysis
     tool reported this turn is a verified fact the commentary may repeat —
     "what's the best move?" is answered by consulting the engine and naming
     what it said."""
@@ -1684,55 +1598,6 @@ def test_analysis_the_player_asked_for_keeps_its_moves():
     response = client.post("/api/command", json=body).json()
 
     assert response["commentary"] == "Nf3 was the better try."
-
-
-def test_analysis_licenses_only_the_moves_it_reported():
-    """The evidence test is scoped to the analysis's *own* moves. Live, the
-    planner answered "what should I play here?" with `evaluate_position` +
-    `analyze_last_move`, which switched the whole guard off and let the
-    narrator hand over a shopping list of moves the analysis never mentioned
-    (`['Bc4', 'c3', 'd3']` — docs/agent-evals.md, 2026-07-25). A tool result
-    licenses repeating what it reported; it does not license the rest of the
-    legal-move list."""
-    ctx = ToolContext(session=GameSession())
-    ctx.engine = FakeEngine(
-        best_moves=(CandidateMove(uci="g1f3", san="Nf3", score_cp=30, mate_in=None),)
-    )
-    brain = ScriptedBrain(
-        AgentResponse(
-            text="Nf3 is the engine's pick, but honestly just play e4.",
-            tool_calls=(ToolCall(name="get_best_moves", args={"n": 1}),),
-        ),
-        rewrites=("Nf3 is the engine's pick. Go with it.",),
-    )
-    app, _ = scripted_app(ctx, brain=brain)
-    client = TestClient(app)
-
-    body = {"text": "what should I play here?"}
-    response = client.post("/api/command", json=body).json()
-
-    assert response["commentary"] == "Nf3 is the engine's pick. Go with it."
-    assert "The engine's moves this turn were: Nf3." in corrections_asked(brain)
-
-
-def test_a_rewrite_that_still_adds_its_own_move_beside_the_engines_is_cut():
-    ctx = ToolContext(session=GameSession())
-    ctx.engine = FakeEngine(
-        best_moves=(CandidateMove(uci="g1f3", san="Nf3", score_cp=30, mate_in=None),)
-    )
-    app, _ = scripted_app(
-        ctx,
-        AgentResponse(
-            text="Nf3 is the engine's pick, but honestly just play e4.",
-            tool_calls=(ToolCall(name="get_best_moves", args={"n": 1}),),
-        ),
-    )
-    client = TestClient(app)
-
-    body = {"text": "what should I play here?"}
-    response = client.post("/api/command", json=body).json()
-
-    assert response["commentary"] == STUCK_REPLY
 
 
 def test_a_settings_call_beside_an_opinion_leaves_the_opinion_alone():
@@ -1872,32 +1737,37 @@ def test_a_played_move_may_be_named():
     assert response["commentary"].startswith("e4. Predictable.")
 
 
-# --- The honesty guard, generalized: every operational claim needs evidence.
+# --- Every operational claim, read against the turn's evidence (#367).
 #
-# Audit item 13. The ending class above is the same rule at its most severe;
-# these are the rest of the facts a turn produces. The evidence is assembled
-# from the turn's tool results, the engine's reply and the board, so the check
-# is against what happened, never against what the model remembers saying.
+# Audit item 13. The ending class above is the same reading at its most
+# severe; these are the rest of the facts a turn produces. The evidence is
+# assembled from the turn's tool results, the engine's reply and the board, so
+# the reading is against what happened, never against what the model remembers
+# saying. The player hears every line as said (#368); these pin that the
+# pipeline hands the scorer the evidence each class needs.
 
 
-def test_commentary_may_not_announce_a_capture_that_never_happened():
-    client, brain, ctx = make_developed_client(
-        AgentResponse(text="Snagged your bishop."),
-        rewrites=("Eyeing your bishop. It's got a target on it.",),
+def developed_turn(response: AgentResponse, text: str):
+    """One brain turn on the developed board: what the player heard, the
+    traced record, and the context."""
+    turns = CollectedTurns()
+    client, _, ctx = make_developed_client(response, tracer=turns)
+    body = client.post("/api/command", json={"text": text}).json()
+    return body["commentary"], turns.records[-1], ctx
+
+
+def test_a_capture_that_never_happened_is_unbacked():
+    said, record, ctx = developed_turn(
+        AgentResponse(text="Snagged your bishop."), "your move"
     )
 
-    response = client.post("/api/command", json={"text": "your move"}).json()
-
     assert ctx.session.captured_pieces() == {"white": [], "black": []}
-    assert response["commentary"] == "Eyeing your bishop. It's got a target on it."
-    assert (
-        "The board does not show a bishop taken the way that sentence says. "
-        "Pieces the player has taken: nothing. Pieces you have taken: nothing."
-    ) in corrections_asked(brain)
+    assert said == "Snagged your bishop."
+    assert unbacked_claims(record) == ["capture"]
 
 
 def test_a_real_capture_is_narrated_as_it_stands():
-    """The guard checks the board, not the vocabulary — the twin of the
+    """The reading checks the board, not the vocabulary — the twin of the
     ending class's test, one claim class down."""
     client, _, ctx = make_developed_client(narrations=("You took my pawn. Cute.",))
 
@@ -1907,17 +1777,12 @@ def test_a_real_capture_is_narrated_as_it_stands():
     assert response["commentary"].startswith("You took my pawn. Cute.")
 
 
-def test_commentary_may_not_invent_a_move_that_was_never_on_the_board():
-    client, brain, _ = make_developed_client(
-        AgentResponse(text="Rough. Qxh7 ends you.")
+def test_a_move_that_was_never_on_the_board_is_unbacked():
+    _, record, _ = developed_turn(
+        AgentResponse(text="Rough. Qxh7 ends you."), "how bad is it?"
     )
 
-    response = client.post("/api/command", json={"text": "how bad is it?"}).json()
-
-    assert "Qxh7" not in response["commentary"]
-    assert "Qxh7 was not a move on this board, so do not name it." in (
-        corrections_asked(brain)
-    )
+    assert unbacked_claims(record) == ["move"]
 
 
 def test_the_move_the_player_missed_is_still_sayable():
@@ -1950,19 +1815,16 @@ def test_reading_the_move_list_back_is_not_an_invention():
     assert response["commentary"] == "Move list: e4, e5, Nf3, Nc6."
 
 
-def test_a_move_credited_to_the_wrong_side_is_guarded():
+def test_a_move_credited_to_the_wrong_side_is_unbacked():
     """Who played a move is a fact too, and the wide `moves` set cannot hold it:
-    a move the *player* made derives from it perfectly, so "I played Nf3" was
-    unguardable. The history knows whose ply each move was."""
-    client, brain, ctx = make_developed_client(
-        AgentResponse(text="I played Nf3, obviously.")
+    a move the *player* made derives from it perfectly, so "I played Nf3" read
+    as true. The history knows whose ply each move was."""
+    _, record, ctx = developed_turn(
+        AgentResponse(text="I played Nf3, obviously."), "what happened?"
     )
 
-    response = client.post("/api/command", json={"text": "what happened?"}).json()
-
     assert ctx.session.move_history() == ["e4", "e5", "Nf3", "Nc6"], "Nf3 was theirs"
-    assert response["commentary"] == STUCK_REPLY
-    assert "You did not play Nf3. The player did." in corrections_asked(brain)
+    assert unbacked_claims(record) == ["owned_move"]
 
 
 def test_the_side_that_really_played_a_move_may_be_credited():
@@ -1990,28 +1852,25 @@ def test_the_engine_reply_is_credited_to_the_opponent():
     is spoken *before* the reply exists, so claiming it there is announcing a
     move Stockfish had not chosen, true only when the guess matched (#289).
     And the player may never be told they played it."""
-    client, _ = traded_client("Word. I played dxc6.")
-    body = client.post("/api/command", json={"text": "Bxc6"}).json()
-    assert body["commentary"] == "Bxc6. dxc6."
+    client, _, turns = traded_client("Word. I played dxc6.")
+    client.post("/api/command", json={"text": "Bxc6"})
+    assert unbacked_claims(turns.records[-1]) == ["unplayed_reply"]
 
-    client, _ = traded_client("Word. You played dxc6.")
-    body = client.post("/api/command", json={"text": "Bxc6"}).json()
-    assert body["commentary"] == "Bxc6. dxc6."
+    client, _, turns = traded_client("Word. You played dxc6.")
+    client.post("/api/command", json={"text": "Bxc6"})
+    assert unbacked_claims(turns.records[-1]) != []
 
 
 def test_a_settings_claim_is_checked_against_the_live_settings():
     """A setting the model announces must be the setting the app is actually
     on — the same rule as the board, applied to the other state the agent
     can change. Nothing set the difficulty to maximum, so nothing may say so."""
-    client, brain, ctx = make_developed_client(
-        AgentResponse(text="Difficulty is maximum now.")
+    _, record, ctx = developed_turn(
+        AgentResponse(text="Difficulty is maximum now."), "make it harder"
     )
 
-    response = client.post("/api/command", json={"text": "make it harder"}).json()
-
     assert ctx.settings.tier == DEFAULT_TIER, "the setting never changed"
-    assert response["commentary"] == STUCK_REPLY
-    assert f"The difficulty is {DEFAULT_TIER}." in corrections_asked(brain)
+    assert unbacked_claims(record) == ["difficulty"]
 
 
 def test_a_settings_change_that_ran_may_be_announced():
@@ -2028,15 +1887,14 @@ def test_a_settings_change_that_ran_may_be_announced():
     assert response["commentary"] == "Difficulty is advanced now."
 
 
-def test_an_unbacked_engine_number_is_guarded():
+def test_an_engine_number_no_analysis_reported_is_unbacked():
     """Engine numbers come from the engine. With no analysis in the turn's
     results there is nothing for a score to derive from."""
-    client, brain, _ = make_developed_client(AgentResponse(text="You're at -3.5 here."))
+    _, record, _ = developed_turn(
+        AgentResponse(text="You're at -3.5 here."), "who's winning?"
+    )
 
-    response = client.post("/api/command", json={"text": "who's winning?"}).json()
-
-    assert response["commentary"] == STUCK_REPLY
-    assert "No engine evaluation ran this turn" in corrections_asked(brain)
+    assert unbacked_claims(record) == ["evaluation"]
 
 
 def test_an_evaluation_the_engine_reported_may_be_quoted():
@@ -2056,20 +1914,19 @@ def test_an_evaluation_the_engine_reported_may_be_quoted():
     assert response["commentary"] == "+1.5 for me. Comfortable."
 
 
-def test_an_invented_material_count_is_guarded():
+def test_an_invented_material_count_is_unbacked():
     """The claim class the board answers on its own: nothing has been traded in
     a developed opening, so nobody is up a piece."""
-    client, brain, ctx = make_developed_client(AgentResponse(text="You're up a piece."))
-
-    response = client.post("/api/command", json={"text": "how's it look?"}).json()
+    _, record, ctx = developed_turn(
+        AgentResponse(text="You're up a piece."), "how's it look?"
+    )
 
     assert ctx.session.material_balance() == 0, "a level board"
-    assert response["commentary"] == STUCK_REPLY
-    assert "Material is level right now." in corrections_asked(brain)
+    assert unbacked_claims(record) == ["material"]
 
 
 def test_a_material_count_the_board_backs_survives():
-    """The other half of the wiring, and the half a guarded test cannot prove:
+    """The other half of the wiring, and the half an unbacked test cannot prove:
     the balance really reaches the facts, so a true count is still sayable."""
     ctx = ToolContext(session=GameSession())
     for san in ("e4", "Nf6", "Nc3", "Nxe4", "Nxe4", "d5"):
@@ -2081,17 +1938,6 @@ def test_a_material_count_the_board_backs_survives():
 
     assert ctx.session.material_balance() == 2, "a knight for a pawn"
     assert response["commentary"] == "You're up a knight. Enjoy it."
-
-
-def test_a_rewrite_that_fixes_one_fact_and_invents_another_is_cut():
-    """The rewrite is checked exactly as the first draft was: every class,
-    every sentence. Trading a false capture for a false ending is not a fix."""
-    client, brain, _ = make_developed_client(
-        AgentResponse(text="Snagged your bishop."), rewrites=("Whatever. Game over.",)
-    )
-    response = client.post("/api/command", json={"text": "your move"}).json()
-    assert response["commentary"] == STUCK_REPLY
-    assert len(brain.rewrite_calls) == 1
 
 
 # --- The resign route: the player conceding is not the model's call.

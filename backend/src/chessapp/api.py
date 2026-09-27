@@ -59,7 +59,6 @@ import re
 import time
 from collections.abc import (
     AsyncIterator,
-    Awaitable,
     Callable,
     Iterator,
     Sequence,
@@ -103,7 +102,6 @@ from chessapp.brain import (
     CONFIRM,
     PHASE_ANSWER,
     PHASE_REACTION,
-    PHASE_REWRITE,
     PHASE_UNKNOWN,
     Brain,
     ModelCall,
@@ -115,21 +113,11 @@ from chessapp.deadline import within_budget as _within_budget
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
 from chessapp.facts import (
     TurnEvidence,
-    analysis_moves,
-    assemble,
     relative_outcome,
-    reported_moves,
     settings_of,
 )
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
-from chessapp.honesty import (
-    Unverified,
-    VerifiedFacts,
-    corrections,
-    unlicensed_advice,
-    unverified,
-)
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
 from chessapp.tools import (
@@ -703,8 +691,9 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
     to a 12B as the ask being finished, and every move this turn made is in
     its own result. No saves or settings: the tools that change them report
     their new values, and the prompt's verbosity layer is already there. The
-    outcome is the player-relative one the guard certifies (`relative_outcome`,
-    #287), so the narrator is told who won in the same words it is checked in.
+    outcome is the player-relative one speech accuracy scores against
+    (`relative_outcome`, #287), so the narrator is told who won in the same
+    words it is judged in.
 
     `reply_owed` is the coordinator's: the player's move landed and the
     engine's answer has not. The brain lifts it out of the facts into the
@@ -968,17 +957,6 @@ def _failure_name(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
-# There is no canned line for a claim the honesty guard cuts. Until 2026-09-10
-# there were three ("Scratch that — the game's still live..."), and every one
-# of them put the app's words in Glitch's mouth on a turn the player had heard
-# nothing wrong on yet — the guard runs before anything is spoken, so the line
-# apologised for a sentence nobody heard, and a false positive cost the whole
-# reply. Now a cut claim goes back to the narrator with the true facts
-# (`_honest_words`), and only a second draft that still asserts something the
-# board does not back falls through to what the app already says when the
-# model has nothing usable: the move confirmation on a move turn, `STUCK_REPLY`
-# on any other.
-
 # The confirmation question for a resignation the pipeline itself dispatched.
 # Deterministic, like the gate it came from: the model is not consulted about a
 # resignation at any point, including how to ask about one.
@@ -1033,9 +1011,9 @@ class _MoveBeats:
     commentary needs to tell those apart from "the engine passed".
 
     `observed_fen` is the board the narration was written from — the position
-    after the player's move, before the reply. The honesty guard needs it:
-    checking a reaction against the position that came *after* the one it
-    reacted to is how ordinary trades came to be guarded as lies. `None` when
+    after the player's move, before the reply. The turn's evidence needs it:
+    judging a reaction against the position that came *after* the one it
+    reacted to is how ordinary trades came to be read as lies. `None` when
     no narration ran, because then there is nothing that saw a board.
 
     `engine_failure` names what killed the reply, on the one shape where
@@ -1170,15 +1148,15 @@ def _remembered_facts(
     """What a turn the *app* spoke for is remembered as: the deterministic facts
     in the app's own register, or nothing at all.
 
-    The transcript's other half of the honesty rule. The guard's canned
-    corrections (retired 2026-09-10 for the rewrite) were written in the first
-    person, and recording one as the assistant's turn handed the narrator its
-    own apology as something it said — `condense` gives the last few turns
-    back verbatim, so Glitch read it and imitated the register, on turns where
-    nothing was guarded at all. Live, that is exactly what happened: one
-    guarded trade was enough to have him volunteering "I almost said something
-    that didn't happen. That's my bad." The rule outlives the lines: the stuck
-    line and the move confirmation are the app's too.
+    The app's lines are never remembered as Glitch's. The old honesty guard's
+    canned corrections (retired 2026-09-10, the guard itself in #368) were
+    written in the first person, and recording one as the assistant's turn
+    handed the narrator its own apology as something it said — `condense`
+    gives the last few turns back verbatim, so Glitch read it and imitated the
+    register. Live, one such line was enough to have him volunteering "I
+    almost said something that didn't happen. That's my bad." The rule
+    outlives those lines: the stuck line and the move confirmation are the
+    app's too.
 
     So a substituted turn remembers what the turn *did*, never what the app said
     about it. A move turn has a line for that already — the same one verbosity=low
@@ -1192,161 +1170,6 @@ def _remembered_facts(
         if record["name"] == "make_move" and result.get("legal") is True:
             return _move_confirmation(result, engine_reply, session)
     return ""
-
-
-@dataclass(frozen=True)
-class _AdviceLicence:
-    """What the advice guard checks a reply against, when it applies at all.
-
-    `unlicensed` is the legal list minus every move a tool reported this
-    turn; `legal` is the whole list, which the clarification rule counts
-    over; `evidence` is what the analysis tools said, which is what the
-    rewrite brief names. `None` in place of one of these means the guard
-    does not apply: the board changed (a reaction is description), or no
-    analysis ran (an opinion is Glitch's to give).
-    """
-
-    unlicensed: frozenset[str]
-    legal: frozenset[str]
-    evidence: frozenset[str]
-
-
-@dataclass(frozen=True)
-class _Guarded:
-    """What the honesty guard let the model say, and what it took to get there.
-
-    `text` is the model's half of the turn as the player will hear it: the
-    first draft when it was clean, the rewrite when the first was not and the
-    second is, or `""` when neither was — the caller composes the app's own
-    deterministic lines around whichever it is. `claims` names the classes the
-    first draft asserted without backing (empty on a clean turn), `suppressed`
-    keeps that draft, and `rewrite` / `rewrite_claims` / `rewrite_suppressed`
-    say what became of the second try, in the trace's vocabulary
-    (`trace.turn_record`). `cost` is the rewrite's round trip — the one that
-    died too — to be added to the turn's.
-    """
-
-    text: str
-    claims: tuple[str, ...] = ()
-    suppressed: str = ""
-    rewrite: str = ""
-    rewrite_claims: tuple[str, ...] = ()
-    rewrite_suppressed: str = ""
-    cost: "_ModelCost" = dc_field(default_factory=lambda: _ModelCost())
-
-    @property
-    def fired(self) -> bool:
-        return bool(self.claims)
-
-    @property
-    def fell_back(self) -> bool:
-        """The player hears the deterministic facts and nothing of the model's:
-        the first draft was cut and no rewrite replaced it."""
-        return self.fired and self.rewrite != "spoken"
-
-
-def _unbacked(
-    commentary: str, facts: VerifiedFacts, advice: _AdviceLicence | None
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The claim classes this commentary asserts without backing, and the
-    correction lines a rewrite brief needs for them — the honesty classes
-    first, then the advice guard's, which is a licence check rather than a
-    fact check and so gets its own line."""
-    found: tuple[Unverified, ...] = unverified(commentary, facts)
-    claims = list(dict.fromkeys(item.claim for item in found))
-    lines = list(corrections(found, facts))
-    if advice is not None and unlicensed_advice(
-        commentary, advice.unlicensed, advice.legal
-    ):
-        claims.append("move_advice")
-        lines.append(
-            "The engine's moves this turn were: "
-            f"{', '.join(sorted(advice.evidence))}. Name only those moves, or no "
-            "move at all — do not add a move of your own beside the engine's."
-        )
-    return tuple(claims), tuple(lines)
-
-
-async def _honest_words(
-    brain: Brain,
-    offloop: Callable[..., Awaitable[Any]],
-    commentary: str,
-    facts: VerifiedFacts,
-    advice: _AdviceLicence | None,
-    transcript: Sequence[dict[str, str]],
-    logged: dict[str, Any],
-) -> _Guarded:
-    """The commentary the turn's facts support, by way of a second draft.
-
-    Every route converges here. The model may neither *do* an unasked
-    destructive op (the gate) nor *say* it did (the ending class) nor announce
-    any other fact the turn cannot back (the rest of them) nor, once it has
-    asked the engine, hand over a move the engine did not name (the advice
-    licence). What it may do is try again: a first draft with an unbacked
-    claim goes back to the narrator with the true facts in plain words
-    (`honesty.corrections`), and the rewrite is checked the same way. Code
-    decides what is true; the model decides how to say it; a false positive
-    costs one round trip and not the reply.
-
-    A rewrite that still asserts something unbacked is cut, and the caller
-    composes the turn from the app's deterministic lines alone — the move
-    confirmation, the stuck line — which are true by construction and which
-    the app already says when the model has nothing usable. There is no
-    third try: a narrator that invents the same fact twice against an explicit
-    correction is not going to be talked out of it, and each try is a round
-    trip the player is waiting on.
-
-    Both drafts and both verdicts go into the log *message* rather than
-    `extra`, and into the trace: with twelve classes a false positive is the
-    likelier failure, and the two live misfires before the trace kept the text
-    were both diagnosed by guessing at phrasings. The default formatter drops
-    `extra`, so a field nobody sees is a field that does not exist.
-    """
-    claims, lines = _unbacked(commentary, facts, advice)
-    if not claims:
-        return _Guarded(commentary)
-    said = commentary.replace("\n", " ")
-    logger.warning(
-        "commentary_claimed_unverified_fact claims=%s suppressed=%r",
-        ",".join(claims),
-        said,
-        extra={**logged, "claims": list(claims)},
-    )
-    started = time.monotonic()
-    try:
-        narration = await offloop(brain.rewrite, commentary, lines, transcript)
-    except ProviderError as exc:
-        # The turn is settled; the words are the only thing a dead provider can
-        # cost here, and the fallback is what a turn with no words already says.
-        # The round trip is still the turn's, and is counted as one (#290).
-        logger.warning("rewrite_failed", exc_info=True, extra=logged)
-        return _Guarded(
-            "",
-            claims,
-            commentary,
-            rewrite="lost",
-            cost=_ModelCost.failed(started, PHASE_REWRITE, exc),
-        )
-    cost = _ModelCost.of(narration, PHASE_REWRITE)
-    second = narration.text
-    again, _ = _unbacked(second, facts, advice) if second else ((), ())
-    if second and not again:
-        return _Guarded(second, claims, commentary, rewrite="spoken", cost=cost)
-    logger.warning(
-        "rewrite_still_unverified claims=%s suppressed=%r",
-        ",".join(again),
-        second.replace("\n", " "),
-        extra={**logged, "claims": list(again)},
-    )
-    return _Guarded(
-        "",
-        claims,
-        commentary,
-        rewrite="cut",
-        rewrite_claims=again,
-        rewrite_suppressed=second,
-        cost=cost,
-    )
 
 
 def _ms_since(started: float) -> int:
@@ -1363,8 +1186,8 @@ class _Spans:
     — the wait behind another turn — is measured by the one piece of code that
     waits, and `total` runs from the player's side of that wait. The other
     phases are added as the turn reaches them (`tool` by the registry's timing
-    observer, `engine` around the reply's collect, `guard` around the honesty
-    check) and summed, because a turn can pass through one more than once.
+    observer, `engine` around the reply's collect) and summed, because a turn
+    can pass through one more than once.
 
     Model time is not a span here: the trace already has it per call
     (`model_latencies_ms`), and a second copy summed another way is a second
@@ -1387,7 +1210,7 @@ class _ModelCost:
 
     A turn's model calls come in phases — reading an answer to a pending
     question, a narrated confirmation, a fast-path reaction, a resignation's
-    words, the brain's whole loop, a rewrite — and a turn can pass through more
+    words, the brain's whole loop — and a turn can pass through more
     than one: a reply the reader calls `unrelated` goes on down whichever road
     the words take. So a turn's cost is always *summed* with `plus`, never
     assigned, and every phase owes the trace the same numbers. Reading them off
@@ -1511,11 +1334,10 @@ class CommandOutcome:
 
     `memory` is the assistant text the turn is *remembered* by: what Glitch
     himself said, and never the app's words. They part company two ways. When
-    the app spoke *in his place* — a guard cut whose rewrite failed too, a
-    budget stop, a dead provider — the turn remembers the deterministic facts
-    instead, because an app line fed back as his own words is a register he
-    imitates (`_remembered_facts`). A guard rewrite that passed is his own
-    second draft and is remembered as such. And when the app spoke *after*
+    the app spoke *in his place* — a budget stop, a dead provider, a late
+    closer — the turn remembers the deterministic facts instead, because an
+    app line fed back as his own words is a register he imitates
+    (`_remembered_facts`). And when the app spoke *after*
     him — the reply announcement composed onto every move turn, or the line
     standing in for it when the engine died — only his reaction is remembered,
     because the appended "\\n\\ne5." fed back as his own words is a format he
@@ -1772,12 +1594,12 @@ def create_app(
     # The boards the open command's mutating tool calls have left behind, in
     # order — or `None` between commands, which is every other road onto the
     # board (a drag, a button, the confirm endpoint) recording nothing.
-    # `_command_window` owns it at both ends; the honesty guard reads it (see
+    # `_command_window` owns it at both ends; the turn's evidence reads it (see
     # `facts.assemble`).
     command_boards: list[str] | None = None
     # The request holding the mutation lock, timed (#290): opened by
     # `_mutation` before it waits, closed when it lets go, so there is at most
-    # one and whatever runs under the lock — a tool, a collect, the guard —
+    # one and whatever runs under the lock — a tool, a collect —
     # adds to the right request's spans. `None` outside the lock.
     current_spans: _Spans | None = None
 
@@ -1800,10 +1622,10 @@ def create_app(
         The mutation chokepoint's one callback. The trail is here rather than
         at the call sites for the reason the broadcast is: `dispatch` is the
         one road every model-initiated mutation takes, so a position recorded
-        here is a position the game really reached — and the honesty guard's
-        whole problem is that a turn holds more boards than its two ends
-        (audit finding 7). Appended before the send, so a broadcast that fails
-        cannot cost the guard its evidence.
+        here is a position the game really reached — and judging a turn's
+        words means knowing it held more boards than its two ends (audit
+        finding 7). Appended before the send, so a broadcast that fails
+        cannot cost the turn its evidence.
         """
         if command_boards is not None:
             command_boards.append(ctx.session.fen())
@@ -2151,18 +1973,12 @@ def create_app(
                     _publish_state()
                 raise HTTPException(status_code=409, detail=result["error"])
             commentary = ""
-            verdict = _Guarded("")
             draft = ""
             turn_evidence: TurnEvidence | None = None
             if beats.legal:
-                # The honesty guard, on this road too: a reaction that announces
-                # something the drag did not actually do goes back to the
-                # narrator with the truth, and a rewrite that still does is
-                # cut. On the reaction alone — the announcement composed
-                # around it below is the app's own deterministic line, so there
-                # is nothing in it to guard and everything to lose by taking it
-                # back with the reaction. No advice licence: the board moved,
-                # so a move named here is a reaction to it.
+                # Glitch's reaction is spoken as he wrote it (#368). What the
+                # turn can back is kept beside it for the trace, so speech
+                # accuracy can judge the one against the other offline (#367).
                 draft = narration.text if narration is not None else ""
                 turn_evidence = _turn_evidence(
                     ctx,
@@ -2176,22 +1992,8 @@ def create_app(
                     # The reaction was spoken before the reply existed.
                     beats.observed_fen if beats.owed_reply else None,
                 )
-                guard_started = time.monotonic()
-                verdict = await _honest_words(
-                    brain,
-                    _offloop,
-                    draft,
-                    assemble(turn_evidence),
-                    None,
-                    transcript,
-                    {"move": move, "correlation_id": correlation_id},
-                )
-                # The guard's own time; its rewrite is model time (#290).
-                _add_span(
-                    "guard", _ms_since(guard_started) - sum(verdict.cost.latencies_ms)
-                )
                 commentary = _move_commentary(
-                    verdict.text,
+                    draft,
                     result,
                     beats.engine_reply,
                     beats.owed_reply,
@@ -2208,11 +2010,10 @@ def create_app(
                 # composed commentary — the appended reply line is the app's,
                 # and remembered as his it becomes a format he completes a beat
                 # early, #193), and the deterministic facts when he didn't (a
-                # reaction cut by the guard, a silent low-verbosity turn).
-                remembered = "" if verdict.fell_back else verdict.text
+                # silent low-verbosity turn, a late or lost reaction).
                 ctx.transcript.record(
                     result["san"],
-                    remembered
+                    draft
                     or _remembered_facts(
                         beats.changes, beats.engine_reply, ctx.session
                     ),
@@ -2238,18 +2039,12 @@ def create_app(
                 tool_calls=[{"move": move}],
                 tool_results=beats.changes,
                 engine_reply=_move_reply_dict(beats.engine_reply),
-                guarded=verdict.fired,
-                guarded_claims=verdict.claims,
-                suppressed=verdict.suppressed,
-                rewrite=verdict.rewrite,
-                rewrite_claims=verdict.rewrite_claims,
-                rewrite_suppressed=verdict.rewrite_suppressed,
                 engine_failure=beats.engine_failure,
                 reaction_late=beats.reaction_late,
                 clarification=asked_about,
                 draft=draft,
                 evidence=turn_evidence.as_trace() if turn_evidence else None,
-                **beats.cost.plus(verdict.cost).as_trace(),
+                **beats.cost.as_trace(),
             )
             return {
                 "legal": beats.legal,
@@ -2765,8 +2560,8 @@ def create_app(
         it did — so they are opened together and, more to the point, closed
         together in the same `finally`. A command that raises half-way must
         neither leak an open window into the next one, nor leave a progress
-        line spinning, nor hand the next command's honesty guard a board this
-        one visited.
+        line spinning, nor hand the next command's evidence a board this one
+        visited.
 
         A plain list is enough for the trail: commands are serialized under
         `ctx.mutation_lock`, so there is only ever one window open, and the
@@ -3199,9 +2994,9 @@ def create_app(
                     commentary = response.text
                     # A closer the brain stopped waiting for (#316): the plan's
                     # record stands and the words are gone, the same shape as a
-                    # late observe beat. The app's own line is composed after
-                    # the guard, like every deterministic line, so it is never
-                    # guarded or rewritten; nothing of the words is remembered.
+                    # late observe beat. The app's own line is composed below,
+                    # like every deterministic line; nothing of the words is
+                    # remembered.
                     closer_late = reaction_late = response.narration_late
                     if closer_late:
                         memory = ""
@@ -3271,25 +3066,6 @@ def create_app(
                     # the player cannot see changing under them.
                     owed_reply = True
                     engine_reply = settled
-                # The honesty guard, at the one point every route converges: an
-                # operational claim the turn cannot back is not shown to the player.
-                # The board, the engine's reply and the tool results are the record of
-                # what happened; the model's prose is not, and live it has claimed
-                # resignations and checkmates that never occurred (trace review,
-                # finding 6). This is the same rule as the gate, applied one step
-                # later — the model may neither *do* a destructive op unasked nor
-                # *say* it did, nor announce any other fact it invented. What it
-                # may do is say it again with the facts right (`_honest_words`).
-                #
-                # It runs on the *model's* half of the turn and nothing else. The
-                # app's own lines — the reply announcement, the canned confirmation,
-                # the lost-brain line — are composed around whatever survives, below.
-                # They are deterministic truth by construction, so there is nothing
-                # in them to guard; running them through it only risks taking back
-                # the engine's move along with the lie, which is the one fact a
-                # guarded turn cannot afford to drop (the board moved under the
-                # player and a rewrite may say nothing about how).
-
                 # Every board this turn actually held, and not just its two ends.
                 # The trail is what the command's own mutating calls left behind, in
                 # order; the fast path names its observation board on top, because
@@ -3303,42 +3079,11 @@ def create_app(
                         # The observe beat is, by construction, a narration
                         # spoken before the reply exists.
                         narrated_before_reply = move_beats.observed_fen
-                # The advice guard rides along, at the same point (audit item 11's
-                # second half): a currently-playable move in the commentary is a
-                # hint whatever prose carries it. It applies on a turn that left
-                # the *board* alone — reacting to a move just played is
-                # description, not advice — and only once the turn has evidence:
-                # an analysis tool reported moves, and the reply names a playable
-                # move outside everything the tools reported. With no analysis in
-                # the turn there is nothing to contradict, and a move Glitch names
-                # is his opinion (decided 2026-09-10; `analysis_moves`).
-                #
-                # The board, specifically, and not the agent view: a turn that
-                # changed a *setting* changed nothing about what the player should
-                # play, so a setter must not buy an exemption. It used to, for
-                # every setter whose value the view carried — `set_verbosity` was
-                # only ever the exception because verbosity was missing from that
-                # view, which is the very gap walkthrough #3 came out of.
-                #
-                # A question naming two or more legal moves is exempt, and it is
-                # the model doing its job: "Do you mean Nf3 or Nh3?" is what an
-                # ambiguous request deserves, and the guard used to eat it whole
-                # (audit finding 6). `unlicensed_advice` owns that reading — the
-                # code still decides what is licensed, the model still owns the
-                # words.
-                advice = None
-                if ctx.board_version == version_before and (
-                    evidence := analysis_moves(tool_results)
-                ):
-                    legal = frozenset(ctx.session.legal_moves())
-                    advice = _AdviceLicence(
-                        unlicensed=legal - reported_moves(tool_results),
-                        legal=legal,
-                        evidence=frozenset(evidence),
-                    )
                 # What the model said and what the turn can back, both kept
                 # for the trace: speech accuracy re-judges the one against the
-                # other offline (#367).
+                # other offline (#367). Nothing checks the words live — the
+                # player hears what Glitch wrote, and a misstatement is fixed in
+                # what he was shown, not cut from what he said (#368).
                 traced["draft"] = commentary
                 turn_evidence = _turn_evidence(
                     ctx,
@@ -3349,25 +3094,7 @@ def create_app(
                     narrated_before_reply,
                 )
                 traced["evidence"] = turn_evidence.as_trace()
-                guard_started = time.monotonic()
-                verdict = await _honest_words(
-                    brain,
-                    _offloop,
-                    commentary,
-                    assemble(turn_evidence),
-                    advice,
-                    transcript,
-                    {"text": text, "correlation_id": correlation_id},
-                )
-                # The guard's own time; its rewrite is model time (#290).
-                _add_span(
-                    "guard", _ms_since(guard_started) - sum(verdict.cost.latencies_ms)
-                )
-                commentary = verdict.text
-                cost = cost.plus(verdict.cost)
-                if verdict.fell_back:
-                    memory = ""
-                elif memory is None:
+                if memory is None:
                     # What Glitch himself said, taken *before* the app's lines are
                     # composed around it below. The reply announcement is the app's
                     # voice: remembered as his, its trailing "\n\ne5." is a format
@@ -3398,12 +3125,6 @@ def create_app(
                     commentary = (
                         f"{commentary}\n\n{reply_line}" if commentary else reply_line
                     )
-                if verdict.fell_back and not commentary:
-                    # Both drafts cut and no deterministic line to stand in: the
-                    # same thing the player hears when the loop ran out of budget,
-                    # because it is the same situation — the model produced no
-                    # usable answer — and an empty bubble reads as a crash.
-                    commentary = STUCK_REPLY
                 if stop_reason == "provider_error":
                     # Recovery semantics (audit item 20): the turn is already
                     # settled — whatever ran stands, the reply was collected above —
@@ -3451,12 +3172,6 @@ def create_app(
                     commentary=commentary,
                     changed=changed,
                     engine_reply=_move_reply_dict(engine_reply),
-                    guarded=verdict.fired,
-                    guarded_claims=verdict.claims,
-                    suppressed=verdict.suppressed,
-                    rewrite=verdict.rewrite,
-                    rewrite_claims=verdict.rewrite_claims,
-                    rewrite_suppressed=verdict.rewrite_suppressed,
                     provider_failure=provider_failure,
                     engine_failure=engine_failure,
                 )
@@ -3467,10 +3182,10 @@ def create_app(
                     state=state,
                     changed=changed,
                     stop_reason=stop_reason,
-                    # Every branch above has settled `memory` by here (the guard
-                    # block fills the last None in), so what is left is only the
-                    # empty case: a turn Glitch said nothing on remembers the
-                    # deterministic facts, or nothing at all.
+                    # Every branch above has settled `memory` by here (the
+                    # evidence block fills the last None in), so what is left
+                    # is only the empty case: a turn Glitch said nothing on
+                    # remembers the deterministic facts, or nothing at all.
                     memory=memory
                     or _remembered_facts(tool_results, engine_reply, ctx.session),
                     engine_failure=engine_failure,

@@ -50,8 +50,7 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   cuts, rewrites or scripts Glitch's words. When he gets something wrong, fix
   what he was shown (context, history, tool results, prompts) and measure it
   as speech accuracy, offline. So no regex fast paths or literal parsers for
-  language, and no new speech guards. The honesty guard still runs until
-  #368 retires it, so don't extend it. Glitch should feel alive, not canned.
+  language, and no speech guards. Glitch should feel alive, not canned.
 - **Personality is tone only** — never move choice, difficulty, or settings.
   The global Glitch text is vendored from `../agent-standard/`; fix drift by
   re-copying, never by editing the copy.
@@ -77,8 +76,7 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 ## Debugging agent behavior
 
 Set `CHESSAPP_TRACE_PATH` and every interaction appends one JSONL record:
-utterance, route, tool trajectory, stop reason, FENs, guard decision, and
-cost. It is the first thing to reach for when a turn misbehaves, and a traced
+utterance, route, tool trajectory, stop reason, FENs, and cost. It is the first thing to reach for when a turn misbehaves, and a traced
 misfire is a ready-made eval scenario. Each record also keeps the narrator's
 `draft` and the facts' `evidence`, so `scripts/speech_report.py` can re-judge
 what Glitch said, offline (`docs/speech-accuracy.md`). To see exactly what a model call was

@@ -136,8 +136,7 @@ records it as `reaction_late`, and the player hears the fast path's late line
 (`_late_close_words`: the moves and the reply — never `STUCK_REPLY` over a move
 that landed). What stays unbounded, knowingly: the planner is bounded between
 round trips (`planning_deadline_s`, #288) and never during one, because its
-calls act and no thread holding them may outlive the turn; and the guard's
-rewrite runs after the reply has been collected.
+calls act and no thread holding them may outlive the turn.
 
 ## Board controls
 
@@ -199,9 +198,9 @@ rewrite runs after the reply has been collected.
   loop is the only surface that can chain dispatches); buttons/MCP dispatch
   once by construction. The window also owns the command's **board trail** —
   the position each mutating dispatch left behind — because chaining is
-  exactly what puts boards between the command's two ends, and the honesty
-  guard checks its commentary against every one of them (`facts.assemble`,
-  audit finding 7).
+  exactly what puts boards between the command's two ends, and the turn's
+  evidence holds every one of them for speech accuracy to judge the
+  commentary against (`facts.assemble`, audit finding 7).
 - **One question per command** (decided 2026-09-05): the first gated call in
   a command arms its op and its question; every later gated call in the same
   window — the same op again or a different one — is refused with a result

@@ -275,15 +275,15 @@ def test_history_replays_text_turns_only_no_tool_payloads():
 
 def test_the_caller_sees_the_fallback_but_the_loop_never_replays_it():
     """The delegate store is one field doing two jobs — the wire record and the
-    loop's memory — and a guarded turn needs them to differ. The rewrite is
-    unscripted, so the fake says the lie again and the turn is cut: the caller
-    is told what a turn with no usable answer says; the brain is given the
-    facts, because an app line replayed as its own words is a register it
-    imitates (`api._remembered_facts`)."""
+    loop's memory — and a turn the app spoke for needs them to differ. A
+    budget stop leaves no usable answer: the caller is told what such a turn
+    says; the brain is given the facts, because an app line replayed as its
+    own words is a register it imitates (`api._remembered_facts`)."""
     brain = ScriptedBrain(
-        AgentResponse(  # invents a capture on an opening move
-            text="Took your knight. Easy.",
+        AgentResponse(  # the move landed, then the budget ran out
+            text="",
             tool_calls=(ToolCall(name="make_move", args={"move": "e4"}),),
+            stop_reason="max_iterations",
         ),
         AgentResponse(text="Nothing much."),
     )

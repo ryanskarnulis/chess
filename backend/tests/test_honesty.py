@@ -1,10 +1,11 @@
-"""The predicate behind the pipeline's honesty guard.
+"""The claim reading speech accuracy scores with (#367).
 
 `claims_destructive_outcome` answers one question about a *string*: does this
-commentary tell the player the game ended, or that a new one began? The pipeline
-pairs that with what deterministically happened (board over? destructive tool
-succeeded?) and refuses to emit the claim when the two disagree — see
-`test_command.py`. This file is the predicate's spec.
+commentary tell the player the game ended, or that a new one began? The scorer
+pairs the reading with what deterministically happened (board over? destructive
+tool succeeded?) and counts the claim unbacked when the two disagree. Until
+#368 a live guard did the same before the player heard it. This file is the
+reading's spec.
 
 The failure it exists for is trace-review finding 6: commentary that invents the
 event it is supposedly reacting to — "Word. Game over." on a live board, "you
@@ -21,9 +22,6 @@ from chessapp.honesty import (
     VerifiedFacts,
     claims,
     claims_destructive_outcome,
-    corrections,
-    unlicensed_advice,
-    unverified,
     unverified_claims,
 )
 
@@ -100,94 +98,6 @@ def test_ordinary_commentary_is_not_a_claim(text):
     assert claims_destructive_outcome(text) is False
 
 
-# --- naming a playable move (the invented-advice leak) -------------------------
-#
-# Audit item 11's second half: the model can invent a move from its own head —
-# the 2026-07-13 trace leak, still measured live after the capability cut
-# (2/5–3/5). The payload of a hint is a SAN token the player could play right
-# now, whatever prose surrounds it, so that is what the predicate matches. The
-# pipeline pairs it with the turn's evidence: a move is licensed exactly when
-# an analysis tool reported it this turn (hints mode is gone, 2026-09-01 — the
-# license is evidence now, never a setting).
-#
-# The one shape that is not advice at all is the clarifying question (audit
-# finding 6, 2026-09-05): "Do you mean Nf3 or Nh3?" is the right answer to
-# "move my kings knight", and the whole-text predicate replaced it with the
-# advice correction. A question naming two or more legal moves is asking, not
-# telling. `Nh3` is in the list for exactly that pair.
-
-LEGAL = ["Nf3", "Nh3", "Nc3", "e4", "d4", "Bc4", "O-O"]
-
-
-def advice(text, licensed=()):
-    """The pipeline's call: everything legal is unlicensed but what an analysis
-    tool reported this turn."""
-    return unlicensed_advice(text, set(LEGAL) - set(licensed), LEGAL)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Try Nf3 here.",
-        "I'd go with e4, obviously.",
-        "Bc4 or Nc3 — both fine.",
-        "Castle already: O-O!",
-        "`d4` is the move.",
-        # A statement naming two is handing over two, not asking about them.
-        "Nf3 or Nh3 both work.",
-        # One move is a recommendation however it is punctuated.
-        "Nf3? Sure.",
-        "Try Nf3?",
-        # A clarification with a recommendation stapled to it: the question
-        # sentence is licensed and the next one is still advice.
-        "Which one — Nf3 or Nh3? I'd go Nf3.",
-    ],
-)
-def test_naming_a_playable_move_is_advice(text):
-    assert advice(text) is True
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        # Declining, needling, or talking about the position without handing
-        # over a move — commentary with no engine consult behind it is
-        # supposed to look like this.
-        "Figure it out yourself.",
-        "Ask me for a hint if you actually want help.",
-        "Your knight is hanging, just saying.",
-        # A move that is not currently playable is not a hint.
-        "That e5 push last game was rough.",
-        "",
-        # The clarifying question, which is the model doing its job.
-        "Do you mean Nf3 or Nh3?",
-        "Which knight — Nf3 or Nh3?",
-        "Nf3 or Nh3?",
-        # Still a clarification with ordinary talk around it: each sentence is
-        # judged on its own, and only the question names moves.
-        "Two knights can go there. Do you mean Nf3 or Nh3?",
-    ],
-)
-def test_commentary_without_a_playable_move_is_not_advice(text):
-    assert advice(text) is False
-
-
-def test_a_move_the_turn_reported_may_be_handed_over():
-    """The licence is the pipeline's half: a move a successful analysis named
-    this turn is a fact the commentary may repeat, and only the rest of the
-    legal list is advice."""
-    assert advice("Nf3 is the move.", licensed=["Nf3"]) is False
-    assert advice("Nf3 is the move. Or e4.", licensed=["Nf3"]) is True
-
-
-def test_a_clarification_counts_every_legal_move_it_names():
-    """The question is weighed against the *legal* moves, not the unlicensed
-    ones: which of the two carries a licence says nothing about whether the
-    sentence is asking or telling, and a question that named one licensed move
-    and one unlicensed one would otherwise read as advice."""
-    assert advice("Do you mean Nf3 or Nh3?", licensed=["Nf3"]) is False
-
-
 # --- verified facts: every operational claim, not just the ending -------------
 #
 # Audit item 13. The ending guard above proved the shape works, and the shape
@@ -196,8 +106,8 @@ def test_a_clarification_counts_every_legal_move_it_names():
 # Personality varies the wording; it does not get to vary the facts.
 #
 # `unverified_claims` returns the claim classes the text asserts and the facts
-# don't support — a list rather than a bool, so a guarded turn can say which
-# class failed. Every class keeps the ending guard's bar: an unhedged assertion
+# don't support — a list rather than a bool, so a miss says which class
+# failed. Every class keeps the ending class's bar: an unhedged assertion
 # in its own sentence. Trash talk, threats, questions and hypotheticals are the
 # whole point of the commentary and must keep surviving, which is why roughly
 # half the cases below are the ones that must come back empty.
@@ -1245,56 +1155,7 @@ def test_on_a_live_board_only_the_ending_class_speaks(text):
     assert unverified_claims(text, NOTHING) == ("ending",)
 
 
-@pytest.mark.parametrize(
-    "text, facts, fact",
-    [
-        (
-            "I win.",
-            PLAYER_MATED,
-            "The game is over: the player won, by checkmate; you lost.",
-        ),
-        (
-            "You win.",
-            VerifiedFacts(ended=True, winner="opponent", termination="checkmate"),
-            "The game is over: you won, by checkmate; the player lost.",
-        ),
-        (
-            "Checkmate.",
-            PLAYER_RESIGNED,
-            "The game is over: the player resigned, so you won.",
-        ),
-        (
-            "You resigned.",
-            GLITCH_RESIGNED,
-            "The game is over: you resigned, so the player won.",
-        ),
-        ("I win.", AGREED_DRAW, "The game ended in a draw, by agreement; nobody won."),
-        (
-            "Stalemate.",
-            VerifiedFacts(ended=True, drawn=True, termination="threefold_repetition"),
-            "The game ended in a draw, by repetition; nobody won.",
-        ),
-        (
-            "You win.",
-            VerifiedFacts(ended=True, winner="opponent", termination="fifty_moves"),
-            "The game is over: you won, by the move-count rule; the player lost.",
-        ),
-        ("Checkmate!", FRESH_BOARD, "A new game began; there is no result to report."),
-    ],
-)
-def test_the_outcome_fact_states_the_ending_as_it_stands(text, facts, fact):
-    found = unverified(text, facts)
-    assert [item.claim for item in found] == ["outcome"]
-    assert corrections(found, facts) == (f'You wrote: "{text}" {fact}',)
-
-
-# --- the facts in words: what a rewrite is told ---------------------------------
-#
-# A claim the facts don't back is sent back to the narrator with the true fact
-# in plain words (`api._honest_words`). This is the spec for those words: one
-# line per unbacked claim, quoting the sentence, addressed to Glitch, stating
-# what is so and never what he did wrong.
-
+# A level middlegame with a little history, for the whole-reading checks below.
 LEVEL = VerifiedFacts(
     material=(0,),
     settings={"voice": "on", "verbosity": "low", "difficulty": "casual"},
@@ -1306,101 +1167,27 @@ LEVEL = VerifiedFacts(
 
 
 @pytest.mark.parametrize(
-    "text, claim, fact",
+    "text, claim",
     [
-        (
-            "Game over.",
-            "ending",
-            "The game is not over and no new game began; it is still being played.",
-        ),
-        ("We drew that one.", "draw", "The game has not been drawn."),
-        ("You're in check.", "check", "Nobody is in check."),
-        (
-            "Snagged your bishop.",
-            "capture",
-            "The board does not show a bishop taken the way that sentence says. "
-            "Pieces the player has taken: pawn. Pieces you have taken: nothing.",
-        ),
-        (
-            "Rxe5 wins on the spot.",
-            "move",
-            "Rxe5 was not a move on this board, so do not name it.",
-        ),
-        (
-            "I played Nf3, obviously.",
-            "owned_move",
-            "You did not play Nf3. The player did.",
-        ),
-        (
-            "You played Nc6 there.",
-            "owned_move",
-            "The player did not play Nc6. You did.",
-        ),
-        ("Saved it as scholars.", "save", "Nothing was saved or loaded this turn."),
-        ("Voice is off now.", "voice", "The voice output is on."),
-        ("Difficulty is maximum now.", "difficulty", "The difficulty is casual."),
-        ("Verbosity is high.", "verbosity", "The verbosity is low."),
-        (
-            "Alright, more detail from now on.",
-            "verbosity_change",
-            "Verbosity was not changed this turn; it is still low.",
-        ),
-        (
-            "You're at -3.5 here.",
-            "evaluation",
-            "No engine evaluation ran this turn, so there is no score to quote.",
-        ),
-        ("You're up a knight.", "material", "Material is level right now."),
+        ("Game over.", "ending"),
+        ("We drew that one.", "draw"),
+        ("You're in check.", "check"),
+        ("Snagged your bishop.", "capture"),
+        ("Rxe5 wins on the spot.", "move"),
+        ("I played Nf3, obviously.", "owned_move"),
+        ("You played Nc6 there.", "owned_move"),
+        ("Saved it as scholars.", "save"),
+        ("Voice is off now.", "voice"),
+        ("Difficulty is maximum now.", "difficulty"),
+        ("Verbosity is high.", "verbosity"),
+        ("Alright, more detail from now on.", "verbosity_change"),
+        ("You're at -3.5 here.", "evaluation"),
+        ("You're up a knight.", "material"),
     ],
 )
-def test_every_claim_class_has_its_fact_in_words(text, claim, fact):
-    found = unverified(text, LEVEL)
-    assert [item.claim for item in found] == [claim]
-    assert corrections(found, LEVEL) == (f'You wrote: "{text}" {fact}',)
-
-
-def test_the_fact_quotes_the_sentence_not_the_whole_reply():
-    found = unverified("Nice. Snagged your bishop. Your move.", LEVEL)
-    (line,) = corrections(found, LEVEL)
-    assert line.startswith('You wrote: "Snagged your bishop." ')
-
-
-def test_a_material_fact_names_the_count_and_both_sides():
-    up = VerifiedFacts(material=(3,))
-    (line,) = corrections(unverified("You're down a rook.", up), up)
-    assert line.endswith(
-        "The player is up 3 pawns of material right now, "
-        "so you are down 3 pawns of material."
-    )
-    down = VerifiedFacts(material=(-1,))
-    (line,) = corrections(unverified("You're up a knight.", down), down)
-    assert line.endswith(
-        "The player is down 1 pawn of material right now, "
-        "so you are up 1 pawn of material."
-    )
-
-
-def test_an_engine_number_fact_names_the_numbers_the_engine_gave():
-    facts = VerifiedFacts(numbers=frozenset({"1.5", "+1.5", "150"}))
-    (line,) = corrections(unverified("You're at -3.5 here.", facts), facts)
-    assert "No engine gave the number -3.5." in line
-    assert "The engine's numbers this turn were: +1.5, 1.5, 150." in line
-
-
-def test_a_difficulty_with_no_named_tier_says_so():
-    facts = VerifiedFacts(settings={"voice": "on", "verbosity": "low"})
-    (line,) = corrections(unverified("Difficulty is maximum now.", facts), facts)
-    assert line.endswith(
-        "The difficulty has no named level right now, so do not name one."
-    )
-
-
-def test_the_same_fact_is_stated_once_however_often_it_is_claimed():
-    found = unverified("Snagged your bishop. Ate your bishop. Word.", LEVEL)
-    assert [item.claim for item in found] == ["capture", "capture"]
-    assert len(corrections(found, LEVEL)) == 2, "two sentences, two quotes"
-    twice = unverified("Snagged your bishop. Snagged your bishop.", LEVEL)
-    assert len(corrections(twice, LEVEL)) == 1, "the same sentence twice is one line"
+def test_every_claim_class_reads_an_unbacked_line(text, claim):
+    """One unbacked line per class, on a level board."""
+    assert unverified_claims(text, LEVEL) == (claim,)
 
 
 def test_unverified_claims_is_the_same_reading_by_class_name():
@@ -1525,23 +1312,10 @@ def test_the_reply_class_is_silent_when_no_reply_was_pending():
     assert unverified_claims("I played Nf6.", facts) == ()
 
 
-@pytest.mark.parametrize("claim", ["takeback", "restart", "unplayed_reply"])
-def test_every_new_class_has_a_fact_for_the_rewrite(claim):
-    text = {
-        "takeback": "Took it back.",
-        "restart": "Fresh board.",
-        "unplayed_reply": "My turn. Nf6.",
-    }[claim]
-    found = [item for item in unverified(text, PENDING) if item.claim == claim]
-    (line,) = corrections(found, PENDING)
-    assert line.startswith('You wrote: "')
-    assert "not" in line.split('"')[-1].lower(), "a fact, stated"
-
-
 # --- the whole reading, for the scorer (#367) -----------------------------------
 #
-# `claims` is what `unverified` filters: the scorer needs the backed claims as
-# well as the unbacked ones, counted on the guard's own rule.
+# The scorer needs the backed claims as well as the unbacked ones;
+# `unverified_claims` is the same reading with the backed ones left out.
 
 
 def test_claims_keep_the_backed_reading_beside_the_unbacked_one():
@@ -1551,10 +1325,9 @@ def test_claims_keep_the_backed_reading_beside_the_unbacked_one():
         ("capture", True),
         ("capture", False),
     ]
-    assert [
-        (u.claim, u.sentence)
-        for u in unverified("I took your knight. You took my queen.", TOOK_A_KNIGHT)
-    ] == [("capture", "You took my queen.")]
+    assert [(c.claim, c.sentence) for c in found if not c.backed] == [
+        ("capture", "You took my queen.")
+    ]
 
 
 def test_a_sentence_is_one_claim_per_class_unbacked_if_any_part_is():

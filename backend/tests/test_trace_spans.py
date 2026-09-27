@@ -2,7 +2,7 @@
 
 A trace used to carry per-call model latencies and nothing else about time,
 and nothing at all about configuration — so a slow turn could not say whether
-it waited on the lock, a tool, Stockfish or the guard, and two eval baselines
+it waited on the lock, a tool or Stockfish, and two eval baselines
 could not be tied to the prompts and server that produced them. `spans_ms`
 answers the first and `serving` the second.
 """
@@ -10,7 +10,6 @@ answers the first and `serving` the second.
 import json
 import threading
 import time
-from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -137,7 +136,8 @@ def test_a_fast_path_move_records_the_engine_reply(trace_path):
     client.post("/api/command", json={"text": "e4"})
     (record,) = read_records(trace_path)
     assert record["engine_reply"] is not None
-    assert {"tool", "engine", "guard"} <= record["spans_ms"].keys()
+    assert {"tool", "engine"} <= record["spans_ms"].keys()
+    assert "guard" not in record["spans_ms"], "retired with the guard (#368)"
 
 
 def test_a_dragged_move_records_the_engine_reply_too(trace_path):
@@ -145,32 +145,7 @@ def test_a_dragged_move_records_the_engine_reply_too(trace_path):
     client.post("/api/game/move", json={"move": "e2e4"})
     (record,) = read_records(trace_path)
     assert record["route"] == "board"
-    assert {"queue", "tool", "engine", "guard", "total"} <= record["spans_ms"].keys()
-
-
-def test_the_guard_span_leaves_the_rewrite_to_model_time(trace_path, monkeypatch):
-    """The rewrite is a model call already in `model_ms`; charging it to the
-    guard as well would count the same seconds twice."""
-    client, _ = build(
-        trace_path,
-        AgentResponse(text="Word. Game over."),
-        rewrites=("Word. Your move.",),
-    )
-    rewrite = ScriptedBrain.rewrite
-
-    def slow_rewrite(self, *args, **kwargs):
-        # A 200 ms round trip that reports its own latency, as the real
-        # brain's `rewrite` does.
-        time.sleep(0.2)
-        return replace(rewrite(self, *args, **kwargs), latency_ms=200)
-
-    monkeypatch.setattr(ScriptedBrain, "rewrite", slow_rewrite)
-    client.post("/api/command", json={"text": "i'm bored of this"})
-
-    (record,) = read_records(trace_path)
-    assert record["rewrite"] == "spoken"
-    assert 200 in record["model_latencies_ms"]
-    assert record["spans_ms"]["guard"] < 150
+    assert {"queue", "tool", "engine", "total"} <= record["spans_ms"].keys()
 
 
 def test_the_registry_reports_each_handler_it_ran_with_its_time():

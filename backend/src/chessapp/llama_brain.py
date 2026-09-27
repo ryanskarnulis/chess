@@ -151,7 +151,6 @@ from chessapp.brain import (
     PHASE_CLOSER,
     PHASE_PLANNER,
     PHASE_REACTION,
-    PHASE_REWRITE,
     RETRY_DIFFERENT_ARGS,
     RETRY_NEVER,
     UNRELATED,
@@ -169,7 +168,7 @@ from chessapp.handoff import build as build_handoff
 from chessapp.handoff import narrator_result_view
 from chessapp.handoff import render as render_handoff
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
-from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING, BRAIN_REWRITING
+from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING
 from chessapp.provider import (
     ChatProvider,
     ChatResult,
@@ -875,28 +874,6 @@ class LlamaBrain:
             )
         return replace(narration, latency_ms=self._elapsed_ms(started))
 
-    def rewrite(
-        self,
-        commentary: str,
-        corrections: Sequence[str],
-        transcript: Sequence[dict[str, str]] = (),
-    ) -> Narration:
-        # The honesty guard's second try: the narrator phase once more, on the
-        # same persona prompt and the same conversation, with a brief that
-        # holds its own reply and the facts the board actually backs. No
-        # tools, like every narrator call; thinking off, because this is a
-        # rephrase and not a position to reason about. Timed here for the
-        # reason `narrate` is: the `Narration` is this call's accounting.
-        self._report(BRAIN_REWRITING)
-        started = self.clock()
-        with model_phase(PHASE_REWRITE):
-            narration = self._speak(
-                _rewrite_brief(commentary, corrections),
-                transcript,
-                thinking=False,
-            )
-        return replace(narration, latency_ms=self._elapsed_ms(started))
-
     def read_answer(self, question: str, text: str) -> Answer:
         """One tool-free round trip that classifies a reply, and nothing else.
 
@@ -1086,7 +1063,7 @@ class LlamaBrain:
 
         `timeout` is the read ceiling for a call someone has a deadline on:
         the observe beat (`_NARRATE_TIMEOUT`) and the loop's closer (its budget
-        plus `_HANG_UP_MARGIN_S`). The rewrite sends none and keeps the
+        plus `_HANG_UP_MARGIN_S`). A call that sends none keeps the
         client's."""
         system = self._resolve_system_prompt()
 
@@ -1423,27 +1400,6 @@ def _fast_path_brief(board_state: dict[str, Any], changes: list[dict[str, Any]])
         f"\n\nNew board state:\n{json.dumps(board_state)}\n\n"
         "React with a short, in-character comment for the player, based "
         "only on these results and the new board. Do not call any tools."
-    )
-
-
-def _rewrite_brief(commentary: str, corrections: Sequence[str]) -> str:
-    """The narrator's brief for saying a reply again with the facts right.
-
-    The reply comes back whole, so the rewrite can keep everything that was
-    fine — the tone, the trash talk, the answer to what the player asked —
-    and one line per unbacked claim says what is actually so (built by
-    `honesty.corrections`, addressed to Glitch). It asks for a second draft
-    and states facts; it does not scold, because a reprimand fed to a 12B
-    produces an apology, and the player never heard the first draft.
-    """
-    facts = "\n".join(f"- {line}" for line in corrections)
-    return (
-        f"You were about to reply to the player with:\n{commentary}\n\n"
-        f"Some of that is not what the board says. The facts:\n{facts}\n\n"
-        "Say it again, in character, keeping everything that was right and "
-        "making it fit those facts. Do not mention this correction or apologize "
-        "for it — the player has not seen the first version. Do not call any "
-        "tools."
     )
 
 

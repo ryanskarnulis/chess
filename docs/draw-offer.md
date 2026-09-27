@@ -97,10 +97,10 @@ Result:
 Description in `resign`'s register: call it as soon as the player offers a
 draw, do not decide the answer yourself, relay whether it was accepted and
 why, and never call it twice in one turn. The narrator gets its words from
-those fields only. The honesty guard already covers the two lies that matter:
-"game over"/"we drew" on a decline is an `ending`/`draw` claim the board does
-not back (`UNTRUE_CLAIM_REPLY`), and "you were winning" needs a number the
-turn reported — `facts.analysis_numbers` learns `offer_draw`'s `cp_engine_pov`
+those fields only. Speech accuracy reads the two lies that matter (the live
+honesty guard that used to cut them is retired, #368): "game over"/"we drew"
+on a decline is an `ending`/`draw` claim the board does not back, and "you
+were winning" needs a number the turn reported — `facts.analysis_numbers` learns `offer_draw`'s `cp_engine_pov`
 (both signs, since the narrator may state it from either side) so an honest
 quote survives and an invented one does not.
 

@@ -60,10 +60,6 @@ def turn(correlation_id: str = "abc123", turn_id: int = 7) -> str:
                 {"name": "make_move", "args": {"move": "e4"}, "result": {"ok": True}}
             ],
             "engine_reply": {"san": "e5", "uci": "e7e5"},
-            "guarded": True,
-            "guarded_claims": ["check"],
-            "suppressed": "Check!",
-            "rewrite": "spoken",
             "commentary": "e4. Your move.",
         }
     )
@@ -105,7 +101,6 @@ def test_calls_group_under_one_header_and_the_decisions_join_them():
     assert "utterance: push my e pawn" in decisions
     assert 'tool make_move {"move": "e4"} → {"ok": true}' in decisions
     assert "engine reply: e5" in decisions
-    assert "guard: cut [check] · rewrite spoken" in decisions
     assert "commentary: e4. Your move." in decisions
 
 

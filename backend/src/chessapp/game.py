@@ -575,7 +575,7 @@ class GameSession:
         A session rebuilt from a FEN can start with Black to move, and assuming
         White moved first would credit every move to the wrong player.
 
-        Who played a move is a fact the honesty guard checks — commentary that
+        Who played a move is a fact speech accuracy reads — commentary that
         credits a move to a side ("I played Nf3") has to name the side that
         really played it.
         """

@@ -31,6 +31,7 @@ from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import Evaluation
 from chessapp.provider import ChatResult, Usage
 from chessapp.provider import ToolCall as ProviderToolCall
+from chessapp.speech_accuracy import unbacked
 from chessapp.tools import build_registry
 
 _DEAD_EVEN = Evaluation(score_cp=0, mate_in=None)
@@ -152,12 +153,6 @@ class ScriptedBrain:
     destructive question — pops the next scripted verdict. Unscripted it says
     `UNRELATED`, the answer that changes nothing, so a test that never thought
     about confirmations behaves exactly as it did before the seam existed.
-
-    `rewrite` — the honesty guard's second try — pops the next scripted
-    rewrite and records what it was asked to fix. Unscripted it says the first
-    draft again, word for word: a fake that changed nothing is the one that
-    lets a test reach the guard's fallback without scripting a second lie, and
-    a fake that invented a clean rewrite would hide what the guard cut.
     """
 
     def __init__(
@@ -166,15 +161,11 @@ class ScriptedBrain:
         dispatcher=None,
         narrations: tuple[str | Narration | Exception, ...] = (),
         answers: tuple[str | Answer, ...] = (),
-        rewrites: tuple[str | Narration | Exception, ...] = (),
     ) -> None:
         self._responses = list(responses)
         self._narrations = list(narrations)
         self._answers = list(answers)
-        self._rewrites = list(rewrites)
         self.answer_calls: list[tuple[str, str]] = []
-        self.rewrite_calls: list[tuple[str, list[str]]] = []
-        self.rewrite_transcripts: list[list] = []
         self.dispatcher = dispatcher
         self.calls: list[tuple[dict, str]] = []
         self.narrate_calls: list[tuple[dict, list]] = []
@@ -204,14 +195,6 @@ class ScriptedBrain:
         # A bare verdict is the common case; a full `Answer` lets a test script
         # the cost fields the trace reads.
         return scripted if isinstance(scripted, Answer) else Answer(verdict=scripted)
-
-    def rewrite(self, commentary: str, corrections, transcript=()) -> Narration:
-        self.rewrite_calls.append((commentary, list(corrections)))
-        self.rewrite_transcripts.append(list(transcript))
-        scripted = self._rewrites.pop(0) if self._rewrites else commentary
-        if isinstance(scripted, Exception):
-            raise scripted
-        return scripted if isinstance(scripted, Narration) else Narration(text=scripted)
 
     def narrate(self, board_state: dict, changes: list, transcript=()) -> Narration:
         self.narrate_calls.append((board_state, changes))
@@ -489,3 +472,25 @@ class CountingProvider:
                     completion_tokens=usage.completion_tokens if usage else None,
                 )
             )
+
+
+class CollectedTurns:
+    """The app's own `Tracer` seam (`trace.Tracer`), kept in memory.
+
+    `mutations` — how many times the board actually moved — is stated in the
+    trace and nowhere else in the HTTP answer, and it is the whole question
+    when a call in the batch was refused.
+    """
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    def record(self, turn: dict) -> None:
+        self.records.append(turn)
+
+
+def unbacked_claims(record: dict) -> list[str]:
+    """What speech accuracy reads as unbacked in the turn's own words (#367).
+    With the live guard retired (#368) the words reach the player as said, and
+    this is where a misstatement still shows."""
+    return [claim.claim for claim in unbacked(record)]

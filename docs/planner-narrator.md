@@ -51,7 +51,8 @@ start inside it and finish past it. The trace's `planning` field (#317) records
 this: the phase's `elapsed_ms`, the configured `deadline_ms`, and `overrun_ms`,
 which is how far past the deadline it finished. The trace's `calls` list has
 one entry per model round trip. Each entry records which phase made the call
-(`planner`, `closer`, `reaction`, `rewrite`, `answer`), how it ended (`ok`,
+(`planner`, `closer`, `reaction`, `answer`; `rewrite` on records from before
+#368), how it ended (`ok`,
 `truncated`, `bad_args`, `failed`, `late`), how long it took, and its tokens,
 which are `null` when unknown. A `late` call's `ms` is the time the turn waited
 before giving up, with the limit it was held to in `budget_ms`. The call may
@@ -158,65 +159,35 @@ the trace records the swap as `offer_refreshes` (a subset of
   one is left as it was. Command-entry schemas are unchanged (the fixed-board
   golden in `test_tool_registry_schema.py` holds), and no schema was minimized.
 
-## The narrator's second draft (the honesty guard, 2026-09-10)
+## Speech is the model's, measured offline (#368, 2026-09-27)
 
-Every operational claim in the narrator's text — an ending, a draw, who won
-and how, a check, a capture, a move, who played it, a save, a setting, an
-engine number, the material count — is checked against the board and the
-turn's tool results before it is spoken (`honesty.unverified`,
-`facts.assemble`). A claim the
-facts don't back used to be answered with one of three canned "Scratch that"
-lines in Glitch's place. It is now answered with **one more narrator call**
-(`Brain.rewrite`): the same persona prompt and conversation, no tools, and a
-brief holding the first draft plus one plain sentence per unbacked claim
-saying what is actually so (`honesty.corrections` — "You wrote: 'Snagged your
-bishop.' Pieces you have taken: nothing."). The rewrite is checked the same
-way. If it passes it is the commentary and is remembered as Glitch's; if it
-still asserts something unbacked it is cut and the turn says only what the app
-already says with no usable model text — the deterministic move line on a move
-turn, the stuck line otherwise. Never a third try, never an apology for a
-sentence the player did not hear.
+The narrator's words are what the player hears. Nothing checks, cuts or
+rewrites them on the live path: code owns actions (inside the tools), and the
+model owns speech. When Glitch says something the turn does not back, the fix
+is what he was shown — the handoff, the facts, the history, the prompts — and
+the measure is speech accuracy (`docs/speech-accuracy.md`), scored offline
+from the trace. Every model-spoken turn records `draft` (his words, before
+the app composes its reply line around them) and `evidence` (the
+`facts.TurnEvidence` its facts are assembled from), and the eval gate fails a
+sample whose draft makes an unbacked claim (`docs/agent-evals.md`).
 
-The winner and the termination became facts on 2026-09-18 (astra audit F7,
-#287): the ending class still checks one boolean and owns the lie on a live
-board ("Game over." with the game running), and an `outcome` class reads the
-same words — "checkmate", "you win", "I resigned", "stalemate" — against the
-session's outcome only once the game is over, so "I win" over the mate the
-player just delivered goes back with "the player won, by checkmate; you
-lost". No new words were added to do it: every alternative it matches was
-already the ending or draw class's, and its correction is the ending as it
-stands. The trace's `outcome` field (winner from the player's side, plus the
-termination) is what lets a finished game's commentary be re-judged later.
+What that reading covers — every operational claim: an ending, a draw, who
+won and how, a check, a capture, a move, who played it, a save, a setting, an
+engine number, the material count, an action nothing did, a reply that does
+not exist yet (`honesty.claims`, `facts.assemble`).
 
-The split is the house rule one step later: code decides what is true, the
-model decides how to say it, and a guard false positive costs one round trip
-rather than the reply. The trace records both drafts and both verdicts
-(`guarded`, `suppressed`, `rewrite`, `rewrite_claims`, `rewrite_suppressed`);
-`guarded` still reads the *first* draft, because the eval floor measures the
-model's own discipline and the rewrite is what spares the player the miss.
-Since trace schema 3 every guarded route also records `draft` (the model's
-own words as the guard was handed them, clean or not) and `evidence` (the
-`facts.TurnEvidence` the facts were assembled from), so a turn's speech can
-be re-judged offline on the facts it really had (#367).
-
-The advice check rides the same call and was inverted the same day: it fires
-only when the turn consulted the engine (`get_best_moves` /
-`analyze_last_move` reported moves) and the reply names a playable move the
-engine did not — an honesty problem. With no analysis in the turn a move
-Glitch names is his own opinion and is his to give; the planner still routes
-hint asks to the engine (`advice_is_engine_backed` measures it). Before the
-inversion the guard ate a correct London answer and a refused move's own
-list of alternatives (live, 2026-09-04 and 2026-09-06).
-
-Two more classes were narrowed on 2026-09-22, after #289's gates caught them
-cutting correct answers. The move class knows where the pieces stand
-(`VerifiedFacts.placements`): a piece named on its own square — "White: Ke1,
-Qd1, …", asked to show the position — is placement, not a move nobody could
-play. The draw class reads only the shapes that report a result ("that's a
-draw", "ended in a draw", "draw agreed"), not the noun somebody offered,
-declined or called too early for. Every live guard firing in the deployed
-trace had been on a correct reply (6/6, all fixed earlier), so the guard errs
-toward letting a reply through when it cannot tell a report from talk.
+**History.** From 2026-07 to #368 a live honesty guard ran that reading on
+every reply. A claim it could not back was first replaced with one of three
+canned "Scratch that" lines in Glitch's place, then (2026-09-10) sent back for
+one more narrator call (`Brain.rewrite`) with the true facts in plain words,
+and cut to the app's deterministic line if the rewrite still lied. An advice
+check rode along: once the turn had asked the engine, a playable move the
+engine did not name was cut. Of the guard's 7 live firings in the #340
+snapshot, 1 caught a real misstatement (the #365 case) and 6 were false
+positives on correct replies — each one a reading error, fixed at the reading,
+which is where those fixes still live. The outcome class (astra audit F7,
+#287: the winner and the termination, read only once the game is over) and
+the placement and draw-shape narrowing (2026-09-22) date from that period too.
 
 ## The handoff (#289, 2026-09-22)
 
@@ -262,7 +233,7 @@ on the app's split registry only; the MCP server's caller asks its own user.
 **Fresh facts through a seam.** `LlamaBrain.narrator_facts`, wired from
 `api.narrator_facts` by `build_app` and the eval harness alike (a test pins
 the two), is read once as the planner hands off: `player_color`, `in_check`,
-`game_over`, the player-relative `outcome` the guard certifies (#287),
+`game_over`, the player-relative `outcome` the outcome class reads (#287),
 `captured` — and `reply_owed`, which the brain lifts into the handoff as "the
 engine has not played its reply to the player's move yet; the app announces it
 after you speak." No `history` (the refresh block's measured reason, one phase
@@ -276,7 +247,7 @@ and resign beats while the state view beside them withheld the same keys. The
 trace keeps the full results; a test pins that the projection and
 `_narrator_state_dict` delete the same four keys.
 
-**Backstops in the guard** (`honesty.py`), measured before they shipped (the
+**Claim classes for the handoff** (`honesty.py`), measured before they shipped (the
 #287 rule; corpus in `test_honesty.py`, deployed sweep in
 `docs/agent-evals.md`):
 
@@ -370,9 +341,9 @@ The trace's `clarification` field records each turn's view of it — `open`,
 ## Cost
 
 The fast path is unchanged (0 calls at verbosity=low, 1 otherwise); brain
-turns pay one extra short tool-free completion (plain move 2 → 3 calls). A
-guarded turn pays one more for the rewrite (6 of 150 deployed turns were
-guarded when the rewrite landed, four of them false positives since fixed).
+turns pay one extra short tool-free completion (plain move 2 → 3 calls).
+Until #368 a guarded turn paid one more for the rewrite (6 of 150 deployed
+turns were guarded when the rewrite landed, four of them false positives).
 Ceilings: planner 2048 / narrator 4096 `max_tokens`; a truncated call is a
 failed turn, never a truncated reply that travels — and the reader in front of
 the destructive gate fails the same way, to the `unrelated` that changes

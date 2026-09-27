@@ -1,17 +1,21 @@
 # Speech accuracy
 
 How often what Glitch says is true, measured offline from traces and evals
-(#367). It is a **score, never a gate**: nothing here runs on the player's
-turn or changes what anyone hears. Once #368 retires the runtime honesty
-guard, this is how a prompt, context or model change is judged on honesty.
+(#367). Nothing here runs on the player's turn or changes what anyone hears:
+the runtime honesty guard is retired (#368), so what Glitch writes is what the
+player hears, and this is how a prompt, context or model change is judged on
+honesty. Over live traces and the frontier tier it is a **score**. In the eval
+gate the same reading fails a sample on any unbacked claim
+(`_assert_speech_backed`, `speech_accuracy.unbacked`; `docs/agent-evals.md`),
+while the suite-wide rate is reported beside the pass rates.
 
 ## What is scored
 
-The guard's own reading does the judging. `honesty.claims` finds each
-operational claim in a narration, sentence by sentence and hedge by hedge, and
-checks it against the facts `facts.assemble` builds from the turn's record.
-The scorer counts one claim per class per sentence, the same rule the guard
-uses, as **made** and **backed**.
+The reading the live guard used (until #368) does the judging.
+`honesty.claims` finds each operational claim in a narration, sentence by
+sentence and hedge by hedge, and checks it against the facts
+`facts.assemble` builds from the turn's record. The scorer counts one claim
+per class per sentence as **made** and **backed**.
 
 | family | classes | backed by |
 | --- | --- | --- |
@@ -34,8 +38,8 @@ Two classes pass by construction where their fact does not apply. That is
 right for a guard and wrong for a count, so the scorer drops them there:
 `outcome` on a live board, where it defers to `ending` on the same sentence,
 and `unplayed_reply` on a turn that owed no reply. The advice licence
-(`move_advice`) is not scored. It checks a licence rather than a fact, and it
-leaves with the guard.
+(`move_advice`) is not scored. It checked a licence rather than a fact, and it
+left with the guard (#368).
 
 **What counts as accuracy:** backed ÷ made over the scored families. A run with
 no claims reports no accuracy (`—`) rather than a perfect one, and every
@@ -43,22 +47,23 @@ report prints its denominator.
 
 ## Where the words and facts come from
 
-Trace schema 3 records two fields on every turn that reaches the guard:
+Trace schema 3 and later record two fields on every turn the model spoke on:
 
-- `draft`: the model's own words exactly as the guard received them, before a
-  rewrite and before the app composes its reply line around them.
-- `evidence`: the `facts.TurnEvidence` the live facts were assembled from.
+- `draft`: the model's own words, before the app composes its reply line
+  around them. Since #368 (schema 4) this is exactly what the player heard of
+  his; on schema 3 it was the guard's first draft, before any rewrite.
+- `evidence`: the `facts.TurnEvidence` the turn's facts are assembled from.
   That is the session (`GameSession.to_dict()`), the claimable settings, the
   engine's reply, and the boards the turn held. The tool results stay in
   `tools`.
 
-The scorer calls the same `assemble` the guard calls, so a re-judged turn is
-judged on the facts it really had. `test_closing_pass.py` holds that as a
-test: on the brain route, the fast path, a drag and an undo, the facts rebuilt
-from the trace equal the facts the live guard received.
+The scorer calls `assemble` on that evidence, so a re-judged turn is judged on
+the facts it really had. `test_closing_pass.py` holds that as a test: on the
+brain route, the fast path, a drag and an undo, the facts rebuilt from the
+trace equal the facts of the evidence the live turn built.
 
 **Older records (schema 1–2)** have no evidence. The draft is recovered from
-`suppressed` when the guard fired, or from `commentary` with the app's reply
+`suppressed` when the old guard fired, or from `commentary` with the app's reply
 announcement removed. The facts are what the record holds: the final board,
 `outcome`, and the tool results. Only the families those facts fully decide are
 scored (`LEGACY_SCORED`): ending, draw, outcome (only where the record has
@@ -75,9 +80,8 @@ A family the reading cannot score reliably would be reported as unscored
 
 - **The labeled corpus.** `test_honesty.py`'s tables (must-fire and
   must-not-fire lines for every class, including every live misfire so far,
-  verbatim) are the guard's spec. They pass, so the reading agrees with every
-  labeled line. `claims` is the reading `unverified` filters, and
-  `test_honesty.py` pins that, so the scorer inherits the corpus.
+  verbatim) are the reading's spec. They pass, so the reading agrees with every
+  labeled line, and the scorer inherits the corpus.
 - **The deployed trace.** Every scored claim in the 283 speakable turns
   (2026-09-04..26) was hand-labelled: 12 claims, 10 true and backed, 2 lies and
   unbacked. The two lies are the "talk more" turns of 2026-09-04, narrated
@@ -97,8 +101,8 @@ A family the reading cannot score reliably would be reported as unscored
   the move". Both were scorer errors, fixed below. With the fix the run
   reads 60/60.
 
-**Where the scorer backs more than the guard.** `speech_accuracy._widened`
-adds two facts the live guard lacks. Each was found as a scorer error on a
+**Where the scorer backs more than the old guard did.**
+`speech_accuracy._widened` adds two facts the live guard lacked. Each was found as a scorer error on a
 true line:
 
 - **A review's alternatives.** `review_game` reports each critical move's
@@ -108,8 +112,8 @@ true line:
   its roundings to 10, 50 and 100. The evaluation class otherwise accepts only
   exact counts and pawn tenths.
 
-Both are scorer-only. Widening the guard would change what the player hears,
-and #368 retires the guard anyway. Both lines are labelled tests in
+Both were kept out of the live guard while it ran, since widening it would
+have changed what the player hears; #368 retired it. Both lines are labelled tests in
 `test_speech_accuracy.py`, beside a count and a move no review backs, which
 stay unbacked.
 

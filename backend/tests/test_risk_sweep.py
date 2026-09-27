@@ -12,9 +12,11 @@ and closes the residue the sweep found:
 - *a command cannot produce duplicate moves* — `test_closing_pass.py`,
   `test_trace.py`'s mutation counts, `test_coordinator.py`'s rejections.
 - *unbacked advice never reaches the player* (originally "hints-off never
-  exposes advice"; the mode retired 2026-09-01 and the evidence rule is what
-  remains) — `test_command.py` (the advice guard); **plus the delegate wire
-  and the line between the agent's advice and the player's own ask, below.**
+  exposes advice"; the mode retired 2026-09-01, and the advice guard that
+  enforced the evidence rule after it was retired with the honesty guard,
+  #368 — whether a hint ask reaches the engine is now the eval gate's
+  measure) — **the line between the agent's advice and the player's own ask,
+  below.**
 - *pending destructive ops cannot be overwritten* — `test_tools.py`,
   `test_command.py`, `test_board_controls.py`; **plus staleness across
   surfaces, below.**
@@ -328,7 +330,7 @@ def test_two_clicks_on_the_same_question_run_one_op():
     assert ctx.session.move_history() == [], "reset once"
 
 
-# --- 3. The delegate wire is the same road, guards included
+# --- 3. The delegate wire is the same road
 
 
 def test_the_delegate_wire_observes_the_player_move_before_the_reply():
@@ -346,33 +348,6 @@ def test_the_delegate_wire_observes_the_player_move_before_the_reply():
     assert "engine_move" not in changes[0]["result"]
     assert exchange["assistant_message"]["content"] == "Bold.\n\ne5."
     assert ctx.session.move_history() == ["e4", "e5"]
-
-
-def test_the_delegate_wire_scrubs_a_move_the_engine_did_not_name():
-    """The advice guard is the pipeline's, so it holds at every entry point:
-    once the engine has been consulted (it said Nc3), a move it did not name
-    is never handed over, whoever asked. The unscripted rewrite repeats the
-    move, so the turn is cut."""
-    ctx = ToolContext(
-        session=GameSession(),
-        engine=FakeEngine(
-            best_moves=(
-                CandidateMove(uci="b1c3", san="Nc3", score_cp=20, mate_in=None),
-            )
-        ),
-    )
-    app, _ = scripted_app(
-        ctx,
-        AgentResponse(
-            text="Easy — play Nf3 and thank me.",
-            tool_calls=(ToolCall(name="get_best_moves", args={}),),
-        ),
-    )
-    client = TestClient(app)
-
-    exchange = say(client, conversation_on(client), "what should I play?")
-
-    assert "Nf3" not in exchange["assistant_message"]["content"]
 
 
 def test_a_provider_failure_on_the_delegate_wire_keeps_the_move_and_says_so():

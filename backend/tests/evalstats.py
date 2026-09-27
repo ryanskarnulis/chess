@@ -461,9 +461,10 @@ _WHOLE_TURN = slice(None)
 
 # The phase tags a schema-2 trace puts on each call (`brain.PHASE_*`, #317),
 # restated here as strings because this module reads records, not the app. The
-# narrator's phases are the closer, a narrate route's reaction and the guard's
-# rewrite — the same persona call three ways. The reader (`answer`) is neither
-# phase, which is exactly the call the positional rule could never place.
+# narrator's phases are the closer, a narrate route's reaction and, on records
+# from before #368, the honesty guard's rewrite — the same persona call. The
+# reader (`answer`) is neither phase, which is exactly the call the positional
+# rule could never place.
 _PLANNER_PHASE = "planner"
 _NARRATOR_PHASES = frozenset({"closer", "reaction", "rewrite"})
 _KNOWN_PHASES = _NARRATOR_PHASES | {_PLANNER_PHASE, "answer"}
@@ -495,15 +496,9 @@ def _attribute_tagged(
 
 
 def _attribute_phases(
-    calls: int, *, route: str | None, stop_reason: str | None, rewrites: int = 0
+    calls: int, *, route: str | None, stop_reason: str | None
 ) -> tuple[Attribution, slice | None, slice | None]:
     """Which of a turn's per-call readings belong to which phase.
-
-    `rewrites` is how many further narrator calls the honesty guard spent
-    after the first (the trace's `rewrite` field is non-empty for one; there
-    is never more than one). They are narrator time: the same phase, the same
-    prompt, one more round trip — so a brain turn's boundary moves that many
-    calls earlier, and a narrate route is still all narrator.
 
     The rule itself, stated once over call *positions* and nothing else, so that
     every kind of per-call reading — milliseconds off the trace, tokens off the
@@ -548,16 +543,12 @@ def _attribute_phases(
         return Attribution.UNKNOWN, None, None
     if stop_reason in BUDGET_STOPS:
         return Attribution.NO_NARRATOR, _WHOLE_TURN, None
-    narrator_calls = 1 + rewrites
-    if narrator_calls >= calls:
-        # More narrator calls than calls: the record contradicts itself, and a
-        # guess would be reported as a measurement.
+    if calls < 2:
+        # A brain turn that completed ran a planner call and a narrator call:
+        # fewer is a record that contradicts itself, and a guess would be
+        # reported as a measurement.
         return Attribution.UNKNOWN, None, None
-    return (
-        Attribution.SPLIT,
-        slice(0, calls - narrator_calls),
-        slice(calls - narrator_calls, calls),
-    )
+    return Attribution.SPLIT, slice(0, calls - 1), slice(calls - 1, calls)
 
 
 def _total(readings: Sequence[int | None], phase: _Phase | None) -> int | None:
@@ -591,7 +582,6 @@ def split_latencies(
     *,
     route: str | None,
     stop_reason: str | None,
-    rewrites: int = 0,
     phases: Sequence[str] | None = None,
 ) -> TurnLatencies:
     """Attribute a turn's per-call readings to the phase that spent them.
@@ -627,9 +617,7 @@ def split_latencies(
     readings = tuple(call_ms)
     attribution, planner, narrator = _attribute_tagged(
         phases, len(readings)
-    ) or _attribute_phases(
-        len(readings), route=route, stop_reason=stop_reason, rewrites=rewrites
-    )
+    ) or _attribute_phases(len(readings), route=route, stop_reason=stop_reason)
     return TurnLatencies(
         readings,
         attribution,
@@ -712,7 +700,6 @@ def split_tokens(
     *,
     route: str | None,
     stop_reason: str | None,
-    rewrites: int = 0,
     phases: Sequence[str] | None = None,
 ) -> TurnTokens:
     """Attribute a turn's per-call token counts to the phase that spent them.
@@ -729,9 +716,7 @@ def split_tokens(
     call_out = tuple(completion for _, completion in usage)
     attribution, planner, narrator = _attribute_tagged(
         phases, len(usage)
-    ) or _attribute_phases(
-        len(usage), route=route, stop_reason=stop_reason, rewrites=rewrites
-    )
+    ) or _attribute_phases(len(usage), route=route, stop_reason=stop_reason)
     return TurnTokens(
         call_in=call_in,
         call_out=call_out,
