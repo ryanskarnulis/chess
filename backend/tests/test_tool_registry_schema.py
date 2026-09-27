@@ -38,7 +38,13 @@ import pytest
 from pydantic import Field
 
 from chessapp.game import GameSession
-from chessapp.tools import UNDO_PLIES_MAX, ToolContext, ToolRegistry, build_registry
+from chessapp.tools import (
+    UNDO_PLIES_MAX,
+    ToolContext,
+    ToolRegistry,
+    brain_tool_definitions,
+    build_registry,
+)
 
 GOLDEN = Path(__file__).parent / "tool_definitions_golden.json"
 EMITTED = Path(__file__).parent / "tool_definitions_emitted.json"
@@ -318,3 +324,67 @@ def test_tool_decorator_accepts_literal_enum():
     prop = registry.definitions()[0]["function"]["parameters"]["properties"]["choice"]
     assert prop["enum"] == ["a", "b"]
     assert registry.dispatch("pick", {"choice": "c"})["ok"] is False
+
+
+# --- the planner's offer: a fixed order, the varying tool last ---------------
+
+# The order the planner is offered its tools in. Fixed so the offer is a
+# byte-stable prefix across boards (#364, folded into #370): the planner's
+# cached prompt holds only up to the first byte that differs, and the one
+# schema that follows the board — `ask_player`'s `candidates` enum, the live
+# `legal_moves` (#315) — sits last, where a new board costs a re-read of that
+# tool alone. A change to this list is a change to what the planner reads, so
+# it runs the eval gate.
+PLANNER_OFFER_ORDER = [
+    "describe_position",
+    "evaluate_position",
+    "get_best_moves",
+    "analyze_last_move",
+    "review_game",
+    "make_move",
+    "undo",
+    "new_game",
+    "resign",
+    "claim_draw",
+    "offer_draw",
+    "export_pgn",
+    "save_game",
+    "resume_game",
+    "set_difficulty",
+    "set_verbosity",
+    "set_voice_output",
+    "ask_player",
+]
+
+
+def _planner_offer(session: GameSession) -> list[dict[str, Any]]:
+    ctx = ToolContext(session=session)
+    return brain_tool_definitions(build_registry(ctx, atomic_exchange=False), ctx)
+
+
+def test_the_planner_offer_is_a_fixed_order_with_ask_player_last():
+    names = [d["function"]["name"] for d in _planner_offer(GameSession())]
+    assert names == PLANNER_OFFER_ORDER
+
+
+def test_the_offer_differs_across_boards_only_in_its_last_tool():
+    start = _planner_offer(GameSession())
+    later = GameSession()
+    for san in ("e4", "e5", "Nf3"):
+        later.submit_move(san)
+    moved = _planner_offer(later)
+    assert moved[:-1] == start[:-1]
+    assert moved[-1] != start[-1], "ask_player's enum follows the board"
+    # Byte for byte, as the wire sends it: everything before ask_player matches.
+    head = json.dumps(start[:-1])
+    assert json.dumps(moved).startswith(head[:-1])
+
+
+def test_a_claimable_draw_changes_nothing_in_the_offer():
+    # Mask, don't remove: `claim_draw` is there before a claim exists and
+    # after, in the same place (#364).
+    repeated = GameSession()
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8") * 2:
+        repeated.submit_move(san)
+    assert repeated.claimable_draws()
+    assert _planner_offer(repeated)[:-1] == _planner_offer(GameSession())[:-1]

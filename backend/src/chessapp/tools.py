@@ -710,17 +710,21 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     one (and a bigger or different tool list is itself a variable: the 2026-07-13
     trace review saw capture phrasings behave differently under two lists).
 
-    Two reasons a tool is withheld, and neither is a prompt rule:
+    One reason a tool is withheld, and it is not a prompt rule:
+    `BOARD_STATE_TOOLS`, always — their answers are strict subsets of the state
+    block the brain is handed every turn, so a call only burns a round trip.
 
-    - `BOARD_STATE_TOOLS`, always: their answers are strict subsets of the state
-      block the brain is handed every turn, so a call only burns a round trip.
-    - `claim_draw` while no draw is claimable: whether the rules allow a claim is
-      board truth, so the tool simply is not there until it can be used — never
-      the model's judgment. This also keeps the planner's schema unchanged on
-      every turn where no claim exists, which is what the eval baseline is
-      measured against.
+    `claim_draw` used to be the second, withheld while no draw was claimable.
+    It is offered on every turn now and refuses in its handler (`retry:
+    never`) when nothing can be claimed — "mask, don't remove" (#364, folded
+    into #370). Inserted mid-list, it shifted every schema after it the moment
+    a claim appeared, which cost the planner's cached prefix; always there, the
+    offer is byte-stable across boards up to `ask_player`, the one tool whose
+    schema follows the board and which is pinned last for that reason
+    (`tests/test_tool_registry_schema.py`). Whether the rules allow a claim is
+    still never the model's judgment: the handler says so.
 
-    `get_best_moves` used to be the third (audit item 11: withheld while hints
+    `get_best_moves` used to be withheld too (audit item 11: withheld while hints
     were off). Hints mode was retired 2026-09-01 — a hint is on-request now, so
     the tool that answers the ask is in the offer on every turn, and whether a
     hint ask reaches it is the planner's routing, which the eval gate measures.
@@ -729,10 +733,7 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     `/api/game/hint`) still get the full registry; a withheld tool stays
     registered and dispatchable, and refuses on its own terms when it cannot run.
     """
-    exclude = list(BOARD_STATE_TOOLS)
-    if not ctx.session.claimable_draws():
-        exclude.append("claim_draw")
-    return exclude
+    return list(BOARD_STATE_TOOLS)
 
 
 # The planner's clarification tool (`build_registry`, the split registry only).
@@ -754,8 +755,8 @@ def brain_tool_definitions(
     planner already holds: a candidate outside it is a schema correction in the
     loop, before anything reaches the narrator, so a clarification can only
     ever offer moves the board allows. With fewer than two legal moves there is
-    nothing to choose between and the tool is withheld, the way `claim_draw`
-    is while no draw is claimable. app assembly, the eval harness and the
+    nothing to choose between and the tool is withheld — which shifts nothing,
+    because it is the last tool offered. app assembly, the eval harness and the
     planner probe all build the offer here, so the measured agent is the
     shipped one.
     """
@@ -2008,7 +2009,8 @@ def build_registry(
         # answer is a move, not another call.
         if not ctx.session.claimable_draws():
             raise ToolError(
-                "cannot claim a draw: no draw is available to claim in this position",
+                "cannot claim a draw: no draw is available to claim in this"
+                " position; a draw by agreement is offer_draw",
                 retry=RETRY_NEVER,
             )
         refusal = _gate("claim_draw", {})

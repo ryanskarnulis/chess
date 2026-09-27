@@ -347,7 +347,7 @@ def test_prepare_builds_the_planner_call_the_app_makes() -> None:
     offered = {d["function"]["name"] for d in prepared.tools}
     assert "make_move" in offered and "undo" in offered
     assert not offered & set(BOARD_STATE_TOOLS), "the board is injected, not offered"
-    assert "claim_draw" not in offered
+    assert "claim_draw" in offered, "masked, not removed (#364)"
     assert prepared.prompt_sha == sha(PLANNER_PROMPT)
     assert prepared.fast_path is None
 

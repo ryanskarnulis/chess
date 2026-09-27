@@ -196,16 +196,17 @@ def test_build_app_offers_get_best_moves_every_command():
     assert {"evaluate_position", "analyze_last_move"} <= offered(fake.calls[0])
 
 
-def test_build_app_offers_claim_draw_only_when_a_draw_is_claimable():
-    # The offer's one remaining live gate, off board truth: whether a draw can
-    # be claimed is something the app knows, so the tool is simply absent until
-    # it can be used and the model is never asked to judge it. Every turn with
-    # no claim available plans against the unchanged schema.
+def test_build_app_offers_claim_draw_whether_or_not_a_draw_is_claimable():
+    # Mask, don't remove (#364, folded into #370): the tool is in the offer on
+    # every turn, so a claim appearing never shifts the schemas after it, and
+    # its handler refuses when there is nothing to claim. Whether a draw can be
+    # claimed is still the app's to say, never the model's.
     fake = ScriptedProvider(text_turn("ok"))
     client = TestClient(build_app(model="gemma", provider=fake))
 
     client.post("/api/command", json={"text": "how's it looking?"})
-    assert "claim_draw" not in offered(fake.calls[0]), "nothing to claim yet"
+    first = fake.calls[0]["tools"]
+    assert "claim_draw" in offered(fake.calls[0]), "offered with nothing to claim"
 
     # Repeat the position into a claimable threefold draw. Each of these is a
     # fast-path move (no planner turn), so the next planner call is the one that
@@ -217,6 +218,12 @@ def test_build_app_offers_claim_draw_only_when_a_draw_is_claimable():
     # -2 is that command's planner turn; -1 is the tool-free narrator.
     assert "claim_draw" in offered(fake.calls[-2])
     assert offered(fake.calls[-1]) == set(), "the narrator still gets no tools"
+    # Byte-stable up to `ask_player`, the one tool that follows the board.
+    later = fake.calls[-2]["tools"]
+    assert [t["function"]["name"] for t in later] == [
+        t["function"]["name"] for t in first
+    ]
+    assert later[:-1] == first[:-1]
 
 
 def test_build_app_from_env_reads_the_planner_temperature(monkeypatch):
