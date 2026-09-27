@@ -35,6 +35,7 @@ from chessapp.coordinator import TurnCoordinator, TurnPhase
 from chessapp.facts import TurnEvidence, assemble
 from chessapp.game import GameSession
 from chessapp.llama_brain import LlamaBrain
+from chessapp.speech_accuracy import score_record
 from chessapp.tools import (
     CONFIRM_QUESTIONS,
     ToolContext,
@@ -97,7 +98,8 @@ def make_client(
         # Wired as app assembly wires it (#289): the narrator's facts, and
         # whether the reply is still owed, read as the planner hands off.
         narrator_facts=lambda: api.narrator_facts(ctx, coordinator),
-        **brain_kwargs,
+        # And the reply settled just before those facts are read (#365).
+        **{"settle_reply": coordinator.settle_owed_reply, **brain_kwargs},
     )
     app = create_app(
         ctx,
@@ -263,7 +265,7 @@ def test_whether_a_reply_is_owed_is_decided_by_whether_the_undo_landed(
     which is the same rule read the other way.
     """
     turns = CollectedTurns()
-    client, _, ctx = make_client(
+    client, provider, ctx = make_client(
         tool_calls_turn(
             ("make_move", {"move": "e4", "source": "said_the_move"}),
             ("undo", {"plies": plies}),
@@ -282,9 +284,11 @@ def test_whether_a_reply_is_owed_is_decided_by_whether_the_undo_landed(
     assert undo_result.get("retry") == retry
     assert ctx.session.move_history() == history
     assert ctx.session.turn == ctx.session.player_color, "the player is to move"
-    # The app's own reply announcement rides on the commentary exactly when a
-    # reply was owed and collected.
-    assert body["commentary"] == f"e4 is on.{announcement}"
+    # Glitch's words are the commentary (#365); the reply, when one was owed
+    # and collected, was in his brief to say.
+    assert body["commentary"] == "e4 is on."
+    brief = provider.calls[-1]["messages"][-1]["content"]
+    assert ("Your reply, already on the board: e5." in brief) is bool(announcement)
     (record,) = turns.records
     assert record["mutations"] == 2
 
@@ -476,14 +480,16 @@ def test_a_resumed_mid_exchange_save_finishes_the_exchange(tmp_path):
     assert coordinator.phase == TurnPhase.AWAITING_PLAYER
     resumed = body["tool_results"][0]["result"]
     assert resumed["engine_move"]["san"] == "e5"
-    assert body["commentary"] == "Back where you left it.\n\ne5."
+    # The settled move is in the narrator's results to say (#365); nothing is
+    # appended to his words.
+    assert body["commentary"] == "Back where you left it."
 
 
 def test_an_odd_takeback_is_announced_like_any_other_engine_move():
     """The other restore, and the one that makes the announcement's case: the
     player asked for one half-move back and the board moved twice. The narrator
-    naming the settled move survives the honesty guard — the `engine_move` the
-    result carries is evidence like the reply's own is."""
+    says the settled move (#365) and it scores as backed — the `engine_move`
+    the result carries is evidence like the reply's own is."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
     for san in ("e4", "c5"):
         assert ctx.session.submit_move(san).legal
@@ -501,7 +507,7 @@ def test_an_odd_takeback_is_announced_like_any_other_engine_move():
     ).json()
 
     assert body["tool_results"][0]["result"]["engine_move"]["san"] == "e5"
-    assert body["commentary"] == "Rolled it back, and I'm on e5 again.\n\ne5."
+    assert body["commentary"] == "Rolled it back, and I'm on e5 again."
     assert ctx.session.move_history() == ["e4", "e5"]
     assert ctx.session.turn == ctx.session.player_color
     (record,) = turns.records
@@ -634,7 +640,7 @@ def test_a_count_from_a_board_the_batch_held_is_backed(trace_path):
 
     assert ctx.session.move_history() == ["e4", "d5", "exd5", "Qxd5"]
     assert ctx.session.material_balance() == 0, "the recapture levelled it again"
-    assert response["commentary"] == "You are up a pawn.\n\nQxd5."
+    assert response["commentary"] == "You are up a pawn."
     assert unbacked_claims(last_turn(trace_path)) == []
 
 
@@ -651,7 +657,7 @@ def test_a_count_no_board_the_batch_held_backs_is_unbacked(trace_path):
         "/api/command", json={"text": "grab the pawn on d5 and tell me the material"}
     ).json()
 
-    assert response["commentary"] == "You are up a rook.\n\nQxd5."
+    assert response["commentary"] == "You are up a rook."
     traced = last_turn(trace_path)
     assert unbacked_claims(traced) == ["material"]
     assert traced["model_calls"] == 3, "planner, note, narrator: no second draft"
@@ -671,7 +677,7 @@ def test_a_move_only_a_board_the_batch_never_held_makes_legal_is_unbacked(trace_
     ).json()
 
     assert "Nxd5" not in ctx.session.legal_moves()
-    assert response["commentary"] == "Nxd5 was cleaner.\n\nQxd5."
+    assert response["commentary"] == "Nxd5 was cleaner."
     assert unbacked_claims(last_turn(trace_path)) == ["move"]
 
 
@@ -771,6 +777,7 @@ def test_a_false_planner_note_is_not_what_the_narrator_is_told(trace_path):
         "refused": [],
         "consulted": [],
         "reply_owed": False,
+        "engine_reply": None,
         "candidates": [],
     }
 
@@ -795,12 +802,17 @@ def test_an_undo_that_ran_may_be_announced(trace_path):
     assert record["handoff"]["performed"] == ["undo"]
 
 
-@pytest.mark.parametrize("reply_uci", ["g8f6", "b8c6"])
-def test_naming_the_engines_reply_early_is_scored_unbacked(reply_uci, trace_path):
-    """Acceptance 3. The narrator closes a `make_move` turn before the
-    pipeline collects the reply, so "...Nf6" is a guess — and it is unbacked
-    whether the guess was right (the engine plays Nf6) or wrong (Nc6). The
-    brief says so; what he makes of it is his (#368), and #365 is the fix."""
+@pytest.mark.parametrize(
+    ("reply_uci", "unbacked", "announced"),
+    [("g8f6", [], True), ("b8c6", ["unplayed_reply"], False)],
+)
+def test_the_narrator_says_the_reply_it_was_handed(
+    reply_uci, unbacked, announced, trace_path
+):
+    """#365, the acceptance turned round. Until #365 the narrator closed a
+    `make_move` turn before the reply existed, so "...Nf6" was a guess and
+    unbacked either way. Now the reply is settled first and handed to him: the
+    right name is backed and said, the wrong one is a misnamed reply."""
     client, provider, ctx = make_client(
         tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
@@ -812,12 +824,15 @@ def test_naming_the_engines_reply_early_is_scored_unbacked(reply_uci, trace_path
     body = client.post("/api/command", json={"text": "e4 please, then think"}).json()
 
     closing = narrator_briefs(provider)[0]
-    assert "has not played its reply" in closing
+    reply = ctx.session.move_history()[1]
+    assert f"Your reply, already on the board: {reply}." in closing
     record = last_turn(trace_path)
-    assert unbacked_claims(record) == ["unplayed_reply"]
-    assert record["handoff"]["reply_owed"] is True
-    assert body["commentary"].startswith("King's pawn. My turn. Nf6.\n\n")
-    assert ctx.session.move_history()[0] == "e4"
+    assert unbacked_claims(record) == unbacked
+    assert record["handoff"]["reply_owed"] is False
+    assert record["handoff"]["engine_reply"] == reply
+    assert record["evidence"]["pending_reply_fen"] is None
+    assert score_record(record).reply_announced is announced
+    assert body["commentary"] == "King's pawn. My turn. Nf6."
 
 
 def test_a_threatened_reply_is_still_glitchs_to_make(trace_path):
@@ -1022,7 +1037,7 @@ def test_the_brain_routes_facts_rebuild_from_its_trace(monkeypatch):
 
     (record,) = turns.records
     assert record["draft"] == "You are up a pawn."
-    assert record["evidence"]["pending_reply_fen"] is not None
+    assert record["evidence"]["pending_reply_fen"] is None, "spoken after it"
     assert _rebuilt(record) == seen[0]
 
 

@@ -26,7 +26,7 @@ per class per sentence as **made** and **backed**.
 | capture | `capture` | who took what, from the game's captured pieces and the named move |
 | move | `move` | a SAN the turn accounts for: played, reported, legal, or a placement |
 | owned move | `owned_move` | the side named really played it |
-| unplayed reply | `unplayed_reply` | not naming the engine's reply before it existed |
+| unplayed reply | `unplayed_reply` | not naming an engine reply that was not played: before the reply existed, any; after it (#365), any it could have played instead |
 | takeback | `takeback` | an `undo` that ran this turn |
 | restart | `restart` | a `new_game` that ran this turn |
 | save | `save` | a `save_game` / `resume_game` that ran |
@@ -37,7 +37,7 @@ per class per sentence as **made** and **backed**.
 Two classes pass by construction where their fact does not apply. That is
 right for a guard and wrong for a count, so the scorer drops them there:
 `outcome` on a live board, where it defers to `ending` on the same sentence,
-and `unplayed_reply` on a turn that owed no reply. The advice licence
+and `unplayed_reply` on a turn with no engine reply, owed or played. The advice licence
 (`move_advice`) is not scored. It checked a licence rather than a fact, and it
 left with the guard (#368).
 
@@ -45,12 +45,23 @@ left with the guard (#368).
 no claims reports no accuracy (`—`) rather than a perfect one, and every
 report prints its denominator.
 
+**Reply said (#365)** is the second measure, reported beside the accuracy and
+never folded into it: of the turns that owed the player the engine's move in
+words — the engine replied, Glitch spoke after it did, and his draft is not
+empty — how many named it (`speech_accuracy.names_reply`: its SAN, a castle
+for a castle, or the square it went to, "knight to f6" or "f6"). The square
+alone counts, so this is generous by design: it is the floor on how often the
+move went unsaid, not a judgment of how well it was said. Whether the move he
+named is the *right* one is the `unplayed_reply` class. The summary line
+prints it as `reply_said=a/o`, and `as_dict` carries `replies: {owed,
+announced}`, which the gate and frontier reports merge like the rest.
+
 ## Where the words and facts come from
 
 Trace schema 3 and later record two fields on every turn the model spoke on:
 
-- `draft`: the model's own words, before the app composes its reply line
-  around them. Since #368 (schema 4) this is exactly what the player heard of
+- `draft`: the model's own words, before the app composes any line of its own
+  around them (the reply line until #365; now only a fallback's). Since #368 (schema 4) this is exactly what the player heard of
   his; on schema 3 it was the guard's first draft, before any rewrite.
 - `evidence`: the `facts.TurnEvidence` the turn's facts are assembled from.
   That is the session (`GameSession.to_dict()`), the claimable settings, the

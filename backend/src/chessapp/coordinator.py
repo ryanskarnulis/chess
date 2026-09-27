@@ -60,7 +60,9 @@ object on the context.
 
 import logging
 import threading
+import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -91,6 +93,33 @@ class TurnStateError(ValueError):
     rejection serve the agent (as `dispatch` error data) and the trusted API
     paths (as a 409) without either learning a new failure shape.
     """
+
+
+@dataclass(frozen=True)
+class ReplySettlement:
+    """How an owed reply was settled: the move the engine played, or what
+    killed it.
+
+    `reply` is None both when the engine had nothing to play (no engine, the
+    player's move ended the game) and when it died; `failure` tells the two
+    apart — empty unless Stockfish raised, in which case the turn is left
+    where the coordinator put it, with the reply still owed (#284).
+    """
+
+    reply: MoveResult | None = None
+    failure: str = ""
+
+
+def failure_name(exc: BaseException) -> str:
+    """One failure, as the short string a record can carry: class and message.
+
+    The trace's `provider_failure` names a *kind* from a vocabulary the brain
+    owns; nothing owns a vocabulary for a dying Stockfish or for whatever else
+    escapes a turn, so the exception names itself. Class alone when it carries
+    no message — `EngineTerminatedError` is already the whole story.
+    """
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
 class _PendingReply:
@@ -157,6 +186,17 @@ class TurnCoordinator:
         self._destructive_spent = False
         # The save names this command has written itself (`record_save`).
         self._saved_this_command: set[str] = set()
+        # The reply `settle_owed_reply` last settled, until someone takes it
+        # (`take_settlement`) or a new command begins (#365).
+        self._settlement: ReplySettlement | None = None
+        # Told how long each settle waited on the engine, in whole ms — the
+        # request's `engine` span (#290). Assigned by `create_app`, like
+        # `on_phase`.
+        self.on_engine_time: Callable[[int], None] | None = None
+        # Told once a settle has put the engine's reply on the board, so the
+        # board reaches every client before the narrator says a word about it
+        # (#365). `create_app` points it at the state broadcast.
+        self.on_reply_played: Callable[[], None] | None = None
 
     @property
     def phase(self) -> TurnPhase:
@@ -378,6 +418,7 @@ class TurnCoordinator:
         self._command_open = True
         self._destructive_spent = False
         self._saved_this_command = set()
+        self._settlement = None
 
     def end_command(self) -> None:
         """Close the command window; outside one the budget is not enforced.
@@ -443,6 +484,67 @@ class TurnCoordinator:
     def saved_this_command(self, name: str) -> bool:
         """Whether this command already wrote save `name` (`record_save`)."""
         return self._command_open and name in self._saved_this_command
+
+    def settle_owed_reply(self) -> ReplySettlement | None:
+        """Collect the reply a landed player move is owed, and close the turn.
+
+        The close beat, in one place for every route (#365): the narrator
+        speaks *after* this, so the engine's move is on the board — and in the
+        narrator's brief — before a word is said about it. The fast path and a
+        drag call it before they narrate; the brain calls it through its
+        `settle_reply` seam as the planner hands off; the command pipeline's
+        convergence calls it for whatever is still owed after that.
+
+        None when nothing is owed. A Stockfish that dies here is not the
+        caller's failure (#284): the player's move is committed, so it comes
+        back as a settlement naming what died, with the turn left owing the
+        reply for the next interaction to settle. The result is kept until
+        `take_settlement`, so the brain's settle and the pipeline's read of it
+        are one collect, not two.
+        """
+        if self._phase not in (
+            TurnPhase.PLAYER_MOVE_APPLIED,
+            TurnPhase.AGENT_OBSERVING,
+        ):
+            return None
+        started = time.monotonic()
+        try:
+            reply = self.collect_engine_reply()
+        except Exception as exc:
+            logger.warning("engine_reply_failed", exc_info=True)
+            settlement = ReplySettlement(failure=failure_name(exc))
+        else:
+            self.complete_turn()
+            settlement = ReplySettlement(reply=reply)
+        finally:
+            elapsed = max(0, round((time.monotonic() - started) * 1000))
+            self._tell(self.on_engine_time, elapsed)
+        self._settlement = settlement
+        if settlement.reply is not None:
+            self._tell(self.on_reply_played)
+        return settlement
+
+    @staticmethod
+    def _tell(observer: Callable[..., None] | None, *args: object) -> None:
+        """Call an observer; one that raises is logged, never the turn's."""
+        if observer is None:
+            return
+        try:
+            observer(*args)
+        except Exception:
+            logger.warning("coordinator_observer_failed", exc_info=True)
+
+    @property
+    def settlement(self) -> ReplySettlement | None:
+        """The reply the last settle produced and nobody has taken yet — what
+        the narrator is told the engine played (`api.narrator_facts`)."""
+        return self._settlement
+
+    def take_settlement(self) -> ReplySettlement | None:
+        """Hand over the kept settlement and forget it, so a later narration
+        (a confirmed op, a resignation) is never told about this reply."""
+        settlement, self._settlement = self._settlement, None
+        return settlement
 
     def settle_engine_turn(self) -> MoveResult | None:
         """Move for the engine on a board that was left with the engine to play.

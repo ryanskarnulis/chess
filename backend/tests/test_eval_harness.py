@@ -1104,6 +1104,31 @@ def test_the_harness_gives_the_narrator_the_same_facts_assembly_does(
         assert facts["reply_owed"] is False
 
 
+def test_the_harness_settles_the_reply_before_narrating_as_assembly_does(
+    monkeypatch,
+) -> None:
+    """#365: whether the narrator is handed the engine's reply decides what
+    it can say, so a harness without the settle seam would measure a
+    narrator that ships nowhere."""
+    import chessapp.app
+    import test_agent_evals
+
+    shipped = _brain_kwargs(
+        monkeypatch,
+        chessapp.app,
+        lambda: chessapp.app.build_app(engine=FakeEngine()),
+    )
+    measured = _brain_kwargs(
+        monkeypatch,
+        test_agent_evals,
+        lambda: test_agent_evals._build_eval_app(FakeEngine()),
+    )
+
+    for wiring in (shipped, measured):
+        assert wiring["settle_reply"] is not None, "a narrator that speaks first"
+        assert wiring["settle_reply"]() is None, "nothing owed on a fresh board"
+
+
 # --- speech accuracy rides on the tracer (#367) -------------------------------------
 
 

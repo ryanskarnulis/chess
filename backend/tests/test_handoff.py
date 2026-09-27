@@ -153,10 +153,32 @@ def test_the_brief_never_carries_a_side_to_move():
     assert '"fen"' not in brief and '"turn"' not in brief
 
 
-def test_an_owed_reply_is_said_to_be_the_apps_to_announce():
+REPLY = {"san": "Nf6", "capture": "knight", "check": True}
+
+
+def test_the_engines_reply_is_the_narrators_to_say():
+    """#365: the narrator speaks after the reply is on the board, is handed
+    it, and is told the player learns it from what he says — the exact line,
+    pinned, because it is the whole of the prompt change."""
+    brief = render(build([MOVED], engine_reply=REPLY), "e4", [MOVED])
+    assert (
+        "Your reply, already on the board: Nf6, taking their knight, check. "
+        "The player learns your move only from what you say; say it however "
+        "you like."
+    ) in brief
+    assert "Your reply" not in render(build([MOVED]), "e4", [MOVED])
+
+
+def test_a_quiet_reply_is_just_the_move():
+    quiet = {"san": "e5", "capture": None, "check": False}
+    brief = render(build([MOVED], engine_reply=quiet), "e4", [MOVED])
+    assert "Your reply, already on the board: e5. " in brief
+
+
+def test_a_reply_the_engine_died_on_is_said_never_to_have_come():
     brief = render(build([MOVED], reply_owed=True), "e4", [MOVED])
-    assert "has not played its reply" in brief
-    assert "has not played its reply" not in render(build([MOVED]), "e4", [MOVED])
+    assert "Your reply to the player's move never came" in brief
+    assert "already on the board" not in brief
 
 
 def test_the_facts_ride_along_and_an_empty_note_leaves_its_heading_out():
@@ -168,13 +190,14 @@ def test_the_facts_ride_along_and_an_empty_note_leaves_its_heading_out():
 
 
 def test_the_trace_names_tools_and_not_results():
-    handoff = build([LOOKED, MOVED, REFUSED], reply_owed=True)
+    handoff = build([LOOKED, MOVED, REFUSED], engine_reply=REPLY)
     assert handoff.trace() == {
         "kind": "partial",
         "performed": ["make_move"],
         "refused": ["new_game"],
         "consulted": ["evaluate_position"],
-        "reply_owed": True,
+        "reply_owed": False,
+        "engine_reply": "Nf6",
         "candidates": [],
     }
 

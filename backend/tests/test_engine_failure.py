@@ -92,6 +92,20 @@ def test_the_apps_line_is_composed_around_glitchs_own_words():
     assert body["commentary"] == f"Classic opener.\n\n{ENGINE_LOST_REPLY_OWED}"
 
 
+def test_the_narrator_is_told_the_reply_never_came():
+    """#365: the reply is settled before Glitch speaks, so when the engine
+    dies on it he knows, and is handed no move to announce."""
+    ctx = ToolContext(session=GameSession(), engine=DyingEngine())
+    brain = ScriptedBrain(narrations=("Classic opener.",))
+    app, _ = scripted_app(ctx, brain=brain)
+
+    TestClient(app).post("/api/command", json={"text": "e4"})
+
+    state, _ = brain.narrate_calls[0]
+    assert state["reply_owed"] is True
+    assert state["engine_reply"] is None
+
+
 def test_a_silent_turn_still_says_the_move_stands():
     """verbosity=low never narrates, so the deterministic move confirmation is
     all there is to compose around — and the player still hears why no answer

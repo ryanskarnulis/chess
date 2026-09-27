@@ -255,6 +255,17 @@ misfire in live turns, the `advice_capture_survives_guard` precedent.
 | --- | --- | --- | --- |
 | `checkmate_reaction_survives_guard` | "queen takes f7"; after 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6, the player white | the fast path (`parse_move` settles `Qxf7#`, asserted in setup), one model call — the observe beat reacting from the finished board, with no reply owed and no result line beside it; the game is over with the player the winner; the record's `outcome` is `{"winner": "player", "termination": "checkmate"}`; the commentary is a reaction and not the app's own `Qxf7#. Game over: 1-0 (checkmate).`; **every claim backed** | Lock |
 
+### Glitch says his own move (added 2026-09-27, floor 0.8)
+
+#365: the narrator speaks after the engine's reply is on the board and is
+handed it as his own move to say; the app no longer appends it. The traced
+line from the live game that opened the issue, where all three reactions
+named a reply they were never shown.
+
+| Scenario | Utterance; setup | Pins | Kind |
+| --- | --- | --- | --- |
+| `consecutive_move_reactions` | "e4", "knight to f3", "bishop to c4" in a row on the panel seam (`_run_steps`), a fresh game | every step on the fast path and answered by the engine; each reaction produced (a draft, not the fallback); **every claim backed** — a misnamed reply is `unplayed_reply`; and the reply said (`speech_accuracy.names_reply`: SAN, square or castle) on all three | Lock |
+
 ### Compositions (added 2026-09-05, floor 0.8 each)
 
 The 2026-09-05 audit's flat finding about this suite was that "the only

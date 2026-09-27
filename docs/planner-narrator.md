@@ -247,10 +247,16 @@ on the app's split registry only; the MCP server's caller asks its own user.
 `api.narrator_facts` by `build_app` and the eval harness alike (a test pins
 the two), is read once as the planner hands off: `player_color`, `in_check`,
 `game_over`, the player-relative `outcome` the outcome class reads (#287),
-`captured` — and `reply_owed`, which the brain lifts into the handoff as "the
-engine has not played its reply to the player's move yet; the app announces it
-after you speak." No `history` (the refresh block's measured reason, one phase
-on) and no side to move.
+`captured` — and two about the engine's answer, both lifted into the handoff.
+`engine_reply` (`{san, capture, check}`) is the reply the coordinator just
+played, settled through the brain's `settle_reply` seam right before the facts
+are read (#365); the brief renders it as "Your reply, already on the board:
+Nf6, taking their knight, check. The player learns your move only from what
+you say; say it however you like." — the one prompt line #365 added, and the
+only thing that asks him to say it. `reply_owed` is left for the reply the
+engine died on: "Your reply to the player's move never came: the engine
+failed." No `history` (the refresh block's measured reason, one phase on) and
+no side to move.
 
 **One projection.** `narrator_result_view` drops `fen`, `turn`, `legal_moves`
 and `captures` from every result a narrator reads, on both briefs — `undo`,
@@ -284,7 +290,8 @@ something you did not do with a tool" were one-prompt text from before the
 split, read by a phase that holds no tools.
 
 `AgentResponse.handoff` and the trace's `handoff` field record what the
-narrator was told (kind, the tools done / refused / looked up, `reply_owed`),
+narrator was told (kind, the tools done / refused / looked up, `reply_owed`,
+the `engine_reply` SAN),
 so a narration is re-judged against that and not against the note.
 
 ## The open question (#319, 2026-09-23)
@@ -341,13 +348,12 @@ The trace's `clarification` field records each turn's view of it — `open`,
 - **A stale board.** The brain route's facts are read as the planner hands
   off (above), after every tool of the turn has run; a reaction reads the same
   facts after its change landed. Neither carries history (#369).
-- **A side to play for** (#188/#193): the observe beat runs while the reply is
-  still computing, so `turn`, `legal_moves`, and the FEN are withheld
-  (`api.narrator_facts`, and `handoff.narrator_result_view` on every
-  result), the split `make_move` result carries no mid-exchange `fen`/`turn`,
-  and a move turn is remembered by the reaction alone (`docs/turn-memory.md`)
-  — every leak of "it is your move" produced narrators announcing moves of
-  their own.
+- **A side to play for** (#188/#193): `turn`, `legal_moves`, and the FEN are
+  withheld (`api.narrator_facts`, and `handoff.narrator_result_view` on every
+  result). While the narrator spoke before the reply existed, every leak of
+  "it is your move" produced narrators announcing moves of their own. Since
+  #365 the one move he may announce is handed to him instead, so nothing he
+  says needs whose move is next.
 - **The planner's note as a record.** It arrives labelled as the planner's
   reading of the ask; what was done is the harness's line above it.
 
@@ -374,13 +380,13 @@ single-fit ask over-asked (2026-09-17, #286, `docs/knight-ask-campaign.md`).
 number through the same function the app does, and pins that it did.
 
 The narrator has a wall clock; the planner does not. A token cap
-bounds generation, not queueing or a stalled server. The pipeline drops the
-observe beat's reaction at `deadline.NARRATION_BUDGET_S` and plays the reply
-Stockfish computed during it (#283, `docs/turn-coordinator.md`), and
+bounds generation, not queueing or a stalled server. The pipeline drops a
+reaction at `deadline.NARRATION_BUDGET_S` and closes on the app's line for
+both moves (#283, `docs/turn-coordinator.md`), and
 `_NARRATE_TIMEOUT` hangs up just above that so the abandoned generation stops
 holding a server slot. The loop's closer is bounded inside the brain (#316):
-the same budget when the engine's reply is owed and held behind words that
-are only a reaction, `deadline.NARRATION_CEILING_S` — a stall backstop, never a cut on a
+the same budget when the turn moved a piece and the words are only a
+reaction, `deadline.NARRATION_CEILING_S` — a stall backstop, never a cut on a
 thinking answer — when nothing is held or the closer thinks; either way only the tool-free speech thread is left behind,
 and the plan's record comes back as `narration_late` with no text. The planner
 sends no ceiling: it legitimately runs 30 s and more with thinking on, its

@@ -837,6 +837,7 @@ def test_the_narrator_facts_hold_no_side_to_move_and_no_history():
         "game_over": False,
         "outcome": None,
         "captured": ctx.session.captured_pieces(),
+        "engine_reply": None,
         "reply_owed": False,
     }
     assert not set(facts) & set(NARRATOR_HIDDEN_KEYS)
@@ -851,6 +852,23 @@ def test_the_narrator_facts_say_when_a_reply_is_owed():
     coordinator.collect_engine_reply()
     coordinator.complete_turn()
     assert narrator_facts(ctx, coordinator)["reply_owed"] is False
+
+
+def test_the_narrator_facts_carry_the_reply_the_coordinator_settled():
+    """#365: the engine's move is the narrator's to say, so the facts hand it
+    over — until someone takes the settlement, after which a later narration
+    (a confirmed op) is never told about it."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    coordinator = TurnCoordinator(ctx)
+
+    coordinator.apply_player_move("e4")
+    settled = coordinator.settle_owed_reply()
+
+    reply = narrator_facts(ctx, coordinator)["engine_reply"]
+    assert settled is not None and settled.reply is not None
+    assert reply == {"san": settled.reply.san, "capture": None, "check": False}
+    coordinator.take_settlement()
+    assert narrator_facts(ctx, coordinator)["engine_reply"] is None
 
 
 def test_the_narrator_facts_name_the_winner_from_the_players_side():
@@ -891,8 +909,14 @@ def test_a_reply_owed_as_the_narrator_spoke_is_evidence_of_nothing():
     assert "Nf6" in facts.moves, "still a legal move, which is why it needs a class"
 
 
-def test_no_reply_pending_means_nothing_is_unplayed():
-    assert _replied(pending=False).unplayed_replies == frozenset()
+def test_after_the_reply_every_other_option_is_unplayed():
+    """#365: spoken after the reply, the narrator knows it, so naming any other
+    move the engine could have played is naming a reply that did not happen."""
+    facts = _replied(pending=False)
+
+    assert "Nc6" in facts.unplayed_replies
+    assert "Nf6" not in facts.unplayed_replies, "the reply itself was played"
+    assert "e4" not in facts.unplayed_replies, "the player's own move is history"
 
 
 def test_placements_name_every_non_pawn_piece_on_every_board_the_turn_held():

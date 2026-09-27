@@ -14,8 +14,10 @@ never the wheel.
 ## The machine
 
 ```
-awaiting_player → player_move_applied → (agent_observing) →
-engine_calculating → engine_move_applied → completed → awaiting_player
+awaiting_player → player_move_applied → engine_calculating →
+engine_move_applied → completed → awaiting_player → (narration, #365)
+
+agent_observing: entered only by a narration over a reply the engine died on
 
 abandon_turn: from anywhere back to awaiting_player (turn_id + 1)
 settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
@@ -61,58 +63,75 @@ settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
 - **The engine's reply belongs to the coordinator and is never a
   model-callable tool** (`test_engine_reply_is_not_a_callable_tool`). A model
   that could ask for the reply could also fail to.
-- **A restored engine-to-move board is settled by the coordinator, and the app
-  announces the move.** The restoring tools report it under `engine_move` — the
-  shape `make_move`'s atomic result already uses — and the command pipeline
-  appends the same deterministic `_reply_announcement` an ordinary reply gets
-  (the last one, if a command restored twice). Voice-first, a board that moved
-  twice in silence is a board the player cannot follow; and like every other
-  app-composed line it is shown to the player, never remembered as Glitch's.
+- **A restored engine-to-move board is settled by the coordinator, and Glitch
+  says the move.** The restoring tools report it under `engine_move` — the
+  shape `make_move`'s atomic result already uses — and the narrator reads it
+  in the results he speaks from (#365). Voice-first, a board that moved twice
+  in silence is a board the player cannot follow, so when no words of his
+  carried it (verbosity=low's canned line, a dead provider) the pipeline
+  appends the deterministic `_reply_announcement` instead (the last one, if a
+  command restored twice); like every other app-composed line it is shown to
+  the player, never remembered as Glitch's.
 - Two ways to run a turn, same boundary: `play_exchange(move)` (atomic — used
   by direct mode and MCP, which have no pipeline behind them) and the beats
-  (`apply_player_move` → reaction → `collect_engine_reply` → `complete_turn`),
-  which the command pipeline and dragged moves run via the shared
-  `api._play_move`. The `atomic_exchange` registry flag names the sequencing
+  (`apply_player_move` → `settle_owed_reply` → narration), which the command
+  pipeline and dragged moves run via the shared `api._play_move`. The `atomic_exchange` registry flag names the sequencing
   owner, never the validation.
 - `TurnStateError` subclasses `ValueError`: the registry converts it to
   `{"ok": False, ...}` result data for the model, trusted endpoints answer
   409. Every caller converges on `dispatch`, which converges here.
 
-## The observe beat
+## The narration beat: after the reply (#365)
 
-`begin_observation()` marks where Glitch reacts to the *verified player move*.
-The reply is computed in the background from the moment the move lands (a
-thread over a board copy; only the collecting thread ever submits a move), so
-the reaction costs no wall clock. The beat is optional by construction —
-verbosity=low, no brain, or a provider failure skips only the words.
+`settle_owed_reply()` is the close beat, in one place for every route: it
+collects the reply the engine has been computing since the player's move
+landed (a background thread over a board copy; only the collecting thread ever
+submits a move), completes the turn, tells `on_reply_played` — which
+`create_app` points at the state broadcast, so every client sees the engine's
+move before a word is said about it — and keeps the result
+(`ReplySettlement`: the reply, or what killed it) until `take_settlement`.
+Then Glitch speaks, and the engine's move is in his brief as his own to say
+(`narrator_facts`' `engine_reply`, rendered by `handoff.render` as "Your
+reply, already on the board: …"). The fast path and a drag settle in
+`_play_move`; the brain settles through its `settle_reply` seam as the planner
+hands off, just before `_close` reads the narrator's facts; the command
+pipeline's convergence settles whatever is still owed after that (a budget
+stop, a dead provider) and reads back what the brain settled otherwise.
 
-The narrator's mid-turn view deliberately carries **no side to play for** — no
-`turn`, no `legal_moves`, no FEN (#188/#193): a narrator that can see whose
-move it is announces one. The pipeline appends a deterministic reply
-announcement instead of paying for a second narration.
+Until #365 it was the other way round: Glitch reacted *while* Stockfish
+thought, his view carried no side to play for (#188/#193) so that he would not
+announce a move, and the app appended the reply in its own words. Live, he
+named one anyway — "black played c5" over a real e5 — because he wanted to say
+his move and was never shown it. The cost of the new order is latency: the
+narration now waits for the engine instead of overlapping it, so a move turn
+grows by the engine's think time (`docs/latency-measurement.md`).
+`agent_observing` is kept for the one case left in it — a narration spoken
+over a reply the engine died on — and is otherwise no longer entered.
 
-A background answer is discarded (and recomputed synchronously) if the board
-moved under it or the computation failed.
+The narration is optional by construction: verbosity=low, no brain, or a
+provider failure costs only the words, and then the app says both moves
+(`_move_confirmation`: "e4. e5.") — the failure fallback, so a hands-free
+player is never left guessing. A background answer is discarded (and
+recomputed synchronously) if the board moved under it or the computation
+failed.
 
-**The beat is bounded as well as optional** (#283). "Optional" used to mean only
-that the reaction could be *skipped*; a narrator that was merely slow still held
-a reply that was already computed, kept the turn in `agent_observing`, and —
-the command runs under the mutation lock — parked every other road onto the
-board behind it. Every `Brain.narrate` call now runs under
-`deadline.NARRATION_BUDGET_S` (10 s, through `api._narrate` → `_within_budget`): when
-it expires the ready reply is applied, the turn closes on the deterministic
-announcement, the lock is released, and the words that arrive afterwards are
-dropped rather than spoken a beat behind the board they were about. The late
-call runs on its own thread and touches nothing — the same shape as an abandoned
-`_PendingReply`, safe for the same reason (a narrator is handed a board view
-snapshotted before the call and answers with words). The number is measured, not
-derived from the token cap: 58 observe beats in the deployed trace took 0.7–2.1 s
-(median ~1.5 s, one 7.5 s outlier), so the budget clears every healthy reaction
-with room for a busy GPU. Underneath it `llama_brain._NARRATE_TIMEOUT` (15 s)
-hangs up on the abandoned round trip, so it stops holding a llama-server slot the
-next turn needs. The trace's `reaction_late` is where a cut beat shows — the
-commentary of one is indistinguishable from verbosity=low, from a dead provider,
-and from a beat that never opened.
+**The beat is bounded as well as optional** (#283). Every `Brain.narrate` call
+runs under `deadline.NARRATION_BUDGET_S` (10 s, through `api._narrate` →
+`_within_budget`): the command runs under the mutation lock, and a stalled
+narrator would park every other road onto the board behind it. When it
+expires the turn closes on the deterministic line, the lock is released, and
+the words that arrive afterwards are dropped rather than spoken a beat behind
+the board they were about. The late call runs on its own thread and touches
+nothing — the same shape as an abandoned `_PendingReply`, safe for the same
+reason (a narrator is handed a board view snapshotted before the call and
+answers with words). The number is measured, not derived from the token cap:
+58 observe beats in the deployed trace took 0.7–2.1 s (median ~1.5 s, one
+7.5 s outlier), so the budget clears every healthy reaction with room for a
+busy GPU. Underneath it `llama_brain._NARRATE_TIMEOUT` (15 s) hangs up on the
+abandoned round trip, so it stops holding a llama-server slot the next turn
+needs. The trace's `reaction_late` is where a cut beat shows — the commentary
+of one is indistinguishable from verbosity=low, from a dead provider, and from
+a beat that never opened.
 
 **The brain route's closer is bounded too** (#316). "Push the king pawn" never
 reaches `api._narrate`: the planner plays the move and the loop's own closing
@@ -123,8 +142,9 @@ pipeline's budget could not see. The bound lives in the brain
 that can act always returns on time with the plan's complete record and only a
 thread that can produce nothing but words is ever left behind. Two numbers,
 chosen by what the closer is doing (the one narration policy since #369):
-`deadline.NARRATION_BUDGET_S` (10 s) when the reply
-is owed and the closer is only reacting — the 31 such closers in the deployed
+`deadline.NARRATION_BUDGET_S` (10 s) when the turn
+moved a piece (the reply just played, or owed because the engine died) and the
+closer is only reacting — the 31 such closers in the deployed
 trace took 0.8–2.0 s, so it only fires on a stuck model — and
 `deadline.NARRATION_CEILING_S` (60 s) otherwise. A closer that thinks is putting an
 evaluation into words, the answer the player asked for, so it gets the ceiling
@@ -282,9 +302,10 @@ browser's own milestones by `interaction_id`: `docs/latency-measurement.md`.
   of raising through it (`api._play_move`'s close beat, the command
   convergence, and direct mode's atomic exchange): 200 with the committed
   results and the current board, the turn deliberately left open with the reply
-  owed, and the app's own line saying so composed where the reply announcement
-  would have been (`ENGINE_LOST_REPLY_OWED` — the app's words, never Glitch's,
-  so the turn is remembered by the facts). The loop's `stop_reason` is
+  owed, and the app's own line saying so composed after whatever Glitch said
+  (`ENGINE_LOST_REPLY_OWED` — the app's words, never Glitch's, so the turn is
+  remembered by the facts). The narrator is told too: his brief says the reply
+  never came (#365). The loop's `stop_reason` is
   untouched (it is the delegate wire's word for how the *run* ended); what the
   turn carries instead is `engine_failure`, class and message, on the outcome
   and in the trace. The trace itself is written from a `finally`-owned envelope

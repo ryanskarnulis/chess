@@ -161,7 +161,7 @@ from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.provider import LlamaCppProvider
 from chessapp.serving import ServingManifest, ServingProbe, app_revision
-from chessapp.speech_accuracy import Tally, unbacked
+from chessapp.speech_accuracy import Tally, score_record, unbacked
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
     Settings,
@@ -299,6 +299,8 @@ _FLOORS: dict[str, float] = {
     "advice_is_engine_backed": 0.8,
     "advice_capture_survives_guard": 0.8,
     "checkmate_reaction_survives_guard": 0.8,
+    # #365: Glitch says his own move. New, so at the family's starting floor.
+    "consecutive_move_reactions": 0.8,
     "verbosity_up_from_low": 0.8,
     "position_is_described": 0.8,
     "impossible_move_is_refused_not_asked": 0.8,
@@ -581,8 +583,10 @@ def _build_eval_app(engine: EnginePlayer) -> EvalApp:
         # when the shipped one is not (or the reverse) measures a different
         # agent. `test_eval_harness.py` pins that these two stay in step.
         board_refresh=lambda: planner_board_refresh(ctx, coordinator),
-        # And the narrator's facts (#289), for the same reason one phase on.
+        # And the narrator's facts (#289), for the same reason one phase on,
+        # with the reply settled just before they are read (#365).
         narrator_facts=lambda: narrator_facts(ctx, coordinator),
+        settle_reply=coordinator.settle_owed_reply,
         # Observation only (#317): the server stamps reach the run's probe.
         on_server=lambda stamp: _SERVING["probe"].observe(stamp),
     )
@@ -2841,6 +2845,54 @@ def test_eval_checkmate_reaction_survives_guard(engine: EnginePlayer) -> None:
         check,
         floor=floor,
         setup=setup,
+        route=ROUTE_FAST_PATH,
+    )
+
+    _assert_floor(result, floor)
+
+
+# The traced line from the 2026-09-26 live game that opened #365: three player
+# moves, each answered by the engine, each reacted to on the fast path.
+_CONSECUTIVE_MOVES = ("e4", "knight to f3", "bishop to c4")
+
+
+def test_eval_consecutive_move_reactions(engine: EnginePlayer) -> None:
+    """Glitch says his own move, three moves running (#365).
+
+    Live, before #365, all three reactions named Black's reply without being
+    shown it: "black played c5" over a real e5, "black responded with e5"
+    over a real Nc6. Now the reply is on the board and in his brief before he
+    speaks, so every reaction must (a) say nothing the turn cannot back — a
+    misnamed reply is `unplayed_reply` — and (b) let the player learn the
+    engine's move from what he said (`speech_accuracy.names_reply`). How he
+    says it is his; only that he does is scored. Three consecutive turns on
+    the panel seam, so each reaction is written with the previous ones in his
+    memory — the register the #193 regression grew from."""
+    record: dict[str, Any] = {}
+    *earlier, last = _CONSECUTIVE_MOVES
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        turns = [_step(record, index)["traced"] for index in (1, 2)]
+        turns.append(app.tracer.last)
+        for said, traced in zip(_CONSECUTIVE_MOVES, turns, strict=True):
+            assert traced.get("route") == ROUTE_FAST_PATH, f"{said!r} left fast path"
+            reply = (traced.get("engine_reply") or {}).get("san")
+            assert reply, f"{said!r}: the engine did not answer"
+            draft = traced.get("draft") or ""
+            assert draft, f"{said!r}: no reaction was produced, nothing to score"
+            _assert_speech_backed(traced)
+            assert score_record(traced).reply_announced is True, (
+                f"{said!r}: the reply {reply} went unsaid — said: {draft!r}"
+            )
+
+    floor = _FLOORS["consecutive_move_reactions"]
+    result = _pass_rate(
+        engine,
+        "consecutive_move_reactions",
+        last,
+        check,
+        floor=floor,
+        runner=_run_steps(*earlier, record=record),
         route=ROUTE_FAST_PATH,
     )
 

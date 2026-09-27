@@ -333,9 +333,9 @@ def test_two_clicks_on_the_same_question_run_one_op():
 # --- 3. The delegate wire is the same road
 
 
-def test_the_delegate_wire_observes_the_player_move_before_the_reply():
-    """A conductor-driven move is a turn like any other: the reaction is to the
-    player's move alone, and the app announces the reply itself."""
+def test_the_delegate_wire_narrates_after_the_reply():
+    """A conductor-driven move is a turn like any other: the engine answers
+    first, and Glitch is handed its reply to say (#365)."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
     brain = ScriptedBrain(narrations=("Bold.",))
     app, _ = scripted_app(ctx, brain=brain)
@@ -344,9 +344,10 @@ def test_the_delegate_wire_observes_the_player_move_before_the_reply():
     exchange = say(client, conversation_on(client), "e4")
 
     state, changes = brain.narrate_calls[0]
-    assert state["reply_owed"] is True, "the engine has not replied yet"
+    assert state["reply_owed"] is False
+    assert state["engine_reply"]["san"] == "e5"
     assert "engine_move" not in changes[0]["result"]
-    assert exchange["assistant_message"]["content"] == "Bold.\n\ne5."
+    assert exchange["assistant_message"]["content"] == "Bold."
     assert ctx.session.move_history() == ["e4", "e5"]
 
 

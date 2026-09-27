@@ -794,3 +794,75 @@ def test_without_an_engine_the_player_moves_both_sides(session):
     session.submit_move("e4")
 
     assert coordinator.apply_player_move("e5").legal
+
+
+# --- settling the owed reply in one place (#365) -----------------------------
+
+
+def test_settling_plays_the_reply_closes_the_turn_and_keeps_the_result(ctx):
+    coordinator = TurnCoordinator(ctx)
+    played: list[str] = []
+    waited: list[int] = []
+    coordinator.on_reply_played = lambda: played.append(ctx.session.fen())
+    coordinator.on_engine_time = waited.append
+    coordinator.apply_player_move("e4")
+
+    settled = coordinator.settle_owed_reply()
+
+    assert settled is not None and settled.reply is not None
+    assert settled.failure == ""
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+    assert coordinator.turn_id == 2
+    assert played == [ctx.session.fen()], "told once the reply is on the board"
+    assert len(waited) == 1 and waited[0] >= 0
+    assert coordinator.settlement is settled
+    assert coordinator.take_settlement() is settled
+    assert coordinator.settlement is None
+
+
+def test_settling_with_nothing_owed_does_nothing(ctx):
+    coordinator = TurnCoordinator(ctx)
+    assert coordinator.settle_owed_reply() is None
+    assert coordinator.settlement is None
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
+
+
+def test_a_settle_the_engine_died_on_names_it_and_leaves_the_reply_owed(session):
+    ctx = ToolContext(session=session, engine=FailEngine())
+    coordinator = TurnCoordinator(ctx)
+    played: list[int] = []
+    coordinator.on_reply_played = lambda: played.append(1)
+    coordinator.apply_player_move("e4")
+
+    settled = coordinator.settle_owed_reply()
+
+    assert settled is not None and settled.reply is None
+    assert settled.failure == "ValueError: engine died"
+    assert coordinator.phase == TurnPhase.PLAYER_MOVE_APPLIED
+    assert played == [], "no reply reached the board"
+
+
+def test_a_new_command_forgets_a_settlement_nobody_took(ctx):
+    coordinator = TurnCoordinator(ctx)
+    coordinator.apply_player_move("e4")
+    coordinator.settle_owed_reply()
+
+    coordinator.begin_command()
+
+    assert coordinator.settlement is None
+
+
+def test_an_observer_that_raises_costs_nothing(ctx):
+    coordinator = TurnCoordinator(ctx)
+
+    def broken(*_args):
+        raise RuntimeError("socket gone")
+
+    coordinator.on_reply_played = broken
+    coordinator.on_engine_time = broken
+    coordinator.apply_player_move("e4")
+
+    settled = coordinator.settle_owed_reply()
+
+    assert settled is not None and settled.reply is not None
+    assert coordinator.phase == TurnPhase.AWAITING_PLAYER
