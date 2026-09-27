@@ -68,6 +68,10 @@ def render(result: Tally) -> str:
         f"{summary['backed']}/{summary['made']} claims backed, over "
         f"{summary['turns']} turns ({summary['legacy_turns']} legacy records).",
         "",
+        f"Reply said: {summary['replies']['announced']}/"
+        f"{summary['replies']['owed']} turns that owed the engine's move in "
+        "words named it (#365).",
+        "",
         "| family | made | backed | unbacked | accuracy |",
         "| --- | ---: | ---: | ---: | ---: |",
     ]

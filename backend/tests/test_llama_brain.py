@@ -2127,17 +2127,19 @@ def test_a_reaction_speaks_from_the_same_brief_the_loop_closes_with():
     facts = {"player_color": "white", "game_over": False}
     brain, provider = make_brain(text_turn("nice"))
 
+    reply = {"san": "Nf6", "capture": None, "check": False}
     brain.narrate(
-        board_state={**facts, "reply_owed": True},
+        board_state={**facts, "engine_reply": reply, "reply_owed": False},
         changes=changes,
         command="pawn takes d5",
     )
 
-    handoff = build_handoff(changes, reply_owed=True, facts=facts)
+    handoff = build_handoff(changes, engine_reply=reply, facts=facts)
     assert _brief(provider) == render_handoff(handoff, "pawn takes d5", changes)
     assert "The player said:\npawn takes d5" in _brief(provider)
-    assert "has not played its reply" in _brief(provider)
+    assert "Your reply, already on the board: Nf6." in _brief(provider)
     assert '"reply_owed"' not in _brief(provider), "lifted out of the facts"
+    assert '"engine_reply"' not in _brief(provider), "lifted out of the facts"
 
 
 def test_a_confirmed_new_game_is_not_narrated_as_the_players_move():
@@ -2166,26 +2168,31 @@ def test_a_board_drag_says_the_player_acted_without_words():
     assert "is playing" not in brief and "you are playing" not in brief
 
 
-def test_the_loops_narration_brief_is_unchanged_by_the_merge():
-    """The brain route's bytes are pinned: #369 changed only what a reaction
-    reads, so the gate's brain-route scenarios measure the same prompt."""
+def test_the_loops_narration_brief_after_a_move_is_pinned():
+    """The brain route's bytes after a move are pinned: #365 swapped the
+    "the app announces it" line for the reply itself, and nothing else, so a
+    gate scenario whose brief carries no move turn measures the same prompt."""
     results = [{"name": "make_move", "result": {"ok": True, "san": "e4"}}]
     handoff = build_handoff(
-        results, note="play e4", reply_owed=True, facts={"player_color": "white"}
+        results,
+        note="play e4",
+        engine_reply={"san": "e5", "capture": None, "check": False},
+        facts={"player_color": "white"},
     )
     assert render_handoff(handoff, "e4 please", results) == (
         "The player said:\ne4 please\n\n"
         "What the tools reported this turn:\n"
         '#1 {"name": "make_move", "result": {"ok": true, "san": "e4"}}\n\n'
         "Done this turn: #1 make_move.\n"
-        "The engine has not played its reply to the player's move yet; "
-        "the app announces it after you speak.\n\n"
+        "Your reply, already on the board: e5. The player learns your move "
+        "only from what you say; say it however you like.\n\n"
         'The game now:\n{"player_color": "white"}\n\n'
         "The planner's reading of what the player wants (not a record of "
         "what happened):\nplay e4\n\n"
-        "Reply to the player in character. Say only what the record above "
-        "shows was done; if it shows nothing done, do not say anything was. "
-        "When the player has to choose, ask them, naming the options."
+        "Reply to the player in character, and tell them your move, e5, your "
+        "way. Say only what the record above shows was done; if it shows "
+        "nothing done, do not say anything was. When the player has to "
+        "choose, ask them, naming the options."
     )
 
 
@@ -2944,7 +2951,7 @@ def test_the_narrator_facts_are_read_once_and_the_owed_reply_is_lifted_out():
 
     def facts():
         reads.append(1)
-        return {"player_color": "black", "reply_owed": True}
+        return {"player_color": "black", "reply_owed": True, "engine_reply": None}
 
     brain, provider = make_brain(
         tool_calls_turn(("make_move", {"move": "e5"})),
@@ -2958,10 +2965,49 @@ def test_the_narrator_facts_are_read_once_and_the_owed_reply_is_lifted_out():
     assert reads == [1], "read once, as the planner hands off"
     brief = provider.calls[-1]["messages"][-1]["content"]
     assert 'The game now:\n{"player_color": "black"}' in brief
-    assert "reply_owed" not in brief
-    assert "has not played its reply" in brief
+    assert "reply_owed" not in brief and "engine_reply" not in brief
+    assert "Your reply to the player's move never came" in brief
     assert resp.handoff.reply_owed is True
     assert resp.handoff.facts == {"player_color": "black"}
+
+
+def test_the_reply_is_settled_before_the_narrator_facts_are_read():
+    """#365: the engine's move goes on the board first, and the facts the
+    narrator reads carry it, so he can say it."""
+    order: list[str] = []
+    reply = {"san": "Nf6", "capture": None, "check": True}
+
+    def settle():
+        order.append("settle")
+
+    def facts():
+        order.append("facts")
+        return {"player_color": "white", "engine_reply": reply, "reply_owed": False}
+
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("e4, and I go Nf6 with check"),
+        narrator_facts=facts,
+        settle_reply=settle,
+    )
+
+    resp = brain.get_agent_response(board_state={}, command="e4")
+
+    assert order == ["settle", "facts"]
+    assert "Your reply, already on the board: Nf6, check." in _brief(provider)
+    assert resp.handoff.engine_reply == reply
+
+
+def test_a_settle_that_raises_costs_the_settle_and_not_the_turn():
+    def broken():
+        raise RuntimeError("engine gone")
+
+    brain, _ = make_brain(text_turn("note"), text_turn("reply"), settle_reply=broken)
+
+    resp = brain.get_agent_response(board_state={}, command="hi")
+
+    assert resp.text == "reply"
 
 
 def test_a_facts_seam_that_raises_costs_the_facts_and_not_the_turn():

@@ -76,6 +76,7 @@ def scripted_factory(*turns):
             provider=provider,
             board_refresh=lambda: planner_board_refresh(ctx, coordinator),
             narrator_facts=lambda: narrator_facts(ctx, coordinator),
+            settle_reply=coordinator.settle_owed_reply,
         )
         tracer = _CollectingTracer()
         client = TestClient(

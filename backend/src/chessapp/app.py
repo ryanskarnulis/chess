@@ -193,6 +193,9 @@ def build_app(
             # The same two halves, for the phase that speaks (#289): the facts
             # the narrator may state, and whether the reply is still owed.
             narrator_facts=lambda: narrator_facts(ctx, coordinator),
+            # And the engine's reply, settled before those facts are read, so
+            # the narrator speaks over it and says it (#365).
+            settle_reply=coordinator.settle_owed_reply,
             # Each call's server stamp, to the probe once it exists (#317).
             on_server=lambda stamp: probe.observe(stamp) if probe else None,
         )

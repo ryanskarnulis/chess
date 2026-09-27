@@ -224,15 +224,15 @@ def test_a_confirmed_destructive_op_falls_back_to_the_apps_own_line(slow):
 
 
 def test_a_reaction_inside_the_budget_is_spoken_exactly_as_ever():
-    """React-before-reply is the beat's acceptance criterion: a narrator that
-    answers in time still gets its words in front of the app's announcement,
-    and the move still costs the one model call it always cost."""
+    """A narrator that answers in time is heard exactly as he wrote it (#365:
+    nothing appended), and the move still costs the one model call it always
+    cost."""
     brain = ScriptedBrain(narrations=("Classic opener.",))
     client, ctx, _ = build(brain, budget=5.0)
 
     body = client.post("/api/command", json={"text": "e4"}).json()
 
-    assert body["commentary"] == "Classic opener.\n\ne5."
+    assert body["commentary"] == "Classic opener."
     assert ctx.session.move_history() == ["e4", "e5"]
     assert len(brain.narrate_calls) == 1
 
@@ -415,6 +415,7 @@ def build_brain_route(provider, *, closing=BUDGET, ceiling=BUDGET, tracer=None):
         system_prompt="You are Glitch.",
         planner_prompt="Route the ask to tools.",
         narrator_facts=lambda: api.narrator_facts(ctx, coordinator),
+        settle_reply=coordinator.settle_owed_reply,
         closing_budget_s=closing,
         closing_ceiling_s=ceiling,
     )
@@ -538,9 +539,10 @@ def test_the_trace_records_one_late_brain_turn(tmp_path, blocked):
     assert record["planning"]["deadline_ms"] is not None
 
 
-def test_a_closer_inside_the_budget_is_spoken_before_the_reply():
-    """React-before-reply, untouched: Glitch's words, then the app's
-    announcement, and nothing recorded as late."""
+def test_a_closer_inside_the_budget_is_spoken_as_written():
+    """A closer that answers in time is heard as he wrote it — the reply was
+    his to say (#365), so nothing follows his words — and nothing is recorded
+    as late."""
     provider = ScriptedProvider(
         tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("played e4"),
@@ -550,7 +552,7 @@ def test_a_closer_inside_the_budget_is_spoken_before_the_reply():
 
     body = client.post("/api/command", json={"text": "push the king pawn"}).json()
 
-    assert body["commentary"] == "King pawn, straight down the middle.\n\ne5."
+    assert body["commentary"] == "King pawn, straight down the middle."
     assert ctx.session.move_history() == ["e4", "e5"]
 
 

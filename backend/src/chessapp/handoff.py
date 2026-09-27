@@ -94,9 +94,12 @@ class Entry:
 class Handoff:
     """What the turn did, as the harness read it off the results.
 
-    `reply_owed` is whether the player's move is still waiting on the engine's
-    answer as the narrator speaks: the reply is being computed and the app
-    announces it afterwards, so the narrator must not. `facts` is the fresh,
+    `engine_reply` is the move the engine just played for the narrator in
+    answer to the player's — `{"san", "capture", "check"}`, or None — and the
+    narrator's to announce (#365): it speaks after the reply is on the board,
+    and the player learns the move from what it says. `reply_owed` is whether
+    the player's move is still waiting on that answer as the narrator speaks,
+    which since #365 means the engine died on it. `facts` is the fresh,
     narrator-safe board view (no side to move, no history). `note` is the
     planner's closing line, kept because a `reply` turn has nothing else to
     answer from — and labelled as a reading, never a record.
@@ -107,6 +110,7 @@ class Handoff:
     refused: tuple[Entry, ...] = ()
     consulted: tuple[Entry, ...] = ()
     reply_owed: bool = False
+    engine_reply: Mapping[str, Any] | None = None
     facts: Mapping[str, Any] = field(default_factory=dict)
     note: str = ""
     # The legal moves the player must choose between, on a `clarify` turn.
@@ -122,6 +126,7 @@ class Handoff:
             "refused": [entry.tool for entry in self.refused],
             "consulted": [entry.tool for entry in self.consulted],
             "reply_owed": self.reply_owed,
+            "engine_reply": self.engine_reply.get("san") if self.engine_reply else None,
             "candidates": list(self.candidates),
         }
 
@@ -143,6 +148,7 @@ def build(
     *,
     note: str = "",
     reply_owed: bool = False,
+    engine_reply: Mapping[str, Any] | None = None,
     facts: Mapping[str, Any] | None = None,
 ) -> Handoff:
     """Sort a turn's results and derive its kind from them.
@@ -191,6 +197,7 @@ def build(
         refused=tuple(refused),
         consulted=tuple(consulted),
         reply_owed=reply_owed,
+        engine_reply=dict(engine_reply) if engine_reply else None,
         facts=dict(facts or {}),
         note=note,
         candidates=tuple(dict.fromkeys(candidates)),
@@ -208,6 +215,17 @@ def narrator_result_view(entry: Mapping[str, Any]) -> dict[str, Any]:
         if key not in NARRATOR_HIDDEN_KEYS
     }
     return {"name": entry["name"], "result": result}
+
+
+def _reply_words(reply: Mapping[str, Any]) -> str:
+    """The engine's reply as the brief states it: "Nf6, taking their knight,
+    check" — the move, then what it did, from the facts alone."""
+    words = [str(reply.get("san"))]
+    if reply.get("capture"):
+        words.append(f"taking their {reply['capture']}")
+    if reply.get("check"):
+        words.append("check")
+    return ", ".join(words)
 
 
 def _refs(entries: Sequence[Entry]) -> str:
@@ -265,10 +283,16 @@ def render(
             + ", ".join(handoff.candidates)
             + ". Ask them which one they mean, naming each."
         )
-    if handoff.reply_owed:
+    if handoff.engine_reply:
         record.append(
-            "The engine has not played its reply to the player's move yet; "
-            "the app announces it after you speak."
+            f"Your reply, already on the board: {_reply_words(handoff.engine_reply)}. "
+            "The player learns your move only from what you say; say it "
+            "however you like."
+        )
+    elif handoff.reply_owed:
+        record.append(
+            "Your reply to the player's move never came: the engine failed. "
+            "The app tells the player so after you speak."
         )
     parts.append("\n".join(record))
     if handoff.facts:
@@ -278,9 +302,19 @@ def render(
             "The planner's reading of what the player wants (not a record of "
             f"what happened):\n{handoff.note}"
         )
+    # The closing sentence carries the reply too (#365), because it is the
+    # sentence a 12B answers: with the move only in the record above, Glitch
+    # said it on 9 of 20 brain-route turns; named here, 20 of 20. A paragraph
+    # of its own said it as often but sent a thinking narrator past the
+    # stall ceiling on half its samples.
+    reply = (
+        f", and tell them your move, {handoff.engine_reply['san']}, your way"
+        if handoff.engine_reply
+        else ""
+    )
     parts.append(
-        "Reply to the player in character. Say only what the record above "
-        "shows was done; if it shows nothing done, do not say anything was. "
-        "When the player has to choose, ask them, naming the options."
+        f"Reply to the player in character{reply}. Say only what the record "
+        "above shows was done; if it shows nothing done, do not say anything "
+        "was. When the player has to choose, ask them, naming the options."
     )
     return "\n\n".join(parts)

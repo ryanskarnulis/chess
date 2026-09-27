@@ -12,6 +12,7 @@ fast path.
 
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.agent_api import MAX_AGENT_MESSAGE_LENGTH
@@ -543,7 +544,7 @@ def test_fast_path_narrates_from_the_new_state():
     client, brain, _ = make_fast_client(narrations=("Classic.",))
     body = client.post("/api/command", json={"text": "e4"}).json()
     state, changes = brain.narrate_calls[0]
-    assert state["reply_owed"] is True
+    assert state["reply_owed"] is False, "settled before he spoke"
     assert state["player_color"] == "white"
     assert changes == body["tool_results"]
     assert brain.narrate_commands == ["e4"], "the player's words reach it (#369)"
@@ -661,17 +662,18 @@ def observing_client(
     return TestClient(app), brain, ctx
 
 
-def test_the_observation_reacts_to_the_player_move_alone():
-    """The board the narrator is handed has the player's move on it and nothing
-    else: the reply does not exist yet, so Glitch cannot be asked to react to
-    something it has not seen."""
+def test_the_narrator_is_handed_the_engines_reply_to_say():
+    """#365, reversing #193's fix: the reply is on the board before Glitch is
+    asked, and handed to him as his own move to say. Until #365 he spoke while
+    it was being computed and, never shown it, named one anyway."""
     client, brain, _ = observing_client(narrations=("Bold opener.",))
 
     body = client.post("/api/command", json={"text": "e4"}).json()
 
     assert len(brain.narrate_calls) == 1
     state, changes = brain.narrate_calls[0]
-    assert state["reply_owed"] is True, "the engine has not replied yet"
+    assert state["reply_owed"] is False
+    assert state["engine_reply"] == {"san": "e5", "capture": None, "check": False}
     result = changes[0]["result"]
     assert result["san"] == "e4"
     assert "engine_move" not in result
@@ -744,15 +746,51 @@ def test_the_observation_is_handed_the_facts_about_the_move():
     assert result["check"] is False
 
 
-def test_the_reply_is_announced_after_the_reaction():
-    client, _, _ = observing_client(narrations=("Bold opener.",))
+def test_the_reply_is_on_the_board_and_published_before_he_speaks():
+    """#365: the board never waits on the words. By the time the narrator is
+    asked, the engine's move is on the board and every client has been sent
+    it."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
+    seen: list[tuple[list[str], list[str]]] = []
+
+    class Watching(ScriptedBrain):
+        def narrate(self, board_state, changes, transcript=(), *, command=""):
+            published = client.get("/api/state").json()["history"]
+            seen.append((ctx.session.move_history(), published))
+            return super().narrate(board_state, changes, transcript, command=command)
+
+    app, _ = scripted_app(ctx, brain=Watching(narrations=("e5, mirror.",)))
+    client = TestClient(app)
+
+    client.post("/api/command", json={"text": "e4"})
+
+    assert seen == [(["e4", "e5"], ["e4", "e5"])]
+
+
+def test_nothing_is_appended_to_his_words():
+    """#365: the app no longer announces the reply after Glitch; he does."""
+    client, _, _ = observing_client(narrations=("Bold opener. e5.",))
     body = client.post("/api/command", json={"text": "e4"}).json()
-    assert body["commentary"] == "Bold opener.\n\ne5."
+    assert body["commentary"] == "Bold opener. e5."
 
 
-def test_the_brain_routes_move_gets_the_reply_appended_too():
-    """One convergent close beat: the loop's own closing narration is the observe
-    beat on that route, and the reply announcement follows it the same way."""
+@pytest.mark.parametrize(
+    ("verbosity", "narrations"),
+    [("low", ("Unused.",)), ("normal", (ProviderError("down"),))],
+)
+def test_with_no_words_the_app_says_both_moves(verbosity, narrations):
+    """The failure fallback (#365): verbosity=low, or a narrator that died,
+    leaves nothing to carry the engine's move, so the app says it — a
+    hands-free player is never left guessing."""
+    client, _, _ = observing_client(narrations=narrations, verbosity=verbosity)
+    body = client.post("/api/command", json={"text": "e4"}).json()
+    assert body["commentary"] == "e4. e5."
+
+
+def test_a_brain_that_spoke_without_the_reply_gets_it_appended():
+    """The fallback's other half: words written before the reply was settled
+    (a brain with no `settle_reply` seam, as this scripted one is) could not
+    carry it, so the app's line still follows them."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
     app, _ = scripted_app(ctx, move("e4", text="King's pawn, obviously."))
 
@@ -785,17 +823,33 @@ def test_a_game_ending_player_move_has_no_reply_to_announce():
     assert body["commentary"] == "Called it.", "nothing replied, so nothing is added"
 
 
-def test_a_reply_that_ends_the_game_says_so():
-    """The close beat carries the outcome, because the reply is the one move
-    Glitch's reaction could not have seen coming."""
-    client, _, ctx = observing_client(narrations=("Your funeral.",), reply_uci="d8h4")
+def test_a_reply_that_ends_the_game_is_handed_over_with_the_ending():
+    """The mating reply is on the board when Glitch speaks, so he is handed it
+    and the finished game both, and saying so is his (#365)."""
+    client, brain, ctx = observing_client(
+        narrations=("Your funeral. Qh4, mate.",), reply_uci="d8h4"
+    )
     for san in ("f3", "e5"):
         ctx.session.submit_move(san)
 
     body = client.post("/api/command", json={"text": "g4"}).json()
 
     assert ctx.session.is_game_over()
-    assert body["commentary"] == "Your funeral.\n\nQh4#. Game over: 0-1 (checkmate)."
+    state, _ = brain.narrate_calls[0]
+    assert state["engine_reply"] == {"san": "Qh4#", "capture": None, "check": True}
+    assert state["game_over"] is True
+    assert state["outcome"] == {"winner": "opponent", "termination": "checkmate"}
+    assert body["commentary"] == "Your funeral. Qh4, mate."
+
+
+def test_a_mating_reply_with_no_words_still_says_the_game_is_over():
+    client, _, ctx = observing_client(verbosity="low", reply_uci="d8h4")
+    for san in ("f3", "e5"):
+        ctx.session.submit_move(san)
+
+    body = client.post("/api/command", json={"text": "g4"}).json()
+
+    assert body["commentary"] == "g4. Qh4#. Game over: 0-1 (checkmate)."
 
 
 def test_a_failed_observation_still_gets_the_reply_and_the_turn():
@@ -855,7 +909,7 @@ def test_an_undo_inside_the_turn_abandons_the_owed_reply():
 def test_a_false_ending_in_the_observation_is_scored_on_the_new_road_too():
     """The reaction is read against the boards this turn held, so one that
     invents an ending shows up on the fast path too. The player hears it as
-    said (#368), and the app's line announcing the reply follows it."""
+    said (#368)."""
     turns = CollectedTurns()
     client, _, ctx = observing_client(
         narrations=("That's the game. Game over.",), tracer=turns
@@ -864,7 +918,7 @@ def test_a_false_ending_in_the_observation_is_scored_on_the_new_road_too():
     body = client.post("/api/command", json={"text": "e4"}).json()
 
     assert not ctx.session.is_game_over()
-    assert body["commentary"] == "That's the game. Game over.\n\ne5."
+    assert body["commentary"] == "That's the game. Game over."
     assert unbacked_claims(turns.records[-1]) == ["ending"]
 
 
@@ -945,17 +999,18 @@ def switching_to_black_client(verbosity: str = "normal"):
     return client, ctx
 
 
-def test_a_confirmed_new_game_as_black_announces_the_opening_move():
-    """The engine's opening move is one of three the coordinator settles, and
-    all three are announced by the one deterministic line — so the player who
-    said yes hears what answered them, and hears it once."""
+def test_a_confirmed_new_game_as_black_hands_the_opening_move_to_glitch():
+    """The engine's opening move is one of three the coordinator settles. The
+    narrator reads it in the result he is handed, so saying it is his (#365)
+    and the app adds nothing to his words."""
     client, ctx = switching_to_black_client()
 
     body = client.post("/api/command", json={"text": "yes"}).json()
 
     assert ctx.session.player_color == "black"
     assert ctx.session.move_history() == ["e4"]
-    assert body["commentary"] == "Fresh board — you're black this time.\n\ne4."
+    assert body["tool_results"][0]["result"]["engine_move"]["san"] == "e4"
+    assert body["commentary"] == "Fresh board — you're black this time."
 
 
 def test_a_confirmed_new_game_as_black_at_low_verbosity_says_it_once():
@@ -1342,20 +1397,20 @@ def test_a_count_from_the_board_the_narrator_saw_is_backed():
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
     assert ctx.session.material_balance() == 0, "the recapture levelled it again"
-    assert body["commentary"] == "Word, you're up a piece.\n\ndxc6."
+    assert body["commentary"] == "Word, you're up a piece."
     assert unbacked_claims(turns.records[-1]) == []
 
 
 def test_a_move_only_the_engine_could_play_mid_reply_is_unbacked():
     """Bb4 is Black's, playable only on the board the reaction was written
-    from — the board where the engine's reply was still being computed. A
-    reaction naming a move only the engine could play there is announcing a
-    reply that does not exist yet, the #193 shape (#365 is the fix)."""
+    from — the board the engine chose its reply on. Spoken after the reply
+    (#365), naming a move the engine could have played and did not is a
+    misnamed reply."""
     client, _, turns = traded_client("Bb4 and you're fine, dude.")
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"] == "Bb4 and you're fine, dude.\n\ndxc6."
+    assert body["commentary"] == "Bb4 and you're fine, dude."
     assert unbacked_claims(turns.records[-1]) == ["unplayed_reply"]
 
 
@@ -1410,7 +1465,7 @@ def test_an_unbacked_reaction_is_remembered_as_he_said_it():
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"] == "Rxe5 wins on the spot.\n\ndxc6."
+    assert body["commentary"] == "Rxe5 wins on the spot."
     assert assistant_turns(ctx) == ["Rxe5 wins on the spot."]
 
 
@@ -1513,18 +1568,13 @@ def test_a_narrated_verbosity_change_with_the_call_stands():
 
 
 def test_a_move_turn_is_remembered_by_the_reaction_alone():
-    """What Glitch said is his; the announcement composed after it is the
-    app's. This deliberately reverses the first cut's "appended facts stay"
-    call: remembered composed turns taught him their format — live, the first
-    announced move appeared exactly one turn after the first remembered
-    "\\n\\ne5." (#193) — so the player still hears both, and the model is given
-    back only its own words. The engine's move is not lost to it: the state
-    block's `history` carries every move, fresh, every turn."""
+    """What Glitch said is his, and it is what is remembered. The app's lines
+    never are: remembered composed turns taught him their format (#193)."""
     client, ctx, _ = traded_client("Word, you're up a piece.")
 
     body = client.post("/api/command", json={"text": "Bxc6"}).json()
 
-    assert body["commentary"] == "Word, you're up a piece.\n\ndxc6."
+    assert body["commentary"] == "Word, you're up a piece."
     assert assistant_turns(ctx) == ["Word, you're up a piece."]
 
 
@@ -1849,13 +1899,13 @@ def test_the_credit_follows_the_players_color():
 
 
 def test_the_engine_reply_is_credited_to_the_opponent():
-    """The reply lands in the turn's record as Glitch's move — but a reaction
-    is spoken *before* the reply exists, so claiming it there is announcing a
-    move Stockfish had not chosen, true only when the guess matched (#289).
-    And the player may never be told they played it."""
+    """The reply lands in the turn's record as Glitch's move, and since #365
+    he speaks after it lands, so claiming it is true (until then it was a
+    guess at a move Stockfish had not chosen, #289). The player may never be
+    told they played it."""
     client, _, turns = traded_client("Word. I played dxc6.")
     client.post("/api/command", json={"text": "Bxc6"})
-    assert unbacked_claims(turns.records[-1]) == ["unplayed_reply"]
+    assert unbacked_claims(turns.records[-1]) == []
 
     client, _, turns = traded_client("Word. You played dxc6.")
     client.post("/api/command", json={"text": "Bxc6"})

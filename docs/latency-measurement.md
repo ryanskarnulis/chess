@@ -147,9 +147,12 @@ so they should keep it append-only.
   - `unknown`: the server reported no timings.
   - `+contended`: the turn waited on the mutation lock, or overlapped another
     turn in time.
-- **Overlap.** The observe beat runs while Stockfish computes, and speech
-  happens after the turn. The report prints spans side by side and never adds
-  them into a serial total.
+- **Overlap.** Until #365 the observe beat ran while Stockfish computed;
+  since then a move turn's narration starts after the reply is on the board,
+  so `command→engine_reply` no longer includes the reaction and the words
+  follow the engine instead of overlapping it. Speech happens after the turn.
+  The report prints spans side by side and never adds them into a serial
+  total.
 - **Old records.** Records with a schema before 2 are counted and skipped.
 
 ## Proposing targets

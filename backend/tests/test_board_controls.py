@@ -79,19 +79,22 @@ def developed(ctx: ToolContext) -> ToolContext:
 
 def test_a_drag_reaches_glitch_and_the_engine_answers():
     """The audit's headline: in agent mode a dragged move produces a Glitch turn.
-    The reaction is to the *player's* move alone — the reply does not exist when
-    the narrator is asked — and the app announces the reply itself."""
-    client, brain, _ = agent_client(narrations=("Bold opener.",), engine=FakeEngine())
+    Since #365 the engine answers first and Glitch is handed its reply to say:
+    nothing is appended to his words."""
+    client, brain, _ = agent_client(
+        narrations=("Bold opener. e5 right back.",), engine=FakeEngine()
+    )
 
     body = client.post("/api/game/move", json={"move": "e2e4"}).json()
 
     assert brain.calls == [], "a drag is a move, not an utterance for the planner"
     state, changes = brain.narrate_calls[0]
-    assert state["reply_owed"] is True, "the engine has not replied yet"
+    assert state["reply_owed"] is False, "the engine replied before he spoke"
+    assert state["engine_reply"] == {"san": "e5", "capture": None, "check": False}
     assert brain.narrate_commands == [""], "a drag has no words"
     assert changes[0]["name"] == "make_move"
     assert changes[0]["result"]["san"] == "e4"
-    assert body["commentary"] == "Bold opener.\n\ne5."
+    assert body["commentary"] == "Bold opener. e5 right back."
     assert body["state"]["history"] == ["e4", "e5"]
 
 
@@ -203,8 +206,8 @@ def test_a_game_ending_drag_has_no_reply_to_announce():
 
 def test_a_dishonest_drag_reaction_is_heard_as_said_and_scored():
     """A drag's reaction is Glitch's words like any other (#368): one that
-    invents an ending reaches the player, the engine's reply is announced after
-    it as on every move turn, and the trace reads the claim as unbacked."""
+    invents an ending reaches the player as he wrote it, and the trace reads
+    the claim as unbacked."""
     turns = CollectedTurns()
     client, _, ctx = agent_client(
         narrations=("That's the game. Game over.",),
@@ -215,16 +218,14 @@ def test_a_dishonest_drag_reaction_is_heard_as_said_and_scored():
     body = client.post("/api/game/move", json={"move": "e2e4"}).json()
 
     assert not ctx.session.is_game_over()
-    assert body["commentary"] == "That's the game. Game over.\n\ne5."
+    assert body["commentary"] == "That's the game. Game over."
     assert unbacked_claims(turns.records[-1]) == ["ending"]
 
 
 def test_a_drag_records_the_turn_on_the_transcript():
     """So Glitch's later turns remember its own drag reactions: the move's SAN
-    stands in for the utterance a drag doesn't have — and the reaction alone is
-    what is remembered, never the reply announcement the app composed after it
-    (#193: the appended "\\n\\ne5." is a register he completes at the beat
-    where the reply doesn't exist yet)."""
+    stands in for the utterance a drag doesn't have — and his own words are
+    what is remembered."""
     client, brain, ctx = agent_client(
         AgentResponse(text="you opened with e4"),
         narrations=("Sharp.",),

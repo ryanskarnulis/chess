@@ -107,7 +107,13 @@ from chessapp.brain import (
     ModelCall,
     Narration,
 )
-from chessapp.coordinator import TurnCoordinator, TurnPhase, TurnStateError
+from chessapp.coordinator import (
+    ReplySettlement,
+    TurnCoordinator,
+    TurnPhase,
+    TurnStateError,
+)
+from chessapp.coordinator import failure_name as _failure_name
 from chessapp.deadline import NARRATION_BUDGET_S, LateReaction
 from chessapp.deadline import within_budget as _within_budget
 from chessapp.engine import validate_elo, validate_skill_level, validate_tier
@@ -649,36 +655,55 @@ def planner_board_refresh(
 
 
 def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, Any]:
-    """The game as the brain route's narrator may state it (#289).
+    """The game as the narrator may state it (#289), on every route (#369).
 
-    Read once, as the planner hands off — after every tool of the turn has
-    run and before the engine's reply is collected — so it is the board the
-    narrator's words will be spoken over. Until this existed the brain route's
-    narrator had no board at all, only whatever the tool results carried.
+    Read once, as the narrator is about to speak — after every tool of the
+    turn has run and after the engine's reply is on the board (#365) — so it
+    is the board the narrator's words will be spoken over.
 
-    The agent view cut down, and deliberately a small one. No side
-    to move, for #193's reason. No `history`, for the refresh block's reason
-    one phase earlier: a history the turn's own undo has just shortened reads
-    to a 12B as the ask being finished, and every move this turn made is in
-    its own result. No saves or settings: the tools that change them report
-    their new values, and the prompt's verbosity layer is already there. The
-    outcome is the player-relative one speech accuracy scores against
-    (`relative_outcome`, #287), so the narrator is told who won in the same
-    words it is judged in.
+    The agent view cut down, and deliberately a small one. No side to move:
+    since #365 the one move a narrator could announce is handed to it, and
+    nothing it says needs to know whose move is next. No `history`, for the
+    refresh block's reason one phase earlier: a history the turn's own undo
+    has just shortened reads to a 12B as the ask being finished, and every
+    move this turn made is in its own result. No saves or settings: the tools
+    that change them report their new values, and the prompt's verbosity
+    layer is already there. The outcome is the player-relative one speech
+    accuracy scores against (`relative_outcome`, #287), so the narrator is
+    told who won in the same words it is judged in.
 
-    `reply_owed` is the coordinator's: the player's move landed and the
-    engine's answer has not. The brain lifts it out of the facts into the
-    handoff, where it becomes the line telling the narrator the reply is the
-    app's to announce.
+    `engine_reply` is the move the engine just played for Glitch in answer to
+    the player's (`coordinator.settlement`), or None: the brain lifts it out
+    of the facts into the handoff, where it becomes Glitch's own move to say.
+    `reply_owed` is the coordinator's too — the player's move landed and no
+    answer did, which since #365 means the engine died on it — and becomes the
+    line saying the reply never came.
     """
+    settled = coordinator.settlement
     return {
         "player_color": ctx.session.player_color,
         "in_check": ctx.session.is_check(),
         "game_over": ctx.session.is_game_over(),
         "outcome": relative_outcome(ctx.session),
         "captured": ctx.session.captured_pieces(),
+        "engine_reply": _reply_facts(settled.reply)
+        if settled is not None and settled.reply is not None
+        else None,
         "reply_owed": coordinator.phase
         in (TurnPhase.PLAYER_MOVE_APPLIED, TurnPhase.AGENT_OBSERVING),
+    }
+
+
+def _reply_facts(reply: MoveResult) -> dict[str, Any]:
+    """The engine's reply as the narrator is handed it: the move, the piece it
+    took (a word, or None) and whether it checks — board truth from the
+    `MoveResult`, the same facts `make_move` reports about the player's."""
+    return {
+        "san": reply.san,
+        "capture": chess.piece_name(chess.Piece.from_symbol(reply.capture).piece_type)
+        if reply.capture
+        else None,
+        "check": reply.check,
     }
 
 
@@ -736,10 +761,10 @@ def _destructive_confirmation(
     It says nothing about the engine's opening move on a game taken as black.
     That used to be spelled here, and is now one case of a rule with three: a
     restored board the coordinator settled reports its move under `engine_move`
-    whichever tool restored it, and the pipeline announces any of them with the
-    one line every other engine move gets (`_reply_announcement`, composed
-    around whatever spoke for the turn). Two composers for one fact would have
-    said it twice on this route.
+    whichever tool restored it; Glitch says it when he speaks (#365), and when
+    only this canned line speaks the pipeline adds the one line every other
+    unspoken engine move gets (`_reply_announcement`). Two composers for one
+    fact would have said it twice on this route.
     """
     if name == "new_game":
         return "New game."
@@ -756,14 +781,14 @@ def _destructive_confirmation(
 
 
 def _reply_announcement(reply: MoveResult | None, session: GameSession) -> str:
-    """The close beat, in the app's own words: the engine's reply, plus the
-    outcome if that reply ended the game. Empty when no reply was owed.
+    """The engine's reply in the app's own words, plus the outcome if that
+    reply ended the game. Empty when no reply was owed.
 
-    Deterministic on purpose. The turn's one narration already happened — during
-    the observation beat, while this very move was being computed — and asking
-    Glitch to react to the reply as well would cost a second round trip on every
-    move, which is precisely the latency the observation beat is required not to
-    add. So the reaction is the model's and the announcement is the app's.
+    A fallback, never a line composed onto Glitch's words. Since #365 the
+    narrator speaks after the reply is on the board and says it himself, in
+    his own words; this is what the player hears instead only when there are
+    no words to carry it — verbosity=low, a narrator that was late or failed —
+    because a hands-free player must still learn the move.
     """
     parts: list[str] = []
     if reply is not None and reply.san:
@@ -793,24 +818,20 @@ def _move_commentary(
     reaction: str,
     result: dict[str, Any],
     reply: MoveResult | None,
-    owed_reply: bool,
     session: GameSession,
 ) -> str:
-    """The words for one move turn: Glitch's reaction to the verified player
-    move, then the app's own line announcing what answered it.
+    """The words for one move turn: Glitch's, as he wrote them.
 
     Shared by every route that plays a move — the fast path, a board drag — so
-    the two cannot drift apart in what a move turn *says*. With no reaction to
-    show (verbosity=low, a provider failure) one canned confirmation covers the
-    move and the reply together. `owed_reply` is why the announcement is not
-    derived from `reply` alone: a game-ending player move is owed nothing, and
-    its outcome already belongs to the reaction's turn rather than to a reply
-    that never came.
+    the two cannot drift apart in what a move turn *says*. Glitch speaks after
+    the engine's reply is on the board and announces it himself (#365), so
+    nothing is composed onto his words. With no reaction to show
+    (verbosity=low, a late or failed narrator) one canned confirmation covers
+    the move and the reply together — the failure fallback, so a hands-free
+    player is never left guessing what was played.
     """
     if not reaction:
         return _move_confirmation(result, reply, session)
-    if owed_reply and (line := _reply_announcement(reply, session)):
-        return f"{reaction}\n\n{line}"
     return reaction
 
 
@@ -908,18 +929,6 @@ def _engine_lost_words(commentary: str) -> str:
 # board waits on. The measurements behind the number live with it.
 
 
-def _failure_name(exc: BaseException) -> str:
-    """One failure, as the short string a record can carry: class and message.
-
-    The trace's `provider_failure` names a *kind* from a vocabulary the brain
-    owns; nothing owns a vocabulary for a dying Stockfish or for whatever else
-    escapes a turn, so the exception names itself. Class alone when it carries
-    no message — `EngineTerminatedError` is already the whole story.
-    """
-    detail = str(exc).strip()
-    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
-
-
 # The confirmation question for a resignation the pipeline itself dispatched.
 # Deterministic, like the gate it came from: the model is not consulted about a
 # resignation at any point, including how to ask about one.
@@ -973,11 +982,12 @@ class _MoveBeats:
     player's own move and when the coordinator had nothing open, and the
     commentary needs to tell those apart from "the engine passed".
 
-    `observed_fen` is the board the narration was written from — the position
-    after the player's move, before the reply. The turn's evidence needs it:
-    judging a reaction against the position that came *after* the one it
-    reacted to is how ordinary trades came to be read as lies. `None` when
-    no narration ran, because then there is nothing that saw a board.
+    `observed_fen` is the board the narration was written from — since #365
+    the position after the engine's reply, or after the player's move when
+    the engine died on it. The turn's evidence needs it: judging words against
+    a board they were not spoken over is how ordinary trades came to be read
+    as lies. `None` when no narration ran, because then there is nothing that
+    saw a board.
 
     `engine_failure` names what killed the reply, on the one shape where
     `owed_reply` is True and `engine_reply` is None because Stockfish died
@@ -1571,14 +1581,6 @@ def create_app(
         if current_spans is not None:
             current_spans.add(phase, elapsed_ms)
 
-    @contextmanager
-    def _span(phase: str) -> Iterator[None]:
-        started = time.monotonic()
-        try:
-            yield
-        finally:
-            _add_span(phase, _ms_since(started))
-
     def _record_mutation() -> None:
         """Remember the board the call left, then publish it.
 
@@ -1596,6 +1598,11 @@ def create_app(
 
     progress.bind(_publish_progress)
     coordinator.on_phase = progress.phase
+    # The engine's reply reaches every client the moment it is played, before
+    # the narrator says a word about it (#365), and the wait on it is charged
+    # to the request that settled it (#290).
+    coordinator.on_reply_played = _publish_state
+    coordinator.on_engine_time = lambda elapsed_ms: _add_span("engine", elapsed_ms)
     registry.on_tool = progress.tool
     # The mutation chokepoint, pointed at the same emitter: the player's move
     # reaches the board when it is validated rather than when the turn ends —
@@ -1784,7 +1791,7 @@ def create_app(
         correlation_id: str,
         command: str = "",
     ) -> _MoveBeats:
-        """One move through the coordinator's beats: apply, observe, close.
+        """One move through the coordinator's beats: apply, close, narrate.
 
         The move-turn orchestration, in one place, because two callers own those
         beats — the command pipeline's fast path and a board drag in agent mode —
@@ -1794,13 +1801,16 @@ def create_app(
         this board, and a drag never had words in the first place.
 
         The order is the whole point. `make_move` applies the player's move and
-        stops, the engine starts thinking the moment it lands, and the reaction
-        runs *while* it does — so the observation costs no wall clock. Then the
-        reply is collected and the turn closed. The reaction is optional by
-        construction: verbosity=low skips it, a `ProviderError` costs the words
-        and nothing else, and a narrator that is merely slow costs the same
-        (`_narrate`'s budget) — because the move it was about is already on the
-        board and the engine's answer is not the model's to hold up.
+        stops, and the engine starts thinking the moment it lands. Then the
+        reply is collected, the turn closed and the board published, and only
+        then does Glitch speak — about both moves, because the second one is
+        his and the player learns it from what he says (#365). Until #365 the
+        reaction ran while the engine thought and the app appended the reply
+        in its own words; a narrator that could not see the reply named one
+        anyway. The reaction is optional by construction: verbosity=low skips
+        it, a `ProviderError` costs the words and nothing else, and a narrator
+        that is merely slow costs the same (`_narrate`'s budget) — the app's
+        own line then says both moves.
 
         The reply is not optional, but it can be *lost*: an engine that dies on
         the collect leaves the turn open with the move standing, and that comes
@@ -1815,18 +1825,30 @@ def create_app(
         assert brain is not None  # both callers are agent-mode only
         result = registry.dispatch("make_move", {"move": move})
         changes = [{"name": "make_move", "result": result}]
+        # The close beat, before a word is said (#365). A turn still
+        # mid-sequence is one whose player move landed without its reply —
+        # including one *this* call did not open, left owing by a route that
+        # raised, which is settled here rather than left to wedge the machine.
+        # Stockfish has been thinking since the move landed; the reply goes on
+        # the board and out to every client now, so the board never waits on
+        # the words, and the narrator is handed the move it is about to say.
+        settlement = coordinator.settle_owed_reply()
+        owed_reply = settlement is not None
+        engine_reply = settlement.reply if settlement is not None else None
+        engine_failure = settlement.failure if settlement is not None else ""
+        if settlement is None and (played := result.get("engine_move")) is not None:
+            # An atomic registry played the reply inside the tool (not how the
+            # app is assembled — see `build_registry`'s `atomic_exchange`), so
+            # there is nothing left to collect. Take its word for the reply
+            # rather than report a silence the board would contradict.
+            owed_reply = True
+            engine_reply = MoveResult(legal=True, san=played["san"], uci=played["uci"])
         narration: Narration | None = None
         observed_fen: str | None = None
         reaction_late = False
         cost = _ModelCost()
         if result.get("legal") is True and ctx.settings.verbosity != "low":
-            # This is the observe beat, so the machine is told so — the phase
-            # the coordinator has always had a slot for, finally entered
-            # (`docs/turn-coordinator.md`). Conditional because the move may
-            # have ended the game, which closes the turn where it stands; the
-            # collect below accepts either phase, so nothing else changes.
-            coordinator.mark_observation()
-            fen_at_observation = ctx.session.fen()
+            fen_at_narration = ctx.session.fen()
             started = time.monotonic()
             try:
                 narration = _narrate(
@@ -1841,15 +1863,14 @@ def create_app(
                 # "the board the reaction was written from", and a beat the
                 # provider killed wrote no reaction. Read off the session,
                 # because the narrator's own view deliberately carries no FEN.
-                observed_fen = fen_at_observation
+                observed_fen = fen_at_narration
             except LateReaction as exc:
-                # The budget expired with the reply already computed and
-                # waiting. Falling through is the whole fix: the collect below
-                # puts Stockfish's answer on the board, the turn closes on the
-                # app's own announcement, and the lock goes back to whoever is
-                # queued behind this one. `_narrate` has logged it; the beat
-                # records it so the trace can tell a late reaction from a lost
-                # one or a skipped one.
+                # The budget expired. The reply is already on the board, so
+                # falling through costs only the words: the turn closes on the
+                # app's own line and the lock goes back to whoever is queued
+                # behind this one. `_narrate` has logged it; the beat records
+                # it so the trace can tell a late reaction from a lost one or a
+                # skipped one.
                 reaction_late = True
                 cost = _ModelCost.failed(
                     started, PHASE_NARRATOR, exc, budget_s=reaction_budget
@@ -1863,45 +1884,9 @@ def create_app(
                     exc_info=True,
                     extra={"correlation_id": correlation_id},
                 )
-        # The close beat. A turn still mid-sequence is one whose player move
-        # landed without its reply — including one *this* call did not open, left
-        # owing by a route that raised, which is settled here rather than left to
-        # wedge the machine.
-        owed_reply = coordinator.phase in (
-            TurnPhase.PLAYER_MOVE_APPLIED,
-            TurnPhase.AGENT_OBSERVING,
-        )
-        engine_reply: MoveResult | None = None
-        engine_failure = ""
-        if owed_reply:
-            try:
-                with _span("engine"):
-                    engine_reply = coordinator.collect_engine_reply()
-            except Exception as exc:
-                # Stockfish died with the player's move already committed and
-                # broadcast, so the failure is not this request's to fail on
-                # (#284): it is a turn holding one move instead of two, and it
-                # goes back as that. The turn is deliberately *not* completed —
-                # the coordinator has put the phase back to
-                # `player_move_applied`, where the reply is still owed and the
-                # next command settles it, and completing it here would be the
-                # one thing the coordinator exists to refuse: skipping the
-                # engine's move. `owed_reply` stays True for the same reason.
-                engine_failure = _failure_name(exc)
-                logger.warning(
-                    "engine_reply_failed",
-                    exc_info=True,
-                    extra={"correlation_id": correlation_id},
-                )
-            else:
-                coordinator.complete_turn()
-        elif (played := result.get("engine_move")) is not None:
-            # An atomic registry played the reply inside the tool (not how the
-            # app is assembled — see `build_registry`'s `atomic_exchange`), so
-            # there is nothing left to collect. Take its word for the reply
-            # rather than report a silence the board would contradict.
-            owed_reply = True
-            engine_reply = MoveResult(legal=True, san=played["san"], uci=played["uci"])
+        # Spoken about; no later narration (a confirmed op, a resignation) may
+        # be told this reply was just played.
+        coordinator.take_settlement()
         return _MoveBeats(
             changes=changes,
             narration=narration,
@@ -1966,15 +1951,12 @@ def create_app(
                     # to read: one dispatch, and the beats already know
                     # which board they narrated from.
                     [beats.observed_fen] if beats.observed_fen is not None else [],
-                    # The reaction was spoken before the reply existed.
-                    beats.observed_fen if beats.owed_reply else None,
+                    # Spoken with the reply still owed only when the engine
+                    # died on it; otherwise the reply was on the board first.
+                    beats.observed_fen if beats.engine_failure else None,
                 )
                 commentary = _move_commentary(
-                    draft,
-                    result,
-                    beats.engine_reply,
-                    beats.owed_reply,
-                    ctx.session,
+                    draft, result, beats.engine_reply, ctx.session
                 )
                 if beats.engine_failure:
                     # The drag landed and the reply did not. The app says so
@@ -1984,10 +1966,9 @@ def create_app(
                     commentary = _engine_lost_words(commentary)
                 # What the turn is remembered by, the same rule as the command
                 # pipeline's: the reaction when Glitch spoke one (never the
-                # composed commentary — the appended reply line is the app's,
-                # and remembered as his it becomes a format he completes a beat
-                # early, #193), and the deterministic facts when he didn't (a
-                # silent low-verbosity turn, a late or lost reaction).
+                # composed commentary — the app's lines are never remembered as
+                # his), and the deterministic facts when he didn't (a silent
+                # low-verbosity turn, a late or lost reaction).
                 ctx.transcript.record(
                     result["san"],
                     draft
@@ -2681,6 +2662,12 @@ def create_app(
             # Glitch spoke on himself; a route that substitutes the app's own
             # words sets it, and `_remembered_facts` fills an empty one in below.
             memory: str | None = None
+            # Whether `commentary` is Glitch's own words, and whether they were
+            # written knowing the engine's reply (#365). Together they decide
+            # whether the app still has to say the reply: only when no words
+            # of his carried it.
+            spoken = False
+            reply_known = True
             stop_reason = "completed"
             # The road this turn took. Its default is the confirmation branch's,
             # and each other branch names its own on the way in; it is settled
@@ -2710,7 +2697,8 @@ def create_app(
             # every other route — those close their own turn further down.
             move_beats: _MoveBeats | None = None
             # The board a narration was spoken over while the engine's reply
-            # was still owed, on whichever route spoke one (#289) — or None.
+            # was still owed, on whichever route spoke one (#289) — since
+            # #365, only when the engine died on it — or None.
             narrated_before_reply: str | None = None
             # The turn's cost at the provider boundary, summed across whatever model
             # calls the chosen route made. The deterministic branches (a canned
@@ -2842,6 +2830,7 @@ def create_app(
                                 )
                             else:
                                 commentary = narration.text
+                                spoken = bool(commentary)
                                 cost = cost.plus(
                                     _ModelCost.of(narration, PHASE_NARRATOR)
                                 )
@@ -2923,6 +2912,7 @@ def create_app(
                             )
                         else:
                             commentary = narration.text
+                            spoken = bool(commentary)
                             cost = cost.plus(_ModelCost.of(narration, PHASE_NARRATOR))
                 else:
                     route = ROUTE_BRAIN
@@ -2963,8 +2953,9 @@ def create_app(
                     ):
                         asked = response.handoff.candidates
                     # The board the narrator just spoke over, when it spoke
-                    # before the engine's reply existed — read here, before
-                    # the close beat below collects that reply (#289).
+                    # with the engine's reply still owed (#289): the brain
+                    # settles it before narrating (#365), so this is a reply
+                    # the engine died on.
                     if coordinator.phase in (
                         TurnPhase.PLAYER_MOVE_APPLIED,
                         TurnPhase.AGENT_OBSERVING,
@@ -2977,6 +2968,7 @@ def create_app(
                     # like every deterministic line; nothing of the words is
                     # remembered.
                     closer_late = reaction_late = response.narration_late
+                    spoken = bool(commentary) and not closer_late
                     if closer_late:
                         memory = ""
                     elif not commentary and stop_reason != "provider_error":
@@ -2998,6 +2990,18 @@ def create_app(
                 # tool's: nothing may close a turn the engine still owes a move to.
                 engine_reply: MoveResult | None = None
                 owed_reply = False
+                # The reply the brain settled as its planner handed off, so its
+                # narrator could say it (#365) — or, when no narrator ran (a
+                # budget stop, a dead provider) or one ran without the settle
+                # seam, the one still owed, settled here after any words were
+                # written, which therefore could not carry it.
+                settlement: ReplySettlement | None = None
+                if move_beats is None:
+                    settlement = coordinator.take_settlement()
+                    if settlement is None:
+                        settlement = await _offloop(coordinator.settle_owed_reply)
+                        coordinator.take_settlement()
+                        reply_known = settlement is None
                 if move_beats is not None:
                     # The fast path ran the beats already, close included; what they
                     # settled is what this turn has to say for itself — including a
@@ -3008,32 +3012,14 @@ def create_app(
                         move_beats.engine_failure,
                     )
                     reaction_late = move_beats.reaction_late
-                elif coordinator.phase in (
-                    TurnPhase.PLAYER_MOVE_APPLIED,
-                    TurnPhase.AGENT_OBSERVING,
-                ):
+                elif settlement is not None:
+                    # An engine that died on it is not this command's failure to
+                    # report (#284): the player's move is committed, the turn
+                    # stays open with the reply owed for the next command, and
+                    # the player is told in the app's own line below.
                     owed_reply = True
-                    try:
-                        with _span("engine"):
-                            engine_reply = await _offloop(
-                                coordinator.collect_engine_reply
-                            )
-                    except Exception as exc:
-                        # The player's move is committed and broadcast, so an
-                        # engine that dies here is not this command's failure to
-                        # report — it is a turn with one move in it (#284). The
-                        # same recovery the fast path's close beat has: name what
-                        # died, leave the turn open where the coordinator put it
-                        # (the reply is still owed and the next command settles
-                        # it), and tell the player in the app's own line below.
-                        engine_failure = _failure_name(exc)
-                        logger.warning(
-                            "engine_reply_failed",
-                            exc_info=True,
-                            extra={"correlation_id": correlation_id},
-                        )
-                    else:
-                        coordinator.complete_turn()
+                    engine_reply = settlement.reply
+                    engine_failure = settlement.failure
                 elif (settled := _settled_engine_move(tool_results)) is not None:
                     # No turn was open, and the engine moved anyway: a restore left
                     # it on move and the coordinator settled that board inside the
@@ -3054,9 +3040,9 @@ def create_app(
                 observed = list(command_boards or ())
                 if move_beats is not None and move_beats.observed_fen is not None:
                     observed.append(move_beats.observed_fen)
-                    if move_beats.owed_reply:
-                        # The observe beat is, by construction, a narration
-                        # spoken before the reply exists.
+                    if move_beats.engine_failure:
+                        # Narrated after the reply, except when the engine
+                        # died on it (#365).
                         narrated_before_reply = move_beats.observed_fen
                 # What the model said and what the turn can back, both kept
                 # for the trace: speech accuracy re-judges the one against the
@@ -3074,12 +3060,10 @@ def create_app(
                 )
                 traced["evidence"] = turn_evidence.as_trace()
                 if memory is None:
-                    # What Glitch himself said, taken *before* the app's lines are
-                    # composed around it below. The reply announcement is the app's
-                    # voice: remembered as his, its trailing "\n\ne5." is a format
-                    # he completes at the beat where the reply does not exist yet —
-                    # live, the first announced move followed the first remembered
-                    # announcement by exactly one turn (#193). The player hears the
+                    # What Glitch himself said, taken *before* the app's lines
+                    # are composed around it below (the lost-brain and
+                    # lost-engine lines, a fallback's facts): the app's voice is
+                    # never remembered as his (#193). The player hears the
                     # composed whole; the model is given back only its own words.
                     memory = commentary
                 if move_beats is not None and move_beats.legal:
@@ -3087,7 +3071,6 @@ def create_app(
                         commentary,
                         move_beats.result,
                         engine_reply,
-                        owed_reply,
                         ctx.session,
                     )
                 elif closer_late and not commentary:
@@ -3098,9 +3081,15 @@ def create_app(
                         _agent_state_dict(ctx) != before,
                         ctx.session,
                     )
-                elif owed_reply and (
-                    reply_line := _reply_announcement(engine_reply, ctx.session)
+                elif (
+                    owed_reply
+                    and not (spoken and reply_known)
+                    and (reply_line := _reply_announcement(engine_reply, ctx.session))
                 ):
+                    # No words of Glitch's carried the engine's move (a dead
+                    # provider, a budget stop, the app's own canned line): the
+                    # app says it, so a hands-free player is not left guessing.
+                    # When he spoke knowing it, saying it was his (#365).
                     commentary = (
                         f"{commentary}\n\n{reply_line}" if commentary else reply_line
                     )

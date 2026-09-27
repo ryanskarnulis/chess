@@ -77,6 +77,7 @@ def test_the_report_prints_the_denominator_the_families_and_the_lies():
     assert "| `capture` | 2 | 1 | 1 | 50.0% |" in text
     assert "| `capture` | 1 | not decidable from a legacy record |" in text
     assert '"You took my queen."' in text
+    assert "Reply said: 0/0 turns" in text
 
 
 def test_a_trace_with_no_claims_says_so_rather_than_scoring_perfect():

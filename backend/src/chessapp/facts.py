@@ -420,11 +420,25 @@ def _unplayed_replies(
     reported: set[str],
     pending_reply_fen: str | None,
 ) -> frozenset[str]:
-    """The engine replies a narration spoken before the reply cannot have
-    known about (`assemble`'s `pending_reply_fen`)."""
-    if pending_reply_fen is None:
-        return frozenset()
+    """The engine replies the narration has no grounds to name: before the
+    reply existed, every one (`assemble`'s `pending_reply_fen`); after it
+    (#365), every one it could have played and did not — so "I went Nc6" over
+    a real Nf6 is a misnamed reply, where the move class alone would pass it
+    as a move that was legal on a board the turn held."""
     player = session.player_color
+    if pending_reply_fen is None:
+        history = session.move_history()
+        if not engine_reply_san or not history or history[-1] != engine_reply_san:
+            return frozenset()
+        chose_from = GameSession(fen=session.position_fens()[-2], player_color=player)
+        accounted = set(history) | reported
+        accounted.update(GameSession(fen=fen_before, player_color=player).legal_moves())
+        if session.turn == player:
+            accounted.update(session.legal_moves())
+        bare = {san.rstrip("+#") for san in accounted}
+        return frozenset(
+            san for san in chose_from.legal_moves() if san.rstrip("+#") not in bare
+        )
     spoken_over = GameSession(fen=pending_reply_fen, player_color=player)
     if spoken_over.turn == player:
         return frozenset()  # nothing was pending on this board after all

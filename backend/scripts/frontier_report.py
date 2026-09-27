@@ -140,6 +140,31 @@ def speech_row(runs: Sequence[dict[str, Any]]) -> list[str]:
     return cells
 
 
+def _reply_cell(speech: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A run's reply-said rate (#365) as the cell `moved` reads: announced of
+    owed. None for a run recorded before it was, or one that owed none."""
+    replies = (speech or {}).get("replies") or {}
+    if not replies.get("owed"):
+        return None
+    return {"passed": replies["announced"], "runs": replies["owed"]}
+
+
+def reply_row(runs: Sequence[dict[str, Any]]) -> list[str]:
+    """One cell per run: how often Glitch said the engine's move when a turn
+    owed it in words (`docs/speech-accuracy.md`), marked like any other row."""
+    cells = []
+    previous = None
+    for line in runs:
+        cell = _reply_cell(line.get("speech"))
+        if cell is None:
+            cells.append("—")
+            continue
+        mark = moved(previous, cell) if previous is not None else ""
+        cells.append(f"{cell['passed']}/{cell['runs']} ({_rate(cell):.0%}){mark}")
+        previous = cell
+    return cells
+
+
 def speech_families(history: Sequence[dict[str, Any]], split: str, last: int) -> str:
     """The split's speech accuracy per claim family, one column per run."""
     runs = [line for line in history if line["split"] == split][-last:]
@@ -225,10 +250,14 @@ def trend(history: Sequence[dict[str, Any]], split: str, last: int = 6) -> str:
         if split == "heldout":
             row.append("yes" if name in ready else "")
         rows.append("| " + " | ".join(row) + " |")
-    speech = ["", "speech accuracy", *speech_row(runs)]
-    if split == "heldout":
-        speech.append("")
-    rows.append("| " + " | ".join(speech) + " |")
+    for label, cells in (
+        ("speech accuracy", speech_row(runs)),
+        ("reply said", reply_row(runs)),
+    ):
+        row = ["", label, *cells]
+        if split == "heldout":
+            row.append("")
+        rows.append("| " + " | ".join(row) + " |")
     return "\n".join(rows)
 
 

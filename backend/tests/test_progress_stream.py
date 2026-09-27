@@ -89,10 +89,11 @@ def steps(events: list[dict]) -> list[tuple[str, str]]:
 
 
 def test_a_fast_path_move_reports_every_beat_of_the_turn():
-    """The audit's three example states, in the order a move actually passes
-    through them: the move is validated, Glitch reacts to the verified move,
-    Stockfish answers. Each comes from the machine that owns it — the registry
-    for the tool, the coordinator's phase setter for the rest."""
+    """The audit's example states, in the order a move actually passes through
+    them: the move is validated, Stockfish answers, and then Glitch speaks
+    about both (#365; the brain reports that phase itself). Each comes from the
+    machine that owns it — the registry for the tool, the coordinator's phase
+    setter for the rest."""
     client, _ = scripted_client(narrations=("Bold.",))
     with client.websocket_connect("/ws") as ws:
         events = drain(ws, lambda: client.post("/api/command", json={"text": "e4"}))
@@ -100,7 +101,6 @@ def test_a_fast_path_move_reports_every_beat_of_the_turn():
         (KIND_BEGIN, ""),
         (KIND_TOOL, "make_move"),
         (KIND_PHASE, TurnPhase.PLAYER_MOVE_APPLIED),
-        (KIND_PHASE, TurnPhase.AGENT_OBSERVING),
         (KIND_PHASE, TurnPhase.ENGINE_CALCULATING),
         (KIND_PHASE, TurnPhase.ENGINE_MOVE_APPLIED),
         (KIND_PHASE, TurnPhase.COMPLETED),
@@ -119,7 +119,7 @@ def test_a_dragged_move_reports_the_same_beats():
         (KIND_BEGIN, ""),
         (KIND_TOOL, "make_move"),
         (KIND_PHASE, TurnPhase.PLAYER_MOVE_APPLIED),
-        (KIND_PHASE, TurnPhase.AGENT_OBSERVING),
+        (KIND_PHASE, TurnPhase.ENGINE_CALCULATING),
     ]
     assert steps(events)[-1] == (KIND_END, "")
 
@@ -193,11 +193,10 @@ def test_the_brain_route_reports_planning_then_narrating():
     assert brain_steps == [BRAIN_PLANNING, BRAIN_PLANNING, BRAIN_NARRATING]
 
 
-def test_the_narrator_turn_is_the_observation_beat():
-    """`agent_observing` was a phase the app never entered — the gap
-    `docs/turn-coordinator.md` left for this slice. On the brain route the
-    reaction happens *inside* `get_agent_response`, which holds no coordinator,
-    so the brain's report of its narrator phase is what opens the beat."""
+def test_the_narrator_speaks_after_the_engines_move():
+    """#365: on the brain route the reply is settled as the planner hands
+    off, so the narrator phase comes after Stockfish has answered — the move
+    is on the board before a word is said about it."""
     client = live_client(
         tool_calls_turn(("make_move", {"move": "e4", "source": "said_the_move"})),
         text_turn("note: played e4"),
@@ -208,12 +207,10 @@ def test_the_narrator_turn_is_the_observation_beat():
             ws, lambda: client.post("/api/command", json={"text": "play e4"})
         )
     ordered = steps(events)
-    assert (KIND_PHASE, TurnPhase.AGENT_OBSERVING) in ordered
-    # And in the right place: after the move landed, before Stockfish answered.
     assert (
         ordered.index((KIND_PHASE, TurnPhase.PLAYER_MOVE_APPLIED))
-        < ordered.index((KIND_PHASE, TurnPhase.AGENT_OBSERVING))
-        < ordered.index((KIND_PHASE, TurnPhase.ENGINE_CALCULATING))
+        < ordered.index((KIND_PHASE, TurnPhase.ENGINE_MOVE_APPLIED))
+        < ordered.index((KIND_BRAIN, BRAIN_NARRATING))
     )
 
 

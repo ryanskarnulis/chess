@@ -7,6 +7,7 @@ against the model.
 """
 
 import chess
+import pytest
 
 from chessapp.facts import TurnEvidence, settings_of
 from chessapp.game import GameSession
@@ -14,6 +15,7 @@ from chessapp.speech_accuracy import (
     LEGACY_SCORED,
     UNSCORED,
     merge,
+    names_reply,
     score_record,
     tally,
     unbacked,
@@ -111,6 +113,57 @@ def test_an_unplayed_reply_counts_only_while_a_reply_was_owed():
 
     assert ("unplayed_reply", False) in _counts(named)
     assert "unplayed_reply" not in dict(_counts(settled))
+
+
+def test_a_reply_named_after_it_was_played_is_judged_against_the_real_one():
+    """#365: the narrator speaks after the reply and is handed it, so the
+    class applies to every turn with a reply — the right name is backed, any
+    other move the engine could have played is not."""
+    session = _session("e4", "e5")
+
+    right = score_record(_record("I answer e5.", session, reply="e5"))
+    wrong = score_record(_record("I answer Nc6.", session, reply="e5"))
+
+    assert ("unplayed_reply", False) not in _counts(right)
+    assert ("unplayed_reply", False) in _counts(wrong)
+
+
+@pytest.mark.parametrize(
+    ("draft", "reply", "said"),
+    [
+        ("Nf6, your move.", "Nf6", True),
+        ("Knight to f6.", "Nf6", True),
+        ("I take on d5 with the pawn.", "exd5", True),
+        ("Mate. Qh4.", "Qh4#", True),
+        ("I castle.", "O-O", True),
+        ("Short castle, easy.", "O-O-O", True),
+        ("Nice move.", "Nf6", False),
+        ("I like f5 here.", "Nf6", False),
+        ("Nf61 is not a square.", "Nf6", False),
+    ],
+)
+def test_names_reply_reads_san_spoken_squares_and_castles(draft, reply, said):
+    assert names_reply(draft, reply) is said
+
+
+def test_a_turn_that_owed_the_reply_in_words_is_counted():
+    session = _session("e4", "e5")
+    said = _record("Mirror. e5.", session, reply="e5")
+    silent = _record("Mirror.", session, reply="e5")
+    before = _record("Mirror.", session, reply="e5", pending=_session("e4").fen())
+    no_reply = _record("Mirror.", session, reply=None)
+
+    assert score_record(said).reply_announced is True
+    assert score_record(silent).reply_announced is False
+    assert score_record(before).reply_announced is None, "spoken before it"
+    assert score_record(no_reply).reply_announced is None
+
+    run = tally([said, silent, before, no_reply])
+    assert (run.replies_owed, run.replies_announced) == (2, 1)
+    assert run.as_dict()["replies"] == {"owed": 2, "announced": 1}
+    assert "reply_said=1/2" in run.summary()
+    merged = merge([run.as_dict(), {**run.as_dict(), "replies": None}])
+    assert merged["replies"] == {"owed": 2, "announced": 1}
 
 
 def test_a_winner_claim_on_a_live_board_is_the_ending_classes_alone():

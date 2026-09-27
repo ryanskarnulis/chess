@@ -429,6 +429,13 @@ class LlamaBrain:
     # `board_refresh` exists, one phase later. `None` (unwired, or a closure
     # that raised) closes the turn from the results alone, as it did before.
     narrator_facts: Callable[[], dict[str, Any] | None] | None = None
+    # Settles the reply a player move this turn is owed, before the narrator
+    # reads its facts (#365): the engine's move goes on the board first, and
+    # the narrator is handed it to say (`coordinator.settle_owed_reply`,
+    # whose result `narrator_facts` then reports). `None` narrates with the
+    # reply still owed, as before #365. One that raises is logged and the
+    # turn narrates from whatever the board then is.
+    settle_reply: Callable[[], object] | None = None
     # What this brain talks to, by name — `{"model", "server"}`, filled in by
     # `create_llama_brain`, which is the one place that knows them (the
     # provider is a protocol and keeps its own private). Empty for a brain
@@ -847,7 +854,10 @@ class LlamaBrain:
         # accounting is the `Narration` itself.
         facts = dict(board_state)
         handoff = build_handoff(
-            changes, reply_owed=bool(facts.pop("reply_owed", False)), facts=facts
+            changes,
+            reply_owed=bool(facts.pop("reply_owed", False)),
+            engine_reply=facts.pop("engine_reply", None),
+            facts=facts,
         )
         self._report(BRAIN_NARRATING)
         started = self.clock()
@@ -951,22 +961,26 @@ class LlamaBrain:
         no effect and the loop ended the phase for it. Both reach the narrator —
         the distinction is what the trace and the eval report read.
         """
+        self._settle_reply()
         facts = dict(self._narrator_facts() or {})
         handoff = build_handoff(
             run.tool_results,
             stop_reason,
             note=note,
             reply_owed=bool(facts.pop("reply_owed", False)),
+            engine_reply=facts.pop("engine_reply", None),
             facts=facts,
         )
         self._report(BRAIN_NARRATING)
         brief = render_handoff(handoff, command, run.tool_results)
         thinking = self._thinking(run)
-        # The tight budget is for a closer that is only reacting: nothing
-        # computed may wait on it. One that thinks is putting an evaluation into
-        # words, which is the answer the player asked for, so it gets the stall
-        # ceiling whether or not a reply is owed.
-        reacting = handoff.reply_owed and not thinking
+        # The tight budget is for a closer that is only reacting to a move
+        # turn: the mutation lock and the player's next move wait on it. One
+        # that thinks is putting an evaluation into words, which is the answer
+        # the player asked for, so it gets the stall ceiling either way.
+        reacting = (
+            handoff.engine_reply is not None or handoff.reply_owed
+        ) and not thinking
         wait = self.closing_budget_s if reacting else self.closing_ceiling_s
         started = self.clock()
         try:
@@ -1150,6 +1164,14 @@ class LlamaBrain:
         if json.dumps(fresh, sort_keys=True) == json.dumps(offered, sort_keys=True):
             return None
         return fresh
+
+    def _settle_reply(self) -> None:
+        if self.settle_reply is None:
+            return
+        try:
+            self.settle_reply()
+        except Exception:
+            logger.warning("settle_reply_failed", exc_info=True)
 
     def _narrator_facts(self) -> dict[str, Any] | None:
         """The facts seam's answer, degrading to none — `_current_board`'s rule:
@@ -1471,6 +1493,7 @@ def create_llama_brain(
     on_phase: Callable[[str], None] | None = None,
     board_refresh: Callable[[], dict[str, Any] | None] | None = None,
     narrator_facts: Callable[[], dict[str, Any] | None] | None = None,
+    settle_reply: Callable[[], object] | None = None,
     on_server: Callable[[ServerStamp], None] | None = None,
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8200/v1).
@@ -1509,7 +1532,9 @@ def create_llama_brain(
 
     `narrator_facts` is the same kind of seam for the narrator (#289): read
     once as the planner hands off, it answers the side-free facts the narrator
-    may state and whether the engine's reply is still owed.
+    may state, the engine's reply and whether it is still owed. `settle_reply`
+    runs just before it (#365), so the reply is on the board and in those facts
+    when the narrator speaks.
 
     `on_server` hears what the server said about each call that came back
     (#317) — the serving manifest's way of noticing the server changed.
@@ -1539,6 +1564,7 @@ def create_llama_brain(
         on_phase=on_phase,
         board_refresh=board_refresh,
         narrator_facts=narrator_facts,
+        settle_reply=settle_reply,
         serving_labels={"model": model, "server": base_url},
         on_server=on_server,
     )

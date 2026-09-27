@@ -214,6 +214,24 @@ def test_the_trend_carries_a_marked_speech_row():
     table = trend(history, "dev")
 
     assert "| speech accuracy | 10/100 (10%) | 95/100 (95%)▲ | — |" in table
+    assert "| reply said | — | — | — |" in table, "no run recorded it"
+
+
+def test_the_trend_carries_the_reply_said_row():
+    history = [
+        {
+            **line("dev", {"s": 5}, date="2026-10-01"),
+            "speech": {**speech(1, 1), "replies": {"owed": 20, "announced": 2}},
+        },
+        {
+            **line("dev", {"s": 5}, date="2026-10-02"),
+            "speech": {**speech(1, 1), "replies": {"owed": 20, "announced": 19}},
+        },
+    ]
+
+    table = trend(history, "dev")
+
+    assert "| reply said | 2/20 (10%) | 19/20 (95%)▲ |" in table
 
 
 def test_the_speech_flag_prints_the_families(tmp_path: Path, capsys):
