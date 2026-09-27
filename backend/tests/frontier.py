@@ -56,6 +56,7 @@ from evalstats import (
     DETERMINISTIC_FAILURES,
     STOP_PROVIDER_ERROR,
     failure_signature,
+    sample_seed,
     wilson_interval,
 )
 from test_agent_evals import _REQUEST_TIMEOUT, EvalApp, _measured
@@ -518,11 +519,12 @@ def play(
 
 
 def _sample_record(
-    episode: Episode, verdict: Grade, breaches: Sequence[str]
+    episode: Episode, verdict: Grade, breaches: Sequence[str], seed: int | None
 ) -> dict[str, Any]:
     speech = tally(episode.traces)
     return {
         "variant": episode.variant,
+        "seed": seed,
         "whole": verdict.whole,
         "score": verdict.score,
         "hits": verdict.hits,
@@ -565,8 +567,9 @@ def measure(
     *,
     runs: int,
     split: str,
-    app_factory: Callable[[], EvalApp],
+    app_factory: Callable[[int | None], EvalApp],
     infra_retries: int = _INFRA_RETRIES,
+    seed_base: int | None = None,
 ) -> FrontierResult:
     """`runs` samples of `scenario`, cycling through `split`'s variants, each
     on a fresh app. Never judges the count: the caller reports it.
@@ -575,6 +578,11 @@ def measure(
     server rejected ends the scenario at once — it would be refused the same
     way every time — and both are counted rather than scored. A broken
     scenario (`ScenarioError`) propagates: there is nothing to measure.
+
+    `app_factory` takes the sample's sampling seed (#363): with `seed_base`
+    set, the `j`-th scored sample runs variant `j` with seed `seed_base + j`.
+    Both key on the scored position, so a re-taken infra death draws the same
+    variant and stream, and sample `j` of two arms stays a pair.
     """
     variants = scenario.variants(split)
     if not variants:
@@ -585,11 +593,10 @@ def measure(
         split=split,
         checkpoints=tuple(c.name for c in scenario.checkpoints),
     )
-    taken = 0
     while result.runs < runs:
-        variant = variants[taken % len(variants)]
-        taken += 1
-        app = app_factory()
+        variant = variants[result.runs % len(variants)]
+        seed = sample_seed(seed_base, result.runs)
+        app = app_factory(seed)
         try:
             episode, breaches = play(app, scenario, variant)
         except Infra as death:
@@ -605,7 +612,7 @@ def measure(
         result.breaches.extend(breaches)
         for trace in episode.traces:
             result.speech.observe(trace)
-        result.samples.append(_sample_record(episode, verdict, breaches))
+        result.samples.append(_sample_record(episode, verdict, breaches, seed))
         mark = "✓" if verdict.whole else "·"
         print(
             f"[frontier]   {mark} {scenario.name}[{variant.name}] "

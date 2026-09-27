@@ -214,6 +214,54 @@ def wilson_interval(
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
+# --- paired arms (#363) -------------------------------------------------------
+#
+# An A/B that seeds sample *j* of every arm alike (common random numbers) turns
+# two independent counts into pairs. For a small change most pairs agree, and
+# the verdict lives in the ones that do not: McNemar's test on the discordant
+# pairs resolves an effect an unpaired comparison needs several times the
+# samples for. Interleaving still answers drift; this answers per-sample noise.
+# `eval_campaign.sh` gives block *n* the base `seed + 1000·n`, wider than any
+# block, so both arms' block *n* pair and different blocks never overlap.
+
+
+def sample_seed(base: int | None, index: int) -> int | None:
+    """The seed of a scenario's `index`-th *scored* sample (0-based), or `None`
+    when the run is unseeded. Keyed on the scored position, not the attempt: an
+    infra retry re-takes the same sample and must draw the same stream, or every
+    later pair of the scenario is misaligned."""
+    return None if base is None else base + index
+
+
+def paired_counts(a: Sequence[bool], b: Sequence[bool]) -> tuple[int, int, int, int]:
+    """(both pass, only A passes, only B passes, neither) over aligned pairs."""
+    if len(a) != len(b):
+        raise ValueError(f"unaligned pairs: {len(a)} against {len(b)}")
+    both = sum(x and y for x, y in zip(a, b, strict=True))
+    a_only = sum(x and not y for x, y in zip(a, b, strict=True))
+    b_only = sum(y and not x for x, y in zip(a, b, strict=True))
+    return both, a_only, b_only, len(a) - both - a_only - b_only
+
+
+def mcnemar_exact(a_only: int, b_only: int) -> float:
+    """Two-sided exact McNemar p: under no effect each discordant pair is a
+    fair coin, so the smaller side is Binomial(a_only + b_only, ½). No
+    discordant pairs is no evidence either way, p = 1."""
+    n = a_only + b_only
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, k) for k in range(min(a_only, b_only) + 1)) / 2**n
+    return min(1.0, 2 * tail)
+
+
+def format_paired(a_only: int, b_only: int, pairs: int) -> str:
+    """One paired verdict as the reports print it."""
+    return (
+        f"pairs {pairs} · A-only {a_only} · B-only {b_only} · "
+        f"p={mcnemar_exact(a_only, b_only):.3g}"
+    )
+
+
 def decide(
     passed: int, runs: int, floor: float, *, z: float = Z_ONE_SIDED_95
 ) -> Decision:

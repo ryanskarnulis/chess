@@ -131,6 +131,33 @@ llama-server are correlated** (the unchanged planner text read 5/20, 19/40 and
 a measurement of that arm. Interleave per sample in the probe, per block in the
 harness, and never compare arms run in separate batches — even 40 each.
 
+**Arms are paired** (#363). Interleaving cancels drift; it does nothing about
+per-sample noise, which is what a one-sentence change has to beat. So sample
+*j* of every arm sends llama-server the same sampling `seed` (common random
+numbers): the probe seeds sample *i* with `--seed + i` (default 363), and
+`eval_campaign.sh` gives block *n* of both arms `CHESSAPP_EVAL_SEED = seed +
+1000·n`, which the gate and the frontier tier apply to their *j*-th scored
+sample (an infra retry re-takes the same seed and variant, so later pairs stay
+aligned). Both reports then add a paired verdict beside the raw counts:
+`pairs N · A-only b · B-only c · p=…`, the exact two-sided McNemar test on the
+discordant pairs (`evalstats.mcnemar_exact`). Pairs that agree carry no
+evidence either way; the verdict lives in the ones the change flipped. Read it
+with the raw counts, not instead of them: a small p says the arms differ on
+these seeds, and the counts say by how much. `--seed none` / `--no-seed` run
+unseeded, independent samples as before. The app itself never seeds.
+
+Pairing is approximate. llama.cpp is not bit-reproducible across batch sizes
+or slots (ggml-org/llama.cpp#7052), and once two arms' prompts differ their
+streams diverge from the first differing logit. Measured 2026-09-27 on the
+shared server (4 slots, MTP drafting), with two identical arms, 20 pairs per
+item, on the items whose output varies at all: seeded twins sent the identical
+tool calls in 54/60 pairs against 35/60 unseeded (`pawn_ask` 16/20 vs 10/20 at
+the planner's temperature, 18/20 vs 11/20 at 1.0; `queen_knight_ask` 20/20 vs
+14/20 at 1.0). Mostly reproducible, then, and never worse than unpaired. On
+that run no pair's *verdict* split in either mode: every probe item now reads
+20/20 or 0/20, so a paired probe earns its keep on a change that moves an item
+off one of those, and on the harness scenarios that sit between.
+
 ## The gating rule
 
 **Run this harness before merging any prompt, model, or loop change; the

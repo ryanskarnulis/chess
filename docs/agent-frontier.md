@@ -89,6 +89,9 @@ A low score is never a failure.
   ```
 
   `campaign_report.py` joins the blocks into one arm table, as for the gate.
+  The arms are seeded alike (#363), so the table also pairs sample *j* of
+  each and reports the flipped pairs with a McNemar p, on `whole`
+  (`docs/agent-evals.md`, "Arms are paired").
 
 ## Graduation and retirement
 

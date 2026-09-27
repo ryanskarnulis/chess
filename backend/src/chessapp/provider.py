@@ -334,6 +334,15 @@ class LlamaCppProvider:
     and the prompt the server's chat template rendered from them
     (`context_capture.py`, #359). `None` — the default — sends one request per
     call, exactly as before the knob existed.
+
+    `seed`, when set, is sent as llama-server's sampling `seed` on every call
+    that does not pass its own. Only the eval harness sets it: sample *j* of
+    every arm of an A/B draws from the same random stream (common random
+    numbers, #363), so a small change is judged on the pairs it flips rather
+    than on two independent counts. The pairing is approximate — llama.cpp is
+    not bit-reproducible across batch sizes or slots (ggml-org/llama.cpp#7052)
+    — but never worse than unpaired. `None`, the default and what the app
+    always uses, omits the field.
     """
 
     def __init__(
@@ -344,7 +353,9 @@ class LlamaCppProvider:
         timeout_seconds: float = _READ_TIMEOUT,
         client: httpx.Client | None = None,
         capture: ContextCapture | None = None,
+        seed: int | None = None,
     ) -> None:
+        self.seed = seed
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._capture = capture
@@ -382,6 +393,7 @@ class LlamaCppProvider:
         temperature: float | None = None,
         timeout: float | None = None,
         cache_prompt: bool | None = None,
+        seed: int | None = None,
     ) -> ChatResult:
         """One completion turn, optionally offering tools.
 
@@ -393,6 +405,10 @@ class LlamaCppProvider:
         omits the field, so every existing caller sends the bytes it always
         did; the knob joins the protocol only if the measurement says the app
         should send it.
+
+        `seed` is the same kind of probe-only knob: the sampling seed for this
+        one request, overriding the provider's own `seed`; `None` falls back to
+        it, and with neither set the field is omitted.
         """
         payload = self._payload(
             messages,
@@ -401,6 +417,7 @@ class LlamaCppProvider:
             max_tokens=max_tokens,
             temperature=temperature,
             cache_prompt=cache_prompt,
+            seed=self.seed if seed is None else seed,
         )
         return self._result(self._post(payload, timeout))
 
@@ -413,6 +430,7 @@ class LlamaCppProvider:
         max_tokens: int | None,
         temperature: float | None,
         cache_prompt: bool | None = None,
+        seed: int | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._model,
@@ -430,6 +448,9 @@ class LlamaCppProvider:
         if cache_prompt is not None:
             # llama-server's own field (not OpenAI's); omitted means its default.
             payload["cache_prompt"] = cache_prompt
+        if seed is not None:
+            # Also llama-server's; omitted means a fresh random stream per call.
+            payload["seed"] = seed
         if tools:
             # Already OpenAI-format dicts (registry `definitions()`) — verbatim.
             payload["tools"] = list(tools)

@@ -27,6 +27,14 @@
 # heldout>: the only honest way to say a change moved a frontier score, since
 # runs on different days sit on differently-warmed servers (#318).
 #
+# Arms are paired (#363): block <n> of both arms runs with
+# CHESSAPP_EVAL_SEED=<seed> + 1000·<n>, so sample j of each arm's block n
+# draws the same sampling stream, and the joined table gets a paired column —
+# the discordant pairs and an exact McNemar p. --seed <base> picks the base
+# (default 363); --no-seed runs unseeded, independent samples as before.
+# Pairing is approximate (llama.cpp#7052) and does not replace the flipped
+# block order, which is what cancels drift.
+#
 # --fresh-per-block calls llama-swap /unload before each arm-block after the
 # probe's pre-flight (refuses while a slot is processing or another job holds
 # the card). Reports land in --out (default ./campaign-<utc>/) as
@@ -38,7 +46,7 @@ BACKEND="$(cd "$HERE/.." && pwd)"
 PYTHON="$BACKEND/.venv/bin/python"
 [ -x "$PYTHON" ] || PYTHON="$(command -v python)"
 
-A=""; B=""; K=""; BLOCKS=4; FRESH=0; OUT=""; RUNS=5; SUITE=gate; SPLIT=heldout
+A=""; B=""; K=""; BLOCKS=4; FRESH=0; OUT=""; RUNS=5; SUITE=gate; SPLIT=heldout; SEED=363
 ENV_A=(); ENV_B=()
 BASE_URL="${LLAMACPP_BASE_URL:-http://127.0.0.1:8200/v1}"
 MODEL="${LLAMACPP_MODEL:-gemma-4-12b}"
@@ -55,7 +63,9 @@ while [ $# -gt 0 ]; do
     --fresh-per-block) FRESH=1; shift ;;
     --suite) SUITE="$2"; shift 2 ;;
     --split) SPLIT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+    --seed) SEED="$2"; shift 2 ;;
+    --no-seed) SEED=""; shift ;;
+    -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -98,13 +108,16 @@ fresh() {
 
 run_block() {  # $1 = block number, $2 = arm name, $3 = tree
   local report="$OUT/block-$1-$2.jsonl"
-  log "block $1 arm $2 start $(date -u +%H:%M:%SZ)"
+  # Same block, same seeds, either arm (`evalstats.sample_seed`).
+  local seed=""
+  [ -n "$SEED" ] && seed=$((SEED + 1000 * $1))
+  log "block $1 arm $2 start $(date -u +%H:%M:%SZ) seed ${seed:-none}"
   [ "$FRESH" = 1 ] && fresh
   identity "$2" "$3"
   local -a extra=()
   while IFS= read -r kv; do [ -n "$kv" ] && extra+=("$kv"); done < <(arm_env "$2")
   (cd "$BACKEND" && env "${extra[@]+"${extra[@]}"}" PYTHONPATH="$3/backend/src" "${SUITE_ENV[@]}" \
-     CHESSAPP_EVAL_REPORT="$report" \
+     CHESSAPP_EVAL_REPORT="$report" CHESSAPP_EVAL_SEED="$seed" \
      LLAMACPP_BASE_URL="$BASE_URL" LLAMACPP_MODEL="$MODEL" \
      CHESSAPP_EXPERIMENT="${CHESSAPP_EXPERIMENT:-$(basename "$OUT")}/block-$1-$2" \
      "$PYTHON" -m pytest "$SUITE_FILE" -k "$K" -s 2>&1 | tee -a "$OUT/block-$1-$2.out" | grep -E '^\[eval\]|^\[frontier\] scenario|passed|failed' || true)
@@ -113,7 +126,7 @@ run_block() {  # $1 = block number, $2 = arm name, $3 = tree
 }
 
 SPECS=()
-log "campaign $(date -u +%FT%TZ) suite $SUITE ($SUITE_FILE) k='$K' blocks=$BLOCKS runs=$RUNS split=$SPLIT fresh=$FRESH"
+log "campaign $(date -u +%FT%TZ) suite $SUITE ($SUITE_FILE) k='$K' blocks=$BLOCKS runs=$RUNS split=$SPLIT fresh=$FRESH seed=${SEED:-none}"
 for ((i = 1; i <= BLOCKS; i++)); do
   if (( i % 2 )); then run_block "$i" a "$A"; run_block "$i" b "$B"
   else run_block "$i" b "$B"; run_block "$i" a "$A"; fi

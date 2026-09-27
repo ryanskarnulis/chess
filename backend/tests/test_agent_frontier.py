@@ -14,9 +14,10 @@ model), or a broken scenario (`frontier.ScenarioError`).
 
 Knobs: `CHESSAPP_FRONTIER_RUNS` (samples per scenario, default 10),
 `CHESSAPP_FRONTIER_SPLIT` (`dev`, the default, or `heldout`), and the gate's
-own `CHESSAPP_EVAL_REPORT`, `LLAMACPP_*` and `CHESSAPP_STOCKFISH`. The report
-opens with a header naming the build, model, sampling and the shas of both
-prompts and of the tool offer, so each number is tied to what produced it.
+own `CHESSAPP_EVAL_SEED` (paired arms, #363), `CHESSAPP_EVAL_REPORT`,
+`LLAMACPP_*` and `CHESSAPP_STOCKFISH`. The report opens with a header naming
+the build, model, sampling and the shas of both prompts and of the tool offer,
+so each number is tied to what produced it.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
 from frontier import Scenario, measure
 from frontier_corpus import SCENARIOS
 from test_agent_evals import (  # noqa: F401 - `engine` is a fixture
+    _SEED_BASE,
     LLAMACPP_MODEL,
     PLANNER_TEMPERATURE,
     _build_eval_app,
@@ -81,6 +83,7 @@ def _frontier_header() -> Generator[None, None, None]:
             "planner_temperature": PLANNER_TEMPERATURE,
             "runs": RUNS,
             "split": SPLIT,
+            "seed": _SEED_BASE,
             **configuration(),
         }
     )
@@ -93,7 +96,8 @@ def test_frontier(scenario: Scenario, engine) -> None:  # noqa: F811
         scenario,
         runs=RUNS,
         split=SPLIT,
-        app_factory=lambda: _build_eval_app(engine),
+        app_factory=lambda seed: _build_eval_app(engine, seed),
+        seed_base=_SEED_BASE,
     )
     print(
         f"\n[frontier] scenario={scenario.name} tier={scenario.tier} "
