@@ -504,6 +504,12 @@ class ToolContext:
     # The open question per origin (#319, `clarification`): one slot for each
     # conversation, read through `live_clarification`, never persisted.
     clarifications: dict[str, Clarification] = field(default_factory=dict)
+    # The difficulty each conversation opened at, per origin (#338): "put it
+    # back where it was when we started" names a value only the conversation
+    # remembers, and the planner reads spoken words, never old tool results.
+    # Taken when a conversation's first command arrives, never persisted — a
+    # conversation this process did not see open has no start to report.
+    opening_difficulty: dict[str, dict[str, Any]] = field(default_factory=dict)
     origin: str = PANEL_ORIGIN
     _confirming: bool = False
     # Carried across session swaps so the version never goes backwards; see
@@ -637,6 +643,9 @@ class ToolContext:
         self._version_base = self.board_version + 1 - session.revision
         self.session = session
         self.transcript = transcript
+        # The resumed conversation opened in another session, at a difficulty
+        # nobody recorded; the panel's start is not this one's.
+        self.opening_difficulty.pop(PANEL_ORIGIN, None)
 
 
 # The tools that throw a real game away: the reset, and the two ways a player
@@ -1353,6 +1362,43 @@ def _takeback_plies(ctx: ToolContext, before_move: int | None = None) -> int:
         retry=RETRY_DIFFERENT_ARGS,
         player_moves_numbered=f"{numbers[player[0]][0]} to {numbers[player[-1]][0]}",
     )
+
+
+# One named level up or down (#338), as `set_difficulty`'s `step` says it.
+DIFFICULTY_STEPS = {"harder": 1, "easier": -1}
+
+
+def current_difficulty(settings: Settings) -> dict[str, Any]:
+    """The one difficulty field that is set, as the brain's settings view
+    shows it (`api._agent_settings_dict`)."""
+    for name in ("tier", "skill_level", "elo"):
+        value = getattr(settings, name)
+        if value is not None:
+            return {name: value}
+    return {}
+
+
+def _stepped_tier(settings: Settings, step: str) -> str:
+    """The tier one step from the current one — the arithmetic a relative ask
+    needs, which is the setting's and not the model's (#338). A difficulty
+    set as a number has no neighbouring tier to step to, so the way out is to
+    name one."""
+    order = list(DIFFICULTY_TIERS)
+    if settings.tier not in order:
+        raise ToolError(
+            f"the difficulty is set as a number ({current_difficulty(settings)}), "
+            "not a named level: pass tier, skill_level or elo instead",
+            retry=RETRY_DIFFERENT_ARGS,
+        )
+    index = order.index(settings.tier) + DIFFICULTY_STEPS[step]
+    if not 0 <= index < len(order):
+        # Nothing to retry: there is no level past the end, so this is for
+        # the player to hear.
+        raise ToolError(
+            f"already at {settings.tier}, the "
+            f"{'hardest' if index >= len(order) else 'easiest'} level"
+        )
+    return order[index]
 
 
 def _player_has_moved(ctx: ToolContext) -> bool:
@@ -2322,7 +2368,11 @@ def build_registry(
         tier: str | None = None,
         skill_level: int | None = None,
         elo: int | None = None,
+        step: str | None = None,
     ) -> dict[str, Any]:
+        was = current_difficulty(ctx.settings)
+        if step is not None:
+            tier = _stepped_tier(ctx.settings, step)
         if tier is not None:
             if ctx.engine is not None:
                 ctx.engine.set_tier(tier)
@@ -2341,7 +2391,13 @@ def build_registry(
             ctx.settings.elo = elo
             ctx.settings.tier = None
             ctx.settings.skill_level = None
-        return {"ok": True, "tier": tier, "skill_level": skill_level, "elo": elo}
+        return {
+            "ok": True,
+            "tier": tier,
+            "skill_level": skill_level,
+            "elo": elo,
+            "was": was,
+        }
 
     # Exactly-one-of tier/skill_level/elo is a JSON-Schema `oneOf`, which a
     # plain signature can't express — the documented `parameters=` escape
@@ -2361,12 +2417,24 @@ def build_registry(
     # 20/20 without it (docs/agent-evals.md): an enumerated trigger outranked
     # the caveat that followed it, which is the phrase-list failure #249 warns
     # about, written into a description instead of a regex.
+    #
+    # `step` is #338's: "make the engine harder" from beginner went straight to
+    # maximum every time (frontier `difficulty_up_and_back`, 0/20), since a
+    # relative ask named no level and the top one is the only "harder" a
+    # schema can point at. One level up or down from the current one is
+    # arithmetic on the setting, so code does it (`_stepped_tier`). Measured
+    # 2026-09-28: harder, one step and harder-still 0 → 5/5 on both splits.
+    # The price, accepted by Ryan: "go easy on me but leave the difficulty
+    # exactly where it is" changes it more often (probe 12/20 → 5/20, frontier
+    # dev 10/10 → 1/5) — a relative lever makes "go easy" read as one, and
+    # neither the enum's names nor the sentence's placement moved it.
     set_difficulty.__doc__ = (
         "Set how hard the engine plays: pass exactly one of tier (named "
         "level: beginner ~500, casual ~1000, intermediate ~1500, advanced "
         f"~2000, maximum = full strength), skill_level ({SKILL_MIN}-"
-        f"{SKILL_MAX}), or elo ({ELO_MIN}-{ELO_MAX}). Prefer tier unless "
-        "the player names a number. This is the only thing that changes how "
+        f"{SKILL_MAX}), elo ({ELO_MIN}-{ELO_MAX}), or step (one named level "
+        "up or down from the current one). Prefer tier unless the player "
+        "names a number or asks for a step. This is the only thing that changes how "
         "hard the engine plays — there is no softer or sharper style to "
         "switch to. The setting persists and the player owns it: if they ask "
         "for an easier game but rule out changing the difficulty, there is "
@@ -2387,11 +2455,13 @@ def build_registry(
                     "minimum": ELO_MIN,
                     "maximum": ELO_MAX,
                 },
+                "step": {"type": "string", "enum": list(DIFFICULTY_STEPS)},
             },
             "oneOf": [
                 {"required": ["tier"]},
                 {"required": ["skill_level"]},
                 {"required": ["elo"]},
+                {"required": ["step"]},
             ],
             "additionalProperties": False,
         }

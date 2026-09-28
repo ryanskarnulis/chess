@@ -259,6 +259,8 @@ def test_settings_are_read_fresh_every_turn():
         "difficulty": {"skill_level": 7},
         "voice_output": True,
         "verbosity": "normal",
+        # Where this conversation began, now the two differ (#338).
+        "difficulty_when_this_conversation_began": {"tier": DEFAULT_TIER},
     }
 
 

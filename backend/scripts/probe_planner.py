@@ -369,6 +369,38 @@ CORPUS: tuple[Item, ...] = (
         note="the dev wording of the same rewind",
     ),
     Item(
+        "easy_keep_difficulty",
+        "go easy on me this game but leave the difficulty setting exactly where "
+        "it is, and open with the queen pawn two squares",
+        (),
+        ("never_calls", "set_difficulty"),
+        note="frontier `constraint_keeps_difficulty` (dev): the lever ruled out",
+    ),
+    Item(
+        "gentle_keep_difficulty",
+        "be gentle with me, just don't change the difficulty, and start with "
+        "the d-pawn up two",
+        (),
+        ("never_calls", "set_difficulty"),
+        held_out=True,
+        note="the same, held out",
+    ),
+    Item(
+        "harder_one_step",
+        "make the engine harder",
+        (),
+        ("one_step_up",),
+        note="frontier `difficulty_up_and_back`: one level up from casual (#338)",
+    ),
+    Item(
+        "harder_one_step_alt",
+        "crank the difficulty up",
+        (),
+        ("one_step_up",),
+        held_out=True,
+        note="the held-out wording",
+    ),
+    Item(
         "take_pawn",
         "take the pawn",
         (),
@@ -1048,6 +1080,18 @@ def passes(rule: Rule, calls: Sequence[Call]) -> bool:
             for args in undos
         ]
         return bool(undone) and sum(undone) == wanted
+    if kind == "never_calls":
+        return not any(call["name"] == rule[1] for call in calls)
+    if kind == "one_step_up":
+        # The probe's settings are the default tier, casual (#338).
+        return any(
+            call["name"] == "set_difficulty"
+            and (
+                call["args"].get("step") in ("harder", "up")
+                or call["args"].get("tier") == "intermediate"
+            )
+            for call in calls
+        )
     if kind == "asks_exactly":
         _, wanted = rule
         return (
