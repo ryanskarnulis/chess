@@ -14,7 +14,7 @@ import chess.pgn
 import pytest
 
 from chessapp.coordinator import TurnCoordinator, TurnPhase
-from chessapp.engine import DEFAULT_TIER
+from chessapp.engine import DEFAULT_TIER, CandidateMove, Evaluation
 from chessapp.game import GameSession
 from chessapp.tools import (
     BOARD_STATE_TOOLS,
@@ -2080,8 +2080,13 @@ def test_evaluate_position_start(session, live_engine):
     registry = build_registry(ToolContext(session=session, engine=live_engine))
     result = registry.dispatch("evaluate_position", {})
     assert result["ok"] is True
-    assert result["mate_in"] is None
-    assert abs(result["score_cp"]) < 150
+    assert result["mate"] is None
+    assert abs(result["player_advantage_cp"]) < 150
+    # What the number was computed on, and how (#320).
+    assert result["position"] == {"board_version": 0, "move_number": 1, "after": None}
+    assert result["search"]["depth_limit"] == 12
+    assert result["search"]["depth_reached"] >= 12
+    assert 1 <= len(result["line"]) <= 4
 
 
 @requires_stockfish
@@ -2091,8 +2096,92 @@ def test_get_best_moves_mate_position(live_engine):
     result = registry.dispatch("get_best_moves", {"n": 2})
     assert result["ok"] is True
     best = result["moves"][0]
-    assert best == {"uci": "f3f7", "san": "Qxf7#", "score_cp": None, "mate_in": 1}
+    assert best == {
+        "uci": "f3f7",
+        "san": "Qxf7#",
+        "player_advantage_cp": None,
+        "mate": {"in": 1, "for": "player"},
+        "line": ["Qxf7#"],
+    }
     json.dumps(result)
+
+
+# --- #320: analysis says whose side and which board ----------------------------
+
+# Black to move and a queen up: bad for White by any engine's count.
+BLACK_QUEEN_UP = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR b KQkq - 0 1"
+
+
+@pytest.mark.parametrize("color, sign", [("white", -1), ("black", 1)])
+def test_evaluate_position_is_from_the_players_side(color, sign):
+    """The same White-POV score reads as opposite advantages for the two
+    colors: a player on Black is never handed White's number to flip."""
+    engine = FakeEngine(evaluation=Evaluation(score_cp=-850, mate_in=None))
+    session = GameSession(fen=BLACK_QUEEN_UP, player_color=color)
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    result = registry.dispatch("evaluate_position", {})
+    assert result["player_advantage_cp"] == sign * 850
+    assert result["mate"] is None
+    assert "score_cp" not in result and "mate_in" not in result
+
+
+@pytest.mark.parametrize(
+    "color, mate_in, side",
+    [("white", 3, "player"), ("white", -3, "glitch"), ("black", 3, "glitch")],
+)
+def test_a_mate_says_who_delivers_it(color, mate_in, side):
+    engine = FakeEngine(evaluation=Evaluation(score_cp=None, mate_in=mate_in))
+    session = GameSession(player_color=color)
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    result = registry.dispatch("evaluate_position", {})
+    assert result["player_advantage_cp"] is None
+    assert result["mate"] == {"in": 3, "for": side}
+
+
+def test_best_moves_score_from_the_players_side_with_their_lines():
+    best = CandidateMove(
+        uci="e7e5",
+        san="e5",
+        score_cp=-40,
+        mate_in=None,
+        depth=12,
+        pv=("e7e5", "g1f3", "b8c6", "f1b5"),
+    )
+    session = GameSession(player_color="black")
+    session.submit_move("e2e4")
+    engine = FakeEngine(best_moves=(best,))
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    result = registry.dispatch("get_best_moves", {"n": 1})
+    assert result["moves"] == [
+        {
+            "uci": "e7e5",
+            "san": "e5",
+            "player_advantage_cp": 40,
+            "mate": None,
+            # Three plies of the line, in SAN from the analysed board.
+            "line": ["e5", "Nf3", "Nc6"],
+        }
+    ]
+    assert result["search"] == {"depth_limit": 12, "depth_reached": 12}
+
+
+def test_analysis_is_dated_by_the_move_it_came_after():
+    """`position.after` says whose move the number came after: an evaluation
+    made once the player has moved and before Glitch's reply says so, and
+    one made after the reply names the reply."""
+    session = GameSession()
+    best = CandidateMove(uci="e2e4", san="e4", score_cp=30, mate_in=None)
+    ctx = ToolContext(session=session, engine=FakeEngine(best_moves=(best,)))
+    registry = build_registry(ctx)
+    session.submit_move("e2e4")
+    before_reply = registry.dispatch("evaluate_position", {})
+    assert before_reply["position"]["after"] == {"san": "e4", "by": "player"}
+    session.submit_move("e7e5")
+    after_reply = registry.dispatch("evaluate_position", {})
+    assert after_reply["position"]["after"] == {"san": "e5", "by": "glitch"}
+    assert after_reply["position"]["move_number"] == 2
+    judged = registry.dispatch("analyze_last_move", {})
+    assert judged["position"]["after"] == {"san": "e5", "by": "glitch"}
 
 
 @requires_stockfish

@@ -128,6 +128,16 @@ have changed what the player hears; #368 retired it. Both lines are labelled tes
 `test_speech_accuracy.py`, beside a count and a move no review backs, which
 stay unbacked.
 
+**Scores from the player's side (#320).** `evaluate_position` and
+`get_best_moves` report `player_advantage_cp` (positive: the player is ahead)
+and `mate: {"in", "for": "player" | "glitch"}` instead of White-POV
+`score_cp`/`mate_in`. `facts.analysis_numbers` records each score with both
+signs, the way it already did for `offer_draw`: "you're up 1.5" and "I'm down
+1.5" quote the same fact. The engine's `line` moves count as reported moves.
+Records from before #320 keep their White-POV keys and re-judge as they
+always did. The number class can't tell which direction a number was hung
+on; #320's scorer step adds that measure.
+
 **What the scorer is lenient about, by design.** These errors inflate
 accuracy and never count against the model:
 

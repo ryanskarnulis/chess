@@ -67,7 +67,13 @@ def analysis_moves(tool_results: Sequence[dict[str, Any]]) -> set[str]:
         if result.get("ok") is not True:
             continue
         if r["name"] == "get_best_moves":
-            reported.update(m["san"] for m in result.get("moves", ()) if m.get("san"))
+            for move in result.get("moves", ()):
+                reported.update(san for san in (move.get("san"),) if san)
+                # The line each candidate leads to (#320): the engine's word
+                # about what follows, which a hint legitimately quotes.
+                reported.update(move.get("line", ()))
+        elif r["name"] == "evaluate_position":
+            reported.update(result.get("line", ()))
         elif r["name"] == "analyze_last_move":
             reported.update(
                 san for san in (result.get("played"), result.get("best")) if san
@@ -132,6 +138,22 @@ def analysis_numbers(tool_results: Sequence[dict[str, Any]]) -> set[str]:
     """
     numbers: set[str] = set()
 
+    def advantage(result: Mapping[str, Any]) -> None:
+        """A score as the analysis tools report it since #320 — the player's
+        advantage and a `mate` said in words — recorded from both sides of
+        the board, the `offer_draw` way: "you're up 1.5" and "I'm down 1.5"
+        quote the same fact. A pre-#320 trace's White-POV `score_cp` /
+        `mate_in` pair is read as it always was, so old records re-judge
+        unchanged."""
+        if "player_advantage_cp" in result or "mate" in result:
+            cp = result.get("player_advantage_cp")
+            record(cp, None)
+            record(-cp if cp is not None else None, None)
+            if mate := result.get("mate"):
+                record(None, mate.get("in"))
+        else:
+            record(result.get("score_cp"), result.get("mate_in"))
+
     def record(score_cp: int | None, mate_in: int | None) -> None:
         if score_cp is not None:
             numbers.add(str(score_cp))
@@ -148,7 +170,7 @@ def analysis_numbers(tool_results: Sequence[dict[str, Any]]) -> set[str]:
         if result.get("ok") is not True:
             continue
         if r["name"] == "evaluate_position":
-            record(result.get("score_cp"), result.get("mate_in"))
+            advantage(result)
         elif r["name"] == "offer_draw":
             # The verdict's number, from either side of the board: the narrator
             # may say "he's up half a pawn" or "you're down half a pawn" about
@@ -159,7 +181,7 @@ def analysis_numbers(tool_results: Sequence[dict[str, Any]]) -> set[str]:
             record(-cp if cp is not None else None, None)
         elif r["name"] == "get_best_moves":
             for candidate in result.get("moves", ()):
-                record(candidate.get("score_cp"), candidate.get("mate_in"))
+                advantage(candidate)
         elif r["name"] == "analyze_last_move":
             record(result.get("cp_loss"), None)
         elif r["name"] == "review_game":

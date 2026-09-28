@@ -69,7 +69,7 @@
       "type": "function",
       "function": {
         "name": "evaluate_position",
-        "description": "Stockfish's verdict on who is better, from White's point of view: centipawns\nor mate-in-N. For \"who's winning?\", \"how am I doing?\", \"is this good for\nme?\". What is on the board is `describe_position`.",
+        "description": "Stockfish's verdict on who is better, from the player's side: centipawns\n(positive means the player is ahead) or a forced mate and who delivers it,\nwith the line the engine expects. For \"who's winning?\", \"how am I doing?\",\n\"is this good for me?\". What is on the board is `describe_position`.",
         "parameters": {
           "properties": {},
           "title": "evaluate_positionArguments",
@@ -82,7 +82,7 @@
       "type": "function",
       "function": {
         "name": "get_best_moves",
-        "description": "Stockfish's top n moves, best first, with scores. For a hint or advice: \"what\nshould I play?\", \"any ideas?\", \"give me a hint\".",
+        "description": "Stockfish's top n moves, best first, each scored from the player's side\nwith the line it leads to. For a hint or advice: \"what should I play?\", \"any\nideas?\", \"give me a hint\".",
         "parameters": {
           "properties": {
             "n": {
@@ -527,7 +527,7 @@
       "type": "function",
       "function": {
         "name": "evaluate_position",
-        "description": "Stockfish's verdict on who is better, from White's point of view: centipawns\nor mate-in-N. For \"who's winning?\", \"how am I doing?\", \"is this good for\nme?\". What is on the board is `describe_position`.",
+        "description": "Stockfish's verdict on who is better, from the player's side: centipawns\n(positive means the player is ahead) or a forced mate and who delivers it,\nwith the line the engine expects. For \"who's winning?\", \"how am I doing?\",\n\"is this good for me?\". What is on the board is `describe_position`.",
         "parameters": {
           "properties": {},
           "title": "evaluate_positionArguments",
@@ -540,7 +540,7 @@
       "type": "function",
       "function": {
         "name": "get_best_moves",
-        "description": "Stockfish's top n moves, best first, with scores. For a hint or advice: \"what\nshould I play?\", \"any ideas?\", \"give me a hint\".",
+        "description": "Stockfish's top n moves, best first, each scored from the player's side\nwith the line it leads to. For a hint or advice: \"what should I play?\", \"any\nideas?\", \"give me a hint\".",
         "parameters": {
           "properties": {
             "n": {

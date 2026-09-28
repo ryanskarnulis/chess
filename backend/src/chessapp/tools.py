@@ -59,6 +59,7 @@ from chessapp.conversation import Transcript
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import (
+    DEFAULT_ANALYSIS_DEPTH,
     DEFAULT_TIER,
     DIFFICULTY_TIERS,
     ELO_MAX,
@@ -66,6 +67,7 @@ from chessapp.engine import (
     SKILL_MAX,
     SKILL_MIN,
     EnginePlayer,
+    player_view,
 )
 from chessapp.game import GameSession, MoveResult
 from chessapp.move_parts import PartsError
@@ -1315,6 +1317,57 @@ def _require_engine(ctx: ToolContext) -> EnginePlayer:
     return ctx.engine
 
 
+# How much of the engine's main line an analysis result quotes (#320): enough
+# to say what the engine actually showed — the reply it expects, the mate it
+# sees — and short enough that a hint for three candidates stays a few lines.
+EVALUATION_LINE_PLIES = 4
+CANDIDATE_LINE_PLIES = 3
+
+
+def _line_san(fen: str, pv: Sequence[str], plies: int) -> list[str]:
+    """The first `plies` moves of an engine line, in SAN, played out from
+    `fen` — the position the line was searched from."""
+    board = chess.Board(fen)
+    line = []
+    for uci in pv[:plies]:
+        move = chess.Move.from_uci(uci)
+        line.append(board.san(move))
+        board.push(move)
+    return line
+
+
+def _analysis_position(ctx: ToolContext) -> dict[str, Any]:
+    """Which board an analysis result was computed on (#320), so nothing
+    reading it later has to assume it is the board it is looking at:
+    `board_version` (the counter every result and refusal is dated by), the
+    move number, and the last move played with who played it — which is what
+    tells an evaluation made after the player's move, before Glitch's reply,
+    from one made after both.
+
+    `by` names a mover, and `describe_position` withholds exactly that (#193).
+    The difference is what the key answers: there it said whose move was
+    next; here it dates a number, and since #365 the narrator is handed its
+    own reply outright."""
+    session = ctx.session
+    labels = session.ply_labels()
+    history = session.move_history()
+    after = None
+    if history:
+        by = "player" if labels[-1][1] == session.player_color else "glitch"
+        after = {"san": history[-1], "by": by}
+    return {
+        "board_version": ctx.board_version,
+        "move_number": session.fullmove_number,
+        "after": after,
+    }
+
+
+def _search(depth: int | None) -> dict[str, Any]:
+    """How deep the search that produced a number went: the depth asked for
+    and the depth reached (None when the engine did not report one)."""
+    return {"depth_limit": DEFAULT_ANALYSIS_DEPTH, "depth_reached": depth}
+
+
 def _player_plies(ctx: ToolContext) -> list[int]:
     """Where the player's own moves sit in the move history, oldest first —
     whose plies are whose, derived the way `_player_has_moved` derives it. Vs
@@ -1693,14 +1746,25 @@ def build_registry(
 
     @registry.tool()
     def evaluate_position() -> dict[str, Any]:
-        """Stockfish's verdict on who is better, from White's point of view: centipawns
-        or mate-in-N. For "who's winning?", "how am I doing?", "is this good for
-        me?". What is on the board is `describe_position`."""
+        """Stockfish's verdict on who is better, from the player's side: centipawns
+        (positive means the player is ahead) or a forced mate and who delivers it,
+        with the line the engine expects. For "who's winning?", "how am I doing?",
+        "is this good for me?". What is on the board is `describe_position`."""
+        fen = ctx.session.fen()
         evaluation = _require_engine(ctx).evaluate_position(ctx.session)
+        # From the player's side, not White's (#320): White-POV numbers left a
+        # player on Black to be told "you're up 1.5" in a lost position,
+        # whenever the model forgot to flip the sign.
+        advantage, mate = player_view(
+            evaluation.score_cp, evaluation.mate_in, ctx.session.player_color
+        )
         return {
             "ok": True,
-            "score_cp": evaluation.score_cp,
-            "mate_in": evaluation.mate_in,
+            "player_advantage_cp": advantage,
+            "mate": mate,
+            "line": _line_san(fen, evaluation.pv, EVALUATION_LINE_PLIES),
+            "position": _analysis_position(ctx),
+            "search": _search(evaluation.depth),
         }
 
     @registry.tool()
@@ -1714,20 +1778,31 @@ def build_registry(
             ),
         ] = 3,
     ) -> dict[str, Any]:
-        """Stockfish's top n moves, best first, with scores. For a hint or advice: "what
-        should I play?", "any ideas?", "give me a hint"."""
+        """Stockfish's top n moves, best first, each scored from the player's side
+        with the line it leads to. For a hint or advice: "what should I play?", "any
+        ideas?", "give me a hint"."""
+        fen = ctx.session.fen()
+        color = ctx.session.player_color
         candidates = _require_engine(ctx).get_best_moves(ctx.session, n=n)
-        return {
-            "ok": True,
-            "moves": [
+        moves = []
+        for c in candidates:
+            advantage, mate = player_view(c.score_cp, c.mate_in, color)
+            moves.append(
                 {
                     "uci": c.uci,
                     "san": c.san,
-                    "score_cp": c.score_cp,
-                    "mate_in": c.mate_in,
+                    "player_advantage_cp": advantage,
+                    "mate": mate,
+                    "line": _line_san(fen, c.pv, CANDIDATE_LINE_PLIES),
                 }
-                for c in candidates
-            ],
+            )
+        return {
+            "ok": True,
+            "moves": moves,
+            "position": _analysis_position(ctx),
+            "search": _search(
+                min((c.depth for c in candidates if c.depth), default=None)
+            ),
         }
 
     @registry.tool()
@@ -1758,6 +1833,10 @@ def build_registry(
             # victim of a capture it is describing. None means a quiet move.
             "played_captures": analysis.played_captures,
             "best_captures": analysis.best_captures,
+            # The board this was asked on (#320). The verdict is about one
+            # past move and does not age, but what came after it can: a
+            # judgment made before Glitch's reply is dated as one.
+            "position": _analysis_position(ctx),
         }
 
     @registry.tool()

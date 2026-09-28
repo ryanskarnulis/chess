@@ -84,21 +84,30 @@ class Evaluation:
     """Position score from White's point of view.
 
     Exactly one of `score_cp` (centipawns) / `mate_in` (signed: positive
-    means White mates in N) is set.
+    means White mates in N) is set. `depth` is the depth the search actually
+    reached (None when the engine did not say), and `pv` the main line it
+    found, in UCI from the evaluated position (#320): what an answer quotes
+    when it says what the engine *showed*, rather than inferring a tactic from
+    a score.
     """
 
     score_cp: int | None
     mate_in: int | None
+    depth: int | None = None
+    pv: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class CandidateMove:
-    """One MultiPV candidate, best-first; score fields as in Evaluation."""
+    """One MultiPV candidate, best-first; score, depth and line fields as in
+    Evaluation (`pv[0]` is the move itself)."""
 
     uci: str
     san: str
     score_cp: int | None
     mate_in: int | None
+    depth: int | None = None
+    pv: tuple[str, ...] = ()
 
 
 def pov_cp(score_cp: int | None, mate_in: int | None, turn: str) -> int:
@@ -111,6 +120,23 @@ def pov_cp(score_cp: int | None, mate_in: int | None, turn: str) -> int:
     else:
         cp = score_cp or 0
     return cp if turn == "white" else -cp
+
+
+def player_view(
+    score_cp: int | None, mate_in: int | None, player_color: str
+) -> tuple[int | None, dict[str, Any] | None]:
+    """A White-POV (score_cp, mate_in) pair turned to the player's side of the
+    board (#320), for anything a model reads: `(player_advantage_cp, mate)`,
+    where the centipawns are positive when the player is better and `mate` is
+    `{"in": N, "for": "player" | "glitch"}` — who delivers it, said in words,
+    because a signed mate distance was one more sign for a 12B to flip.
+    Unlike `pov_cp` it keeps a mate a mate rather than folding it onto a
+    number."""
+    sign = 1 if player_color == "white" else -1
+    if mate_in is not None:
+        side = "player" if mate_in * sign > 0 else "glitch"
+        return None, {"in": abs(mate_in), "for": side}
+    return (None if score_cp is None else score_cp * sign), None
 
 
 def sample_weighted(losses: list[int], temperature: float, rng: random.Random) -> int:
@@ -345,7 +371,12 @@ class EnginePlayer:
             lambda engine: engine.analyse(board, chess.engine.Limit(depth=depth))
         )
         score_cp, mate_in = _score_fields(info["score"])
-        return Evaluation(score_cp=score_cp, mate_in=mate_in)
+        return Evaluation(
+            score_cp=score_cp,
+            mate_in=mate_in,
+            depth=info.get("depth"),
+            pv=tuple(move.uci() for move in info.get("pv", ())),
+        )
 
     def get_best_moves(
         self, session: GameSession, n: int = 3, depth: int = DEFAULT_ANALYSIS_DEPTH
@@ -375,6 +406,8 @@ class EnginePlayer:
                     san=board.san(move),
                     score_cp=score_cp,
                     mate_in=mate_in,
+                    depth=info.get("depth"),
+                    pv=tuple(m.uci() for m in pv),
                 )
             )
         return candidates
