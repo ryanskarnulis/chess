@@ -779,6 +779,7 @@ def test_a_false_planner_note_is_not_what_the_narrator_is_told(trace_path):
         "reply_owed": False,
         "engine_reply": None,
         "candidates": [],
+        "pieces": [],
     }
 
 
@@ -929,7 +930,7 @@ def test_a_typed_clarification_reaches_the_player_with_its_candidates(trace_path
     candidates are board-validated, the loop ends on it, and the narrator's
     question naming them is not mistaken for advice."""
     client, provider, ctx = make_client(
-        tool_calls_turn(("ask_player", {"candidates": ["Nf3", "Nh3"]})),
+        tool_calls_turn(("ask_player", {"piece": "knight", "which": "kings"})),
         text_turn("Which knight hop — Nf3 or Nh3?"),
         tracer=JsonlTracer(trace_path),
     )
@@ -937,12 +938,11 @@ def test_a_typed_clarification_reaches_the_player_with_its_candidates(trace_path
     body = client.post("/api/command", json={"text": "move my kings knight"}).json()
 
     assert offered_tools(provider) == [True, False]
-    enum = next(
-        t["function"]["parameters"]["properties"]["candidates"]["items"]["enum"]
-        for t in provider.calls[0]["tools"]
-        if t["function"]["name"] == "ask_player"
+    # The planner says the parts; code works out the moves (#371).
+    ask = next(
+        t for t in provider.calls[0]["tools"] if t["function"]["name"] == "ask_player"
     )
-    assert enum == ctx.session.legal_moves()
+    assert "candidates" not in ask["function"]["parameters"]["properties"]
     assert body["commentary"] == "Which knight hop — Nf3 or Nh3?"
     assert ctx.session.move_history() == []
     record = last_turn(trace_path)
@@ -964,7 +964,7 @@ def test_a_landed_ask_leaves_the_move_after_it_unplayed():
     client, provider, ctx = make_client(
         tool_calls_turn(
             ("set_verbosity", {"verbosity": "low"}),
-            ("ask_player", {"candidates": ["Nf3", "Nh3"]}),
+            ("ask_player", {"piece": "knight", "which": "kings"}),
             ("make_move", {"move": "Nf3", "source": "said_the_move"}),
         ),
         text_turn("Nf3 or Nh3?"),

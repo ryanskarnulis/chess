@@ -237,8 +237,8 @@ class AgentResponse:
     # counts, so the seam stays model-agnostic.
     state_refreshes: tuple[int, ...] = ()
     # The board versions at which the planner's *offer* changed with that
-    # refresh (#315) — `ask_player`'s candidates re-narrowed, or a tool that
-    # appeared or went. A subset of `state_refreshes`: a refresh whose menu
+    # refresh (#315) — a tool that appeared or went (`ask_player` with fewer
+    # than two legal moves). A subset of `state_refreshes`: a refresh whose menu
     # left the offer as it was swaps nothing, and a swap is what costs the
     # planner a re-read of its prompt.
     offer_refreshes: tuple[int, ...] = ()

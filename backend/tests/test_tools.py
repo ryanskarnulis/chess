@@ -2605,16 +2605,18 @@ def test_ask_player_is_the_app_registrys_alone():
     assert "ask_player" in split
 
 
-def test_the_offer_narrows_candidates_to_the_live_legal_moves():
+def test_the_offer_is_the_screened_parts_schema_on_every_board():
+    """#371: the planner says the parts, code works out the moves, so the
+    offered schema is the screened one and no longer follows the board."""
+    from chessapp.tools import ASK_PLAYER_PARAMETERS
+
     ctx = ToolContext(session=GameSession())
+    before = _ask_offer(ctx)
+    ctx.session.submit_move("e4")
+    after = _ask_offer(ctx)
 
-    offer = _ask_offer(ctx)
-
-    items = offer["function"]["parameters"]["properties"]["candidates"]["items"]
-    assert items == {"type": "string", "enum": ctx.session.legal_moves()}
-    registered = _split(ctx).definitions()
-    static = next(d for d in registered if d["function"]["name"] == "ask_player")
-    assert "enum" not in json.dumps(static), "the registry's own schema is untouched"
+    assert before["function"]["parameters"] == ASK_PLAYER_PARAMETERS
+    assert before == after
 
 
 def test_with_nothing_to_choose_between_ask_player_is_withheld():
@@ -2624,37 +2626,72 @@ def test_with_nothing_to_choose_between_ask_player_is_withheld():
     assert _ask_offer(ctx) is None
 
 
-def test_ask_player_answers_its_candidates_and_moves_nothing():
+def test_ask_player_asks_with_exactly_the_moves_that_fit_and_moves_nothing():
     ctx = ToolContext(session=GameSession())
     registry = _split(ctx)
     version = ctx.board_version
 
-    result = registry.dispatch("ask_player", {"candidates": ["Nf3", "Nh3", "Nf3"]})
+    result = registry.dispatch("ask_player", {"piece": "knight", "which": "kings"})
 
     assert result == {"ok": True, "candidates": ["Nf3", "Nh3"]}
     assert ctx.board_version == version
 
 
-@pytest.mark.parametrize(
-    "candidates", [["Nf3", "Qh5"], ["Nf3", "Nf3"]], ids=["illegal", "one"]
-)
-def test_ask_player_refuses_what_the_board_does_not_offer(candidates):
+def test_a_capture_and_castling_are_asked_by_their_parts():
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5", "Nf3", "Nc6", "d4", "exd4"):
+        ctx.session.submit_move(san)
+    registry = _split(ctx)
+
+    assert registry.dispatch("ask_player", {"takes": "pawn"})["candidates"] == [
+        "Nxd4",
+        "Qxd4",
+    ]
+    assert registry.dispatch("ask_player", {"castle": True})["ok"] is False
+
+
+def test_a_wide_ask_says_which_pieces_its_moves_belong_to():
+    """Sixteen pawn moves are too many to read out (live, 2026-09-26): the
+    result names the pieces, so the question can be which pawn first."""
     ctx = ToolContext(session=GameSession())
 
-    result = _split(ctx).dispatch("ask_player", {"candidates": candidates})
+    result = _split(ctx).dispatch("ask_player", {"piece": "pawn"})
+
+    assert len(result["candidates"]) == 16
+    assert result["pieces"] == [f"pawn on {f}2" for f in "abcdefgh"]
+    narrow = _split(ctx).dispatch("ask_player", {"piece": "knight"})
+    assert "pieces" not in narrow
+
+
+@pytest.mark.parametrize(
+    ("args", "retry", "says"),
+    [
+        ({}, "different_args", "give the parts"),
+        ({"piece": "knight", "which": "the shiny one"}, "different_args", "which"),
+        ({"piece": "pawn", "to": "e4"}, "different_args", "only e4 fits"),
+        ({"takes": "pawn"}, "never", "no legal move fits"),
+    ],
+    ids=["no_parts", "not_a_board_term", "one_fits", "none_fit"],
+)
+def test_ask_player_refuses_what_is_not_a_question(args, retry, says):
+    ctx = ToolContext(session=GameSession())
+
+    result = _split(ctx).dispatch("ask_player", args)
 
     assert result["ok"] is False
-    assert result["retry"] == "different_args"
+    assert result["retry"] == retry
+    assert says in result["error"]
+    assert ctx.session.move_history() == []
 
 
 def test_ask_player_refuses_while_the_engine_is_to_move():
-    """Mid-exchange the offer stays on the player's last board (#315), so its
-    candidates can pass the schema; the handler is what knows the menu is the
-    engine's, and that no other candidates would help."""
+    """Mid-exchange the offer stays on the player's last board (#315); the
+    handler is what knows the menu is the engine's, and that no other parts
+    would help."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine())
     ctx.session.submit_move("e4")
 
-    result = _split(ctx).dispatch("ask_player", {"candidates": ["d4", "c4"]})
+    result = _split(ctx).dispatch("ask_player", {"piece": "pawn", "which": "d"})
 
     assert result["ok"] is False
     assert "engine is to move" in result["error"]
@@ -2665,9 +2702,9 @@ def test_engine_free_either_side_to_move_can_be_asked_about():
     ctx = ToolContext(session=GameSession())
     ctx.session.submit_move("e4")
 
-    result = _split(ctx).dispatch("ask_player", {"candidates": ["e5", "e6"]})
+    result = _split(ctx).dispatch("ask_player", {"piece": "knight", "which": "kings"})
 
-    assert result == {"ok": True, "candidates": ["e5", "e6"]}
+    assert result == {"ok": True, "candidates": ["Nf6", "Nh6"]}
 
 
 def test_ask_player_refuses_on_a_finished_game():
@@ -2675,7 +2712,7 @@ def test_ask_player_refuses_on_a_finished_game():
     for san in ("f3", "e5", "g4", "Qh4"):
         ctx.session.submit_move(san)
 
-    result = _split(ctx).dispatch("ask_player", {"candidates": ["e3", "e4"]})
+    result = _split(ctx).dispatch("ask_player", {"piece": "pawn", "which": "e"})
 
     assert result["ok"] is False
     assert "game is over" in result["error"]

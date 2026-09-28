@@ -513,9 +513,9 @@ class LlamaBrain:
     ) -> AgentResponse:
         # The offer and the schemas it is validated against are one list,
         # resolved here and again only where the planner is re-shown a board
-        # (#315): `ask_player`'s candidates are the live menu, so an offer that
-        # outlived the board it was built on would refuse what the refreshed
-        # block says is legal. Never between two boards, so the two stay one.
+        # (#315): whether `ask_player` is offered follows the board, so an
+        # offer that outlived the board it was built on could disagree with
+        # the refreshed block. Never between two boards, so the two stay one.
         tools = _resolve(self.tool_definitions)
         schemas = _schemas_of(tools)
         run = _RunState()
@@ -722,8 +722,8 @@ class LlamaBrain:
                 shown = version
                 # The offer follows the board it was just shown (#315), at this
                 # boundary and no other: while a reply is owed there is no
-                # refresh, and re-resolving then would narrow `ask_player` to
-                # the engine's menu. Swapped only when it differs, because the
+                # refresh, and re-resolving then would read the engine's menu.
+                # Swapped only when it differs, because the
                 # tools render ahead of the conversation and a new list costs
                 # the planner a re-read of its whole prompt.
                 fresh = self._fresh_offer(tools)

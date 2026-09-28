@@ -367,17 +367,15 @@ def test_the_planner_offer_is_a_fixed_order_with_ask_player_last():
     assert names == PLANNER_OFFER_ORDER
 
 
-def test_the_offer_differs_across_boards_only_in_its_last_tool():
+def test_the_offer_is_the_same_on_every_board():
+    """Since `ask_player` asks by parts (#371) nothing in the offer follows
+    the board, so it renders byte for byte the same and stays in the prefix
+    cache (#362)."""
     start = _planner_offer(GameSession())
     later = GameSession()
     for san in ("e4", "e5", "Nf3"):
         later.submit_move(san)
-    moved = _planner_offer(later)
-    assert moved[:-1] == start[:-1]
-    assert moved[-1] != start[-1], "ask_player's enum follows the board"
-    # Byte for byte, as the wire sends it: everything before ask_player matches.
-    head = json.dumps(start[:-1])
-    assert json.dumps(moved).startswith(head[:-1])
+    assert json.dumps(_planner_offer(later)) == json.dumps(start)
 
 
 def test_a_claimable_draw_changes_nothing_in_the_offer():

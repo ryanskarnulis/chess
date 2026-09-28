@@ -211,6 +211,7 @@ def test_the_trace_names_tools_and_not_results():
         "reply_owed": False,
         "engine_reply": "Nf6",
         "candidates": [],
+        "pieces": [],
     }
 
 
@@ -244,6 +245,30 @@ def test_the_clarification_brief_names_every_candidate():
     assert "Done this turn: nothing." in brief
     assert "The player has to choose between: Nf3, Nh3." in brief
     assert "naming each" in brief
+
+
+WIDE = {
+    "name": "ask_player",
+    "result": {
+        "ok": True,
+        "candidates": ["a3", "a4", "b3", "b4", "c3", "c4"],
+        "pieces": ["pawn on a2", "pawn on b2", "pawn on c2"],
+    },
+}
+
+
+def test_a_wide_ask_asks_which_piece_and_keeps_every_move():
+    """#371: sixteen pawn moves read out took about 12 s. The brief names the
+    pieces to ask about; the record keeps the moves, so any one answers it."""
+    handoff = build([WIDE])
+    brief = render(handoff, "push a pawn", [WIDE])
+
+    assert handoff.candidates == ("a3", "a4", "b3", "b4", "c3", "c4")
+    assert handoff.pieces == ("pawn on a2", "pawn on b2", "pawn on c2")
+    assert "too many moves to read out" in brief
+    assert "pawn on a2, pawn on b2, pawn on c2" in brief
+    assert "naming each" not in brief
+    assert "naming each" in render(build([ASKED]), "move my kings knight", [ASKED])
 
 
 def test_the_split_registry_classifies_ask_player_apart():

@@ -1,7 +1,8 @@
 """The open clarification: a question the player was asked and has not answered.
 
-`ask_player` (#289) validates the moves a player's words fit and hands them to
-the narrator, who asks. Until #319 that was the end of them: the next turn had
+`ask_player` (#289) works out the moves a player's words fit — from the parts
+the planner names, since #371 — and hands them to the narrator, who asks.
+Until #319 that was the end of them: the next turn had
 to recover *which* moves were on offer from the narrator's wording in the
 transcript — paraphrased, dropped from the verbatim window four turns later
 (`conversation.condense` keeps the player's words, not Glitch's), and bound to

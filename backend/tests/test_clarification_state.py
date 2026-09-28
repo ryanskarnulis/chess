@@ -27,7 +27,7 @@ from fakes import FakeEngine, text_turn, tool_calls_turn
 from test_closing_pass import CollectedTurns, make_client
 
 KNIGHT_ASK = "move my kings knight"
-ASK = tool_calls_turn(("ask_player", {"candidates": ["Nf3", "Nh3"]}))
+ASK = tool_calls_turn(("ask_player", {"piece": "knight", "which": "kings"}))
 QUESTION = text_turn("Nf3 or Nh3?")
 
 
@@ -143,7 +143,7 @@ def test_asking_again_replaces_it():
     first = ctx.clarifications[PANEL_ORIGIN]
 
     provider.rescript(
-        tool_calls_turn(("ask_player", {"candidates": ["e3", "e4"]})),
+        tool_calls_turn(("ask_player", {"piece": "pawn", "which": "e"})),
         text_turn("One step or two?"),
     )
     client.post("/api/command", json={"text": "push the king pawn"})
