@@ -2956,7 +2956,12 @@ def test_the_narrator_facts_are_read_once_and_the_owed_reply_is_lifted_out():
 
     def facts():
         reads.append(1)
-        return {"player_color": "black", "reply_owed": True, "engine_reply": None}
+        return {
+            "player_color": "black",
+            "reply_owed": True,
+            "engine_reply": None,
+            "board_version": 3,
+        }
 
     brain, provider = make_brain(
         tool_calls_turn(("make_move", {"move": "e5"})),
@@ -2971,8 +2976,10 @@ def test_the_narrator_facts_are_read_once_and_the_owed_reply_is_lifted_out():
     brief = provider.calls[-1]["messages"][-1]["content"]
     assert 'The game now:\n{"player_color": "black"}' in brief
     assert "reply_owed" not in brief and "engine_reply" not in brief
+    assert "board_version" not in brief.split("The game now:")[1]
     assert "Your reply to the player's move never came" in brief
     assert resp.handoff.reply_owed is True
+    assert resp.handoff.board_version == 3
     assert resp.handoff.facts == {"player_color": "black"}
 
 
