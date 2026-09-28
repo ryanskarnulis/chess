@@ -2279,14 +2279,18 @@ def build_registry(
         # Whether a claim exists is board truth, and it is checked *before* the
         # gate for the same reason the budget is: a call that cannot run must not
         # arm a question, because the player's "yes" to it would then fail on a
-        # game they were told they could end. `never`, and not for want of
-        # classifying it — there are no arguments to vary, and what changes the
-        # answer is a move, not another call.
+        # game they were told they could end. `different_args`, not `never`
+        # (#401): the call that can succeed is a different one. Offered on every
+        # board since #393, this tool draws "want to just call it a draw?", and
+        # `never` — which the planner reads as "stop" — ended the turn before
+        # `offer_draw` ran (0/10). Whether the player meant a claim or an offer
+        # stays the model's reading; this only says what else there is.
         if not ctx.session.claimable_draws():
             raise ToolError(
                 "cannot claim a draw: no draw is available to claim in this"
-                " position; a draw by agreement is offer_draw",
-                retry=RETRY_NEVER,
+                " position; if the player is asking the engine to agree to a"
+                " draw, call offer_draw instead",
+                retry=RETRY_DIFFERENT_ARGS,
             )
         refusal = _gate("claim_draw", {})
         if refusal is not None:

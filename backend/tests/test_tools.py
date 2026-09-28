@@ -160,7 +160,7 @@ def test_claim_draw_with_nothing_to_claim_refuses_and_arms_nothing(session):
     result = registry.dispatch("claim_draw", {})
 
     assert result["ok"] is False
-    assert result["retry"] == "never"
+    assert result["retry"] == "different_args", "another call can succeed (#401)"
     assert "offer_draw" in result["error"], "points a draw offer at its tool"
     assert ctx.pending is None, "a claim that cannot run must not arm a question"
 
@@ -1539,9 +1539,10 @@ def test_claim_draw_reports_the_rule_the_claim_landed_under():
 
 
 def test_claim_draw_with_nothing_to_claim_is_a_refusal_not_a_crash(registry, session):
-    """No draw available is a domain "no": the board never moved, and no
-    argument would have changed the answer, so it comes back `retry: never` for
-    the player to hear rather than for the loop to retry."""
+    """No draw available is a domain "no": the board never moved. It comes back
+    `retry: different_args` because a different call, `offer_draw`, can still
+    do what a player asking for a draw usually wants (#401); `never` read as
+    "stop" and ended the turn before the offer ran."""
     for san in ("e4", "e5"):
         session.submit_move(san)
     fen_before = session.fen()
@@ -1549,7 +1550,7 @@ def test_claim_draw_with_nothing_to_claim_is_a_refusal_not_a_crash(registry, ses
     result = registry.dispatch("claim_draw", {})
 
     assert result["ok"] is False
-    assert result["retry"] == "never"
+    assert result["retry"] == "different_args"
     assert "no draw" in result["error"]
     assert session.fen() == fen_before
     assert not session.is_game_over()
