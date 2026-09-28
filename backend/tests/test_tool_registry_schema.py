@@ -260,7 +260,7 @@ def test_defaulted_params_keep_their_default():
 
 
 def test_set_difficulty_keeps_oneof_via_override():
-    """`set_difficulty`'s exactly-one-of tier/skill_level/elo (oneOf) cannot be
+    """`set_difficulty`'s exactly-one-of tier/skill_level/elo/step (oneOf) cannot be
     derived from a plain signature; it rides the decorator's `parameters=`
     escape hatch and must survive in the emitted schema."""
     live = build_registry(ToolContext(session=GameSession())).definitions()
@@ -273,6 +273,7 @@ def test_set_difficulty_keeps_oneof_via_override():
         {"required": ["tier"]},
         {"required": ["skill_level"]},
         {"required": ["elo"]},
+        {"required": ["step"]},
     ]
 
 

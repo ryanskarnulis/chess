@@ -1979,6 +1979,53 @@ def test_set_difficulty_requires_exactly_one_of_skill_or_elo(registry):
     )
 
 
+def test_a_step_is_one_named_level_from_the_current_one(session):
+    """ "Make it harder" from beginner is casual, not the top (#338): which
+    level is next is arithmetic on the setting, done here."""
+    engine = FakeEngine()
+    ctx = ToolContext(session=session, engine=engine)
+    ctx.settings.tier = "beginner"
+    registry = build_registry(ctx)
+    result = registry.dispatch("set_difficulty", {"step": "harder"})
+    assert result["ok"] is True
+    assert result["tier"] == "casual"
+    assert result["was"] == {"tier": "beginner"}
+    assert registry.dispatch("set_difficulty", {"step": "harder"})["tier"] == (
+        "intermediate"
+    )
+    assert registry.dispatch("set_difficulty", {"step": "easier"})["tier"] == ("casual")
+    assert engine.tiers == ["casual", "intermediate", "casual"]
+
+
+def test_a_step_past_the_end_is_refused_for_the_player_to_hear(session):
+    ctx = ToolContext(session=session)
+    ctx.settings.tier = "maximum"
+    registry = build_registry(ctx)
+    result = registry.dispatch("set_difficulty", {"step": "harder"})
+    assert result["ok"] is False
+    assert result["retry"] == "never"
+    assert "hardest" in result["error"]
+    assert ctx.settings.tier == "maximum"
+
+
+def test_a_step_from_a_number_asks_for_a_level_instead(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    registry.dispatch("set_difficulty", {"elo": 1800})
+    result = registry.dispatch("set_difficulty", {"step": "easier"})
+    assert result["ok"] is False
+    assert result["retry"] == "different_args"
+    assert ctx.settings.elo == 1800
+
+
+def test_set_difficulty_says_what_it_was(session):
+    ctx = ToolContext(session=session)
+    registry = build_registry(ctx)
+    registry.dispatch("set_difficulty", {"elo": 1800})
+    result = registry.dispatch("set_difficulty", {"tier": "advanced"})
+    assert result["was"] == {"elo": 1800}
+
+
 def test_set_difficulty_rejects_out_of_range(registry):
     assert registry.dispatch("set_difficulty", {"skill_level": 21})["ok"] is False
     assert registry.dispatch("set_difficulty", {"skill_level": -1})["ok"] is False

@@ -345,6 +345,35 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Targeted run 2026-09-28 on relative difficulty (#338, roadmap #366 step
+10, second half). `set_difficulty` takes `step` (`harder`/`easier`: one named
+level from the current one, worked out by code, refused past either end or
+from a number), and its result says what the difficulty `was`. The planner's
+settings view gains `difficulty_when_this_conversation_began`, recorded per
+conversation origin at its first command and shown only once it differs from
+the current difficulty. Not a full gate run: the difficulty and constraint
+scenarios, `long_capture`, and the probe.**
+
+- Frontier, 5 a scenario (`main` 10 a scenario): `difficulty_up_and_back`
+  5/5 on both splits (0/10). With `step` alone, harder, one step and
+  harder-still were already 5/5, but "back where it started" was held-out
+  1/5 and dev 3/5. The start fact made it 5/5. `settings_move_and_verdict`
+  is 5/5 on both.
+- **Accepted regression (Ryan, 2026-09-28): frontier dev
+  `constraint_keeps_difficulty` 10/10 → 0/5.** "Go easy on me this game but
+  leave the difficulty setting exactly where it is" now changes it
+  (`step=easier` or `tier=beginner`). On probe item `easy_keep_difficulty`,
+  `main`'s definition scored 12/20 and the step definition 5/20 (p=0.04).
+  Neither `up`/`down` enum names (5/20) nor `main`'s sentence with `step` only
+  in the schema (2/10) moved it: a relative lever makes "go easy" read as one.
+  The held-out wording holds (5/5), and so do both gate constraint scenarios
+  (`constraint_rules_out_the_only_lever` 10/10,
+  `constraint_survives_a_live_thread` 9/10). Personality is tone only, so the
+  ask never had a lever to pull, and it is rare next to the plain
+  "harder"/"easier" asks this fixes.
+- Gate, 10 each: `voice_setting_and_move` and `long_capture` ×3 all 10/10;
+  `settings_by_speech_makes_it_easier` passed.
+
 **Targeted run 2026-09-28 on undo by move (#338 and #394, roadmap #366 step
 10). The planner's `undo` has no count any more: `plies` is left out of its
 offer (MCP and board callers keep it), and it gains `before_move`, the move

@@ -134,6 +134,7 @@ from chessapp.tools import (
     ToolRegistry,
     build_registry,
     confirm_pending,
+    current_difficulty,
     live_checkpoint,
     pgn_headers,
     saved_game_names,
@@ -519,6 +520,7 @@ def planner_state(
     state: dict[str, Any],
     question: clarification.Clarification | None,
     expired: clarification.Closed | None,
+    opening_difficulty: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The opening board state the planner reads (#319): the agent view plus,
     when there is one, the question its conversation has open.
@@ -538,12 +540,25 @@ def planner_state(
     another client moved reads as an answer to a question nothing stands
     behind any more.
 
+    `settings.difficulty_when_this_conversation_began` is the difficulty the
+    conversation opened at (`ToolContext.opening_difficulty`, #338), only once
+    it differs from the current one: "back to where it was when we started"
+    is otherwise a value the planner has no way to see, since it reads the
+    words spoken and never an old tool result. While the two agree it is left
+    out, so the opening view of an ordinary turn is unchanged.
+
     Built from what the turn already read rather than by reading again,
     because the read drops a stale record: one read per turn, one report.
     Deliberately not in `_agent_state_dict`, which the narrator's views are
     derived from and the turn's change detection compares.
     """
     view = dict(state)
+    settings = state.get("settings") or {}
+    if opening_difficulty and opening_difficulty != settings.get("difficulty"):
+        view["settings"] = {
+            **settings,
+            "difficulty_when_this_conversation_began": opening_difficulty,
+        }
     if question is not None:
         view["open_question"] = {
             "player_asked": question.request,
@@ -561,14 +576,8 @@ def _agent_settings_dict(ctx: ToolContext) -> dict[str, Any]:
     """The live settings the brain is shown: difficulty (exactly the one field
     of tier / skill_level / elo that is set), voice output, and verbosity."""
     settings = ctx.settings
-    difficulty: dict[str, Any] = {}
-    for field in ("tier", "skill_level", "elo"):
-        value = getattr(settings, field)
-        if value is not None:
-            difficulty = {field: value}
-            break
     return {
-        "difficulty": difficulty,
+        "difficulty": current_difficulty(settings),
         "voice_output": settings.voice_output,
         "verbosity": settings.verbosity,
     }
@@ -2636,6 +2645,9 @@ def create_app(
         # one that no longer stands on this board is dropped here and reported
         # once, as `expired`.
         question, expired = ctx.live_clarification(origin)
+        if not transcript:
+            # This conversation's first command: what "where we started" means.
+            ctx.opening_difficulty[origin] = current_difficulty(ctx.settings)
         before = _agent_state_dict(ctx)
         # What locates this turn afterwards (audit item 18): the coordinator turn
         # it opened under, an id for this one interaction, and the board version
@@ -2919,7 +2931,12 @@ def create_app(
                     route = ROUTE_BRAIN
                     response = await _offloop(
                         brain.get_agent_response,
-                        planner_state(before, question, expired),
+                        planner_state(
+                            before,
+                            question,
+                            expired,
+                            ctx.opening_difficulty.get(origin),
+                        ),
                         text,
                         transcript,
                     )
