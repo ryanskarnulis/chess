@@ -17,6 +17,7 @@ from chessapp.engine import (
     ELO_MIN,
     MAX_SAMPLE_LOSS,
     EnginePlayer,
+    player_view,
     sample_weighted,
     validate_elo,
     validate_skill_level,
@@ -188,6 +189,40 @@ def test_engine_finds_mate_in_one(engine):
     assert result.legal
     assert result.game_over
     assert session.outcome().termination == "checkmate"
+
+
+@requires_stockfish
+def test_analysis_reports_its_depth_and_line(engine):
+    """#320: an evaluation and each candidate say how deep the search went and
+    the line it found, starting from the analysed position."""
+    session = GameSession(
+        fen="r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"
+    )
+    evaluation = engine.evaluate_position(session, depth=8)
+    assert evaluation.mate_in == 1
+    assert evaluation.depth is not None and evaluation.depth >= 1
+    assert evaluation.pv[0] == "f3f7"
+    best = engine.get_best_moves(GameSession(), n=2, depth=8)
+    for candidate in best:
+        assert candidate.depth is not None and candidate.depth >= 8
+        assert candidate.pv[0] == candidate.uci
+        assert len(candidate.pv) >= 2
+
+
+@pytest.mark.parametrize(
+    "score_cp, mate_in, color, expected",
+    [
+        (120, None, "white", (120, None)),
+        (120, None, "black", (-120, None)),
+        (None, 2, "white", (None, {"in": 2, "for": "player"})),
+        (None, 2, "black", (None, {"in": 2, "for": "glitch"})),
+        (None, -4, "black", (None, {"in": 4, "for": "player"})),
+    ],
+)
+def test_player_view_turns_white_pov_to_the_players_side(
+    score_cp, mate_in, color, expected
+):
+    assert player_view(score_cp, mate_in, color) == expected
 
 
 @requires_stockfish
