@@ -294,7 +294,15 @@ narrator past the 60 s ceiling on 9 of 20 samples (a probe of interleaved
 arms, 2026-09-27; the numbers are in `docs/agent-evals.md`). `reply_owed` is left for the reply the
 engine died on: "Your reply to the player's move never came: the engine
 failed." No `history` (the refresh block's measured reason, one phase on) and
-no side to move.
+no side to move. `board_version` (#320) is lifted out too, and never shown as
+a number. It dates the turn's analysis: `evaluate_position` and
+`get_best_moves` results carry `position.board_version`, and one computed on
+an earlier board gets a record line such as "#2 evaluate_position was worked
+out after the player played e4; your reply e5 came after it." That is
+`move_and_judgment`'s case: the evaluation runs between the player's move and
+the reply, and the narrator speaks after the reply. `analyze_last_move` judges
+one past move and is not dated. Scores are the player's side
+(`player_advantage_cp`, `mate.for`), not White's.
 
 **One projection.** `narrator_result_view` drops `fen`, `turn`, `legal_moves`
 and `captures` from every result a narrator reads, on both briefs — `undo`,

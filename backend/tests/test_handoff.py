@@ -277,3 +277,102 @@ def test_the_split_registry_classifies_ask_player_apart():
     )
     names = {d["function"]["name"] for d in registry.definitions()}
     assert "ask_player" in names and "ask_player" not in READ_TOOLS
+
+
+# --- #320: a score or hint older than the board it is spoken over -----------------
+
+
+def _evaluated(version, after):
+    return {
+        "name": "evaluate_position",
+        "result": {
+            "ok": True,
+            "player_advantage_cp": 35,
+            "mate": None,
+            "position": {"board_version": version, "move_number": 1, "after": after},
+        },
+    }
+
+
+def test_an_evaluation_made_before_the_reply_says_so():
+    """`move_and_judgment`: the evaluation ran after the player's e4, the
+    narrator speaks after Glitch's e5 — the brief dates the number."""
+    results = [MOVED, _evaluated(1, {"san": "e4", "by": "player"})]
+    handoff = build(
+        results,
+        engine_reply={"san": "e5", "capture": None, "check": False},
+        board_version=2,
+    )
+    brief = render(handoff, "play e4, and how am I doing?", results)
+    assert (
+        "#2 evaluate_position was worked out after the player played e4;"
+        " your reply e5 came after it." in brief
+    )
+
+
+def test_an_evaluation_of_the_board_as_it_stands_is_not_dated():
+    results = [_evaluated(4, {"san": "Nf6", "by": "glitch"})]
+    current = render(build(results, board_version=4), "how am I doing?", results)
+    undated = render(build(results), "how am I doing?", results)
+    # Byte for byte the brief a turn got before #320: nothing to date, nothing
+    # added — so the scenarios this cannot move need no re-run.
+    assert current == undated
+    assert "worked out" not in current
+
+
+def test_a_stale_hint_without_a_reply_says_the_board_moved_on():
+    hint = {
+        "name": "get_best_moves",
+        "result": {
+            "ok": True,
+            "moves": [],
+            "position": {"board_version": 0, "move_number": 1, "after": None},
+        },
+    }
+    results = [hint, {"name": "undo", "result": {"ok": True, "undone": ["e4"]}}]
+    brief = render(build(results, board_version=2), "hint, then undo", results)
+    assert (
+        "#1 get_best_moves was worked out on the starting position;"
+        " the board has changed since." in brief
+    )
+
+
+def test_a_move_verdict_is_never_dated():
+    """`analyze_last_move` judges one past move; that does not age."""
+    judged = {
+        "name": "analyze_last_move",
+        "result": {
+            "ok": True,
+            "played": "e4",
+            "position": {
+                "board_version": 0,
+                "move_number": 1,
+                "after": {"san": "e4", "by": "player"},
+            },
+        },
+    }
+    brief = render(build([judged], board_version=5), "was that good?", [judged])
+    assert "worked out" not in brief
+
+
+def test_the_live_narrator_facts_date_a_pre_reply_evaluation():
+    """End to end at the tool boundary: a real evaluation made between the
+    player's move and the reply, and the facts the narrator reads after it."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    coordinator = TurnCoordinator(ctx)
+    registry = build_registry(ctx, coordinator=coordinator, atomic_exchange=False)
+    moved = registry.dispatch("make_move", {"move": "e4", "source": "said_the_move"})
+    evaluated = registry.dispatch("evaluate_position", {})
+    coordinator.settle_owed_reply()
+    facts = api.narrator_facts(ctx, coordinator)
+    results = [
+        {"name": "make_move", "result": moved},
+        {"name": "evaluate_position", "result": evaluated},
+    ]
+    handoff = build(
+        results,
+        engine_reply=facts.pop("engine_reply"),
+        board_version=facts.pop("board_version"),
+        facts=facts,
+    )
+    assert "your reply e5 came after it" in render(handoff, "e4, how am I?", results)

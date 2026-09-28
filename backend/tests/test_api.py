@@ -839,6 +839,8 @@ def test_the_narrator_facts_hold_no_side_to_move_and_no_history():
         "captured": ctx.session.captured_pieces(),
         "engine_reply": None,
         "reply_owed": False,
+        # Lifted out by the brain before the facts are shown (#320).
+        "board_version": 0,
     }
     assert not set(facts) & set(NARRATOR_HIDDEN_KEYS)
 

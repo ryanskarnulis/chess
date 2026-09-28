@@ -686,7 +686,8 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
     of the facts into the handoff, where it becomes Glitch's own move to say.
     `reply_owed` is the coordinator's too — the player's move landed and no
     answer did, which since #365 means the engine died on it — and becomes the
-    line saying the reply never came.
+    line saying the reply never came. `board_version` is lifted out the same
+    way and dates the turn's analysis results against this board (#320).
     """
     settled = coordinator.settlement
     return {
@@ -700,6 +701,10 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
         else None,
         "reply_owed": coordinator.phase
         in (TurnPhase.PLAYER_MOVE_APPLIED, TurnPhase.AGENT_OBSERVING),
+        # The board the narrator speaks over, by the counter analysis results
+        # are dated with (#320): lifted out by the brain, never shown as a
+        # number, and what lets the brief say an evaluation is older.
+        "board_version": ctx.board_version,
     }
 
 

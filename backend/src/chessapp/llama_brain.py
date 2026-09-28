@@ -857,6 +857,7 @@ class LlamaBrain:
             changes,
             reply_owed=bool(facts.pop("reply_owed", False)),
             engine_reply=facts.pop("engine_reply", None),
+            board_version=facts.pop("board_version", None),
             facts=facts,
         )
         self._report(BRAIN_NARRATING)
@@ -969,6 +970,7 @@ class LlamaBrain:
             note=note,
             reply_owed=bool(facts.pop("reply_owed", False)),
             engine_reply=facts.pop("engine_reply", None),
+            board_version=facts.pop("board_version", None),
             facts=facts,
         )
         self._report(BRAIN_NARRATING)

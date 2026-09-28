@@ -65,6 +65,11 @@ READ_TOOLS = frozenset(
     }
 )
 
+# The analysis whose answer is about the board as it stood (#320): a score or a
+# hint goes stale once a move lands after it. `analyze_last_move` judges one
+# past move, and that verdict does not age, so it is not dated in the brief.
+_DATED = frozenset({"evaluate_position", "get_best_moves"})
+
 # How the loop ending on its own reads here — a stall (`no_progress`) or a
 # budget (#288): the planner never declared itself done, so a turn that also
 # changed something is `partial`.
@@ -118,6 +123,10 @@ class Handoff:
     # On an ask too wide to read out (`tools.ASK_WIDE`), the pieces those
     # moves belong to ("pawn on e2"), so the question can be which piece (#371).
     pieces: tuple[str, ...] = ()
+    # The board the narrator speaks over (#320), which an analysis result's
+    # own `position.board_version` is compared with (`_outdated`); None when
+    # the caller did not say, and then nothing is dated.
+    board_version: int | None = None
 
     def trace(self) -> dict[str, Any]:
         """The handoff as the turn record keeps it: enough to re-judge a
@@ -154,6 +163,7 @@ def build(
     reply_owed: bool = False,
     engine_reply: Mapping[str, Any] | None = None,
     facts: Mapping[str, Any] | None = None,
+    board_version: int | None = None,
 ) -> Handoff:
     """Sort a turn's results and derive its kind from them.
 
@@ -208,6 +218,7 @@ def build(
         note=note,
         candidates=tuple(dict.fromkeys(candidates)),
         pieces=tuple(dict.fromkeys(pieces)),
+        board_version=board_version,
     )
 
 
@@ -233,6 +244,41 @@ def _reply_words(reply: Mapping[str, Any]) -> str:
     if reply.get("check"):
         words.append("check")
     return ", ".join(words)
+
+
+def _outdated(handoff: Handoff, tool_results: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One line per score or hint worked out on an earlier board than the one
+    the narrator speaks over (#320). In `move_and_judgment` ("play e4, and how
+    am I doing?") the evaluation runs after the player's move and before
+    Glitch's reply, and the narrator speaks after the reply lands: without a
+    date, that number reads as the position now. The line says what the
+    result was computed after, and that the board has moved on — a fact about
+    the record, not a wording; what to make of it is the narrator's."""
+    if handoff.board_version is None:
+        return []
+    lines = []
+    for entry in handoff.consulted:
+        if entry.tool not in _DATED:
+            continue
+        position = tool_results[entry.ref - 1]["result"].get("position") or {}
+        version = position.get("board_version")
+        if not isinstance(version, int) or version >= handoff.board_version:
+            continue
+        after = position.get("after")
+        when = (
+            f"after {'the player' if after['by'] == 'player' else 'you'}"
+            f" played {after['san']}"
+            if after
+            else "on the starting position"
+        )
+        reply = handoff.engine_reply
+        since = (
+            f"your reply {reply['san']} came after it"
+            if reply and after and after["by"] == "player"
+            else "the board has changed since"
+        )
+        lines.append(f"#{entry.ref} {entry.tool} was worked out {when}; {since}.")
+    return lines
 
 
 def _refs(entries: Sequence[Entry]) -> str:
@@ -284,6 +330,7 @@ def render(
         )
     if handoff.consulted:
         record.append(f"Looked up: {_refs(handoff.consulted)}.")
+        record.extend(_outdated(handoff, tool_results))
     if handoff.pieces:
         # Too many moves to read out: live, sixteen pawn moves took about 12 s
         # of speech (#371). The moves stay in the record, so any of them
