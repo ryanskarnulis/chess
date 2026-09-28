@@ -172,6 +172,16 @@ _PLAIN_TURN = (
     ("user", "e4"),
     ("assistant", "e4, and I answer e5. Classic."),
 )
+# The review turn of frontier `late_game_review_undo_replay`, as Glitch said it
+# in a traced held-out run (#338): the worst move named by its number.
+_WORST_MOVE_NAMED = (
+    ("user", "go over this game — what was my biggest mistake?"),
+    (
+        "assistant",
+        "yo, your move 7 was the real issue. d3 was a blunder—you should've "
+        "taken the queen with Bxc4.",
+    ),
+)
 
 
 def _pgn_moves(name: str) -> tuple[str, ...]:
@@ -317,6 +327,46 @@ CORPUS: tuple[Item, ...] = (
             ("assistant", "Saved it as before_undo."),
         ),
         note="frontier `late_game_save_undo_resume`'s undo turn (#371)",
+    ),
+    Item(
+        "undo_chain_second",
+        "undo the move before it as well",
+        ("e4", "e5", "Nf3", "Nc6"),
+        ("undoes_plies", 2),
+        held_out=True,
+        transcript=(
+            ("user", "undo my previous move"),
+            ("assistant", "Word, move undone."),
+        ),
+        note="frontier `undo_chain_across_turns`'s second takeback (#338)",
+    ),
+    Item(
+        "undo_chain_second_dev",
+        "and the one before that too",
+        ("e4", "e5", "Nf3", "Nc6"),
+        ("undoes_plies", 2),
+        transcript=(
+            ("user", "take back my last move"),
+            ("assistant", "Done, that one's gone."),
+        ),
+        note="the dev wording: one more, not two in all",
+    ),
+    Item(
+        "rewind_before_worst",
+        "rewind the game to right before I made it",
+        _pgn_moves("late_game_150_plies.pgn"),
+        ("first_call", "undo", {"args": {"before_move": 7}}),
+        held_out=True,
+        transcript=_WORST_MOVE_NAMED,
+        note="frontier `late_game_review_undo_replay`'s rewind turn (#338)",
+    ),
+    Item(
+        "back_before_worst",
+        "take me back to just before that move",
+        _pgn_moves("late_game_150_plies.pgn"),
+        ("first_call", "undo", {"args": {"before_move": 7}}),
+        transcript=_WORST_MOVE_NAMED,
+        note="the dev wording of the same rewind",
     ),
     Item(
         "take_pawn",
@@ -924,8 +974,9 @@ def outcome_label(calls: Sequence[Call]) -> str:
         if name == "make_move" and "move" in args:
             source = f",{args['source']}" if "source" in args else ""
             parts.append(f"make_move({args['move']}{source})")
-        elif name == "undo" and "plies" in args:
-            parts.append(f"undo(plies={args['plies']})")
+        elif name == "undo" and args:
+            said = ",".join(f"{k}={v}" for k, v in args.items())
+            parts.append(f"undo({said})")
         elif name == MOVE_PIECE or (
             name in ("make_move", "ask_player")
             and "candidates" not in args
@@ -984,10 +1035,17 @@ def passes(rule: Rule, calls: Sequence[Call]) -> bool:
     if kind == "asks":
         return not calls or calls[0]["name"] == "ask_player"
     if kind == "undoes_plies":
-        # Half-moves taken back: `plies`, or one exchange (2) when omitted.
+        # Half-moves taken back: `plies`, two per exchange for `moves` (#338),
+        # or one exchange (2) when omitted. Every item this rule scores is
+        # the player's turn after an exchange, vs the engine. A `before_move`
+        # target is not a count, so it never scores as one.
         _, wanted = rule
+        undos = [c["args"] for c in calls if c["name"] == "undo"]
+        if any("before_move" in args for args in undos):
+            return False
         undone = [
-            int(c["args"].get("plies") or 2) for c in calls if c["name"] == "undo"
+            int(args["plies"]) if args.get("plies") else 2 * int(args.get("moves") or 1)
+            for args in undos
         ]
         return bool(undone) and sum(undone) == wanted
     if kind == "asks_exactly":
@@ -1003,6 +1061,8 @@ def passes(rule: Rule, calls: Sequence[Call]) -> bool:
             return False
         args = calls[0]["args"]
         if "move_in" in constraints and args.get("move") not in constraints["move_in"]:
+            return False
+        if any(args.get(k) != v for k, v in constraints.get("args", {}).items()):
             return False
         return all(key not in args for key in constraints.get("absent", ()))
     raise ValueError(f"unknown rule kind {kind!r}")

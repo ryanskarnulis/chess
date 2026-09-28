@@ -89,6 +89,24 @@ def test_the_split_is_read_off_the_board_not_assumed_from_white():
     assert session.move_history_by_color() == {"white": ["Nf3"], "black": ["e5"]}
 
 
+def test_each_ply_is_labelled_as_a_score_sheet_would():
+    session = GameSession()
+    for move in ["e4", "e5", "Nf3"]:
+        assert session.submit_move(move).legal
+    assert session.ply_labels() == [(1, "white"), (1, "black"), (2, "white")]
+
+
+def test_ply_labels_start_where_the_fen_does():
+    """A mid-game FEN brings its own move number and can start with Black to
+    move: the first ply is Black's move 12, the next White's 13."""
+    session = GameSession(
+        fen="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 12"
+    )
+    for move in ["e5", "Nf3"]:
+        assert session.submit_move(move).legal
+    assert session.ply_labels() == [(12, "black"), (13, "white")]
+
+
 # --- captured pieces ------------------------------------------------------
 
 
