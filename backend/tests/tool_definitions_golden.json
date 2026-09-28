@@ -144,13 +144,18 @@
   },
   {
     "function": {
-      "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit plies — the app pops the\nwhole exchange itself, leaving the player to move again. When the player\nnames several moves to take back, call this again for each further named\nmove, plies omitted every time. Pass plies only when the player asked for\nan explicit count of half-moves.",
+      "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit the arguments — the app\npops the whole exchange itself, leaving the player to move again. When\nthe player names several moves to take back, call this again for each\nfurther named move. When they point back to a move by its number, pass\nbefore_move.",
       "name": "undo",
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "before_move": {
+            "description": "The move number of one of the player's moves, as review_game numbers them: go back to just before it, however far back that is.",
+            "minimum": 1,
+            "type": "integer"
+          },
           "plies": {
-            "description": "How many half-moves to take back. Omit for a normal takeback — the app works out the right number itself.",
+            "description": "How many half-moves to take back, for a caller that counts plies. Omit for a normal takeback.",
             "maximum": 100,
             "minimum": 1,
             "type": "integer"

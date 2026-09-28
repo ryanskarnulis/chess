@@ -202,6 +202,7 @@ _NULL_BRANCH = {"type": "null"}
 # (tool, parameter) → the typed branch that sits beside the null one.
 _OPTIONAL_TYPED_PARAMS: dict[tuple[str, str], dict[str, Any]] = {
     ("analyze_last_move", "color"): {"enum": ["white", "black"], "type": "string"},
+    ("undo", "before_move"): {"minimum": 1, "type": "integer"},
     ("undo", "plies"): {"maximum": UNDO_PLIES_MAX, "minimum": 1, "type": "integer"},
     ("new_game", "player_color"): {"enum": ["white", "black"], "type": "string"},
     ("resign", "color"): {"enum": ["white", "black"], "type": "string"},
@@ -360,6 +361,18 @@ PLANNER_OFFER_ORDER = [
 def _planner_offer(session: GameSession) -> list[dict[str, Any]]:
     ctx = ToolContext(session=session)
     return brain_tool_definitions(build_registry(ctx, atomic_exchange=False), ctx)
+
+
+def test_the_planner_takes_back_by_move_never_by_count():
+    """`undo` offers the planner a move number to go back before, never a
+    count (#338, #394); the MCP surface keeps `plies`."""
+    (undo,) = [
+        d["function"]
+        for d in _planner_offer(GameSession())
+        if d["function"]["name"] == "undo"
+    ]
+    assert list(undo["parameters"]["properties"]) == ["before_move"]
+    assert "plies" in _live_parameters()["undo"]["properties"]
 
 
 def test_the_planner_offer_is_a_fixed_order_with_ask_player_last():

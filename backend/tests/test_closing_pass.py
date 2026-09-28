@@ -237,21 +237,22 @@ def developed(ctx: ToolContext) -> ToolContext:
 
 
 @pytest.mark.parametrize(
-    ("plies", "took_back", "retry", "history", "announcement"),
+    ("before_move", "took_back", "retry", "history", "announcement"),
     [
-        # A hundred half-moves were never played, so nothing is taken back —
-        # and the turn that played e4 is still owed the engine's answer to it.
-        (100, False, "never", ["e4", "e5"], "\n\ne5."),
+        # There is no move 100 to go back to, so nothing is taken back — and
+        # the turn that played e4 is still owed the engine's answer to it.
+        (100, False, "different_args", ["e4", "e5"], "\n\ne5."),
         # The same refusal in JSON's one number type. It reaches the same
         # handler as an int (the registry narrows it) and is refused there.
-        (100.0, False, "never", ["e4", "e5"], "\n\ne5."),
-        # And the same spelling on a count that *is* takeable: 1.0 is one
-        # half-move, it pops e4, and now there is nothing left to answer.
+        (100.0, False, "different_args", ["e4", "e5"], "\n\ne5."),
+        # And the same spelling on a target that *is* there: 1.0 is the
+        # player's first move, it pops e4, and now there is nothing left to
+        # answer.
         (1.0, True, None, [], ""),
     ],
 )
 def test_whether_a_reply_is_owed_is_decided_by_whether_the_undo_landed(
-    plies, took_back, retry, history, announcement
+    before_move, took_back, retry, history, announcement
 ):
     """`make_move` and `undo` in one planner batch, with the undo refused.
 
@@ -268,7 +269,7 @@ def test_whether_a_reply_is_owed_is_decided_by_whether_the_undo_landed(
     client, provider, ctx = make_client(
         tool_calls_turn(
             ("make_move", {"move": "e4", "source": "said_the_move"}),
-            ("undo", {"plies": plies}),
+            ("undo", {"before_move": before_move}),
         ),
         text_turn("played e4; the takeback is another matter"),
         text_turn("e4 is on."),
@@ -307,7 +308,7 @@ def test_an_integral_float_argument_lands_instead_of_ending_the_command():
     client, _, ctx = make_client(
         tool_calls_turn(
             ("make_move", {"move": "e4", "source": "said_the_move"}),
-            ("undo", {"plies": 1.0}),
+            ("undo", {"before_move": 1.0}),
             ("set_voice_output", {"enabled": True}),
         ),
         text_turn("moved, took it back, voice on"),
@@ -485,34 +486,32 @@ def test_a_resumed_mid_exchange_save_finishes_the_exchange(tmp_path):
     assert body["commentary"] == "Back where you left it."
 
 
-def test_an_odd_takeback_is_announced_like_any_other_engine_move():
-    """The other restore, and the one that makes the announcement's case: the
-    player asked for one half-move back and the board moved twice. The narrator
-    says the settled move (#365) and it scores as backed — the `engine_move`
-    the result carries is evidence like the reply's own is."""
+def test_the_planner_never_counts_a_takeback_in_plies():
+    """A half-move is not a unit players speak, so the planner is not offered
+    one (#338): "undo my three most recent moves" read as `plies=3` or
+    `plies=6` depending on another tool's wording (#394). It takes back one
+    move per call, and a count of plies sent anyway is refused with the way
+    out — which leaves the odd takeback (and the engine move that settles it)
+    to the MCP and board callers that count plies on purpose."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
     for san in ("e4", "c5"):
         assert ctx.session.submit_move(san).legal
-    turns = CollectedTurns()
     client, _, ctx = make_client(
         tool_calls_turn(("undo", {"plies": 1})),
-        text_turn("popped one half-move"),
-        text_turn("Rolled it back, and I'm on e5 again."),
+        text_turn("that count is not mine to give"),
+        text_turn("Say which of your moves to take back."),
         ctx=ctx,
-        tracer=turns,
     )
 
     body = client.post(
         "/api/command", json={"text": "take back just that last half-move"}
     ).json()
 
-    assert body["tool_results"][0]["result"]["engine_move"]["san"] == "e5"
-    assert body["commentary"] == "Rolled it back, and I'm on e5 again."
-    assert ctx.session.move_history() == ["e4", "e5"]
-    assert ctx.session.turn == ctx.session.player_color
-    (record,) = turns.records
-    assert record["mutations"] == 2, "the takeback and the move that answered it"
-    assert unbacked_claims(record) == []
+    result = body["tool_results"][0]["result"]
+    assert result["ok"] is False
+    assert result["retry"] == "different_args"
+    assert "plies" in result["error"]
+    assert ctx.session.move_history() == ["e4", "c5"]
 
 
 class FailEngine(FakeEngine):
@@ -1076,7 +1075,7 @@ def test_a_finished_game_and_an_undo_rebuild_from_the_trace(monkeypatch):
     turns = CollectedTurns()
     ctx = finished(ToolContext(session=GameSession(), engine=FakeEngine()))
     client, _, _ = make_client(
-        tool_calls_turn(("undo", {"plies": 2})),
+        tool_calls_turn(("undo", {})),
         text_turn("took two back"),
         text_turn("Back to where we were."),
         ctx=ctx,

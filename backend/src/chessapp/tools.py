@@ -798,13 +798,16 @@ def _pieces_moving(session: "GameSession", moves: Sequence[str]) -> list[str]:
 
 MAKE_MOVE = "make_move"
 MOVE_SOURCE = "source"
+UNDO = "undo"
+UNDO_PLIES = "plies"
 
 
 def brain_tool_definitions(
     registry: "ToolRegistry", ctx: ToolContext
 ) -> list[dict[str, Any]]:
     """What the brain is offered this command: the registry minus
-    `brain_tool_exclusions`, with `make_move`'s `source` required. Resolved at
+    `brain_tool_exclusions`, with `make_move`'s `source` required and `undo`'s
+    `plies` left out (#338). Resolved at
     the start of each command and again each time the loop re-shows the
     planner a board (#315).
 
@@ -835,6 +838,13 @@ def brain_tool_definitions(
                 "description": _MOVE_SOURCE_DESCRIPTION,
             }
             parameters["required"] = [*parameters.get("required", []), MOVE_SOURCE]
+            function["parameters"] = parameters
+        elif function["name"] == UNDO:
+            # The planner takes back one move per call, or back to a move
+            # number (#338). A count of half-moves is for callers that count
+            # plies, and on the planner it only ever carried a misread (#394).
+            parameters = json.loads(json.dumps(function["parameters"]))
+            parameters.get("properties", {}).pop(UNDO_PLIES, None)
             function["parameters"] = parameters
     return offered
 
@@ -1296,22 +1306,53 @@ def _require_engine(ctx: ToolContext) -> EnginePlayer:
     return ctx.engine
 
 
-def _takeback_plies(ctx: ToolContext) -> int:
-    """How many plies a player's takeback pops — the same rule the board UI's
-    undo button uses (`api.undo`), and deliberately not the model's to work out.
+def _player_plies(ctx: ToolContext) -> list[int]:
+    """Where the player's own moves sit in the move history, oldest first —
+    whose plies are whose, derived the way `_player_has_moved` derives it. Vs
+    the engine, the plies of the player's color; engine-free, every ply, since
+    the player's own hand played both sides."""
+    labels = ctx.session.ply_labels()
+    if ctx.engine is None:
+        return list(range(len(labels)))
+    color = ctx.session.player_color
+    return [index for index, (_, side) in enumerate(labels) if side == color]
 
-    Vs the engine it is the player's turn after an exchange, so a takeback pops
-    their move *and* the engine's reply; popping one would leave their move on
-    the board with the engine to move and nothing to move it, which is what an
-    agent-driven undo used to do. One ply when the game ended on the player's
-    own move (no reply came) or there is no engine at all. Never the engine's
-    lone opening move: that is not the player's to take back, and asking for two
-    plies when only one has been played comes back as an ordinary error result.
+
+def _takeback_plies(ctx: ToolContext, before_move: int | None = None) -> int:
+    """How many plies a takeback pops — the player's last move, or back to just
+    before their move numbered `before_move` — and deliberately not the
+    model's to work out.
+
+    Either way the takeback reaches back to one of the player's moves and pops
+    it with everything after it, so it lands on the player to move again. Vs
+    the engine that is their move *and* the reply; popping one would leave
+    their move on the board with the engine to move and nothing to move it,
+    which is what an agent-driven undo used to do. One ply when the game ended
+    on the player's own move (no reply came) or there is no engine at all. The
+    default is the rule the board UI's undo button uses (`api.undo`), and never
+    touches the engine's lone opening move: that is not the player's.
+
+    A rewind to before a move `review_game` named is a target, not a count:
+    the 150-ply review rewind needed 138 plies, past the cap a count carries,
+    and the planner took one ordinary takeback instead (#338).
     """
-    vs_engine = ctx.engine is not None
-    if vs_engine and ctx.session.turn == ctx.session.player_color:
-        return 2
-    return 1
+    player = _player_plies(ctx)
+    if not player:
+        # Nothing to retry: another call does not conjure a move that was
+        # never played, so this is for the player to hear.
+        raise ToolError("cannot undo: the player has no move on the board")
+    history = len(ctx.session.move_history())
+    if before_move is None:
+        return history - player[-1]
+    numbers = ctx.session.ply_labels()
+    for index in player:
+        if numbers[index][0] == before_move:
+            return history - index
+    raise ToolError(
+        f"the player has no move numbered {before_move} on the board",
+        retry=RETRY_DIFFERENT_ARGS,
+        player_moves_numbered=f"{numbers[player[0]][0]} to {numbers[player[-1]][0]}",
+    )
 
 
 def _player_has_moved(ctx: ToolContext) -> bool:
@@ -1832,26 +1873,55 @@ def build_registry(
     # 16/20 against the old text's 19/20 and 7/20 in alternating blocks on one
     # server. Facts, not triggers (`set_difficulty`'s note below), and not even a
     # fact that counts anything, in a description whose argument is a number.
+    #
+    # #338 took the count away from the planner. `plies` left its offer
+    # (`brain_tool_definitions`): a half-move is not a unit players speak, and
+    # "undo my three most recent moves" read as `plies=3` or `plies=6`
+    # depending on another tool's wording (#394). A count in the player's own
+    # unit fared no better: offered `moves`, "undo my previous move" then "and
+    # the one before that too" read as `moves=2`, a running total over a move
+    # already gone — 0/10 on both wordings, against 10/10 with no count at all,
+    # where "three moves" is three calls (probe, 2026-09-28). What is left is a
+    # target, `before_move`: the move number `review_game` reports, which a
+    # count cannot reach once it is past the cap. `plies` stays for the MCP
+    # and delegate callers, who count plies on purpose.
     @registry.tool()
     def undo(
+        before_move: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                description=(
+                    "The move number of one of the player's moves, as "
+                    "review_game numbers them: go back to just before it, "
+                    "however far back that is."
+                ),
+            ),
+        ] = None,
         plies: Annotated[
             int | None,
             Field(
                 ge=1,
                 le=UNDO_PLIES_MAX,
                 description=(
-                    "How many half-moves to take back. Omit for a normal "
-                    "takeback — the app works out the right number itself."
+                    "How many half-moves to take back, for a caller that "
+                    "counts plies. Omit for a normal takeback."
                 ),
             ),
         ] = None,
     ) -> dict[str, Any]:
         """Take back the player's last move. For any normal takeback ("undo",
-        "take that back", "undo the bishop move") omit plies — the app pops the
-        whole exchange itself, leaving the player to move again. When the player
-        names several moves to take back, call this again for each further named
-        move, plies omitted every time. Pass plies only when the player asked for
-        an explicit count of half-moves."""
+        "take that back", "undo the bishop move") omit the arguments — the app
+        pops the whole exchange itself, leaving the player to move again. When
+        the player names several moves to take back, call this again for each
+        further named move. When they point back to a move by its number, pass
+        before_move."""
+        if before_move is not None and plies is not None:
+            raise ToolError(
+                "pass before_move or plies, not both", retry=RETRY_DIFFERENT_ARGS
+            )
+        if plies is None:
+            plies = _takeback_plies(ctx, before_move)
         # Attempt first, abandon second — and only if the takeback happened.
         # A takeback replaces the position the open turn is about, so the turn
         # goes with it (and any reply being computed for it); a *refused* one
@@ -1862,7 +1932,7 @@ def build_registry(
         # left to answer (audit 2026-09-05, finding 1). The same rule the other
         # non-move mutations below already follow, because each of them
         # abandons only on the path where its mutation really runs.
-        result = ctx.session.undo(_takeback_plies(ctx) if plies is None else plies)
+        result = ctx.session.undo(plies)
         if not result.ok:
             # Nothing to take back, or a game ended by resignation: asking again
             # with a different count does not conjure plies that were never

@@ -44,7 +44,8 @@ settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
 - `settle_engine_turn` answers a *restored* position: a board with the engine
   to move and no turn open over it. Three ways in — a new game the player takes
   as black, a save written between the player's move and the reply, an explicit
-  odd-ply takeback that pops the reply alone — and one condition, read off the
+  odd-ply takeback that pops the reply alone (an MCP or board caller's `plies`;
+  the planner is offered no count since #338) — and one condition, read off the
   session at call time: an engine, a live game, and the side to move is not the
   player's. `new_game`, `undo` and `resume_game` call it after abandoning, and
   so does `/api/game/undo`, whose client may send its own `plies`. It is not a

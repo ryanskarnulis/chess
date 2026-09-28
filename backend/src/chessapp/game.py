@@ -594,6 +594,25 @@ class GameSession:
             board.push(move)
         return sans
 
+    def ply_labels(self) -> list[tuple[int, str]]:
+        """Each ply played, as a score sheet labels it: `(move number, color)`.
+
+        Read off the root board rather than assumed from parity, for the reason
+        `move_history_by_color` replays: a session rooted on a mid-game FEN
+        starts at that FEN's move number and can start with Black to move. This
+        is what lets a takeback be asked for in the player's terms — "my last
+        three moves", "back to before move 23" — and turned into plies by code.
+        """
+        root = self._board.root()
+        offset = 1 if root.turn == chess.BLACK else 0
+        return [
+            (
+                root.fullmove_number + (index + offset) // 2,
+                "white" if (index + offset) % 2 == 0 else "black",
+            )
+            for index in range(len(self._board.move_stack))
+        ]
+
     def move_history_by_color(self) -> dict[str, list[str]]:
         """The moves each color played, in order — `move_history()` split by
         whose turn it was.

@@ -10,6 +10,7 @@ import json
 import shutil
 from pathlib import Path
 
+import chess.pgn
 import pytest
 
 from chessapp.coordinator import TurnCoordinator, TurnPhase
@@ -1368,6 +1369,89 @@ def test_undo_with_nothing_to_undo_is_error(registry):
 def test_undo_rejects_bad_plies(registry):
     assert registry.dispatch("undo", {"plies": 0})["ok"] is False
     assert registry.dispatch("undo", {"plies": "two"})["ok"] is False
+
+
+def _vs_engine_game(session, sans):
+    """`sans` already on the board, with the engine to reply to whatever the
+    player plays next (it never gets to here: every test only takes back)."""
+    for san in sans:
+        assert session.submit_move(san).legal
+    ctx = ToolContext(session=session, engine=FakeEngine(reply_uci="e7e5"))
+    return build_registry(ctx)
+
+
+_SIX_EXCHANGES = (
+    "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O",
+)  # fmt: skip
+
+
+def test_three_takebacks_are_three_calls(session):
+    """ "Undo my three most recent moves" is three calls, each popping one of
+    the player's moves with its reply — no count for the planner to misread
+    (#394)."""
+    registry = _vs_engine_game(session, _SIX_EXCHANGES)
+    for _ in range(3):
+        assert registry.dispatch("undo", {})["ok"] is True
+    assert session.move_history() == list(_SIX_EXCHANGES[:6])
+    assert session.turn == session.player_color
+
+
+def test_undo_goes_back_to_before_a_move_number(session):
+    """A move `review_game` named, by its number: back to just before the
+    player's move with that number, the player to move again."""
+    registry = _vs_engine_game(session, _SIX_EXCHANGES)
+    result = registry.dispatch("undo", {"before_move": 2})
+    assert result["ok"] is True
+    assert session.move_history() == ["e4", "e5"]
+    assert session.turn == session.player_color
+
+
+def test_undo_before_a_move_reaches_past_any_count_cap(session):
+    """The 150-ply review rewind needed 138 plies, over the 100 a count may
+    carry, and the planner took one ordinary takeback instead (#338). A target
+    has no cap: the player's first move is as reachable as their last."""
+    game = chess.pgn.read_game(
+        (Path(__file__).parent / "late_game_150_plies.pgn").open()
+    )
+    board = game.board()
+    sans = []
+    for move in game.mainline_moves():
+        sans.append(board.san(move))
+        board.push(move)
+    registry = _vs_engine_game(session, sans)
+    result = registry.dispatch("undo", {"before_move": 2})
+    assert result["ok"] is True
+    assert len(result["undone"]) == len(sans) - 2 > 100
+    assert session.move_history() == sans[:2]
+
+
+def test_undo_before_a_move_the_player_did_not_make_says_which_they_did(session):
+    registry = _vs_engine_game(session, ("e4", "e5", "Nf3", "Nc6"))
+    result = registry.dispatch("undo", {"before_move": 9})
+    assert result["ok"] is False
+    assert result["retry"] == "different_args"
+    assert result["player_moves_numbered"] == "1 to 2"
+    assert session.move_history() == ["e4", "e5", "Nf3", "Nc6"]
+
+
+def test_undo_before_a_move_finds_black_s_move_by_its_number(session):
+    """As black the player's move 2 is the fourth ply, not the third."""
+    session.new_game(player_color="black")
+    registry = _vs_engine_game(session, ("e4", "e5", "Nf3", "Nc6", "Bc4"))
+    assert registry.dispatch("undo", {"before_move": 2})["undone"] == [
+        "Bc4",
+        "Nc6",
+    ]
+    assert session.move_history() == ["e4", "e5", "Nf3"]
+    assert session.turn == session.player_color == "black"
+
+
+def test_undo_takes_a_target_or_a_count_not_both(session):
+    registry = _vs_engine_game(session, _SIX_EXCHANGES)
+    result = registry.dispatch("undo", {"plies": 2, "before_move": 2})
+    assert result["ok"] is False
+    assert result["retry"] == "different_args"
+    assert len(session.move_history()) == len(_SIX_EXCHANGES)
 
 
 def test_new_game_resets(session):
