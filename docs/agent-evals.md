@@ -345,6 +345,39 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Targeted run 2026-09-28 on undo by move (#338 and #394, roadmap #366 step
+10). The planner's `undo` has no count any more: `plies` is left out of its
+offer (MCP and board callers keep it), and it gains `before_move`, the move
+number `review_game` reports, turned into plies by code
+(`GameSession.ply_labels`) with no cap. "Three moves" is three calls. Not a
+full gate run (#338 is mid-milestone): the undo scenarios, `long_capture`, the
+probe, and the four frontier undo scenarios.**
+
+- Planner probe, 10 a screen, paired. A count in the player's own unit
+  (`moves`) fixed "undo my three most recent moves" (`undo_three_late` 0–1/20
+  on `main` → 20/20 as `moves=3`) but broke the chain across turns: "undo my
+  previous move", then "undo the move before it as well" read as `moves=2`, a
+  running total over a move already gone. That was 0/10 on both wordings, and
+  so was the frontier's `undo_chain_across_turns` (`main` held-out 10/10). Two
+  `moves` descriptions ("not counted again", "how many more") stayed at 0–1/10.
+  "Pass moves only when the player says how many" recovered the held-out
+  wording (8/10), but "and the one before that too" stayed at 0/10. With no
+  count at all (`nocount`, shipped byte for byte): `undo_three_late` 10/10 as
+  `undo|undo|undo`, both chain items 10/10, `back_before_worst` 9/10,
+  `undo_replace` 10/10.
+- Gate, 10 each: `undo_and_replace`, `undo_twice_and_replace` and
+  `long_capture` ×3 all 10/10.
+- Frontier, 5 a scenario (`main` for comparison, its last recorded run, 10 a
+  scenario): `late_game_save_undo_resume` held-out 4/5 (0/10), dev 5/5 (4/10);
+  `undo_chain_across_turns` held-out 5/5 (10/10), dev 5/5 (8/10);
+  `late_game_review_undo_replay` dev 4/5 (0/10), **held-out 0/5 (0/10)**;
+  `undo_replace_and_judge` held-out 5/5, dev 4/5 (5/10).
+- The held-out rewind stays out of reach. Glitch's review names the move ("your
+  move 7 was the real issue") and the dev wording "take me back to just before
+  that move" is `undo(before_move=7)`. "Rewind the game to right before I made
+  it" is a bare `undo` every time, and neither of two description arms moved it
+  (0/10 each, probe item `rewind_before_worst`).
+
 **Run 2026-09-27 on asks by parts (#371, roadmap #366 step 9: `ask_player`
 takes the parts of the move the player described — `piece`, `which`, `to`,
 `takes`, `castle` — and `GameSession.moves_fitting` works out the legal moves
