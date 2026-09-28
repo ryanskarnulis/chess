@@ -345,6 +345,45 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Run 2026-09-27 on asks by parts (#371, roadmap #366 step 9: `ask_player`
+takes the parts of the move the player described — `piece`, `which`, `to`,
+`takes`, `castle` — and `GameSession.moves_fitting` works out the legal moves
+that fit; a wide ask also names the pieces, and the narrator asks which one).
+Full gate: 54 passed, `long_capture` 5/5 ×3, speech 106/106 claims backed.
+The tool offer is ~2.7k tokens (chars/4) and byte-identical on every board;
+`main`'s was ~2.6k on the opening board and grew with the legal-move enum.**
+
+How it was measured, paired on the sampling seed (#363):
+
+- Planner probe, three screens of 10 then a confirmation of 20 in two
+  sessions (the second fresh, another seed). Seven arms: a `move_piece` tool,
+  parts on `make_move`, and five `ask_player` shapes. Only parts-only
+  `ask_player` asked "push my e pawn" (10/10 every screen), but it could not
+  express castling or a capture (0/10 each). Parts or candidates fixed those
+  and broke the light-squared bishop and "the pawn in front of my king" with
+  wrong lists (0/10). Parts with `takes` and `castle` (`parts_ask5`) shipped.
+  Confirmed, control → shipped, per session: `knight_ask_exact` 0 → 20, 0 → 20;
+  `queen_knight_exact` 0 → 20, 0 → 20; `castle_both` 0 → 20, 0 → 20;
+  `pawn_forward_ask` 0 → 20, 0 → 19; `light_bishop_ask` 19 → 20, 18 → 20;
+  `kingspawn_stt` 2 → 0, 1 → 0. The other 20 items were level in both sessions,
+  held-out ones included. The four push-verb pawn items ("push my e pawn",
+  "advance the pawn on e2") are played as e3 or e4 on every arm, control
+  included: #357's model limit stands.
+- Two lessons for the probe. Every ask item now scores the exact candidate
+  set (`asks_exactly`): the old `asks` rule passed an "ask" that resolved to
+  every king move for "castle". And a 10-sample screen is one draw, not a rate:
+  the identical arm read `kingspawn_stt` 10/10, then 0/10 in the next screen.
+- Frontier held-out, 10 a scenario, seed 371: 204 vs `main`'s 206 of 240.
+  `undo_then_ambiguous_bishop` 6 → 8/10 (the #370 regression; the refused-pick
+  recovery already worked on `main` after #393). Speech 251/259 vs 257/257;
+  every miss is a narrator line in a turn with no ask. **Shipped as a known
+  regression: `late_game_save_undo_resume` 16/30 → 4/30 over two runs (14–2
+  discordant).** "Undo my three most recent moves" reads as `plies=3` rather
+  than 6. Swapping only `ask_player`'s definition on the exact turn (probe
+  item `undo_three_late`, knob `tool_def`) moves it 18/20 ↔ 0/20: `main`'s
+  description and its legal-move enum both nudged the count. `undo` is
+  unchanged. Filed as #394, with a tool-side direction, for #338.
+
 **Run 2026-09-27 on the lean planner (#370, roadmap #366 step 8: a short
 `PLANNER_PROMPT` contract, tool descriptions that say what each tool does
 and which requests trigger it, and `make_move` refusals that say whether a
