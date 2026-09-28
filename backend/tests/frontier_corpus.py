@@ -99,7 +99,12 @@ _BLACK_FACING_MATE = "7k/8/5K2/8/8/8/8/6Q1 b - - 0 1"
 
 def black_facing_mate(app: EvalApp) -> None:
     _save_dir(app)
-    app.ctx.session = GameSession(fen=_BLACK_FACING_MATE, player_color="black")
+    # Through `replace_session`, not a bare assignment: the swap has to bump
+    # the board version, or `/api/state` keeps serving the opening position it
+    # published and the response-is-the-board invariant sees two games.
+    app.ctx.replace_session(
+        GameSession(fen=_BLACK_FACING_MATE, player_color="black"), app.ctx.transcript
+    )
 
 
 # Kept for the harness's own tests, which script a sample on this position.

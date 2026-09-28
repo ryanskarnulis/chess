@@ -33,11 +33,13 @@ per class per sentence as **made** and **backed**.
 | settings | `voice`, `difficulty`, `verbosity`, `verbosity_change` | the live value, or a setter that ran this turn |
 | engine numbers | `evaluation` | a number an analysis tool reported |
 | material | `material` | the count on some board the turn held |
+| advantage | `advantage` | the direction of an engine verdict the turn reported, from the player's side (#320) |
 
-Two classes pass by construction where their fact does not apply. That is
+Three classes pass by construction where their fact does not apply. That is
 right for a guard and wrong for a count, so the scorer drops them there:
 `outcome` on a live board, where it defers to `ending` on the same sentence,
-and `unplayed_reply` on a turn with no engine reply, owed or played. The advice licence
+`unplayed_reply` on a turn with no engine reply, owed or played, and
+`advantage` on a turn that asked the engine for no verdict. The advice licence
 (`move_advice`) is not scored. It checked a licence rather than a fact, and it
 left with the guard (#368).
 
@@ -136,7 +138,26 @@ signs, the way it already did for `offer_draw`: "you're up 1.5" and "I'm down
 1.5" quote the same fact. The engine's `line` moves count as reported moves.
 Records from before #320 keep their White-POV keys and re-judge as they
 always did. The number class can't tell which direction a number was hung
-on; #320's scorer step adds that measure.
+on, so a second class reads the direction.
+
+**The advantage class (#320).** It reads a verdict's direction:
+- "you're winning / ahead / better", "I'm losing / behind / worse"
+- "you're up 1.5", "White's up big" (up/down count only before an amount)
+- "you've got the edge / a big lead"
+
+It holds that direction to the turn's verdicts from the player's side
+(`facts.analysis_advantages`: every `evaluate_position`, plus the best
+candidate of a `get_best_moves`; mates fold onto `MATE_CP`). A color subject
+is mapped through the player's color (`VerifiedFacts.player_color`). Within
+`LEVEL_BAND_CP` (50) of level either direction is backed. It is judged only
+on turns that asked the engine for a verdict. Vibes ("you're cooked", "doing
+okay") and non-verdicts ("better off castling", "I'm up next", "up a
+knight", which is the material class's) are out on purpose.
+
+The first `judgment_as_black` run is why the class reads colors. The player
+was Black and a queen up, and all five narrations said White was ahead
+("You're cooked, man. White's up big."). None of them named "you" or "I".
+Those five lines are the corpus's must-fire table, verbatim.
 
 **What the scorer is lenient about, by design.** These errors inflate
 accuracy and never count against the model:

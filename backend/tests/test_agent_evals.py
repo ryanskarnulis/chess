@@ -3875,7 +3875,10 @@ def test_eval_judgment_as_black(engine: EnginePlayer) -> None:
     utterance = "how am I doing?"
 
     def setup(app: EvalApp) -> None:
-        app.ctx.session = GameSession(fen=_BLACK_A_QUEEN_UP, player_color="black")
+        app.ctx.replace_session(
+            GameSession(fen=_BLACK_A_QUEEN_UP, player_color="black"),
+            app.ctx.transcript,
+        )
         verdict = engine.evaluate_position(app.ctx.session)
         assert verdict.mate_in is None and verdict.score_cp <= -200, (
             f"the fixture no longer reads as Black clearly better: {verdict}"

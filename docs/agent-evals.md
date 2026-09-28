@@ -345,6 +345,44 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Milestone 3 close, 2026-09-28: full gate and both frontier splits on #320
+(roadmap #366 step 11).**
+
+What #320 changed:
+- Analysis results score from the player's side (`player_advantage_cp`,
+  `mate.for`), not White's.
+- They carry a code-written verdict `summary`, the engine's `line`, the board
+  they were computed on (`position`) and the search depth.
+- The narrator's brief dates an evaluation made before Glitch's reply.
+- Speech accuracy gains the `advantage` class (a verdict's direction).
+- New gate scenario `judgment_as_black`; new frontier row
+  `verdict_as_black_facing_mate`.
+
+Results (seed 363):
+- **Gate: 55 passed in 16 m 29 s.** Every pass-rate scenario is ABOVE_FLOOR,
+  and `long_capture` holds. Speech 112/112 over 299 turns; reply said 86/87.
+- **`judgment_as_black` found the bug the issue was about, one layer up.** The
+  position has the player on Black, a queen up (+654 on their side). With the
+  number alone, the planner's note read it as "you are down by about 654
+  centipawns, meaning White has a significant advantage", 5 of 5 samples.
+  Glitch told the player White was winning ("You're cooked, man. White's up
+  big."), and the first cut of the advantage class missed all five, because
+  none named "you" or "I". The verdict `summary` made it 5/5 right ("You're up
+  about 6.3 pawns already."). The class now reads colors and possession, and
+  those five lines are its must-fire corpus.
+- **Frontier** (history label "#320, milestone 3 close"):
+  - Speech: dev 325/330, held-out 337/340; reply said dev 209/214, held-out
+    233/236.
+  - `verdict_as_black_facing_mate` is 10/10 on both splits.
+  - `difficulty_up_and_back` is 10/10 on both splits (#338).
+  - Dev regressions against the 2026-09-27 row: `draw_declined_then_advice`
+    10→0 and `undo_then_ambiguous_bishop` 10→4. Held-out:
+    `undo_then_ambiguous_bishop` 8→0.
+  - A paired, seeded check puts both on `main` before #320 (dev draw 0/10 on
+    `0c83ced` and on #320; held-out bishop 1/10 vs 0/10). They are filed as
+    #401.
+  - Dev `constraint_keeps_difficulty` 1/10 is #338's accepted regression.
+
 **Targeted run 2026-09-28 on relative difficulty (#338, roadmap #366 step
 10, second half). `set_difficulty` takes `step` (`harder`/`easier`: one named
 level from the current one, worked out by code, refused past either end or

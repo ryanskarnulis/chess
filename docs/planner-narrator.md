@@ -302,7 +302,13 @@ out after the player played e4; your reply e5 came after it." That is
 `move_and_judgment`'s case: the evaluation runs between the player's move and
 the reply, and the narrator speaks after the reply. `analyze_last_move` judges
 one past move and is not dated. Scores are the player's side
-(`player_advantage_cp`, `mate.for`), not White's.
+(`player_advantage_cp`, `mate.for`), not White's. Each verdict also carries a
+code-written `summary` in `describe_position`'s voice ("Stockfish has the
+player ahead by about 6.5 pawns.", "…has you ahead…", "…calls it about
+level."). With the number alone, playing Black a queen up, the planner's note
+read +654 as "you are down by about 654 centipawns" on 5 of 5 samples, and
+Glitch told the player White was winning. With the summary, 5 of 5 were right
+(`judgment_as_black`, 2026-09-28).
 
 **One projection.** `narrator_result_view` drops `fen`, `turn`, `legal_moves`
 and `captures` from every result a narrator reads, on both briefs — `undo`,
