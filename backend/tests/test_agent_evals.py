@@ -343,6 +343,8 @@ _FLOORS: dict[str, float] = {
     "save_over_existing_asks": 0.8,
     # #351's traced misfire, new, so at the family's starting floor.
     "ordinal_with_nothing_asked": 0.8,
+    # #320: the verdict read from the player's side. New, so at the floor.
+    "judgment_as_black": 0.8,
 }
 
 # The loop's budget stops live in `evalstats.BUDGET_STOPS`, next to the other
@@ -3842,6 +3844,68 @@ def test_eval_voice_setting_and_move(engine: EnginePlayer) -> None:
     result = _pass_rate(
         engine,
         "voice_setting_and_move",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+        requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+# White has played e4 without a queen; Black to move. The player is Black and a
+# queen up, which a White-POV score reads as about -9 (#320).
+_BLACK_A_QUEEN_UP = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 0 1"
+
+
+def test_eval_judgment_as_black(engine: EnginePlayer) -> None:
+    """ "how am I doing?" as Black, a queen up — the verdict from the player's
+    side (#320).
+
+    The analysis tools reported White's point of view until #320, so a player
+    on Black was one forgotten sign flip from "you're down big" in a won
+    position, and the number class backed it either way. The results are the
+    player's side now, and the advantage class holds the direction: an
+    unbacked "you're losing" here fails the sample through
+    `_assert_speech_backed`. Nothing is asserted about the words beyond that —
+    "you're cooked" is Glitch's to say, and a verdict he keeps to himself is
+    no lie. What each sample said is printed for hand-labelling the class.
+    """
+    utterance = "how am I doing?"
+
+    def setup(app: EvalApp) -> None:
+        app.ctx.replace_session(
+            GameSession(fen=_BLACK_A_QUEEN_UP, player_color="black"),
+            app.ctx.transcript,
+        )
+        verdict = engine.evaluate_position(app.ctx.session)
+        assert verdict.mate_in is None and verdict.score_cp <= -200, (
+            f"the fixture no longer reads as Black clearly better: {verdict}"
+        )
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        verdicts = [
+            name
+            for name in ("evaluate_position", "analyze_last_move", "get_best_moves")
+            if _succeeded(assistant, name)
+        ]
+        assert verdicts, "a judgment question must route through an analysis tool: " + (
+            _trajectory(assistant) or "no tool calls"
+        )
+        assert _board_mutations(assistant) == [], "a read-only question must not mutate"
+        assert app.ctx.session.player_color == "black"
+        print(
+            f"[eval] scenario=judgment_as_black said={app.tracer.last.get('draft')!r}"
+        )
+        _assert_speech_backed(app.tracer.last)
+        _assert_completed(app.tracer.last)
+
+    floor = _FLOORS["judgment_as_black"]
+    result = _pass_rate(
+        engine,
+        "judgment_as_black",
         utterance,
         check,
         floor=floor,

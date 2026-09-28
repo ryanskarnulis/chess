@@ -259,6 +259,13 @@ class VerifiedFacts:
     restarted: bool = False
     unplayed_replies: frozenset[str] = frozenset()
     placements: frozenset[str] = frozenset()
+    # The turn's engine verdicts on who is better, from the player's side
+    # (#320): centipawns, positive when the player is ahead, mates folded onto
+    # `engine.MATE_CP`. Empty on a turn that asked no engine, and then the
+    # advantage class has nothing to judge (the scorer drops it there).
+    advantages: tuple[int, ...] = ()
+    # Which color the player has, so "White's way ahead" can be read as a side.
+    player_color: str | None = None
 
 
 _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
@@ -742,6 +749,67 @@ def _material_matches(match: re.Match[str], facts: VerifiedFacts) -> bool:
     return any(holds(balance) for balance in facts.material)
 
 
+# Who is better, as a direction (#320). The number class checks that a score
+# was reported and cannot see which way it was hung: with a White-POV score a
+# player on Black was told "you're up 1.5" in a lost position and every number
+# checked out. So this reads the direction — "you're winning", "I'm ahead",
+# "you're down 1.2" — and holds it to the turn's engine verdicts.
+#
+# Narrow on purpose, like the material class: a subject and a verdict word,
+# nothing about vibes ("you're cooked", "doing okay" are Glitch's to say).
+# "Better off", "better than", "down to", "up next" are not verdicts, and "up"
+# and "down" count only before a number — "up a knight" is the material
+# class's claim, and "I'm up" alone is whose turn it is.
+_AMOUNT_AHEAD = r"""
+    (?= \s+ (?: (?: like | about | around | by ) \s+ ){0,2}
+        (?: [+-]? \d | big \b | huge \b | massive \b | a \s+ ton \b ) )
+"""
+_ADVANTAGE = re.compile(
+    rf"""
+    \b (?P<subject> i | you | white | black )
+    (?: (?: 'm | 're | 's | \s+ am | \s+ are | \s+ is ) \s+
+        (?: (?: still | slightly | a \s+ bit | way | clearly | already | pretty
+              | so | totally | just ) \s+ )*
+        (?: (?P<ahead> winning | ahead | better (?! \s+ (?: off | than ) ) )
+          | (?P<behind> losing | behind | worse (?! \s+ (?: off | than ) ) )
+          | (?P<up> up ) {_AMOUNT_AHEAD}
+          | (?P<down> down ) {_AMOUNT_AHEAD}
+        )
+      | (?: 's \s+ got | 've \s+ got | \s+ has | \s+ have | \s+ got ) \s+
+        (?: a | an | the ) \s+
+        (?: (?: slight | small | little | big | huge | clear | decent | massive
+              | real | nice | pretty | very ) \s+ ){{0,2}}
+        (?P<edge> edge | advantage | lead | upper \s+ hand )
+    ) \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# How far from level a verdict must be before a direction claim can be wrong
+# (#320): lichess's inaccuracy threshold. Inside it the position is level
+# enough that "you're a bit better" and "I'm a bit better" are both talk.
+LEVEL_BAND_CP = 50
+
+
+def _advantage_matches(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    """Whether some engine verdict this turn reported fits the direction the
+    sentence claims for its subject. Any of them, for the material class's
+    reason: a turn can evaluate twice across a move, and both were real."""
+    if not facts.advantages:
+        return True  # nothing asked of the engine; the scorer drops the claim
+    ahead = bool(match.group("ahead") or match.group("up") or match.group("edge"))
+    subject = match.group("subject").lower()
+    if subject in ("white", "black"):
+        if facts.player_color is None:
+            return True  # a color with no side to map it to: nothing to judge
+        subject = "you" if subject == facts.player_color else "i"
+    if subject == "i":  # Glitch is the other side
+        ahead = not ahead
+    if ahead:
+        return any(cp > -LEVEL_BAND_CP for cp in facts.advantages)
+    return any(cp < LEVEL_BAND_CP for cp in facts.advantages)
+
+
 def _number_reported(match: re.Match[str], facts: VerifiedFacts) -> bool:
     number = match.group(0) if match.group("score") else None
     for name in ("score", "decimal", "centipawns", "mate"):
@@ -938,6 +1006,7 @@ _CLAIM_CLASSES = (
     ),
     _ClaimClass("evaluation", _EVALUATION, _number_reported),
     _ClaimClass("material", _MATERIAL, _material_matches),
+    _ClaimClass("advantage", _ADVANTAGE, _advantage_matches),
 )
 
 

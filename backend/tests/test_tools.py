@@ -2138,6 +2138,26 @@ def test_a_mate_says_who_delivers_it(color, mate_in, side):
     assert result["mate"] == {"in": 3, "for": side}
 
 
+@pytest.mark.parametrize(
+    "color, score_cp, mate_in, summary",
+    [
+        ("black", -654, None, "Stockfish has the player ahead by about 6.5 pawns."),
+        ("white", -654, None, "Stockfish has you ahead by about 6.5 pawns."),
+        ("white", 30, None, "Stockfish calls it about level."),
+        ("black", None, 2, "Stockfish sees a forced mate in 2 for you."),
+    ],
+)
+def test_the_verdict_is_summarized_for_the_side_it_favours(
+    color, score_cp, mate_in, summary
+):
+    """The direction in words, composed by code (#320): a 12B read a positive
+    `player_advantage_cp` for a player on Black as White's lead, 5 of 5."""
+    engine = FakeEngine(evaluation=Evaluation(score_cp=score_cp, mate_in=mate_in))
+    session = GameSession(fen=BLACK_QUEEN_UP, player_color=color)
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    assert registry.dispatch("evaluate_position", {})["summary"] == summary
+
+
 def test_best_moves_score_from_the_players_side_with_their_lines():
     best = CandidateMove(
         uci="e7e5",
@@ -2163,6 +2183,7 @@ def test_best_moves_score_from_the_players_side_with_their_lines():
         }
     ]
     assert result["search"] == {"depth_limit": 12, "depth_reached": 12}
+    assert result["summary"] == "Stockfish calls it about level."
 
 
 def test_analysis_is_dated_by_the_move_it_came_after():

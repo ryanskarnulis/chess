@@ -247,7 +247,9 @@ def _meaningful(
     is right for a guard and wrong for a count: `outcome` defers to `ending`
     on a live board (the same sentence, one fact), and `unplayed_reply` reads
     every SAN and can only be false on a turn with an engine reply — owed as
-    the narrator spoke, or played before it (#365). Counted elsewhere, each
+    the narrator spoke, or played before it (#365). `advantage` (#320) is only
+    a claim about the engine's verdict on a turn that asked for one. Counted
+    elsewhere, each
     would add a backed claim for every "Checkmate!" or "Nf3" that the other
     class already judged. `reply_judged` is None when the record cannot say,
     and the class is then left for the unscored count.
@@ -257,6 +259,7 @@ def _meaningful(
         for claim in found
         if not (claim.claim == "outcome" and not facts.ended)
         and not (claim.claim == "unplayed_reply" and reply_judged is False)
+        and not (claim.claim == "advantage" and not facts.advantages)
     )
 
 
