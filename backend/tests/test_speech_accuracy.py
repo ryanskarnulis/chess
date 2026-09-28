@@ -403,3 +403,26 @@ def test_unbacked_leaves_out_what_the_scorer_does_not_score():
 
 def test_a_record_with_no_words_to_judge_has_nothing_unbacked():
     assert unbacked({"kind": "serving", "schema": 4}) == ()
+
+
+# --- #320: who is better, from the player's side --------------------------------
+
+
+def test_a_direction_is_scored_only_on_a_turn_that_asked_the_engine():
+    session = _session("e4", "e5")
+    assert _counts(score_record(_record("You're winning.", session))) == []
+
+    evaluated = ("evaluate_position", {"ok": True, "player_advantage_cp": -180})
+    score = score_record(_record("You're winning.", session, tools=[evaluated]))
+    assert _counts(score) == [("advantage", False)]
+
+
+def test_a_pre_320_white_pov_score_is_turned_to_the_players_side():
+    """The bug #320 is for, re-judged from an old record: White-POV +180 with
+    the player on Black, and Glitch telling them they're ahead."""
+    session = _session("e4", "e5", player_color="black")
+    legacy = ("evaluate_position", {"ok": True, "score_cp": 180, "mate_in": None})
+    told_ahead = score_record(_record("You're up 1.8, easy.", session, tools=[legacy]))
+    assert ("advantage", False) in _counts(told_ahead)
+    told_behind = score_record(_record("I'm ahead.", session, tools=[legacy]))
+    assert _counts(told_behind) == [("advantage", True)]

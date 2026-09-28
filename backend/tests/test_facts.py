@@ -158,3 +158,39 @@ def test_the_engines_line_is_a_reported_move():
         ]
     )
     assert moves == {"Nf6", "Bc4", "e5", "Nf3"}
+
+
+def test_the_turns_verdicts_are_the_players_side():
+    from chessapp.facts import analysis_advantages
+
+    results = [
+        {
+            "name": "evaluate_position",
+            "result": {"ok": True, "player_advantage_cp": 40},
+        },
+        {
+            "name": "evaluate_position",
+            "result": {
+                "ok": True,
+                "player_advantage_cp": None,
+                "mate": {"in": 2, "for": "glitch"},
+            },
+        },
+        {
+            "name": "get_best_moves",
+            "result": {
+                "ok": True,
+                "moves": [
+                    {"san": "e5", "player_advantage_cp": -20},
+                    {"san": "a6", "player_advantage_cp": -90},
+                ],
+            },
+        },
+        # Before #320: White-POV, turned with the player's color.
+        {
+            "name": "evaluate_position",
+            "result": {"ok": True, "score_cp": 70, "mate_in": None},
+        },
+        {"name": "evaluate_position", "result": {"ok": False, "error": "engine"}},
+    ]
+    assert analysis_advantages(results, "black") == (40, -(100_000 - 2), -20, -70)

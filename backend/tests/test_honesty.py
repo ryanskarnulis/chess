@@ -1037,6 +1037,132 @@ def test_a_reported_number_is_reportable(text):
     assert unverified_claims(text, EVALUATED) == ()
 
 
+# --- who is better, as a direction (#320) ------------------------------------------
+#
+# The number class checks a score was reported, never which way it was hung.
+# With the player 1.5 down, "you're up 1.5" quotes a reported number and is
+# the lie that matters, so the direction is its own class, held to the turn's
+# engine verdicts from the player's side (`VerifiedFacts.advantages`).
+
+PLAYER_BEHIND = VerifiedFacts(
+    advantages=(-150,), numbers=frozenset({"150", "1.5", "-150", "-1.5"})
+)
+PLAYER_AHEAD = VerifiedFacts(advantages=(150,))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You're up 1.5, easy.",
+        "You're winning, bro.",
+        "You are clearly better here.",
+        "I'm losing this one.",
+        "I'm behind.",
+        "I'm down 1.5 here.",
+    ],
+)
+def test_a_direction_the_engine_contradicts_is_a_claim(text):
+    assert unverified_claims(text, PLAYER_BEHIND) == ("advantage",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You're down 1.5.",
+        "You're losing, bro.",
+        "I'm winning.",
+        "I'm ahead, and it's not close.",
+        "You're behind, but it's fixable.",
+    ],
+)
+def test_a_direction_the_engine_backs_is_reportable(text):
+    assert unverified_claims(text, PLAYER_BEHIND) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Not verdicts: whose turn, advice, comparisons, material counts.
+        "I'm up next.",
+        "You're better off castling.",
+        "I'm better than you and we both know it.",
+        "You're up a knight.",
+        "You're down to your last rook.",
+        # Vibes are Glitch's to say.
+        "You're cooked.",
+        "You're doing okay, man.",
+        # Futures, conditions and questions, the shared hedges.
+        "You'll be winning after that trade.",
+        "If you take it, you're ahead.",
+        "Are you winning? Nah.",
+    ],
+)
+def test_talk_that_is_not_a_verdict_is_no_advantage_claim(text):
+    assert "advantage" not in unverified_claims(text, PLAYER_AHEAD)
+    assert "advantage" not in unverified_claims(text, PLAYER_BEHIND) or (
+        text == "You're up a knight."  # the material class's claim, not this one
+    )
+
+
+def test_a_near_level_verdict_backs_either_direction():
+    """Inside `LEVEL_BAND_CP` a slight edge is talk either way."""
+    nearly_level = VerifiedFacts(advantages=(-30,))
+    assert unverified_claims("You're slightly better.", nearly_level) == ()
+    assert unverified_claims("I'm slightly better.", nearly_level) == ()
+
+
+def test_no_verdict_this_turn_licenses_the_direction_for_the_guard():
+    """Nothing asked of the engine: the class passes, and the scorer drops the
+    claim (`speech_accuracy._meaningful`) rather than count it backed."""
+    assert unverified_claims("You're losing.", VerifiedFacts()) == ()
+
+
+def test_a_forced_mate_is_the_strongest_verdict():
+    mated = VerifiedFacts(advantages=(-(100_000 - 3),))
+    assert unverified_claims("You're winning.", mated) == ("advantage",)
+    assert unverified_claims("I'm winning.", mated) == ()
+
+
+# The first `judgment_as_black` run (2026-09-28), verbatim: the player on Black
+# a queen up (+654 their side), and the planner's note had read the score as
+# White's. Every one is the lie #320 is about, and none named "you" or "I".
+BLACK_A_QUEEN_UP = VerifiedFacts(advantages=(654,), player_color="black")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "White's already up a ton, bro.",
+        "You're cooked fr. White's way ahead.",
+        "Word, you're good. White's got a slight edge.",
+        "White's got a pretty big lead, fr.",
+        "You're cooked, man. White's up big.",
+    ],
+)
+def test_the_side_named_by_color_is_the_side_the_verdict_is_about(text):
+    assert unverified_claims(text, BLACK_A_QUEEN_UP) == ("advantage",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The same run once the result carried its own summary, verbatim.
+        "Nasty. You're up about 6.3 pawns already.",
+        "Word, you're up by about 6.5 pawns. That's clean.",
+        "Black is winning.",
+        "You've got a nice edge.",
+        "I'm behind, no lie.",
+    ],
+)
+def test_a_color_or_possession_the_verdict_backs_is_reportable(text):
+    assert "advantage" not in unverified_claims(text, BLACK_A_QUEEN_UP)
+
+
+def test_a_color_with_no_side_to_map_it_to_is_not_judged():
+    unknown = VerifiedFacts(advantages=(654,))
+    assert unverified_claims("White's way ahead.", unknown) == ()
+
+
 def test_a_pgn_read_out_loud_is_not_an_evaluation_claim():
     """From the recorded turns: "give me the pgn" gets the whole thing back,
     headers and move numbers included. A date is not a score and `1.` is not

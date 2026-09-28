@@ -21,6 +21,7 @@ from typing import Any
 import chess
 
 from chessapp.analysis import captured_piece
+from chessapp.engine import MATE_CP, pov_cp
 from chessapp.game import GameSession
 from chessapp.honesty import VerifiedFacts
 from chessapp.tools import DESTRUCTIVE_TOOLS
@@ -190,6 +191,40 @@ def analysis_numbers(tool_results: Sequence[dict[str, Any]]) -> set[str]:
             numbers.update(str(value) for value in result.get("accuracy", {}).values())
             numbers.update(str(value) for value in result.get("counts", {}).values())
     return numbers
+
+
+def analysis_advantages(
+    tool_results: Sequence[Mapping[str, Any]], player_color: str
+) -> tuple[int, ...]:
+    """The engine's verdicts on who is better this turn, from the player's
+    side (#320): each `evaluate_position`, and each `get_best_moves`'s best
+    candidate (the position's value with best play). Mates fold onto the
+    `MATE_CP` scale. A pre-#320 record's White-POV pair is turned with the
+    player's color, so old traces are judged on the same footing."""
+    verdicts: list[int] = []
+
+    def verdict(result: Mapping[str, Any]) -> None:
+        if "player_advantage_cp" in result or "mate" in result:
+            mate = result.get("mate")
+            if mate:
+                folded = MATE_CP - abs(mate["in"])
+                verdicts.append(folded if mate["for"] == "player" else -folded)
+            elif (cp := result.get("player_advantage_cp")) is not None:
+                verdicts.append(cp)
+        elif result.get("score_cp") is not None or result.get("mate_in") is not None:
+            verdicts.append(
+                pov_cp(result.get("score_cp"), result.get("mate_in"), player_color)
+            )
+
+    for r in tool_results:
+        result = r["result"]
+        if result.get("ok") is not True:
+            continue
+        if r["name"] == "evaluate_position":
+            verdict(result)
+        elif r["name"] == "get_best_moves" and result.get("moves"):
+            verdict(result["moves"][0])
+    return tuple(verdicts)
 
 
 @dataclass(frozen=True)
@@ -391,6 +426,8 @@ def assemble(evidence: TurnEvidence) -> VerifiedFacts:
         settings_changed=frozenset(settings_changed_by(tool_results)),
         captures_by_move=_captures_by_move(boards, discussed),
         numbers=frozenset(analysis_numbers(tool_results)),
+        advantages=analysis_advantages(tool_results, session.player_color),
+        player_color=session.player_color,
         # Board truth, and the one fact here no tool has to have run for: who
         # is ahead is a piece count, so it is always available on every board
         # the turn held — including the one the reaction was written from.

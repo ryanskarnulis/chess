@@ -1362,6 +1362,31 @@ def _analysis_position(ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+# Inside this many centipawns a verdict is "about level" — the scorer's band
+# for a direction claim (`honesty.LEVEL_BAND_CP`), so what the summary calls
+# level is exactly what either direction may be said about.
+VERDICT_LEVEL_CP = 50
+
+
+def _verdict_summary(advantage: int | None, mate: dict[str, Any] | None) -> str:
+    """The engine's verdict as one sentence, in `describe_position`'s voice:
+    "the player" is the human and "you" is the narrator (#320).
+
+    Composed by code for `_move_summary`'s reason. A 12B handed
+    `player_advantage_cp: 654` for a player on Black wrote "you are down by
+    about 654 centipawns, meaning White has a significant advantage" in its
+    note, 5 samples of 5, and the narrator said "White's up big" to a player
+    a queen up: the prior that a positive score is White's beat the key's
+    name. The numbers stay on the payload for every other reader."""
+    if mate is not None:
+        side = "the player" if mate["for"] == "player" else "you"
+        return f"Stockfish sees a forced mate in {mate['in']} for {side}."
+    if advantage is None or abs(advantage) < VERDICT_LEVEL_CP:
+        return "Stockfish calls it about level."
+    side = "the player" if advantage > 0 else "you"
+    return f"Stockfish has {side} ahead by about {abs(advantage) / 100:.1f} pawns."
+
+
 def _search(depth: int | None) -> dict[str, Any]:
     """How deep the search that produced a number went: the depth asked for
     and the depth reached (None when the engine did not report one)."""
@@ -1760,6 +1785,7 @@ def build_registry(
         )
         return {
             "ok": True,
+            "summary": _verdict_summary(advantage, mate),
             "player_advantage_cp": advantage,
             "mate": mate,
             "line": _line_san(fen, evaluation.pv, EVALUATION_LINE_PLIES),
@@ -1796,8 +1822,13 @@ def build_registry(
                     "line": _line_san(fen, c.pv, CANDIDATE_LINE_PLIES),
                 }
             )
+        best = moves[0] if moves else {}
         return {
             "ok": True,
+            # The position's value with best play: the verdict a hint implies.
+            "summary": _verdict_summary(
+                best.get("player_advantage_cp"), best.get("mate")
+            ),
             "moves": moves,
             "position": _analysis_position(ctx),
             "search": _search(

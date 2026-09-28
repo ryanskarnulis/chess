@@ -28,6 +28,7 @@ from typing import Any
 
 import chess.pgn
 
+from chessapp.game import GameSession
 from frontier import VERDICT_TOOLS, Checkpoint, Episode, Say, Scenario, Turn, Variant
 from test_agent_evals import _TIER_STRENGTH, EvalApp
 
@@ -90,6 +91,16 @@ AFTER_E4_E5 = after("e4", "e5")
 AFTER_E4_E5_NF3_NC6 = after("e4", "e5", "Nf3", "Nc6")
 LATE_84 = replayed("late_game_84_plies.pgn")
 LATE_150 = replayed("late_game_150_plies.pgn")
+
+# Black to move with one legal move, Kh7, and Qg7# after it: the player is
+# Black and Glitch has a forced mate (#320).
+_BLACK_FACING_MATE = "7k/8/5K2/8/8/8/8/6Q1 b - - 0 1"
+
+
+def black_facing_mate(app: EvalApp) -> None:
+    _save_dir(app)
+    app.ctx.session = GameSession(fen=_BLACK_FACING_MATE, player_color="black")
+
 
 # Kept for the harness's own tests, which script a sample on this position.
 after_e4_e5 = AFTER_E4_E5
@@ -1406,6 +1417,37 @@ QUEEN_ASK_LONG_CHAT_THEN_FIRST = Scenario(
     ),
 )
 
+VERDICT_AS_BLACK_FACING_MATE = Scenario(
+    name="verdict_as_black_facing_mate",
+    tier=1,
+    why=(
+        "#320: the verdict from the player's side when the player is Black and "
+        "the engine has a forced mate. Until #320 the analysis spoke White's "
+        "point of view, and a signed mate distance was one more sign for the "
+        "model to flip. The checkpoints are the read; which way the verdict "
+        "was said is speech accuracy's advantage class."
+    ),
+    dev=(
+        Variant(
+            "am_i_getting_mated", (Say("am I getting mated here?"),), black_facing_mate
+        ),
+        Variant(
+            "how_bad", (Say("how bad is it for me right now?"),), black_facing_mate
+        ),
+    ),
+    heldout=(
+        Variant("am_i_lost", (Say("be honest, am I lost?"),), black_facing_mate),
+        Variant(
+            "whos_winning", (Say("who's winning at this point?"),), black_facing_mate
+        ),
+    ),
+    checkpoints=(
+        Checkpoint("judged_1", lambda e: judged(e.turn(1))),
+        still(1),
+        completed(1),
+    ),
+)
+
 SCENARIOS: tuple[Scenario, ...] = (
     UNDO_REPLACE_AND_JUDGE,
     SETTINGS_MOVE_AND_VERDICT,
@@ -1431,4 +1473,5 @@ SCENARIOS: tuple[Scenario, ...] = (
     QUEEN_ASK_ASIDE_THEN_FIRST,
     ASK_ASIDE_THEN_SECOND,
     QUEEN_ASK_LONG_CHAT_THEN_FIRST,
+    VERDICT_AS_BLACK_FACING_MATE,
 )
