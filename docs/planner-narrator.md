@@ -17,7 +17,9 @@ not asking one call to do both jobs. The split cured the release-blocking
   persona-free contract (#370): turn the player's words into tool calls; the
   tools enforce the rules, and a failed result says how to fix it (`retry`);
   never judge legality, submit the move asked for; ask between the legal moves
-  that fit (`ask_player`) or, when the intent is unclear, say what to ask; omit
+  that fit (`ask_player`, which takes the parts of the move the player named
+  and works the moves out itself, #371) or, when the intent is unclear, say
+  what to ask; omit
   optional args. What each tool does and which requests trigger it are in the
   tool's own description, and `make_move`'s refusal says whether a corrected
   call can still be the player's move (`fix`, `retry`). Its first
@@ -149,6 +151,11 @@ against it.
 
 ### The offer follows the board (#315, 2026-09-23)
 
+*Since #371 `ask_player` asks by parts and carries no enum, so its schema is
+the same on every board and the whole offer is byte-stable. What still follows
+the board is whether it is offered at all (the availability rule below). The
+history here explains the refresh machinery, which stays.*
+
 The block alone was half the fix. `ask_player`'s candidates are an enum of the
 live `legal_moves` (#289), and the loop resolved its tool offer — and the
 schemas it validates calls against — once per command. So "undo and move my
@@ -249,6 +256,24 @@ so the advice licence covers them. Before this, the question lived in the
 note and was paraphrased away: on `main` both ambiguity scenarios asked
 "which rook and which square?" 20/20, naming nothing. The tool is registered
 on the app's split registry only; the MCP server's caller asks its own user.
+
+**Asked by parts** (#371, 2026-09-27). The candidate list was the planner's to
+fill, and the 12B filled it too wide or not at all: "move my king's knight"
+asked all four knight moves (#348), "castle" with both sides open played O-O,
+and "move my king's pawn forward" played e4. Now `ask_player` takes the parts
+of the move the player described (`piece`, `which` — a square, a file, the
+side it started on, or a square colour — `to`, `takes`, `castle`), and
+`GameSession.moves_fitting` (`move_parts.fits`) works out the legal moves that
+fit. "Which one" is answered off the game's history: the king's knight is the
+one that started on g1, wherever it stands. The question offers exactly those
+moves, sorted. No parts, a part that is not a board term, or a single fit
+(which it says to submit) is `different_args`; nothing fitting is `never`.
+Above `ASK_WIDE` (4) moves the result also names the pieces they belong to,
+and the brief tells the narrator to ask which piece rather than read every
+move out; the record keeps every move, so any of them answers. The schema is
+the probe's screened arm verbatim (`parts_ask5`; numbers in
+docs/agent-evals.md). Push-verb pawn asks ("push my e pawn") are still played
+on this model, as they were before.
 
 **Fresh facts through a seam.** `LlamaBrain.narrator_facts`, wired from
 `api.narrator_facts` by `build_app` and the eval harness alike (a test pins

@@ -77,6 +77,7 @@ from pathlib import Path
 from typing import Any
 
 import chess
+import chess.pgn
 import httpx
 
 from chessapp import clarification
@@ -171,6 +172,19 @@ _PLAIN_TURN = (
     ("user", "e4"),
     ("assistant", "e4, and I answer e5. Classic."),
 )
+
+
+def _pgn_moves(name: str) -> tuple[str, ...]:
+    """A game's moves in SAN, from a PGN under tests/."""
+    path = Path(__file__).resolve().parent.parent / "tests" / name
+    game = chess.pgn.read_game(path.open())
+    board = game.board()
+    sans = []
+    for move in game.mainline_moves():
+        sans.append(board.san(move))
+        board.push(move)
+    return tuple(sans)
+
 
 CORPUS: tuple[Item, ...] = (
     Item(
@@ -293,6 +307,18 @@ CORPUS: tuple[Item, ...] = (
         note="two captures of the one pawn: asked with both (#371)",
     ),
     Item(
+        "undo_three_late",
+        "undo my three most recent moves",
+        _pgn_moves("late_game_84_plies.pgn"),
+        ("undoes_plies", 6),
+        held_out=True,
+        transcript=(
+            ("user", "store this game as before_undo"),
+            ("assistant", "Saved it as before_undo."),
+        ),
+        note="frontier `late_game_save_undo_resume`'s undo turn (#371)",
+    ),
+    Item(
         "take_pawn",
         "take the pawn",
         (),
@@ -405,6 +431,9 @@ class Arm:
     model: str | None = None
     tool_text: dict[str, str] = field(default_factory=dict)
     drop_tools: tuple[str, ...] = ()
+    # Whole `function` definitions to swap in by name (#371): another build's
+    # tool, to isolate what one tool's schema does to an unrelated decision.
+    tool_defs: dict[str, dict[str, Any]] = field(default_factory=dict)
     state_view: str | None = None
     tool_schema: str | None = None
     thinking: bool = False
@@ -432,6 +461,12 @@ class Arm:
             ]
         if self.tool_schema is not None:
             definitions = TOOL_SCHEMAS[self.tool_schema](copy.deepcopy(definitions))
+        if self.tool_defs:
+            definitions = copy.deepcopy(definitions)
+            for d in definitions:
+                swap = self.tool_defs.get(d["function"]["name"])
+                if swap is not None:
+                    d["function"] = copy.deepcopy(swap)
         if not self.tool_text:
             return definitions
         offered = copy.deepcopy(definitions)
@@ -813,6 +848,7 @@ def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
     kwargs: dict[str, Any] = {}
     tool_text: dict[str, str] = {}
     drop_tools: list[str] = []
+    tool_defs: dict[str, dict[str, Any]] = {}
     for pair in filter(None, rest.split(",")):
         key, eq, value = pair.partition("=")
         if not eq:
@@ -836,6 +872,11 @@ def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
             tool_text[tool] = read(Path(path))
         elif key == "drop_tool":
             drop_tools.append(value)
+        elif key == "tool_def":
+            tool, at, path = value.partition("@")
+            if not at or not tool:
+                raise SystemExit(f"arm {name!r}: tool_def must be <tool>@path")
+            tool_defs[tool] = json.loads(read(Path(path)))
         elif key == "state_view":
             if value not in STATE_VIEWS:
                 raise SystemExit(
@@ -853,7 +894,13 @@ def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
             kwargs["thinking"] = value.lower() == "on"
         else:
             raise SystemExit(f"arm {name!r}: unknown knob {key!r}")
-    return Arm(name=name, tool_text=tool_text, drop_tools=tuple(drop_tools), **kwargs)
+    return Arm(
+        name=name,
+        tool_text=tool_text,
+        drop_tools=tuple(drop_tools),
+        tool_defs=tool_defs,
+        **kwargs,
+    )
 
 
 # --- classification and scoring -----------------------------------------------
@@ -936,6 +983,13 @@ def passes(rule: Rule, calls: Sequence[Call]) -> bool:
         return not any(call["name"] == "make_move" for call in calls)
     if kind == "asks":
         return not calls or calls[0]["name"] == "ask_player"
+    if kind == "undoes_plies":
+        # Half-moves taken back: `plies`, or one exchange (2) when omitted.
+        _, wanted = rule
+        undone = [
+            int(c["args"].get("plies") or 2) for c in calls if c["name"] == "undo"
+        ]
+        return bool(undone) and sum(undone) == wanted
     if kind == "asks_exactly":
         _, wanted = rule
         return (
