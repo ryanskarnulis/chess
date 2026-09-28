@@ -1529,7 +1529,7 @@ def create_app(
 
     # What the live checkpoint last recorded, so an unchanged game is not
     # rewritten on every request that happened to take the lock.
-    last_checkpoint: tuple[int, int, int] | None = None
+    last_checkpoint: tuple[int, int, int, int] | None = None
 
     def _checkpoint() -> None:
         """Write the live game to disk if it changed (#291, `live.json`).
@@ -1545,10 +1545,16 @@ def create_app(
         nonlocal last_checkpoint
         if ctx.save_dir is None:
             return
+        # The ledger is caught up with the board it is written beside (#372):
+        # the broadcast checkpoints mid-turn too.
+        ctx.observe_ledger()
         signature = (
             ctx.board_version,
             id(ctx.transcript),
             len(ctx.transcript.to_dict()),
+            # A declined draw offer or a setting moves the ledger (#372)
+            # and nothing else.
+            ctx.ledger.next_seq,
         )
         if signature == last_checkpoint:
             return
@@ -1780,7 +1786,10 @@ def create_app(
             current_spans = None
             # Every road onto the board ends here, still holding the lock: the
             # one place a checkpoint is both complete (the transcript a command
-            # records lands inside the guard too) and coherent.
+            # records lands inside the guard too) and coherent. The ledger is
+            # caught up first — an engine reply or a button changes the board
+            # without a dispatch to observe it (#372).
+            ctx.observe_ledger()
             _checkpoint()
             ctx.mutation_lock.release()
 
@@ -2473,6 +2482,9 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail="engine unavailable: difficulty not changed"
             ) from exc
+        # Not a board mutation, so no guard observes it on the way out; the
+        # change is the ledger's to record all the same (#372).
+        ctx.observe_ledger()
         return {
             "tier": ctx.settings.tier,
             "skill_level": ctx.settings.skill_level,
@@ -3311,6 +3323,7 @@ def create_app(
         `set_voice_output` tool — the mute button shouldn't need the LLM).
         Not a board mutation, so nothing is broadcast."""
         ctx.settings.voice_output = request.enabled
+        ctx.observe_ledger()
         return {"voice_output": ctx.settings.voice_output}
 
     def _trace_event(kind: str, fields: dict[str, Any]) -> None:

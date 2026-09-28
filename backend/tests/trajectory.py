@@ -367,6 +367,13 @@ class Harness:
     def state(self) -> dict[str, Any]:
         return self.client.get("/api/state").json()
 
+    def checkpoint(self) -> dict[str, Any] | None:
+        """The live checkpoint on disk, or None before one exists."""
+        path = self.save_dir / LIVE_CHECKPOINT_FILENAME
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+
     @contextmanager
     def failures(self, step: Step) -> Iterator[None]:
         """The step's injected failures, switched on for it alone."""
@@ -608,6 +615,8 @@ class Observed:
     questions_before: dict[str, Question] = field(default_factory=dict)
     # For a retry: the step it repeats, as it was first observed.
     original: Observed | None = None
+    # The live checkpoint after the step (#372), or None before any.
+    checkpoint: dict[str, Any] | None = None
 
 
 def _delegate_results(response: dict[str, Any]) -> list[dict[str, Any]]:
@@ -691,6 +700,7 @@ def run_step(
         observed.provider_calls = list(harness.provider.calls)
     observed.after = harness.state()
     observed.turns = harness.tracer.records[traced:]
+    observed.checkpoint = harness.checkpoint()
     return observed
 
 
@@ -1148,6 +1158,39 @@ def check_budgets_cap_the_turn(observed: Observed) -> None:
         )
 
 
+def check_ledger_follows_the_board(observed: Observed) -> None:
+    """The checkpointed ledger's standing line — every move, minus what a
+    takeback popped — is the checkpointed game's move list, whatever road moved
+    it (#372). A gap here is a false fact in the story of the game. Read off
+    the file rather than the live board: a restart settles an owed reply
+    without writing a checkpoint, and the two are only promised to agree with
+    each other."""
+    checkpoint = observed.checkpoint
+    if checkpoint is None or "ledger" not in checkpoint:
+        # None yet, or one the walk wrote itself in the pre-ledger shape (a
+        # restart over a checkpoint taken mid-exchange).
+        return
+    events = checkpoint["ledger"]
+    session = GameSession.from_dict(checkpoint["session"])
+    if not events or events[0]["game_id"] != session.game_id:
+        raise InvariantBreach(
+            f"the checkpoint's ledger is not its game's: {events[:1]}"
+        )
+    seqs = [event["seq"] for event in events]
+    if seqs != sorted(set(seqs)):
+        raise InvariantBreach(f"ledger seqs out of order: {seqs}")
+    standing: list[str] = []
+    for event in events:
+        if event["kind"] == "move":
+            standing.append(event["san"])
+        elif event["kind"] == "takeback":
+            del standing[len(standing) - event["plies"] :]
+    if standing != session.move_history():
+        raise InvariantBreach(
+            f"ledger line {standing} is not the board's {session.move_history()}"
+        )
+
+
 INVARIANTS: tuple[Callable[[Observed], None], ...] = (
     check_status,
     check_clarification_moves_nothing,
@@ -1164,6 +1207,7 @@ INVARIANTS: tuple[Callable[[Observed], None], ...] = (
     check_late_words_land_nowhere,
     check_stall_is_bounded,
     check_budgets_cap_the_turn,
+    check_ledger_follows_the_board,
 )
 
 
