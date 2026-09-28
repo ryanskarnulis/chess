@@ -128,6 +128,8 @@ def build_app(
             coordinator.settle_engine_turn()
         except Exception:
             logger.warning("could not settle the restored game", exc_info=True)
+        # The reply settled here is a move like any other (#372).
+        ctx.observe_ledger()
     # Live progress (audit item 19). Built here, before the things that report
     # through it, because the *brain* is one of them and only assembly can reach
     # it: the coordinator and the registry are wired by `create_app`, but a

@@ -70,6 +70,7 @@ from chessapp.engine import (
     player_view,
 )
 from chessapp.game import GameSession, MoveResult
+from chessapp.ledger import Ledger
 from chessapp.move_parts import PartsError
 
 logger = logging.getLogger(__name__)
@@ -282,6 +283,10 @@ def live_checkpoint(ctx: "ToolContext") -> dict[str, Any]:
         "board_version": ctx.board_version,
         "session": ctx.session.to_dict(),
         "transcript": ctx.transcript.to_dict(),
+        # The current game's events (#372): the takebacks, settings and draw
+        # offers a board cannot replay. Additive; a checkpoint without it
+        # rebuilds the moves from the session.
+        "ledger": ctx.ledger.to_dict(),
     }
 
 
@@ -338,6 +343,7 @@ def restore_live_checkpoint(ctx: "ToolContext") -> bool:
     ctx._version_base = version + 1 - session.revision
     ctx.session = session
     ctx.transcript = transcript
+    ctx.ledger = Ledger.restore(data.get("ledger"), session, ctx.settings.snapshot())
     return True
 
 
@@ -502,6 +508,9 @@ class ToolContext:
     save_dir: Path | None = None
     settings: Settings = field(default_factory=Settings)
     transcript: Transcript = field(default_factory=Transcript)
+    # What happened in the game, as code saw it (#372, `ledger`): observed
+    # after every dispatch and wherever a request lets go of the board.
+    ledger: Ledger = field(default_factory=Ledger)
     pending: PendingOp | None = None
     # The open question per origin (#319, `clarification`): one slot for each
     # conversation, read through `live_clarification`, never persisted.
@@ -536,6 +545,16 @@ class ToolContext:
             path = self.save_dir / SETTINGS_FILENAME
             _restore_settings(self.settings, path)
             self.settings.attach_store(lambda data: _write_settings_file(path, data))
+        self.observe_ledger()
+
+    def observe_ledger(self) -> None:
+        """Bring the ledger up to date with the session and the settings.
+        Best-effort like every other observer here: a ledger that cannot
+        follow is logged, never a failed call."""
+        try:
+            self.ledger.observe(self.session, self.settings.snapshot())
+        except Exception:
+            logger.warning("ledger_observe_failed", exc_info=True)
 
     @property
     def board_version(self) -> int:
@@ -1073,6 +1092,10 @@ class ToolRegistry:
                 and self.context.board_version != version_before
             ):
                 self._report_mutation()
+            if self.context is not None:
+                # After every call, so one command's "undo, then play e4"
+                # reads as two events in the order they happened.
+                self.context.observe_ledger()
             self._report_done(name, round((time.monotonic() - started) * 1000))
 
     def _report(self, name: str) -> None:
@@ -2307,6 +2330,19 @@ def build_registry(
             },
         }
 
+    def _note_draw_offer(verdict: Any) -> None:
+        # The ledger's one board-less fact (#372): a declined offer changes
+        # nothing, so no diff would ever see it.
+        try:
+            ctx.ledger.note_draw_offer(
+                ctx.session,
+                ctx.settings.snapshot(),
+                accepted=verdict.accepted,
+                reason=verdict.reason,
+            )
+        except Exception:
+            logger.warning("ledger_note_failed", exc_info=True)
+
     @registry.tool()
     def offer_draw() -> dict[str, Any]:
         """Offer the engine a draw by agreement. The engine decides; the result says
@@ -2333,10 +2369,12 @@ def build_registry(
         )
         result: dict[str, Any] = {"ok": True, **verdict.to_dict()}
         if not verdict.accepted:
+            _note_draw_offer(verdict)
             # The open turn is untouched: with the engine to move the reply is
             # still owed, and the pipeline collects and announces it.
             return result
         coordinator.abandon_turn()  # no reply is owed on a game that just ended
+        _note_draw_offer(verdict)
         outcome = ctx.session.agree_draw()
         coordinator.record_destructive_op()
         result["outcome"] = {
@@ -2461,6 +2499,8 @@ def build_registry(
         # A different game replaces the position entirely, so the open turn (and
         # anything being computed for the *old* session) is abandoned first.
         coordinator.abandon_turn()
+        # A board cannot tell a resumed save from a reset; the ledger is told.
+        ctx.ledger.expect_resume(name)
         ctx.replace_session(session, transcript)
         coordinator.record_destructive_op()
         # A save can be taken mid-exchange — "play e4 and save this" writes the
