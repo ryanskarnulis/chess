@@ -52,6 +52,7 @@ object on the context.
 """
 
 import asyncio
+import functools
 import logging
 import mimetypes
 import random
@@ -107,6 +108,7 @@ from chessapp.brain import (
     ModelCall,
     Narration,
 )
+from chessapp.conversation import DEFAULT_WINDOW_TURNS, condense, recall
 from chessapp.coordinator import (
     ReplySettlement,
     TurnCoordinator,
@@ -124,6 +126,8 @@ from chessapp.facts import (
 )
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
+from chessapp.handoff import NARRATOR_REPLY_LABEL
+from chessapp.ledger import render_record
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
 from chessapp.tools import (
@@ -1665,7 +1669,7 @@ def create_app(
     def _narrate(
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
-        transcript: Sequence[dict[str, str]],
+        earlier: str,
         correlation_id: str,
         command: str = "",
     ) -> Narration:
@@ -1691,7 +1695,7 @@ def create_app(
         try:
             return _within_budget(
                 lambda: brain.narrate(
-                    board_state, changes, transcript, command=command
+                    board_state, changes, command=command, earlier=earlier
                 ),
                 reaction_budget,
             )
@@ -1808,9 +1812,21 @@ def create_app(
         except WebSocketDisconnect:
             broadcaster.disconnect(websocket)
 
+    def _earlier(conversation: Sequence[dict[str, str]]) -> str:
+        """What came before this turn, for the narrator (#372): the game's
+        record, the player's requests and the last exchange, in place of the
+        chat turns it used to read. Taken as the turn opens, so this turn's own
+        events are the handoff's to tell, not the record's."""
+        ctx.observe_ledger()
+        return recall(
+            list(conversation),
+            render_record(ctx.ledger.current()),
+            reply_label=NARRATOR_REPLY_LABEL,
+        )
+
     def _play_move(
         move: str,
-        transcript: Sequence[dict[str, str]],
+        earlier: str,
         correlation_id: str,
         command: str = "",
     ) -> _MoveBeats:
@@ -1878,7 +1894,7 @@ def create_app(
                 narration = _narrate(
                     narrator_facts(ctx, coordinator),
                     changes,
-                    transcript,
+                    earlier,
                     correlation_id,
                     command,
                 )
@@ -1945,8 +1961,8 @@ def create_app(
         question, expired = ctx.live_clarification(PANEL_ORIGIN)
         asked_about = _question_trace(question, expired)
         with progress.interaction(correlation_id, turn_id):
-            transcript = ctx.transcript.memory()
-            beats = await _offloop(_play_move, move, transcript, correlation_id)
+            earlier = _earlier(ctx.transcript.to_dict())
+            beats = await _offloop(_play_move, move, earlier, correlation_id)
             result = beats.result
             narration = beats.narration
             if result.get("ok") is False:
@@ -2565,7 +2581,7 @@ def create_app(
 
     async def _run_command(
         text: str,
-        transcript: Sequence[dict[str, str]],
+        conversation: Sequence[dict[str, str]],
         version: int | None = None,
         *,
         origin: str,
@@ -2586,11 +2602,11 @@ def create_app(
         armed or answered here, and both halves belong to one conversation.
         """
         async with _mutation(version, game_id):
-            return await _command_turn(text, transcript, origin=origin)
+            return await _command_turn(text, conversation, origin=origin)
 
     async def _command_turn(
         text: str,
-        transcript: Sequence[dict[str, str]],
+        conversation: Sequence[dict[str, str]],
         *,
         origin: str,
         interaction_id: str = "",
@@ -2662,7 +2678,12 @@ def create_app(
         # one that no longer stands on this board is dropped here and reported
         # once, as `expired`.
         question, expired = ctx.live_clarification(origin)
-        if not transcript:
+        # The conversation as the caller keeps it, every text turn: the planner
+        # still reads it condensed (`docs/turn-memory.md`), and the narrator
+        # reads it as data instead of chat (#372, `_earlier`).
+        transcript = condense(list(conversation)[-2 * DEFAULT_WINDOW_TURNS :])
+        earlier = _earlier(conversation)
+        if not conversation:
             # This conversation's first command: what "where we started" means.
             ctx.opening_difficulty[origin] = current_difficulty(ctx.settings)
         before = _agent_state_dict(ctx)
@@ -2833,7 +2854,7 @@ def create_app(
                                     _narrate,
                                     narrator_facts(ctx, coordinator),
                                     tool_results,
-                                    transcript,
+                                    earlier,
                                     correlation_id,
                                     text,
                                 )
@@ -2872,7 +2893,7 @@ def create_app(
                     # what differs between the two routes, never the sequencing.
                     route = ROUTE_FAST_PATH
                     move_beats = await _offloop(
-                        _play_move, fast_san, transcript, correlation_id, text
+                        _play_move, fast_san, earlier, correlation_id, text
                     )
                     tool_results.extend(move_beats.changes)
                     tool_args.append({"move": fast_san})
@@ -2918,7 +2939,7 @@ def create_app(
                                 _narrate,
                                 narrator_facts(ctx, coordinator),
                                 tool_results,
-                                transcript,
+                                earlier,
                                 correlation_id,
                                 text,
                             )
@@ -2947,7 +2968,7 @@ def create_app(
                 else:
                     route = ROUTE_BRAIN
                     response = await _offloop(
-                        brain.get_agent_response,
+                        functools.partial(brain.get_agent_response, earlier=earlier),
                         planner_state(
                             before,
                             question,
@@ -3261,10 +3282,9 @@ def create_app(
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
         async with _mutation(request.version, request.game_id):
-            transcript = ctx.transcript.memory()
             outcome = await _command_turn(
                 request.text,
-                transcript,
+                ctx.transcript.to_dict(),
                 origin=PANEL_ORIGIN,
                 interaction_id=request.interaction_id or "",
             )

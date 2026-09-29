@@ -285,8 +285,18 @@ def _refs(entries: Sequence[Entry]) -> str:
     return ", ".join(f"#{entry.ref} {entry.tool}" for entry in entries)
 
 
+# How the narrator's brief names the last reply in `earlier` (#372): his own
+# words, but not a record — what the tools did is, and a line he said last
+# turn is never a fact to repeat.
+NARRATOR_REPLY_LABEL = "What you said then (your words, not a record)"
+
+
 def render(
-    handoff: Handoff, command: str, tool_results: Sequence[Mapping[str, Any]]
+    handoff: Handoff,
+    command: str,
+    tool_results: Sequence[Mapping[str, Any]],
+    *,
+    earlier: str = "",
 ) -> str:
     """The narrator's brief, for every turn (#369): one the planner just
     finished, and one the loop never ran (a fast-path move, a board drag, a
@@ -297,11 +307,17 @@ def render(
     says so in those words. The planner's note comes last and is labelled as
     what it is. The closing instruction speaks from the record and the facts;
     the note is context for understanding the ask, not a source of claims.
+
+    `earlier` is what came before this turn (#372, `conversation.recall`):
+    the game's record, the player's requests and the last exchange, as data.
+    It leads the brief, headed as earlier, so nothing in it reads as this
+    turn's record.
     """
     # A board drag has no words. Said outright, because "Done this turn" with
     # no ask above it reads to a 12B as "I did" — live, Glitch once narrated
     # the player's capture as his own (#193).
-    parts = [
+    parts = [f"Before this turn:\n\n{earlier}"] if earlier else []
+    parts += [
         f"The player said:\n{command}"
         if command
         else "The player acted on the board without saying anything: "

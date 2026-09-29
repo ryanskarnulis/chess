@@ -5,8 +5,9 @@ Read `docs/planner-narrator.md` first — this is what goes *into* the phases.
 
 ## The shape
 
-One deterministic transform applied to the message list before it reaches a
-brain:
+One deterministic transform applied to the message list before it reaches the
+planner (the narrator reads what came before as data instead since #372 —
+`docs/planner-narrator.md`, "What the narrator remembers"):
 
 ```
 [ digest(user) , "Noted."(assistant) , …last RECENT_TURNS turns verbatim… ]
@@ -62,6 +63,10 @@ the board moves it is withdrawn, and the next turn is told once that it closed
 
 ## Call sites
 
-`Transcript.memory()` (command pipeline + board drag) and
-`agent_api.history_for_loop` (delegate wire) — one memory policy, both entry
-points. `window()` stays the raw record. The `Brain` seam is untouched.
+The command pipeline (`api._command_turn`) condenses for the planner, from the
+conversation its caller hands it whole: `ctx.transcript.to_dict()` for the
+panel, `agent_api.history_for_loop` for a delegate thread (every text turn,
+`memory` over `content`). One memory policy, both entry points, applied in one
+place. The same whole conversation is what `conversation.recall` renders for
+the narrator (#372). `window()` stays the raw record. A board drag condenses
+nothing: its only model phase is the narrator.

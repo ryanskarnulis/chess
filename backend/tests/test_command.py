@@ -761,10 +761,12 @@ def test_the_reply_is_shown_with_his_words_not_before(path, body):
     seen: list[tuple[list[str], list[str]]] = []
 
     class Watching(ScriptedBrain):
-        def narrate(self, board_state, changes, transcript=(), *, command=""):
+        def narrate(self, board_state, changes, *, command="", earlier=""):
             published = client.get("/api/state").json()["history"]
             seen.append((ctx.session.move_history(), published))
-            return super().narrate(board_state, changes, transcript, command=command)
+            return super().narrate(
+                board_state, changes, command=command, earlier=earlier
+            )
 
     app, _ = scripted_app(ctx, brain=Watching(narrations=("e5, mirror.",)))
     client = TestClient(app)
@@ -2266,7 +2268,7 @@ class BlockingBrain(ScriptedBrain):
         self.reached = threading.Event()
         self.release = threading.Event()
 
-    def get_agent_response(self, board_state, command, transcript=()):
+    def get_agent_response(self, board_state, command, transcript=(), *, earlier=""):
         if not self.reached.is_set():
             self.reached.set()
             assert self.release.wait(10), "the first turn was never released"
@@ -2402,3 +2404,33 @@ def test_a_stale_command_leaves_the_conversation_untouched():
     assert response.json()["stale"] is True
     assert brain.calls == [], "refused before the model was asked anything"
     assert ctx.transcript.to_dict() == [], "and before the conversation was touched"
+
+
+# --- what the narrator reads of the past (#372) ---------------------------------
+
+
+def test_the_narrator_reads_the_record_requests_and_last_exchange():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    ctx.transcript.record("only knights from now on", "Bet.")
+    ctx.transcript.record("give me a hint", "Try Nf3 or Nc3.")
+    ctx.observe_ledger()
+    ctx.note_offer(
+        "get_best_moves", {"ok": True, "moves": [{"san": "Nf3"}, {"san": "Nc3"}]}
+    )
+    app, brain = scripted_app(ctx, AgentResponse(text="ok", stop_reason="completed"))
+    TestClient(app).post("/api/command", json={"text": "the second one"})
+    [earlier] = brain.earlier
+    assert "before the first move: a hint offered Nf3, Nc3." in earlier
+    assert '- "only knights from now on"' in earlier
+    assert 'The player said: "give me a hint"' in earlier
+    assert "the second one" not in earlier, "this turn is not the past"
+
+
+def test_a_drag_narrates_with_the_same_past():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    ctx.transcript.record("talk less", "Word.")
+    ctx.transcript.record("what's up", "Not much.")
+    app, brain = scripted_app(ctx)
+    TestClient(app).post("/api/game/move", json={"move": "e4"})
+    [earlier] = brain.narrate_earlier
+    assert '- "talk less"' in earlier and 'The player said: "what\'s up"' in earlier

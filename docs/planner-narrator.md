@@ -28,8 +28,9 @@ not asking one call to do both jobs. The split cured the release-blocking
 - **The narrator** is one further call on the full Glitch prompt
   (+ verbosity layer), offered **no tools**, given the utterance and the
   typed handoff below — the turn's results sorted by the harness, the fresh
-  facts it may state, and the planner's note labelled as a reading. Its text
-  is the commentary. It is the
+  facts it may state, and the planner's note labelled as a reading. What came
+  before the turn leads the brief as data, not as chat turns (#372, below).
+  Its text is the commentary. It is the
   one phase that may think (when analysis landed). Being structurally unable
   to act is the enforcement of "react from results, never the raw utterance";
   `tests/test_closing_pass.py` pins it route by route. `Brain.narrate` (the
@@ -80,14 +81,16 @@ duration.
 Prompt size has a budget too (`input_budget_tokens`, 32k estimated at three
 characters a token against llama-server's 131k window — about ten times the
 heaviest measured prompt, so it is a safety net, never a knob). Before the
-planner's opening call and every narrator call, an over-budget prompt drops the
+planner's opening call, an over-budget prompt drops the
 conversation's oldest exchanges a user/assistant pair at a time; the system
 prompt, the state block and the brief are never trimmed, and neither is the
 latest exchange (what "do the second one" points at, and where an unanswered
 `ask_player` question lives). The loop never trims mid-run — it only appends,
 so the KV prefix holds — and a run whose own results outgrow the budget ends
-under `budget: input`. A narrator prompt that still cannot fit is not sent; its
-empty reply is the one the pipeline already stands in for. The trace's
+under `budget: input`. The narrator has no conversation to trim since #372 (its
+past is a capped section of the brief); a narrator prompt that still cannot
+fit is not sent, and its empty reply is the one the pipeline already stands
+in for. The trace's
 `input_trimmed` counts the exchanges dropped.
 A `no_progress` stop (a planner turn whose every call repeats one this turn
 already made *and is answered as it was then*) *does* reach the narrator: real
@@ -446,3 +449,25 @@ calls act, and it is bounded between round trips (`planning_deadline_s`), never
 during one.
 
 Every prompt change here is eval-gated (`docs/agent-evals.md`).
+
+## What the narrator remembers (#372, 2026-09-28)
+
+The narrator no longer reads chat turns. Until #372 it got the same condensed
+conversation as the planner, as user/assistant messages, so his own older
+lines sat in front of him as things he had said and a false one ("black played
+c5" over a real e5) stayed there as fact. Now its messages are the persona and
+the brief alone, and the brief opens with **"Before this turn:"**
+(`conversation.recall`, built by `api._earlier` as the turn opens):
+
+- the game's record, kept by the app — the ledger's events the move list
+  cannot show, keyed to it (`ledger.render_record`: takebacks, setting
+  changes, draw offers, what was offered, the ending);
+- what the player asked for earlier, in their own words (every turn but the
+  latest, bare moves left out, newest kept under a cap);
+- the last exchange, whole: the player's words and "What you said then (your
+  words, not a record)" (`handoff.NARRATOR_REPLY_LABEL`).
+
+Taken as the turn opens, so this turn's own events are the handoff's to tell
+and never appear twice. No model writes any of it (`docs/game-record.md`
+says why the model-written story was dropped). The planner still reads the
+condensed conversation until the milestone PR moves it onto the same data.

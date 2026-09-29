@@ -423,6 +423,8 @@ class Brain(Protocol):
         board_state: dict[str, Any],
         command: str,
         transcript: Sequence[dict[str, str]] = (),
+        *,
+        earlier: str = "",
     ) -> AgentResponse:
         """Run the agent loop for one utterance: turn it into tool calls, run
         them through the dispatcher, feed the results back, and stop on the
@@ -441,16 +443,20 @@ class Brain(Protocol):
         it reaches and in what form is the app's memory policy, not the brain's:
         what actually arrives is `Transcript.memory()` — the last few turns
         verbatim behind a digest of the older asks (`docs/turn-memory.md`) — and
-        a brain neither knows nor needs to know which of them were condensed."""
+        a brain neither knows nor needs to know which of them were condensed.
+        The planner reads it; the narrator does not (#372). `earlier` is what
+        the narrator reads instead: what came before this turn as data — the
+        game's record, the player's requests, the last exchange
+        (`conversation.recall`)."""
         ...
 
     def narrate(
         self,
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
-        transcript: Sequence[dict[str, str]] = (),
         *,
         command: str = "",
+        earlier: str = "",
     ) -> Narration:
         """The narrator for a turn the loop did not run: the deterministic
         fast path (`parse_move` → `make_move`), a board drag, a confirmed
@@ -461,7 +467,8 @@ class Brain(Protocol):
         `api.narrator_facts` — no side to play for, since the beat can run
         while the engine's reply is still being computed and a narrator that
         can see whose move it is announces one, and a `reply_owed` flag the
-        brain turns into the line saying so. No tools offered. At
+        brain turns into the line saying so. `earlier` is what came before
+        the turn, as in `get_agent_response`. No tools offered. At
         verbosity=low this is skipped for a canned line, making a plain move
         zero-LLM."""
         ...

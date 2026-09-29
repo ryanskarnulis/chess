@@ -288,13 +288,13 @@ class BlockingBrain:
         self.release = threading.Event()
         self.dispatcher = None
 
-    def get_agent_response(self, board_state, command, transcript=()):
+    def get_agent_response(self, board_state, command, transcript=(), *, earlier=""):
         self.entered.set()
         assert self.release.wait(5), "test never released the brain"
         return AgentResponse(text="Done.")
 
     def narrate(
-        self, board_state, changes, transcript=(), *, command=""
+        self, board_state, changes, *, command="", earlier=""
     ):  # pragma: no cover
         raise AssertionError("this route never narrates")
 

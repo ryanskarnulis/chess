@@ -19,6 +19,7 @@ from chessapp.conversation import (
     condense,
     last_exchange,
     player_requests,
+    recall,
 )
 
 
@@ -336,3 +337,23 @@ def test_glitchs_words_are_never_a_request():
 def test_nothing_said_yet_has_no_last_exchange():
     assert last_exchange([]) is None
     assert Transcript().requests() == []
+
+
+def test_recall_labels_each_part_and_leaves_empty_ones_out():
+    messages = _turns(("only knights from now on", "Bet."), ("hint?", "Try Nf3."))
+    text = recall(
+        messages, ["after 1... e5: took back 2. Qh5."], reply_label="You said"
+    )
+    assert text.split("\n\n") == [
+        "The game's record, kept by the app (what happened earlier in this game "
+        "besides the moves themselves):\n- after 1... e5: took back 2. Qh5.",
+        "What the player asked for earlier, in their own words, oldest first:\n"
+        '- "only knights from now on"',
+        'The last exchange:\nThe player said: "hint?"\nYou said: "Try Nf3."',
+    ]
+    assert recall([], [], reply_label="You said") == ""
+
+
+def test_recall_says_when_the_last_reply_was_nothing():
+    text = recall(_turns(("e4", "")), [], reply_label="You said")
+    assert text.endswith("You said: nothing.")
