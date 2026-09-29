@@ -578,3 +578,34 @@ def destructive_succeeded(tool_results: Sequence[dict[str, Any]]) -> bool:
         r["name"] in DESTRUCTIVE_TOOLS and r["result"].get("ok") is True
         for r in tool_results
     )
+
+
+def story_facts(evidence: Mapping[str, Any]) -> VerifiedFacts:
+    """What the story of the game may state, from the evidence its keeper
+    accumulated from the ledger and the tool results of every turn it covers
+    (`story.accumulate`, #372). Game-spanning and historical, as the story is:
+    a capture or an ending from earlier in the conversation is a true thing to
+    tell. `settings` is each setting's latest value; the scorer leaves the
+    three value classes unscored on a story (`speech_accuracy.STORY_UNSCORED`),
+    since a story may name a value a setting held before."""
+    return VerifiedFacts(
+        ended=bool(evidence.get("ended")),
+        drawn=bool(evidence.get("drawn")),
+        winner=evidence.get("winner"),
+        termination=evidence.get("termination"),
+        check=bool(evidence.get("check")),
+        captured_by_player=frozenset(evidence.get("captured_by_player", ())),
+        captured_by_opponent=frozenset(evidence.get("captured_by_opponent", ())),
+        moves=frozenset(evidence.get("moves", ())),
+        moves_by_player=frozenset(evidence.get("by_player", ())),
+        moves_by_opponent=frozenset(evidence.get("by_opponent", ())),
+        saved=bool(evidence.get("saved")),
+        settings=dict(evidence.get("settings", {})),
+        settings_changed=frozenset(evidence.get("settings_changed", ())),
+        captures_by_move=dict(evidence.get("captures_by_move", {})),
+        numbers=frozenset(evidence.get("numbers", ())),
+        material=tuple(evidence.get("material", ())),
+        undone=bool(evidence.get("undone")),
+        restarted=bool(evidence.get("restarted")),
+        player_color=evidence.get("player_color"),
+    )

@@ -26,9 +26,13 @@ brain:
   fresh into the state block every turn; a digest line restating them would be
   a second, ageing copy — the exact self-poisoning shape. Older turns that
   were just a move (`e4`) are dropped too: they already live in `history`.
-- **No model writes the summary.** Code copies the player's words; a
-  model-written rollup would be an unguarded place to hallucinate, plus a
-  third model phase per turn.
+- **A model now writes a summary, and nothing reads it yet** (#372, reversing
+  "no model writes the summary"). The story of the game is written by a
+  third model phase, the summarizer, from code's ground truth — the ledger
+  and the tool results — with Glitch's words labelled as his and never a
+  source of facts, and scored offline against that ground truth
+  (`docs/story-and-ledger.md`). It is trace-only while it is measured; the
+  digest below is still what both phases read until the story replaces it.
 - **What the app said is never remembered as Glitch's.** App lines
   (lost-brain lines, the stuck line, a late close, a fallback's reply line)
   are for the player, not the model's memory — remembered as such, the

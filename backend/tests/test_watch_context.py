@@ -223,3 +223,28 @@ def test_main_puts_each_turns_decisions_after_its_own_calls(tmp_path):
         < printed.index("── decisions ──")
         < printed.index("turn 8")
     )
+
+
+def test_a_story_record_shows_its_cost_its_waits_and_the_story_verbatim():
+    """The story of the game (#372) is watched like a turn: the summarizer's
+    call lands under the turn it caught up to, then the `story` record."""
+    story = json.dumps(
+        {
+            "kind": "story",
+            "origin": "panel",
+            "status": "ok",
+            "covered": ["abc123"],
+            "call": {
+                "ms": 3300,
+                "prompt_tokens": 660,
+                "cached_tokens": 120,
+                "completion_tokens": 210,
+            },
+            "waited": [{"correlation_id": "def456", "lag_ms": 1800}],
+            "story": "Standing requests: none\n  The game so far: 1. e4 e5.",
+        }
+    )
+    out = watch((call(phase="summarizer"), SOURCE_CONTEXT), (story, SOURCE_TRACE))
+    assert "── story · panel · 1 turn(s) · ok ──" in out
+    assert "cached 120" in out and "waited: 1800 ms (def456)" in out
+    assert "Standing requests: none\n  The game so far: 1. e4 e5.\n" in out

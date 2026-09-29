@@ -176,6 +176,18 @@ class ProgressReporter:
             logger.warning("progress_emit_failed", exc_info=True)
 
 
+@contextmanager
+def attributed(correlation_id: str, turn_id: int) -> Iterator[None]:
+    """Attribute the calls made inside to an interaction that has already
+    ended, and report nothing: the story's summarizer runs after its turn
+    (#372), and its captured model call should still name that turn."""
+    token = _CURRENT.set(_Interaction(correlation_id, turn_id))
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
+
+
 def current_interaction() -> tuple[str, int] | None:
     """The interaction the calling code runs inside, as `(correlation_id,
     turn_id)`, or `None` outside one.
