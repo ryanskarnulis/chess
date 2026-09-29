@@ -104,6 +104,15 @@ class Transcript:
         caps how much of that reaches the prompt."""
         return condense(self.window(max_turns))
 
+    def requests(self) -> list[str]:
+        """What the player has asked for across the whole conversation, the
+        last exchange aside (`player_requests`)."""
+        return player_requests(self._messages)
+
+    def last_exchange(self) -> tuple[str, str] | None:
+        """The latest turn, as said (`last_exchange`)."""
+        return last_exchange(self._messages)
+
     def to_dict(self) -> list[dict[str, str]]:
         """Serialized form: the full message list (not windowed)."""
         return [dict(m) for m in self._messages]
@@ -204,3 +213,60 @@ def _truncate(text: str, limit: int = DIGEST_REQUEST_CHARS) -> str:
     head = text[: limit + 1]
     cut = head.rfind(" ")
     return f"{text[:cut].rstrip() if cut > 0 else text[:limit]}…"
+
+
+# --- what replaces the chat history (#372) ------------------------------------------
+
+# The player's requests, as the model phases will read them: each cut to this
+# many characters, and the newest kept until this many characters in all.
+REQUEST_CHARS = 160
+REQUESTS_MAX_CHARS = 1500
+
+
+def player_requests(
+    messages: list[dict[str, str]],
+    *,
+    request_chars: int = REQUEST_CHARS,
+    max_chars: int = REQUESTS_MAX_CHARS,
+) -> list[str]:
+    """The player's own words from every turn but the latest, oldest first:
+    what they asked for, where a standing ask ("only knights from now on")
+    lives. Code copies words and reads none — which requests still stand is
+    the model's to work out. A turn that was only a move is left out (the
+    move list has it), and so is the latest turn (`last_exchange` shows it
+    whole). Past `max_chars` the oldest go, and the first line says how many,
+    because a memory that quietly forgets reads like one that never heard.
+    Glitch's words are never here."""
+    users = [m["content"] for m in messages if m["role"] == "user"]
+    if messages and messages[-1]["role"] == "assistant" and users:
+        users = users[:-1]
+    requests = [
+        _truncate(collapsed, request_chars)
+        for text in users
+        if (collapsed := " ".join(text.split())) and not _BARE_MOVE.match(collapsed)
+    ]
+    kept: list[str] = []
+    total = 0
+    for request in reversed(requests):
+        total += len(request)
+        if total > max_chars and kept:
+            break
+        kept.append(request)
+    kept.reverse()
+    dropped = len(requests) - len(kept)
+    return ([f"({dropped} earlier requests not listed)"] if dropped else []) + kept
+
+
+def last_exchange(messages: list[dict[str, str]]) -> tuple[str, str] | None:
+    """The latest completed turn, `(the player's words, the reply as
+    remembered)`, or None before there is one. Kept whole because "the other
+    one" and "undo that" point at it. The reply is what the transcript
+    remembers: Glitch's words, or the app's deterministic line for a turn he
+    said nothing on (`api.CommandOutcome.memory`), or "" for neither."""
+    for index in range(len(messages) - 1, 0, -1):
+        if (
+            messages[index]["role"] == "assistant"
+            and messages[index - 1]["role"] == "user"
+        ):
+            return messages[index - 1]["content"], messages[index]["content"]
+    return None

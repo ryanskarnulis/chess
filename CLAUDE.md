@@ -84,10 +84,8 @@ shown and what it said back (request, rendered prompt, raw response), set
 `CHESSAPP_CONTEXT_PATH` and run `scripts/watch_context.py`
 (`docs/context-capture.md`, which also covers the deployed container); it is
 heavy, so leave it off otherwise. The trace
-file also holds `serving` manifests (the weights, build and settings actually serving the app), the
-`speech`/`voice` records that follow one voice interaction end to end, and, with
-`CHESSAPP_STORY=1`, one `story` record per summarizer run (the story of the game, its
-cost and the wait it would add; `docs/story-and-ledger.md`).
+file also holds `serving` manifests (the weights, build and settings actually serving the app) and the
+`speech`/`voice` records that follow one voice interaction end to end.
 `docs/latency-measurement.md` has the record kinds, the clock rules and
 `scripts/latency_report.py`. `docs/turn-coordinator.md` and
 `docs/planner-narrator.md` explain the turn architecture;

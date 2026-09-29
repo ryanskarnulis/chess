@@ -45,10 +45,6 @@ from chessapp.handoff import Handoff
 PHASE_PLANNER = "planner"
 PHASE_NARRATOR = "narrator"
 PHASE_ANSWER = "answer"
-# The story of the game (#372): one call after a turn, off the turn's path,
-# that rewrites the running story from the ledger. Recorded on its own `story`
-# trace record, never in a turn's `calls`.
-PHASE_SUMMARIZER = "summarizer"
 # A call from a brain that does not tag its own (a test double): known to have
 # happened, not known to have been which.
 PHASE_UNKNOWN = "unknown"

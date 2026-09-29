@@ -72,7 +72,6 @@ from chessapp.engine import (
 from chessapp.game import GameSession, MoveResult
 from chessapp.ledger import Ledger
 from chessapp.move_parts import PartsError
-from chessapp.story import StoryState
 
 logger = logging.getLogger(__name__)
 
@@ -288,9 +287,6 @@ def live_checkpoint(ctx: "ToolContext") -> dict[str, Any]:
         # offers a board cannot replay. Additive; a checkpoint without it
         # rebuilds the moves from the session.
         "ledger": ctx.ledger.to_dict(),
-        # The panel's story (#372), pending notes included, so a restart
-        # catches up rather than forgetting the turns it had not yet told.
-        "story": ctx.story.to_dict(),
     }
 
 
@@ -348,7 +344,6 @@ def restore_live_checkpoint(ctx: "ToolContext") -> bool:
     ctx.session = session
     ctx.transcript = transcript
     ctx.ledger = Ledger.restore(data.get("ledger"), session, ctx.settings.snapshot())
-    ctx.story = StoryState.from_dict(data.get("story"), cursor=ctx.ledger.next_seq)
     return True
 
 
@@ -516,9 +511,6 @@ class ToolContext:
     # What happened in the game, as code saw it (#372, `ledger`): observed
     # after every dispatch and wherever a request lets go of the board.
     ledger: Ledger = field(default_factory=Ledger)
-    # The panel conversation's story of the game (#372, `story`): rides
-    # wherever `transcript` does — the live checkpoint and named saves.
-    story: StoryState = field(default_factory=StoryState)
     pending: PendingOp | None = None
     # The open question per origin (#319, `clarification`): one slot for each
     # conversation, read through `live_clarification`, never persisted.
@@ -554,6 +546,14 @@ class ToolContext:
             _restore_settings(self.settings, path)
             self.settings.attach_store(lambda data: _write_settings_file(path, data))
         self.observe_ledger()
+
+    def note_offer(self, tool: str, result: dict[str, Any]) -> None:
+        """Record the moves a tool result offered, if it offered any; never
+        costs the call (the `observe_ledger` rule)."""
+        try:
+            self.ledger.note_offer(self.session, self.settings.snapshot(), tool, result)
+        except Exception:
+            logger.warning("ledger_note_failed", exc_info=True)
 
     def observe_ledger(self) -> None:
         """Bring the ledger up to date with the session and the settings.
@@ -659,12 +659,7 @@ class ToolContext:
         if self.pending is not None:
             self.pending = replace(self.pending, board_version=self.board_version)
 
-    def replace_session(
-        self,
-        session: GameSession,
-        transcript: Transcript,
-        story: StoryState | None = None,
-    ) -> None:
+    def replace_session(self, session: GameSession, transcript: Transcript) -> None:
         """Swap in a resumed game — a mutation like any other, version included.
 
         The base absorbs whatever the two sessions counted for themselves and
@@ -677,9 +672,6 @@ class ToolContext:
         self._version_base = self.board_version + 1 - session.revision
         self.session = session
         self.transcript = transcript
-        self.story = (
-            story if story is not None else StoryState(cursor=self.ledger.next_seq)
-        )
         # The resumed conversation opened in another session, at a difficulty
         # nobody recorded; the panel's start is not this one's.
         self.opening_difficulty.pop(PANEL_ORIGIN, None)
@@ -1057,7 +1049,12 @@ class ToolRegistry:
         version_before = None if self.context is None else self.context.board_version
         started = time.monotonic()
         try:
-            return tool.handler(**args)
+            result = tool.handler(**args)
+            if self.context is not None:
+                # What a tool put in front of the player to choose from (#372):
+                # a result the board never holds, so the ledger is told.
+                self.context.note_offer(name, result)
+            return result
         except ToolError as exc:
             return self.refusal(str(exc), exc.retry, **exc.details)
         except chess.engine.EngineError:
@@ -2443,8 +2440,6 @@ def build_registry(
         # saves (no transcript key) remain loadable.
         data = ctx.session.to_dict()
         data["transcript"] = ctx.transcript.to_dict()
-        # And the story of it (#372), for the same reason.
-        data["story"] = ctx.story.to_dict()
         try:
             _write_json_atomic(path, data)
         except OSError as exc:
@@ -2519,11 +2514,7 @@ def build_registry(
         coordinator.abandon_turn()
         # A board cannot tell a resumed save from a reset; the ledger is told.
         ctx.ledger.expect_resume(name)
-        # The save's story comes back with its transcript. Its ledger cursor
-        # belonged to another run's ledger: it starts at the resume itself.
-        story = StoryState.from_dict(data.get("story"))
-        story.cursor = ctx.ledger.next_seq
-        ctx.replace_session(session, transcript, story)
+        ctx.replace_session(session, transcript)
         coordinator.record_destructive_op()
         # A save can be taken mid-exchange — "play e4 and save this" writes the
         # board between the player's move and the reply — so the game that comes

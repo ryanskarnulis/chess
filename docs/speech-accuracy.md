@@ -298,15 +298,3 @@ fixed scorer the same run reads **dev 98.0% (336/343), held-out 99.1%
 from before #384 reads low by that much; compare later rows against these
 numbers, not the raw ones. The deployed trace rescores identically on both
 scorers (94.4%, 34/36, the two `verbosity_change` lies still unbacked).
-
-## The story of the game (#372)
-
-`scripts/speech_report.py` prints a second section, **The story of the game**,
-when the trace holds `story` records (and `--json` adds a `story` key): the
-same reading over each story the summarizer wrote, against the evidence of
-every turn that story covers (`speech_accuracy.score_story`,
-`facts.story_facts`). The story's third person is mapped onto the reading's
-persons first, and three things the reading does not apply to history are
-left out: the setting-value classes (a story may name a value a setting held
-before; `verbosity_change` stays scored), a narrative "then", and move numbers.
-The measured numbers and the reasons are in `docs/story-and-ledger.md`.

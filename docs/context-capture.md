@@ -29,7 +29,7 @@ written, the turn's decisions follow: tools and results, the engine's reply,
 and the commentary. Options:
 
 - `--phase planner` follows one phase (`planner`, `narrator`,
-  `answer`, `summarizer`; records from before #369 have `closer` and `reaction` instead of
+  `answer`; records from before #369 have `closer` and `reaction` instead of
   `narrator`, and from before #368 also `rewrite`).
 - `--json` prints the request body instead of the rendered prompt.
 - `--from-start` replays the files from the top instead of waiting at the end.
@@ -89,7 +89,7 @@ The file gets one JSONL line per model call (`kind: "model_call"`,
 | field | what it is |
 | --- | --- |
 | `turn_id`, `correlation_id` | the interaction, the same ids the turn trace uses. `null` for a call made outside one (evals, probes) |
-| `phase` | `planner`, `narrator`, `answer`, `summarizer` (the story of the game, #372: after the turn, attributed to the last turn it covers), or `unknown` (`closer`/`reaction` on records from before #369, `rewrite` from before #368) |
+| `phase` | `planner`, `narrator`, `answer`, or `unknown` (`closer`/`reaction` on records from before #369, `rewrite` from before #368) |
 | `seq` | the call's place among the calls its interaction sent, counted when it was sent |
 | `started_at`, `ended_at`, `ms` | wall clock |
 | `url` | where the request went |

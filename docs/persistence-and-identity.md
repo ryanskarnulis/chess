@@ -13,9 +13,9 @@ Under `CHESSAPP_SAVE_DIR` (the `/data/saves` volume in the container):
 | File | Holds | Written |
 |---|---|---|
 | `settings.json` | difficulty, verbosity, voice | on every settings change, best-effort |
-| `games/<name>.json` | a named save: the game plus the panel transcript and story (#372) | by `save_game`, atomically |
-| `live.json` | the live game: board, panel transcript, `game_id`, board version, the game's ledger and the panel's story (#372) | on every change, atomically, best-effort |
-| `conversations.json` | every delegate thread: turns, its story (#372), soft deletes, id counters, idempotency keys | on every change, atomically, best-effort |
+| `games/<name>.json` | a named save: the game plus the panel transcript | by `save_game`, atomically |
+| `live.json` | the live game: board, panel transcript, `game_id`, board version, the game's ledger (#372) | on every change, atomically, best-effort |
+| `conversations.json` | every delegate thread: turns, soft deletes, id counters, idempotency keys | on every change, atomically, best-effort |
 
 **Restart** (#291). `live.json` is written whenever the board version or the
 panel transcript changes — from the mutation guard's exit and from the
@@ -29,7 +29,7 @@ thinking is settled on restore, as a resumed save is. The file sits at the
 save dir's root, outside `games/`, and nests the session under a key, so it
 is never listed as a save nor swept up by the legacy-save migration.
 
-The current game's **ledger** (#372, `docs/story-and-ledger.md`) rides in the
+The current game's **ledger** (#372, `docs/game-record.md`) rides in the
 same file under `ledger`, so a takeback, a setting change or a declined draw
 offer made before a restart is still on record after it. A change to the
 ledger alone (a declined offer, a setting) is a change worth a write. It is
@@ -37,12 +37,6 @@ kept only if its events replay to the restored session's move line; a
 checkpoint without one, or with one that does not replay, gets a ledger
 rebuilt from the session, moves only. Named saves do not carry it: a resumed
 save is a `resumed` event followed by its line replayed as moves.
-
-The **story of the game** rides with each conversation's transcript: the
-panel's in `live.json` and named saves, a delegate thread's in
-`conversations.json`. Pending notes are kept with it, so a restart catches the
-story up. A story that does not parse is dropped for an empty one — it is
-derived memory, never a reason to refuse a start.
 
 What does **not** survive a restart:
 

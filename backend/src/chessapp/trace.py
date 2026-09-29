@@ -51,11 +51,6 @@ KIND_SPEECH = "speech"
 # offsets from the moment the player stopped speaking (or submitted), never
 # timestamps to subtract from the server's.
 KIND_VOICE = "voice"
-# One summarizer run (#372): which conversation, the notes it took in, the
-# story before and after, the call, and how long the turns that began before
-# it finished would have waited on it (`waited`). `evidence` is what a story
-# covering those notes may state, for speech accuracy's story split.
-KIND_STORY = "story"
 
 # The four roads an utterance can take through `_run_command`. Three of them are
 # deterministic; only `brain` involves the model in deciding what to do.
@@ -131,7 +126,6 @@ def turn_record(
     input_trimmed: int = 0,
     game_id: str = "",
     interaction_id: str = "",
-    story: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One turn, as the flat record a reviewer (or a replay) reads.
 
@@ -187,10 +181,9 @@ def turn_record(
 
     `calls` is every model round trip the turn made, one entry each in call
     order (#317): `seq` (its place in the turn — with `correlation_id`, the
-    attempt's identity), `phase` (`planner`, `narrator`, `answer` — records
-    before #369 say `closer` and `reaction`, before #368 also `rewrite` — or
-    `unknown` from a brain that does not tag its calls; the story's
-    `summarizer` runs after the turn and is on its own `story` record), `status`
+    attempt's identity), `phase` (`planner`, `closer`, `reaction`, `answer`
+    — older records also have `rewrite` — or `unknown` from a brain that does
+    not tag its calls), `status`
     (`ok`, `truncated`, `bad_args`, `failed` with the provider's `failure` kind,
     or `late` — still running when its caller stopped waiting, so its `ms` is
     the wait, censored at `budget_ms`), its wall clock in `ms`, and its tokens,
@@ -357,10 +350,6 @@ def turn_record(
         "clarification": clarification,
         "budget": budget,
         "input_trimmed": input_trimmed,
-        # Whether this conversation's story covered every earlier turn as this
-        # one began (#372): `pending` notes not yet told. The wait a turn would
-        # have had is on the `story` record that caught up (`waited`).
-        "story": story,
         "model_calls": len(calls),
         "unmetered_calls": unmetered,
         "prompt_tokens": sum(call.prompt_tokens or 0 for call in calls),
