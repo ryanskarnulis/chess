@@ -245,7 +245,11 @@ nothing can be captured, so no question about which pawn),
 difficulty" rules out the one lever there is, so no setting moves),
 `constraint_survives_a_live_thread` (the same ask in the walkthrough's own
 thread — panel seam, verbosity `low`, eleven turns deep — the condition that
-reproduces the live miss), `pgn_is_handed_over_not_recited` ("export the pgn"
+reproduces the live miss), `standing_ask_survives_the_thread` (#372: "from now
+on, when I say pineapple, take back my last move" eleven turns back in a real
+game on the panel; "pineapple" must take back the last exchange and nothing
+else. A word with no chess meaning: without the ask it moves nothing, 0/5,
+where "oops" was taken back 5/5 anyway), `pgn_is_handed_over_not_recited` ("export the pgn"
 calls `export_pgn` and says it is ready — the notation is app-owned text now,
 rendered with a copy button, so a reply carrying the headers or the movetext
 is the old dump reappearing), and the long-transcript family
@@ -344,6 +348,48 @@ Everything else in the table is a lock — a useful regression condition with no
 evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
+
+**Milestone 4 close, 2026-09-29: full gate and both frontier splits on #372
+(roadmap #366 step 12, the record of the game).**
+
+What #372 changed:
+- Neither phase reads chat turns any more. Both read a `conversation.Recall` as
+  data under "Before this turn:": the ledger's record keyed to the move list,
+  the player's requests in their own words, and the last exchange, the reply
+  labelled as words and not a record. `condense` is retired.
+- The ledger (`ledger.py`) records what a board cannot: takebacks, setting
+  changes, draw offers, what a tool offered. A model-written story was built,
+  measured and dropped (`docs/game-record.md`).
+- New gate scenario `standing_ask_survives_the_thread`.
+
+Results (seed 363):
+- **Gate: 56 of 56 passed** (the new scenario in its final form, run on its
+  own; the other 55 in one run of 18 m 54 s). `long_capture` holds in all
+  three conditions, 5/5 each. `position_is_described` and
+  `pgn_is_handed_over_not_recited` 4/5, at the floor. Speech 104/106 over 304
+  turns (`owned_move` ×2); reply said 86/87.
+- **`standing_ask_survives_the_thread`** 5/5: "pineapple", defined eleven
+  turns back as a takeback, took back the last exchange every time; without
+  the ask it moved nothing, 0/5. The first version ("pick one for me" must be a
+  knight move) failed 0/5 on the old memory and the new alike, on #351's
+  pick-by-position rule rather than on memory: that is #408. "oops" was tried
+  next and taken back 5/5 with no ask at all, so it measured nothing.
+- **Frontier** (history label "#372, milestone 4 close"):
+  - Speech: dev 363/370, held-out 345/349; reply said dev 223/223, held-out
+    227/228.
+  - Dev gains against the #320 row: `draw_declined_then_advice` 0→10,
+    `undo_then_ambiguous_bishop` 4→10, `second_choice_chain` 7→10.
+  - **Two regressions, caused by the planner's switch** (a paired run of the
+    same scenarios on `main` before it: 10/10 each): dev
+    `late_game_review_undo_replay` 10→3 (misses going back before the worst
+    move the review named, and playing the best move there) and held-out
+    `long_session` 10→3 (misses playing a move a hint suggested earlier).
+    Both act on a move a tool named turns before; the old memory kept
+    Glitch's last four replies, which named it, and the record does not yet
+    hold what `review_game` or the analysis tools named. Merged and filed as #409
+    (Ryan, 2026-09-29).
+  - Dev `two_threads_similar_asks` 4/10 against 6/10, within noise (`main`
+    6/10 in the paired run).
 
 **Milestone 3 close, 2026-09-28: full gate and both frontier splits on #320
 (roadmap #366 step 11).**

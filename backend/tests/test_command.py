@@ -24,7 +24,6 @@ from chessapp.api import (
     create_app,
 )
 from chessapp.brain import CANCEL, CONFIRM, UNRELATED, AgentResponse, Answer, ToolCall
-from chessapp.conversation import RECENT_TURNS
 from chessapp.engine import DEFAULT_TIER, CandidateMove, Evaluation
 from chessapp.game import GameSession
 from chessapp.provider import ProviderError
@@ -420,84 +419,59 @@ def test_read_only_command_does_not_broadcast():
     assert message["state"]["history"] == ["e4"]
 
 
-# --- conversation transcript -------------------------------------------------
+# --- what came before, as the brain is handed it (#372) ---------------------
 
 
-def test_first_command_sees_empty_transcript():
+def test_first_command_has_nothing_before_it():
     client, brain = make_client(AgentResponse(text="hello"))
     client.post("/api/command", json={"text": "hi there"})
-    assert brain.transcripts == [[]]
+    assert brain.earlier[0].render("Glitch said") == ""
 
 
-def test_transcript_carries_prior_turns_to_the_brain():
-    """The conversation memory: turn N+1's brain call includes turn N's
-    user command and the commentary the user actually saw."""
+def test_the_last_exchange_reaches_the_brain_whole():
+    """Turn N+1 is handed turn N: the player's words and the reply they saw —
+    what "the queenside one" resolves against."""
     client, brain = make_client(
         AgentResponse(text="Which knight did you mean?"),
         AgentResponse(text="noted"),
     )
     client.post("/api/command", json={"text": "move the knight"})
     client.post("/api/command", json={"text": "the queenside one"})
-    assert brain.transcripts[1] == [
-        {"role": "user", "content": "move the knight"},
-        {"role": "assistant", "content": "Which knight did you mean?"},
-    ]
+    assert brain.earlier[1].last == ("move the knight", "Which knight did you mean?")
 
 
-def test_the_transcript_records_the_users_words_and_the_closing_comment():
-    """What the next turn remembers is the conversation the user had — their own
-    words and the comment they saw — never the loop's internal tool traffic."""
+def test_the_last_exchange_is_the_users_words_and_the_closing_comment():
+    """What the next turn is shown is the conversation the user had — their
+    own words and the comment they saw — never the loop's tool traffic."""
     client, brain = make_client(
         move("e4", text="A bold king's pawn!"),
         AgentResponse(text="you did"),
     )
     client.post("/api/command", json={"text": "play e4"})
     client.post("/api/command", json={"text": "did I open well?"})
-    assert brain.transcripts[1] == [
-        {"role": "user", "content": "play e4"},
-        {"role": "assistant", "content": "A bold king's pawn!"},
-    ]
+    assert brain.earlier[1].last == ("play e4", "A bold king's pawn!")
 
 
-def test_older_turns_reach_the_brain_condensed_not_verbatim():
-    """The memory policy at the boundary (`docs/turn-memory.md`): what the brain
-    is handed is the last few turns verbatim behind a digest of what the player
-    asked for earlier — not twenty turns of Glitch's prose."""
+def test_older_turns_reach_the_brain_as_the_players_words_only():
+    """The memory policy at the boundary (`docs/turn-memory.md`): older turns
+    are the player's own requests; Glitch's older prose is not shown at all."""
     ctx = ToolContext(session=GameSession())
     ctx.transcript.record("save this as testgame", "I can't save right now, bro.")
     app, brain = scripted_app(
         ctx, *[AgentResponse(text=f"reply {i}") for i in range(7)]
     )
     client = TestClient(app)
-    for i in range(RECENT_TURNS):
+    for i in range(4):
         client.post("/api/command", json={"text": f"filler {i}"})
     client.post("/api/command", json={"text": "load the game I saved"})
 
-    transcript = brain.transcripts[-1]
-    assert len(transcript) == 2 + 2 * RECENT_TURNS
-    digest = transcript[0]["content"]
-    assert '"save this as testgame"' in digest
+    earlier = brain.earlier[-1]
+    assert earlier.requests[0] == "save this as testgame"
     # The stale claim itself is gone — that sentence is precisely what taught the
     # model a save it had made didn't exist (trace review 2026-07-13).
-    assert "can't save right now" not in digest
-    assert transcript[-2:] == [
-        {"role": "user", "content": f"filler {RECENT_TURNS - 1}"},
-        {"role": "assistant", "content": f"reply {RECENT_TURNS - 1}"},
-    ]
-
-
-def test_a_recent_turn_still_reaches_the_brain_word_for_word():
-    """The digest must not eat the turns references point at: "the queenside
-    one" only resolves against the question that prompted it."""
-    client, brain = make_client(*[AgentResponse(text=f"reply {i}") for i in range(9)])
-    for i in range(6):
-        client.post("/api/command", json={"text": f"filler {i}"})
-    client.post("/api/command", json={"text": "move the knight"})
-    client.post("/api/command", json={"text": "the queenside one"})
-    assert brain.transcripts[-1][-2:] == [
-        {"role": "user", "content": "move the knight"},
-        {"role": "assistant", "content": "reply 6"},
-    ]
+    rendered = earlier.render("Glitch said")
+    assert "can't save right now" not in rendered
+    assert earlier.last == ("filler 3", "reply 3")
 
 
 # --- deterministic fast-parse path (the seam BRIEF reserves) ------------------
@@ -608,10 +582,7 @@ def test_fast_path_turn_is_recorded_in_the_transcript():
     )
     client.post("/api/command", json={"text": "e4"})
     client.post("/api/command", json={"text": "did I open well?"})
-    assert brain.transcripts[0] == [
-        {"role": "user", "content": "e4"},
-        {"role": "assistant", "content": "Sharp."},
-    ]
+    assert brain.earlier[0].last == ("e4", "Sharp.")
 
 
 def test_fast_move_broadcasts_state_to_ws():
@@ -761,7 +732,7 @@ def test_the_reply_is_shown_with_his_words_not_before(path, body):
     seen: list[tuple[list[str], list[str]]] = []
 
     class Watching(ScriptedBrain):
-        def narrate(self, board_state, changes, *, command="", earlier=""):
+        def narrate(self, board_state, changes, *, command="", earlier=None):
             published = client.get("/api/state").json()["history"]
             seen.append((ctx.session.move_history(), published))
             return super().narrate(
@@ -1451,8 +1422,9 @@ def test_a_move_no_board_this_turn_makes_legal_is_unbacked():
 #
 # Every canned correction the old guard spoke was in the first person —
 # "Scratch that — I said something the board doesn't back up" — and the
-# pipeline recorded the *substituted* text as the assistant's turn. `condense`
-# hands the last few turns to the narrator verbatim, so Glitch read his own
+# pipeline recorded the *substituted* text as the assistant's turn. The memory
+# of the time handed the last few turns to the narrator verbatim (the last
+# exchange still is, #372), so Glitch read his own
 # apology as something he had said and started producing the register himself
 # ("I almost said something that didn't happen. That's my bad.").
 #
@@ -2268,11 +2240,11 @@ class BlockingBrain(ScriptedBrain):
         self.reached = threading.Event()
         self.release = threading.Event()
 
-    def get_agent_response(self, board_state, command, transcript=(), *, earlier=""):
+    def get_agent_response(self, board_state, command, *, earlier=None):
         if not self.reached.is_set():
             self.reached.set()
             assert self.release.wait(10), "the first turn was never released"
-        return super().get_agent_response(board_state, command, transcript)
+        return super().get_agent_response(board_state, command, earlier=earlier)
 
 
 class QueueingLock:
@@ -2359,10 +2331,7 @@ def test_a_queued_command_sees_the_exchange_that_finished_before_it():
         AgentResponse(text="You asked about the opening."),
     )
 
-    assert brain.transcripts[1] == [
-        {"role": "user", "content": "what opening is this?"},
-        {"role": "assistant", "content": "It is the Italian."},
-    ]
+    assert brain.earlier[1].last == ("what opening is this?", "It is the Italian.")
     assert results["second"]["commentary"] == "You asked about the opening."
 
 
@@ -2419,7 +2388,8 @@ def test_the_narrator_reads_the_record_requests_and_last_exchange():
     )
     app, brain = scripted_app(ctx, AgentResponse(text="ok", stop_reason="completed"))
     TestClient(app).post("/api/command", json={"text": "the second one"})
-    [earlier] = brain.earlier
+    [recall] = brain.earlier
+    earlier = recall.render("You said")
     assert "before the first move: a hint offered Nf3, Nc3." in earlier
     assert '- "only knights from now on"' in earlier
     assert 'The player said: "give me a hint"' in earlier
@@ -2432,5 +2402,5 @@ def test_a_drag_narrates_with_the_same_past():
     ctx.transcript.record("what's up", "Not much.")
     app, brain = scripted_app(ctx)
     TestClient(app).post("/api/game/move", json={"move": "e4"})
-    [earlier] = brain.narrate_earlier
+    earlier = brain.narrate_earlier[0].render("You said")
     assert '- "talk less"' in earlier and 'The player said: "what\'s up"' in earlier

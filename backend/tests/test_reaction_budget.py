@@ -76,7 +76,7 @@ class SlowNarrator(ScriptedBrain):
         self.release = threading.Event()
         self.finished = threading.Event()
 
-    def narrate(self, board_state, changes, *, command="", earlier=""):
+    def narrate(self, board_state, changes, *, command="", earlier=None):
         self.narrate_calls.append((board_state, changes))
         self.entered.set()
         self.release.wait(timeout=PATIENCE)
@@ -179,7 +179,7 @@ def test_the_late_words_land_nowhere(slow):
     assert ctx.board_version == version, "a late narration moved nothing"
     assert ctx.session.move_history() == history
     assert LATE_WORDS not in body["commentary"]
-    remembered = " ".join(message["content"] for message in ctx.transcript.memory())
+    remembered = " ".join(message["content"] for message in ctx.transcript.to_dict())
     assert LATE_WORDS not in remembered
     assert LATE_WORDS not in json.dumps(client.get("/api/state").json())
 
@@ -481,7 +481,7 @@ def test_the_late_closers_words_land_nowhere(blocked):
     assert ctx.board_version == version, "a late closer moved nothing"
     assert ctx.session.move_history() == history
     assert LATE_WORDS not in body["commentary"]
-    remembered = " ".join(message["content"] for message in ctx.transcript.memory())
+    remembered = " ".join(message["content"] for message in ctx.transcript.to_dict())
     assert LATE_WORDS not in remembered
     assert LATE_WORDS not in json.dumps(client.get("/api/state").json())
     # Nor in what the next turn's planner is shown.

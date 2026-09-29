@@ -80,18 +80,14 @@ duration.
 
 Prompt size has a budget too (`input_budget_tokens`, 32k estimated at three
 characters a token against llama-server's 131k window — about ten times the
-heaviest measured prompt, so it is a safety net, never a knob). Before the
-planner's opening call, an over-budget prompt drops the
-conversation's oldest exchanges a user/assistant pair at a time; the system
-prompt, the state block and the brief are never trimmed, and neither is the
-latest exchange (what "do the second one" points at, and where an unanswered
-`ask_player` question lives). The loop never trims mid-run — it only appends,
-so the KV prefix holds — and a run whose own results outgrow the budget ends
-under `budget: input`. The narrator has no conversation to trim since #372 (its
-past is a capped section of the brief); a narrator prompt that still cannot
-fit is not sent, and its empty reply is the one the pipeline already stands
-in for. The trace's
-`input_trimmed` counts the exchanges dropped.
+heaviest measured prompt, so it is a safety net, never a knob). Since #372
+there is no conversation to trim: what came before the turn is a capped
+section of each phase's prompt. An opening that still does not fit is never
+sent and the phase ends under `budget: input`; the loop never trims mid-run —
+it only appends, so the KV prefix holds — and a run whose own results outgrow
+the budget ends the same way. A narrator prompt that cannot fit is not sent,
+and its empty reply is the one the pipeline already stands in for. (Records
+before #372 carry `input_trimmed`, the exchanges the budget dropped.)
 A `no_progress` stop (a planner turn whose every call repeats one this turn
 already made *and is answered as it was then*) *does* reach the narrator: real
 results came back, and the loop just refuses iterations that can only repeat.
@@ -450,24 +446,28 @@ during one.
 
 Every prompt change here is eval-gated (`docs/agent-evals.md`).
 
-## What the narrator remembers (#372, 2026-09-28)
+## What both phases remember (#372, 2026-09-28)
 
-The narrator no longer reads chat turns. Until #372 it got the same condensed
-conversation as the planner, as user/assistant messages, so his own older
-lines sat in front of him as things he had said and a false one ("black played
-c5" over a real e5) stayed there as fact. Now its messages are the persona and
-the brief alone, and the brief opens with **"Before this turn:"**
-(`conversation.recall`, built by `api._earlier` as the turn opens):
+Neither phase reads chat turns. Until #372 both got the condensed conversation
+as user/assistant messages: the planner read Glitch's replies as its own past
+turns, and a false line ("black played c5" over a real e5) stayed there as
+fact. Now the planner's messages are its contract and one opening user message,
+and the narrator's are the persona and the brief; each opens with **"Before
+this turn:"** (`conversation.Recall`, built by `api._earlier` as the turn
+opens, `docs/turn-memory.md`):
 
 - the game's record, kept by the app — the ledger's events the move list
   cannot show, keyed to it (`ledger.render_record`: takebacks, setting
   changes, draw offers, what was offered, the ending);
 - what the player asked for earlier, in their own words (every turn but the
   latest, bare moves left out, newest kept under a cap);
-- the last exchange, whole: the player's words and "What you said then (your
-  words, not a record)" (`handoff.NARRATOR_REPLY_LABEL`).
+- the last exchange, whole: the player's words and the reply, labelled as
+  words and not a record — "Glitch said then" to the planner, "What you said
+  then" to the narrator (`conversation.PLANNER_REPLY_LABEL`,
+  `NARRATOR_REPLY_LABEL`).
 
 Taken as the turn opens, so this turn's own events are the handoff's to tell
 and never appear twice. No model writes any of it (`docs/game-record.md`
-says why the model-written story was dropped). The planner still reads the
-condensed conversation until the milestone PR moves it onto the same data.
+says why the model-written story was dropped). For the planner it sits ahead
+of the board and the command in the one opening message, and is never re-sent:
+the mid-command refresh block stays the menu alone.

@@ -566,12 +566,11 @@ def render_record(
         kind = event.kind
         if kind == MOVE:
             standing.append(_label(d))
-        elif kind in (NEW_GAME, RESUMED):
-            start = (
-                f"The saved game '{d.get('name')}' was resumed"
-                if kind == RESUMED
-                else "A new game began"
-            )
+        elif kind == RESUMED:
+            # A fresh game's start is not said: the record is this game's
+            # alone, so it always opens there, and the side is the state
+            # block's. A resume is, because which save it was is not.
+            start = f"The saved game '{d.get('name')}' was resumed"
             start += f"; the player has {d.get('player_color')}"
             if d.get("root_fen"):
                 start += ", from a set-up position"

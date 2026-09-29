@@ -263,18 +263,19 @@ def test_a_yes_after_a_question_confirms_nothing():
 
 def _opening_states(provider) -> list[dict]:
     """The opening board state of every planner request the provider saw —
-    the `Board state:` block `LlamaBrain._messages` writes, parsed. Planner
-    requests are the ones offered tools; the narrator's never are."""
+    the `Board state:` block `LlamaBrain._messages` writes, parsed (after
+    whatever came before the turn, #372). Planner requests are the ones
+    offered tools; the narrator's never are."""
     states = []
     for call in provider.calls:
         if call["tools"] is None:
             continue
         opening = next(
             m["content"]
-            for m in reversed(call["messages"])
-            if m["role"] == "user" and m["content"].startswith("Board state:\n")
+            for m in call["messages"]
+            if m["role"] == "user" and "Board state:\n" in m["content"]
         )
-        block = opening.removeprefix("Board state:\n").split("\n\nCommand: ")[0]
+        block = opening.split("Board state:\n", 1)[1].split("\n\nCommand: ")[0]
         states.append(json.loads(block))
     return states
 
@@ -371,16 +372,14 @@ def test_another_threads_question_is_never_shown():
     assert "open_question" not in state and "closed_question" not in state
 
 
-def test_the_question_survives_the_input_budget_trimming_the_conversation():
+def test_the_question_survives_a_long_conversation():
     """The acceptance criterion the record exists for: a conversation long
-    enough that the input budget drops its oldest exchanges — the question
-    among them — still hands the planner the open question, because the state
-    block is never trimmed. And it carries no board fact of its own, so what
-    is kept cannot be a stale copy of the position."""
+    enough that the question is no longer the last exchange still hands the
+    planner the open question, because it rides in the state block. And it
+    carries no board fact of its own, so what is kept cannot be a stale copy
+    of the position."""
     turns = CollectedTurns()
-    client, provider, ctx = make_client(
-        ASK, QUESTION, tracer=turns, input_budget_tokens=10_000
-    )
+    client, provider, ctx = make_client(ASK, QUESTION, tracer=turns)
     client.post("/api/command", json={"text": KNIGHT_ASK})
     chatter = "tell me more about the history of this opening " * 160
     for _ in range(5):
@@ -390,16 +389,15 @@ def test_the_question_survives_the_input_budget_trimming_the_conversation():
     _quiet(provider)
     client.post("/api/command", json={"text": "the one to f3"})
 
-    assert turns.records[-1]["input_trimmed"] > 0
     (state,) = _opening_states(provider)
     assert state["open_question"] == {
         "player_asked": KNIGHT_ASK,
         "choose_between": ["Nf3", "Nh3"],
     }
-    # Nothing of the question is left in the conversation the planner reads.
+    # Nothing of the question is left in what came before: Glitch's older
+    # words are never shown (#372), and the last exchange is the chatter.
     planner = next(call for call in provider.calls if call["tools"] is not None)
-    conversation = [m["content"] for m in planner["messages"][1:-1]]
-    assert not any("Nf3 or Nh3?" in str(content) for content in conversation)
+    assert "Nf3 or Nh3?" not in planner["messages"][1]["content"]
 
 
 # --- a pick by position (#351) -------------------------------------------------

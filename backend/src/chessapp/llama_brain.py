@@ -163,6 +163,11 @@ from chessapp.brain import (
     _RunState,
 )
 from chessapp.context_capture import model_phase
+from chessapp.conversation import (
+    NARRATOR_REPLY_LABEL,
+    PLANNER_REPLY_LABEL,
+    Recall,
+)
 from chessapp.deadline import (
     NARRATION_BUDGET_S,
     NARRATION_CEILING_S,
@@ -509,9 +514,8 @@ class LlamaBrain:
         self,
         board_state: dict[str, Any],
         command: str,
-        transcript: Sequence[dict[str, str]] = (),
         *,
-        earlier: str = "",
+        earlier: Recall | None = None,
     ) -> AgentResponse:
         # The offer and the schemas it is validated against are one list,
         # resolved here and again only where the planner is re-shown a board
@@ -521,16 +525,16 @@ class LlamaBrain:
         tools = _resolve(self.tool_definitions)
         schemas = _schemas_of(tools)
         run = _RunState()
-        # Admission (#288): the oldest conversation goes first when the opening
-        # prompt would not fit. Fitted once, here, because the loop only ever
-        # appends — trimming mid-run would rewrite the prefix the KV cache
-        # holds. The same trimmed conversation is what the narrator is handed.
-        transcript, run.input_trimmed = self._admit(
-            lambda kept: self._messages(board_state, command, kept),
-            transcript,
-            tools,
+        # One opening message (#372): what came before this turn as data, the
+        # board, and the command. No chat turns, so nothing to trim; the past
+        # is capped where it is rendered (`conversation.Recall`).
+        messages = self._messages(
+            board_state,
+            command,
+            earlier.render(PLANNER_REPLY_LABEL) if earlier is not None else "",
         )
-        messages = self._messages(board_state, command, transcript)
+        # The narrator reads the same past, with the last reply as his own.
+        told = earlier.render(NARRATOR_REPLY_LABEL) if earlier is not None else ""
         corrections = 0
         # Every exchange this turn has already had — a call and what it brought
         # back — so a turn that learns nothing new can be recognized as the
@@ -564,7 +568,7 @@ class LlamaBrain:
                 # flight is bounded by its `max_tokens`, and what it asked for
                 # has already run. This only declines to start another.
                 return self._budget_stop(
-                    run, command, earlier, "budget", "wall_time", dispatched
+                    run, command, told, "budget", "wall_time", dispatched
                 )
             if self._over_input_budget(messages, tools):
                 # The run's own results have grown the prompt past the budget
@@ -572,7 +576,7 @@ class LlamaBrain:
                 # help without rewriting what the planner already read, so the
                 # phase ends here — spoken from what ran, like any budget.
                 return self._budget_stop(
-                    run, command, earlier, "budget", "input", dispatched
+                    run, command, told, "budget", "input", dispatched
                 )
             self._report(BRAIN_PLANNING)
             try:
@@ -593,7 +597,7 @@ class LlamaBrain:
                     return self._budget_stop(
                         run,
                         command,
-                        earlier,
+                        told,
                         "correction_limit",
                         "corrections",
                         dispatched,
@@ -635,12 +639,12 @@ class LlamaBrain:
                     # phase, let the narrator close from what the turn
                     # verified, under the loop's own note.
                     return self._close(
-                        run, command, _NO_PROGRESS_NOTE, earlier, "no_progress"
+                        run, command, _NO_PROGRESS_NOTE, told, "no_progress"
                     )
                 # The planner is done. Its text is a handoff note, never the
                 # reply — the narrator turns the turn's verified results into
                 # what the player actually reads.
-                return self._close(run, command, result.content or "", earlier)
+                return self._close(run, command, result.content or "", told)
 
             # Tool calls, so `finish_reason` is deliberately not consulted:
             # the provider parsed every call's arguments before this result
@@ -709,12 +713,12 @@ class LlamaBrain:
                 # player's choice back. Terminal at the call itself (#314): the
                 # rest of the batch was answered unrun above, so a planner that
                 # asked cannot go on to play one of the candidates anyway.
-                return self._close(run, command, "", earlier)
+                return self._close(run, command, "", told)
             if tripped:
                 # A cap refused part of this batch, so the next iteration could
                 # only be refused more of the same: the phase ends here.
                 return self._budget_stop(
-                    run, command, earlier, "budget", tripped, dispatched
+                    run, command, told, "budget", tripped, dispatched
                 )
             current = self._current_board()
             version = _board_version_of(current)
@@ -738,7 +742,7 @@ class LlamaBrain:
                     return self._budget_stop(
                         run,
                         command,
-                        earlier,
+                        told,
                         "correction_limit",
                         "corrections",
                         dispatched,
@@ -757,12 +761,10 @@ class LlamaBrain:
                 # instead of the pipeline's canned stuck line. The note is the
                 # loop's own, because the planner never reached the turn that
                 # writes one — see `_NO_PROGRESS_NOTE`.
-                return self._close(
-                    run, command, _NO_PROGRESS_NOTE, earlier, "no_progress"
-                )
+                return self._close(run, command, _NO_PROGRESS_NOTE, told, "no_progress")
 
         return self._budget_stop(
-            run, command, earlier, "max_iterations", "iterations", dispatched
+            run, command, told, "max_iterations", "iterations", dispatched
         )
 
     def _over_budget(self, name: str, dispatched: int, expensive: int) -> str:
@@ -807,42 +809,13 @@ class LlamaBrain:
             and _estimate_tokens(messages, tools) > self.input_budget_tokens
         )
 
-    def _admit(
-        self,
-        build: Callable[[Sequence[dict[str, str]]], list[dict[str, Any]]],
-        transcript: Sequence[dict[str, str]],
-        tools: Sequence[dict[str, Any]] = (),
-    ) -> tuple[list[dict[str, str]], int]:
-        """Fit a prompt to the input budget by dropping the conversation's
-        oldest exchanges; return what is kept and how many exchanges went.
-
-        Only the conversation is ever trimmed — the system prompt, the state
-        block (`legal_moves` among it) and the brief are what the call is
-        *for*. It goes a user/assistant pair at a time, oldest first (the
-        digest before any verbatim turn), so the alternation the chat template
-        expects holds, and the latest exchange is never dropped: it is what
-        "do the second one" refers to. An unanswered `ask_player` question
-        no longer depends on it — its candidates ride in the state block as
-        `open_question` (#319, `api.planner_state`), which is never trimmed.
-        When that is still too large the caller decides what an over-budget
-        prompt means for its phase.
-        """
-        kept = list(transcript)
-        trimmed = 0
-        while len(kept) > 2 and self._over_input_budget(build(kept), tools):
-            del kept[:2]
-            trimmed += 1
-        if trimmed:
-            logger.warning("input_budget_trimmed exchanges=%d", trimmed)
-        return kept, trimmed
-
     def narrate(
         self,
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
         *,
         command: str = "",
-        earlier: str = "",
+        earlier: Recall | None = None,
     ) -> Narration:
         # The narrator for a turn the loop never ran: the fast path, a board
         # drag, a confirmed op or a resignation. One narrator (#369): the same
@@ -866,7 +839,14 @@ class LlamaBrain:
         started = self.clock()
         with model_phase(PHASE_NARRATOR):
             narration = self._speak(
-                render_handoff(handoff, command, changes, earlier=earlier),
+                render_handoff(
+                    handoff,
+                    command,
+                    changes,
+                    earlier=earlier.render(NARRATOR_REPLY_LABEL)
+                    if earlier is not None
+                    else "",
+                ),
                 thinking=self.enable_thinking,
                 timeout=self.narrate_timeout,
             )
@@ -1299,16 +1279,18 @@ class LlamaBrain:
         self,
         board_state: dict[str, Any],
         command: str,
-        transcript: Sequence[dict[str, str]] = (),
+        earlier: str = "",
     ) -> list[dict[str, Any]]:
-        # Small prompt: the planner's contract, prior conversation (a bounded
-        # Transcript window, final answers only), then board truth + command.
-        # It is only the *opening* of the run — the loop grows this list turn by
-        # turn rather than rebuilding it, so the KV cache holds.
-        user = f"Board state:\n{json.dumps(board_state)}\n\nCommand: {command}"
+        # Small prompt: the planner's contract, then one user message — what
+        # came before this turn (#372: the game's record, the player's requests
+        # and the last exchange, as data and never as assistant turns the
+        # planner would read as its own), then board truth and the command.
+        # It is only the *opening* of the run — the loop grows this list turn
+        # by turn rather than rebuilding it, so the KV cache holds.
+        before = f"Before this turn:\n\n{earlier}\n\n" if earlier else ""
+        user = f"{before}Board state:\n{json.dumps(board_state)}\n\nCommand: {command}"
         return [
             {"role": "system", "content": self._resolve_planner_prompt()},
-            *transcript,
             {"role": "user", "content": user},
         ]
 

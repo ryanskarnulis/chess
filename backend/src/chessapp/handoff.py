@@ -285,12 +285,6 @@ def _refs(entries: Sequence[Entry]) -> str:
     return ", ".join(f"#{entry.ref} {entry.tool}" for entry in entries)
 
 
-# How the narrator's brief names the last reply in `earlier` (#372): his own
-# words, but not a record — what the tools did is, and a line he said last
-# turn is never a fact to repeat.
-NARRATOR_REPLY_LABEL = "What you said then (your words, not a record)"
-
-
 def render(
     handoff: Handoff,
     command: str,
@@ -308,7 +302,7 @@ def render(
     what it is. The closing instruction speaks from the record and the facts;
     the note is context for understanding the ask, not a source of claims.
 
-    `earlier` is what came before this turn (#372, `conversation.recall`):
+    `earlier` is what came before this turn (#372, `conversation.Recall`, rendered):
     the game's record, the player's requests and the last exchange, as data.
     It leads the brief, headed as earlier, so nothing in it reads as this
     turn's record.

@@ -26,7 +26,6 @@ from chessapp.agent_api import (
 )
 from chessapp.api import STUCK_REPLY, CommandOutcome
 from chessapp.brain import AgentResponse, ToolCall
-from chessapp.conversation import RECENT_TURNS
 from chessapp.game import GameSession
 from chessapp.provider import ProviderRequestError
 from chessapp.tools import ToolContext
@@ -264,13 +263,10 @@ def test_history_replays_text_turns_only_no_tool_payloads():
     send(client, conversation_id, "start with the king's pawn")
     send(client, conversation_id, "what did you play?")
 
-    replayed = brain.transcripts[-1]
-    assert replayed == [
-        {"role": "user", "content": "start with the king's pawn"},
-        {"role": "assistant", "content": "Pawn to e4."},
-    ]
+    earlier = brain.earlier[-1]
+    assert earlier.last == ("start with the king's pawn", "Pawn to e4.")
     # Text turns only: no tool payloads smuggled into model context.
-    assert all(set(turn) == {"role", "content"} for turn in replayed)
+    assert "make_move" not in earlier.render("Glitch said")
 
 
 def test_the_caller_sees_the_fallback_but_the_loop_never_replays_it():
@@ -294,33 +290,27 @@ def test_the_caller_sees_the_fallback_but_the_loop_never_replays_it():
     send(client, conversation_id, "what did you play?")
 
     assert body["assistant_message"]["content"] == STUCK_REPLY
-    assert brain.transcripts[-1] == [
-        {"role": "user", "content": "start with the king's pawn"},
-        {"role": "assistant", "content": "e4."},
-    ]
+    assert brain.earlier[-1].last == ("start with the king's pawn", "e4.")
 
 
-def test_the_delegate_wire_condenses_older_turns_like_the_panel_does():
-    """One memory policy, not two: the delegate's replay is `condense`d off its
-    own store, so a long conversation reaches the brain as recent turns behind a
-    digest — same as `/api/command` (`docs/turn-memory.md`)."""
-    turns = RECENT_TURNS + 2
+def test_the_delegate_wire_recalls_older_turns_like_the_panel_does():
+    """One memory policy, not two: the delegate's past is built from its own
+    store the way `/api/command`'s is from the panel's (`docs/turn-memory.md`):
+    the player's older words, and the last exchange whole."""
+    turns = 6
     brain = ScriptedBrain(*[AgentResponse(text=f"reply {i}") for i in range(turns + 1)])
     client, _, _ = make_client(brain=brain)
     conversation_id = new_conversation(client)
 
     send(client, conversation_id, "tell me about the Sicilian")
-    for i in range(RECENT_TURNS):
+    for i in range(4):
         send(client, conversation_id, f"and what about line {i}")
     send(client, conversation_id, "so what should I study?")
 
-    replayed = brain.transcripts[-1]
-    assert len(replayed) == 2 + 2 * RECENT_TURNS
-    assert '"tell me about the Sicilian"' in replayed[0]["content"]
-    assert replayed[-2:] == [
-        {"role": "user", "content": f"and what about line {RECENT_TURNS - 1}"},
-        {"role": "assistant", "content": f"reply {RECENT_TURNS}"},
-    ]
+    earlier = brain.earlier[-1]
+    assert earlier.requests[0] == "tell me about the Sicilian"
+    assert "reply 0" not in earlier.render("Glitch said")
+    assert earlier.last == ("and what about line 3", "reply 4")
 
 
 def test_fast_path_move_skips_the_brain_loop():
@@ -347,9 +337,7 @@ def test_delegate_move_broadcasts_to_the_web_board():
 
 def test_provider_failure_is_502_and_keeps_the_user_message():
     class BoomBrain:
-        def get_agent_response(
-            self, board_state, command, transcript=(), *, earlier=""
-        ):
+        def get_agent_response(self, board_state, command, *, earlier=None):
             raise ProviderRequestError("connect timeout")
 
         def react(self, board_state, changes, transcript=()):  # pragma: no cover
@@ -733,9 +721,7 @@ def test_a_retry_after_a_restart_is_answered_from_disk(tmp_path):
 
 def test_a_key_whose_exchange_never_finished_is_refused():
     class BoomBrain:
-        def get_agent_response(
-            self, board_state, command, transcript=(), *, earlier=""
-        ):
+        def get_agent_response(self, board_state, command, *, earlier=None):
             raise ProviderRequestError("llama-server down")
 
     client, _, _ = make_client(brain=BoomBrain())

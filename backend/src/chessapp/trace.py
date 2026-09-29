@@ -123,7 +123,6 @@ def turn_record(
     handoff: dict[str, Any] | None = None,
     clarification: dict[str, Any] | None = None,
     budget: str = "",
-    input_trimmed: int = 0,
     game_id: str = "",
     interaction_id: str = "",
 ) -> dict[str, Any]:
@@ -283,9 +282,8 @@ def turn_record(
     `analysis_calls`, `wall_time` or `input` — and is empty on every turn none
     did, which is every route but that one. `stop_reason` says the phase ended
     early; this says on what, which is the number worth tuning when it fires.
-    `input_trimmed` beside it counts the conversation's oldest exchanges the
-    input budget dropped to fit the prompt; any non-zero reading is a prompt
-    ten times larger than anything measured, and worth a look.
+    (Records before #372 also carry `input_trimmed`, the conversation
+    exchanges the input budget dropped; there is no conversation to trim now.)
 
     `interaction_id` is the browser's id for the interaction this turn served
     (#317) — minted when the player stopped speaking (or submitted), and sent
@@ -349,7 +347,6 @@ def turn_record(
         "handoff": handoff,
         "clarification": clarification,
         "budget": budget,
-        "input_trimmed": input_trimmed,
         "model_calls": len(calls),
         "unmetered_calls": unmetered,
         "prompt_tokens": sum(call.prompt_tokens or 0 for call in calls),

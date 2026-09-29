@@ -240,7 +240,7 @@ def test_a_drag_records_the_turn_on_the_transcript():
     ]
     # And the next command sees it.
     client.post("/api/command", json={"text": "how did I open?"})
-    assert brain.transcripts[0][0] == {"role": "user", "content": "e4"}
+    assert brain.earlier[0].last == ("e4", "Sharp.")
 
 
 def test_a_drag_broadcasts_the_new_state():

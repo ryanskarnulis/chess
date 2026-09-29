@@ -29,10 +29,10 @@ How the words get written is the implementation's business, and
 player may be shown and that it was produced from verified results.
 """
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from chessapp.conversation import Recall
 from chessapp.handoff import Handoff
 
 # Which phase of a turn made a model round trip (#317). The trace used to hold
@@ -254,9 +254,6 @@ class AgentResponse:
     # what, which is the number a trace reader tunes. `input` is the prompt
     # budget: the run's own results outgrew it.
     budget: str = ""
-    # How many of the conversation's oldest exchanges were dropped to fit the
-    # input budget (#288); 0 on every turn that fit, which is every real one.
-    input_trimmed: int = 0
     # True when the closing narration was still being written when the brain
     # stopped waiting for it (#316): the plan ran and its record stands, the
     # words are gone. `text` is empty, and it is not a provider failure — the
@@ -355,9 +352,6 @@ class _RunState:
     offers_refreshed: list[int] = field(default_factory=list)
     # Which turn budget ended the planning phase (#288), or "" when none did.
     budget: str = ""
-    # How many of the conversation's oldest exchanges the input budget dropped
-    # from this run's prompts (#288).
-    input_trimmed: int = 0
 
     def record(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
         self.tool_calls.append(ToolCall(name=name, args=args))
@@ -412,7 +406,6 @@ class _RunState:
             offer_refreshes=tuple(self.offers_refreshed),
             handoff=handoff,
             budget=self.budget,
-            input_trimmed=self.input_trimmed,
             narration_late=narration_late,
         )
 
@@ -422,9 +415,8 @@ class Brain(Protocol):
         self,
         board_state: dict[str, Any],
         command: str,
-        transcript: Sequence[dict[str, str]] = (),
         *,
-        earlier: str = "",
+        earlier: Recall | None = None,
     ) -> AgentResponse:
         """Run the agent loop for one utterance: turn it into tool calls, run
         them through the dispatcher, feed the results back, and stop on the
@@ -438,16 +430,11 @@ class Brain(Protocol):
         themselves, and — for the legal-move menu, which no result reports —
         through whatever board-refresh seam the implementation was wired with
         (#282). A brain given no such seam works from the opening view alone.
-        `transcript` is the prior conversation as chat messages (final answers
-        only) so the agent can follow references to earlier turns. How far back
-        it reaches and in what form is the app's memory policy, not the brain's:
-        what actually arrives is `Transcript.memory()` — the last few turns
-        verbatim behind a digest of the older asks (`docs/turn-memory.md`) — and
-        a brain neither knows nor needs to know which of them were condensed.
-        The planner reads it; the narrator does not (#372). `earlier` is what
-        the narrator reads instead: what came before this turn as data — the
-        game's record, the player's requests, the last exchange
-        (`conversation.recall`)."""
+        `earlier` is what came before this turn (#372, `conversation.Recall`):
+        the game's record, the player's requests in their own words, and the
+        last exchange — what "the other one" and a standing ask point back to.
+        Both phases read it as data, never as chat turns; how far back it
+        reaches is the app's memory policy (`docs/turn-memory.md`)."""
         ...
 
     def narrate(
@@ -456,7 +443,7 @@ class Brain(Protocol):
         changes: list[dict[str, Any]],
         *,
         command: str = "",
-        earlier: str = "",
+        earlier: Recall | None = None,
     ) -> Narration:
         """The narrator for a turn the loop did not run: the deterministic
         fast path (`parse_move` → `make_move`), a board drag, a confirmed

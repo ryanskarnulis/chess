@@ -342,7 +342,7 @@ def test_prepare_builds_the_planner_call_the_app_makes() -> None:
     assert user["role"] == "user"
     head, command = user["content"].split("\n\nCommand: ")
     assert command == "move my kings knight"
-    state = json.loads(head.removeprefix("Board state:\n"))
+    state = json.loads(head.split("Board state:\n", 1)[1])
     assert {"Nf3", "Nh3"} <= set(state["legal_moves"])
     assert state["fen"] == prepared.fen
     offered = {d["function"]["name"] for d in prepared.tools}
@@ -424,7 +424,7 @@ def _item(name: str):
 
 def _state(prepared) -> dict:
     head = prepared.messages[-1]["content"].split("\n\nCommand: ")[0]
-    return json.loads(head.removeprefix("Board state:\n"))
+    return json.loads(head.split("Board state:\n", 1)[1])
 
 
 def _prepare(item_name: str, arm: Arm | None = None):
@@ -478,12 +478,16 @@ def test_an_item_question_reaches_the_planner_state_open_or_closed() -> None:
     assert not {"open_question", "closed_question"} & set(none_state)
 
 
-def test_an_item_transcript_sits_between_the_prompt_and_the_command() -> None:
+def test_an_item_transcript_rides_ahead_of_the_board_as_data() -> None:
+    """#372: the item's prior conversation is rendered as the app renders it,
+    in the one opening message, never as chat turns."""
     prepared = _prepare("ordinal_open_pick")
     roles = [m["role"] for m in prepared.messages]
-    assert roles == ["system", "user", "assistant", "user"]
-    assert prepared.messages[1]["content"] == "move my kings knight"
-    assert prepared.messages[-1]["content"].endswith("Command: the first one")
+    assert roles == ["system", "user"]
+    user = prepared.messages[1]["content"]
+    assert 'The player said: "move my kings knight"' in user
+    assert user.index("Before this turn") < user.index("Board state:")
+    assert user.endswith("Command: the first one")
 
 
 def test_state_views_reshape_only_legal_moves() -> None:

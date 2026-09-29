@@ -36,6 +36,7 @@ from chessapp.brain import (
     AgentResponse,
 )
 from chessapp.context_capture import current_phase
+from chessapp.conversation import Recall
 from chessapp.coordinator import TurnCoordinator
 from chessapp.deadline import NARRATION_BUDGET_S, NARRATION_CEILING_S
 from chessapp.game import GameSession
@@ -710,65 +711,16 @@ def test_no_deadline_when_it_is_disabled():
 # --- the input budget (#288) -------------------------------------------------
 
 
-def _long_conversation(turns: int = 20, chars: int = 8_000) -> list[dict[str, str]]:
-    """`turns` exchanges at the command cap, each tagged so a test can see
-    which survived."""
-    return [
-        message
-        for n in range(turns)
-        for message in (
-            {"role": "user", "content": f"<ask {n}>" + "x" * chars},
-            {"role": "assistant", "content": f"<reply {n}>"},
-        )
-    ]
-
-
-def test_an_over_budget_prompt_drops_the_oldest_exchanges_first():
-    # A 300-ply game in the state block and twenty exchanges at the command cap
-    # (~55k estimated tokens) against a 10k budget: whole exchanges go, oldest
-    # first, until it fits. The system prompt, the state block and the latest
-    # exchange are never touched.
-    history = ["e4", "e5", "Nf3", "Nc6"] * 75
-    board = {"fen": "x", "history": history, "legal_moves": ["a3", "h3"]}
-    brain, provider = make_brain(
-        text_turn("done"), text_turn("Sure."), input_budget_tokens=10_000
-    )
-    resp = brain.get_agent_response(board, "and now?", _long_conversation())
-
-    planner = provider.calls[0]["messages"]
-    assert planner[0]["content"] == PLANNER
-    assert '"legal_moves": ["a3", "h3"]' in planner[-1]["content"]
-    assert planner[-1]["content"].endswith("Command: and now?")
-    kept = [m["content"][:9] for m in planner[1:-1] if m["role"] == "user"]
-    assert kept and kept[-1] == "<ask 19>x"
-    assert "<ask 0>xx" not in kept
-    # Pairs, so the conversation still alternates and opens on the player.
-    assert [m["role"] for m in planner[1:-1]] == ["user", "assistant"] * len(kept)
-    assert resp.input_trimmed == 20 - len(kept)
-    assert _estimate_tokens(planner, TOOLS) <= 10_000
-    # The narrator is handed a conversation that fits as well.
-    narrator = provider.calls[-1]["messages"]
-    assert narrator[0]["content"] == PERSONA
-    assert _estimate_tokens(narrator) <= 10_000
-    assert resp.stop_reason == "completed"
-
-
-def test_a_prompt_that_fits_is_sent_whole():
-    brain, provider = make_brain(text_turn("done"), text_turn("Sure."))
-    resp = brain.get_agent_response({}, "and now?", _long_conversation(turns=3))
-    assert len(provider.calls[0]["messages"]) == 1 + 6 + 1
-    assert resp.input_trimmed == 0
-
-
-def test_a_prompt_that_cannot_fit_is_never_sent():
-    # Nothing to trim can make room: the latest exchange alone is over. The
-    # phase ends before any call, silent, under the input budget.
-    brain, provider = make_brain(text_turn("never sent"), input_budget_tokens=100)
-    resp = brain.get_agent_response({}, "hm", _long_conversation(turns=1))
+def test_an_opening_that_cannot_fit_is_never_sent():
+    # No conversation is trimmed any more (#372): the past is capped where it
+    # is rendered. An opening prompt still over the budget — a state block no
+    # real game produces — ends the phase before any call, silent.
+    board = {"fen": "x", "history": ["e4", "e5"] * 20_000}
+    brain, provider = make_brain(text_turn("never sent"), input_budget_tokens=10_000)
+    resp = brain.get_agent_response(board, "and now?")
     assert provider.calls == []
     assert resp.stop_reason == "budget"
     assert resp.budget == "input"
-    assert resp.text == ""
 
 
 def test_results_that_outgrow_the_budget_end_the_planning_phase():
@@ -1566,20 +1518,14 @@ def test_the_narrator_reads_what_came_before_as_data_not_chat():
     came before as one labelled section of its brief, never as chat turns it
     would take for its own past lines."""
     brain, provider = make_brain(text_turn("nothing to do"), text_turn("ok"))
-    brain.get_agent_response(
-        board_state={},
-        command="hi",
-        transcript=TRANSCRIPT,
-        earlier="The last exchange: the player asked for a hint.",
-    )
-    planner, narrator = provider.calls[0], provider.calls[-1]
-    assert planner["messages"][1:3] == TRANSCRIPT
+    brain.get_agent_response(board_state={}, command="hi", earlier=EARLIER)
+    narrator = provider.calls[-1]
     roles = [m["role"] for m in narrator["messages"]]
     assert roles == ["system", "user"]
     brief = narrator["messages"][1]["content"]
-    assert brief.startswith(
-        "Before this turn:\n\nThe last exchange: the player asked for a hint."
-    )
+    assert brief.startswith("Before this turn:\n\nThe game's record")
+    # To the narrator, the last reply is his own.
+    assert 'What you said then (your words, not a record): "e4' in brief
 
 
 @pytest.mark.parametrize(
@@ -2048,34 +1994,43 @@ def test_a_truncated_narrate_says_nothing_but_still_counts():
 
 # --- conversation transcript ------------------------------------------------
 
-TRANSCRIPT = [
-    {"role": "user", "content": "play e4"},
-    {"role": "assistant", "content": "e4 — the classic."},
-]
+EARLIER = Recall(
+    record=("after 1... e5: took back 2. Qh5.",),
+    requests=("only knights from now on",),
+    last=("play e4", "e4 — the classic."),
+)
 
 
-def test_transcript_sits_between_system_and_current_command():
+def test_the_planner_reads_what_came_before_as_data_in_one_message():
+    """#372: the past rides in the opening user message, ahead of the board
+    and the command — never as assistant turns the planner reads as its own."""
     brain, provider = make_brain(text_turn("ok"))
     brain.get_agent_response(
-        board_state={"fen": "8/8/8/8"}, command="play Nf3", transcript=TRANSCRIPT
+        board_state={"fen": "8/8/8/8"}, command="play Nf3", earlier=EARLIER
     )
     messages = provider.calls[0]["messages"]
-    assert messages[0]["role"] == "system"
-    assert messages[1:3] == TRANSCRIPT
-    assert messages[-1]["role"] == "user"
-    assert "Nf3" in messages[-1]["content"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    user = messages[1]["content"]
+    assert user.startswith("Before this turn:\n\nThe game's record")
+    assert 'Glitch said then (his words, not a record): "e4 — the classic."' in user
+    assert user.index("Before this turn") < user.index("Board state:")
+    assert user.endswith("Command: play Nf3")
 
 
-def test_transcript_defaults_to_empty():
+def test_nothing_before_the_turn_is_the_old_prompt_exactly():
     brain, provider = make_brain(text_turn("ok"))
     brain.get_agent_response(board_state={}, command="hi")
-    assert len(provider.calls[0]["messages"]) == 2  # system + current turn only
+    messages = provider.calls[0]["messages"]
+    assert len(messages) == 2  # system + current turn only
+    assert messages[1]["content"] == "Board state:\n{}\n\nCommand: hi"
 
 
-def test_the_transcript_survives_a_correction():
+def test_the_past_survives_a_correction_and_is_never_re_sent():
     brain, provider = make_brain(_bad_json_call(), text_turn("sorry"))
-    brain.get_agent_response(board_state={}, command="play e4", transcript=TRANSCRIPT)
-    assert provider.calls[1]["messages"][1:3] == TRANSCRIPT
+    brain.get_agent_response(board_state={}, command="play e4", earlier=EARLIER)
+    second = provider.calls[1]["messages"]
+    assert "Before this turn" in second[1]["content"]
+    assert sum("Before this turn" in (m.get("content") or "") for m in second) == 1
 
 
 # --- narrate: the fast path's commentary turn ------------------------------
@@ -2118,11 +2073,11 @@ def test_narrate_reads_what_came_before_in_its_brief():
     brain.narrate(
         board_state={"fen": "8/8/8/8"},
         changes=[{"name": "make_move", "result": {"san": "Nf3"}}],
-        earlier="The game's record: took back Qh5.",
+        earlier=EARLIER,
     )
     messages = provider.calls[0]["messages"]
     assert [m["role"] for m in messages] == ["system", "user"]
-    assert "took back Qh5" in messages[1]["content"]
+    assert "took back 2. Qh5" in messages[1]["content"]
 
 
 def test_nothing_before_the_turn_adds_no_section():

@@ -540,7 +540,6 @@ def test_the_record_keys_what_the_move_list_cannot_show_to_it():
     _played(session, "Nf3", "Nc6")
     ledger.observe(session, low)
     assert render_record(ledger.current()) == [
-        "A new game began; the player has white.",
         "after 2. Qh5: took back 2. Qh5.",
         "after 1... e5: verbosity changed from normal to low.",
         "after 1... e5: a hint offered Nf3.",
@@ -571,5 +570,5 @@ def test_a_long_record_keeps_the_newest_and_says_how_many_went():
     for level in ("low", "high") * 5:
         ledger.observe(session, {**SETTINGS, "verbosity": level})
     lines = render_record(ledger.current(), max_lines=4)
-    assert lines[0] == "(7 earlier events not listed)"
+    assert lines[0] == "(6 earlier events not listed)"
     assert len(lines) == 5 and lines[-1].endswith("to high.")

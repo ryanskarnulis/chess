@@ -14,9 +14,10 @@ chat history (`docs/turn-memory.md`), in four parts, all written by code:
    one" and "undo that" point at.
 4. **The state block**, as today, `open_question` included.
 
-The narrator reads them in place of its chat turns (PR 4, `conversation.recall`
-at the head of its brief; `docs/planner-narrator.md`); the planner will next,
-with the chat history removed from both (PR 5, the milestone gate).
+Both phases read them in place of chat turns (`conversation.Recall`, at the
+head of the planner's opening message and of the narrator's brief;
+`docs/turn-memory.md`, `docs/planner-narrator.md`). The fresh-game start is not
+a line in the record (the side is the state block's); a resume is.
 
 ## Why no model writes it
 
@@ -109,8 +110,8 @@ is what "the second one you suggested" reaches for three turns later.
 One line per event, prefixed by where the move list stood: "after 2. Qh5: took
 back 2. Qh5.", "after 11... Nc6: a hint offered d4, Ne2, f4.", "after 30.
 Kg2: the player offered a draw; the engine declined (engine ahead).", "the
-game ended by checkmate; the engine won (0-1).", and a game's start ("A new
-game began; the player has white.", "The saved game 'keep' was resumed; ...").
+game ended by checkmate; the engine won (0-1).", and a resume ("The saved
+game 'keep' was resumed; the player has white.").
 Moves themselves are not listed: the state block's `history` holds them, and
 a second copy would be the ageing duplicate `docs/turn-memory.md` forbids.
 Past `RECORD_MAX_LINES` (30) the oldest lines go, and the first line says how
