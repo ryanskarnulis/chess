@@ -3333,9 +3333,9 @@ def test_eval_constraint_survives_a_live_thread(engine: EnginePlayer) -> None:
 # them (UCI in, the move lines out). The ask defines a word the player uses
 # later: "pineapple" means nothing in chess, so only the standing ask can make
 # it a takeback. ("oops" was the first word tried; without the ask it was
-# taken back 5/5 anyway, so it measured nothing.) (A first version asked for "pick one for me" to be a knight move;
-# it failed the same way on the old memory, on #351's pick-by-position rule
-# rather than on memory, and is #408.)
+# taken back 5/5 anyway, so it measured nothing. A first version asked for
+# "pick one for me" to be a knight move; it failed the same way on the old
+# memory, on #351's pick-by-position rule rather than on memory, and is #408.)
 _STANDING_ASK = "from now on, when I say pineapple, take back my last move"
 _STANDING_MOVES = (
     "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O",
