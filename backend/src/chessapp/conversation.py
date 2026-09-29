@@ -1,70 +1,35 @@
-"""Conversation memory: what the agent remembers being said.
+"""Conversation memory: what was said, and what the model phases are shown of it.
 
 One user command + the final commentary the user actually saw = one turn. The
 transcript stores final answers only — never thought blocks, never raw tool
-payloads (BRIEF: final answers only). The full transcript is kept in memory so
-the whole conversation survives a save/resume round trip; only the model's view
-is reduced.
+payloads (BRIEF: final answers only). The full transcript is kept, so the whole
+conversation survives a save/resume round trip.
 
-Two views, because they answer different questions:
+The model phases are never handed it as chat turns (#372,
+`docs/turn-memory.md`). Each reads a `Recall` instead, as data inside its own
+prompt: the game's record (the ledger's, code's), the player's requests in
+their own words, and the last exchange. Glitch's older lines are not in it —
+an old assistant turn is personality, and a false one stayed in history as
+fact — and nothing here is written by a model: code copies words and reads
+none of them.
 
-- `window()` is the **raw record**: the most recent turns exactly as they were
-  said. Serialization, tests, and anything asking "what was actually said" reads
-  this.
-- `memory()` is the **model's view** (`docs/turn-memory.md`): the last
-  `RECENT_TURNS` turns verbatim, behind a deterministic digest of what the
-  player asked for in the turns before them. Reference-following ("do the second
-  one") only reaches back a turn or two, so the recent turns stay untouched;
-  everything older collapses to the player's own words, and Glitch's side of it
-  is dropped. That prose is the noise the digest exists to remove — an older
-  assistant turn is personality, and personality competing with the tool
-  decision is this project's measured failure mode (self-poisoning, trace review
-  2026-07-13).
-
-The digest carries **no board facts, no settings, no saves**. Those are injected
-fresh into the state block every turn (`api._agent_state_dict`), and a summary
-restating them would be a second, ageing copy of a fact the app holds — exactly
-the bug that injection cured. What survives is what genuinely lives only in the
-conversation: the player's standing asks, in their own words. No model writes
-it; copying words needs no model, and an unguarded summary the player never sees
-is the worst place to let one invent something.
+No board facts, settings or saves are copied here either. Those are injected
+fresh into the state block every turn (`api._agent_state_dict`), and a second
+copy would be an ageing one.
 
 Roles are restricted to user/assistant: the system prompt is owned by the
 brain's personality layer, so a save file can never smuggle one in.
 """
 
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
-# How many prior turns the raw window holds. ~20 turns keeps banter continuity
-# without letting a long game grow the record unboundedly.
+# How many prior turns `window` returns by default.
 DEFAULT_WINDOW_TURNS = 20
 
-# How many of those the model sees verbatim, and how much older history the
-# digest in front of them may quote. The digest is one line per older request,
-# so this pair is the whole prompt-size story: a turn's memory can never exceed
-# a digest plus RECENT_TURNS turns, however long the game runs.
-RECENT_TURNS = 4
-DIGEST_MAX_REQUESTS = 12
-DIGEST_REQUEST_CHARS = 100
-
 _ROLES = ("user", "assistant")
-
-# The digest's header. It names its own limits: the model is told, in the same
-# breath, that the state block — not this — is where board truth lives.
-_DIGEST_HEADER = (
-    "Earlier in this conversation, condensed to what the player asked for. "
-    "The board, the settings and the saved games are supplied fresh with every "
-    "command — never take them from here."
-)
-# The digest rides as a user message; this keeps the user/assistant alternation
-# the chat template expects. Deliberately inert — it becomes model context.
-# It does a second job for the same reason: standing in for a turn the app
-# spoke on Glitch's behalf, which the record holds as an empty assistant
-# message (`api.CommandOutcome.memory`). Something has to occupy that slot or
-# the template sees two user turns in a row, and this is the one line in the
-# app already chosen for having no voice to imitate.
-DIGEST_ACK = "Noted."
 
 # A command that is nothing but a move: how a board drag records itself, and how
 # a typed "e4" arrives. That turn's content is already in the state block's
@@ -97,12 +62,6 @@ class Transcript:
         Turns are recorded atomically, so slicing by message pairs never
         splits a turn."""
         return [dict(m) for m in self._messages[-2 * max_turns :]]
-
-    def memory(self, max_turns: int = DEFAULT_WINDOW_TURNS) -> list[dict[str, str]]:
-        """What a brain is given: `condense` over the raw window. One bound in
-        one place — the window caps how far back the digest may look, the digest
-        caps how much of that reaches the prompt."""
-        return condense(self.window(max_turns))
 
     def requests(self) -> list[str]:
         """What the player has asked for across the whole conversation, the
@@ -137,76 +96,8 @@ class Transcript:
         return transcript
 
 
-def condense(
-    messages: list[dict[str, str]], *, recent_turns: int = RECENT_TURNS
-) -> list[dict[str, str]]:
-    """The model's view of a conversation: recent turns verbatim, older ones
-    reduced to the player's requests.
-
-    Pure and deterministic — the same messages always condense the same way, so
-    this is unit-testable without a provider and cannot drift under sampling.
-    The synthetic pair is built here and never recorded, so `Transcript`'s role
-    whitelist stays the only thing that decides what a save file may contain.
-
-    A turn Glitch did not speak on — one the app substituted its own words for,
-    recorded as an empty assistant message — is shown as the inert ack. The
-    record keeps the emptiness because that is what happened; the model's view
-    cannot ship it, because the chat template alternates.
-    """
-    messages = [_spoken(m) for m in messages]
-    split = len(messages) - 2 * recent_turns
-    if split <= 0:
-        return messages
-    older, recent = messages[:split], messages[split:]
-
-    requests = [
-        collapsed
-        for message in older
-        if message["role"] == "user"
-        and (collapsed := " ".join(message["content"].split()))
-        and not _BARE_MOVE.match(collapsed)
-    ]
-    if not requests:
-        # Those turns held nothing the state block doesn't already carry (a
-        # stretch of board drags, say). Don't spend tokens saying so.
-        return recent
-
-    # The ack exists only to keep user/assistant alternating. When the recent
-    # slice already opens on an assistant turn — the delegate store can drop a
-    # contentless message and leave one there — it would be the thing that
-    # breaks alternation, so it is left out.
-    ack = [] if recent and recent[0]["role"] == "assistant" else [_ack()]
-    return [{"role": "user", "content": _digest(requests)}, *ack, *recent]
-
-
-def _ack() -> dict[str, str]:
-    return {"role": "assistant", "content": DIGEST_ACK}
-
-
-def _spoken(message: dict[str, str]) -> dict[str, str]:
-    """One message as the model may see it: a copy, with an assistant turn
-    nobody spoke on standing in as the ack."""
-    if message["role"] == "assistant" and not message["content"]:
-        return _ack()
-    return dict(message)
-
-
-def _digest(requests: list[str]) -> str:
-    """The digest text: the header, then the newest `DIGEST_MAX_REQUESTS`
-    requests, then — when older ones were dropped — how many. The count is
-    explicit because a memory that quietly forgets reads like one that never
-    heard."""
-    kept = requests[-DIGEST_MAX_REQUESTS:]
-    dropped = len(requests) - len(kept)
-    lines = [_DIGEST_HEADER]
-    lines += [f'- "{_truncate(request)}"' for request in kept]
-    if dropped:
-        lines.append(f"(+{dropped} earlier requests not listed)")
-    return "\n".join(lines)
-
-
-def _truncate(text: str, limit: int = DIGEST_REQUEST_CHARS) -> str:
-    """Cut a request to `limit` characters on a word boundary. Whole words only:
+def _truncate(text: str, limit: int) -> str:
+    """Cut `text` to `limit` characters on a word boundary. Whole words only:
     half a move phrase is worse than a shorter one."""
     if len(text) <= limit:
         return text
@@ -273,39 +164,58 @@ def last_exchange(messages: list[dict[str, str]]) -> tuple[str, str] | None:
 
 
 # How much of the last exchange is shown: whole in practice, cut only when a
-# pasted wall of text would crowd out the brief.
+# pasted wall of text would crowd out the prompt.
 LAST_EXCHANGE_CHARS = 600
 
+# How each phase's prompt names the last reply (#372): his own words, and not a
+# record — what the tools did is, and a line said last turn is never a fact to
+# repeat. The narrator is Glitch, so to him it is what *he* said.
+NARRATOR_REPLY_LABEL = "What you said then (your words, not a record)"
+PLANNER_REPLY_LABEL = "Glitch said then (his words, not a record)"
 
-def recall(
-    messages: list[dict[str, str]], record: list[str], *, reply_label: str
-) -> str:
-    """What came before this turn, as data for a model phase (#372): the
-    game's record (`ledger.render_record`, code's), the player's requests in
-    their own words, and the last exchange. Empty parts are left out, and an
-    empty conversation on a fresh game is "". `reply_label` names the last
-    reply for whoever reads it — the narrator reads it as what *he* said."""
-    parts = []
-    if record:
-        parts.append(
-            "The game's record, kept by the app (what happened earlier in "
-            "this game besides the moves themselves):\n"
-            + "\n".join(f"- {line}" for line in record)
+
+@dataclass(frozen=True)
+class Recall:
+    """What came before this turn, as data for a model phase (#372), in the
+    three parts code keeps: the game's record (`ledger.render_record`), the
+    player's requests in their own words, and the last exchange. Each phase
+    renders it for itself (`render`), because the last reply is Glitch's own
+    words to the narrator and his words to the planner."""
+
+    record: tuple[str, ...] = ()
+    requests: tuple[str, ...] = ()
+    last: tuple[str, str] | None = None
+
+    @classmethod
+    def of(cls, messages: list[dict[str, str]], record: Sequence[str]) -> "Recall":
+        return cls(
+            tuple(record), tuple(player_requests(messages)), last_exchange(messages)
         )
-    requests = player_requests(messages)
-    if requests:
-        parts.append(
-            "What the player asked for earlier, in their own words, oldest "
-            "first:\n"
-            + "\n".join(f"- {r}" if r.startswith("(") else f'- "{r}"' for r in requests)
-        )
-    last = last_exchange(messages)
-    if last is not None:
-        said, reply = (
-            _truncate(" ".join(t.split()), LAST_EXCHANGE_CHARS) for t in last
-        )
-        parts.append(
-            f'The last exchange:\nThe player said: "{said}"\n'
-            + (f'{reply_label}: "{reply}"' if reply else f"{reply_label}: nothing.")
-        )
-    return "\n\n".join(parts)
+
+    def render(self, reply_label: str) -> str:
+        """The three parts under their labels, empty ones left out; "" when
+        there is nothing before this turn."""
+        parts = []
+        if self.record:
+            parts.append(
+                "The game's record, kept by the app (what happened earlier in "
+                "this game besides the moves themselves):\n"
+                + "\n".join(f"- {line}" for line in self.record)
+            )
+        if self.requests:
+            parts.append(
+                "What the player asked for earlier, in their own words, oldest "
+                "first:\n"
+                + "\n".join(
+                    f"- {r}" if r.startswith("(") else f'- "{r}"' for r in self.requests
+                )
+            )
+        if self.last is not None:
+            said, reply = (
+                _truncate(" ".join(t.split()), LAST_EXCHANGE_CHARS) for t in self.last
+            )
+            parts.append(
+                f'The last exchange:\nThe player said: "{said}"\n'
+                + (f'{reply_label}: "{reply}"' if reply else f"{reply_label}: nothing.")
+            )
+        return "\n\n".join(parts)

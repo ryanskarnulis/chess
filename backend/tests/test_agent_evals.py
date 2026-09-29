@@ -318,6 +318,9 @@ _FLOORS: dict[str, float] = {
     "impossible_capture_is_refused_not_asked": 0.8,
     "constraint_rules_out_the_only_lever": 0.8,
     "constraint_survives_a_live_thread": 0.8,
+    # #372: a standing ask from many turns back, kept only in the player's own
+    # words. New, so at the family's starting floor.
+    "standing_ask_survives_the_thread": 0.8,
     "pgn_is_handed_over_not_recited": 0.8,
     "long_resume": 0.8,
     "long_resign": 0.8,
@@ -1612,11 +1615,12 @@ def _run_panel(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
     The difference is the transcript, and it is the whole point of the
     long-transcript scenarios. The delegate endpoint carries its own
     per-conversation history (`_run` above opens a fresh one every time, so the
-    model sees an empty thread); `/api/command` reads `ctx.transcript.memory()`,
-    the running conversation the player has actually been having — recent turns
-    verbatim behind a digest of the older asks (`docs/turn-memory.md`), which is
-    why the `poisoned` conditions below seed their poison at the *end* of the
-    thread: a stale assistant line only poisons what it is still quoted in.
+    model sees an empty thread); `/api/command` reads `ctx.transcript`, the
+    running conversation the player has actually been having — since #372 as
+    the player's requests and the last exchange, whole (`conversation.Recall`,
+    `docs/turn-memory.md`), which is why the `poisoned` conditions below seed
+    their poison at the *end* of the thread: a stale assistant line only
+    poisons what it is still quoted in, and now that is the last exchange.
     Every failure
     in the 2026-07-13 trace review happened on *this* seam, deep into a thread —
     and none of them reproduce on a fresh delegate conversation.
@@ -1726,7 +1730,7 @@ def _run_steps(
     Panel by default (`seam=`), because that is the only seam with memory: `_run`
     opens a fresh delegate conversation per call, so "the one to f3" would
     arrive with nothing to refer back to. `/api/command` reads
-    `ctx.transcript.memory()` and records each settled turn back onto it, which
+    `ctx.transcript` and records each settled turn back onto it, which
     is what makes a reference to an earlier turn resolvable at all.
 
     **It asserts nothing**, on purpose. `_sample` calls the runner *outside* the
@@ -3318,6 +3322,84 @@ def test_eval_constraint_survives_a_live_thread(engine: EnginePlayer) -> None:
         setup=setup,
         runner=_run_panel,
         requires_narrator=True,
+    )
+
+    _assert_floor(result, floor)
+
+
+# #372's scenario: a standing ask made early in a real game, many turns before
+# the ask it governs. The game is played from the start (so the ledger holds it)
+# and the thread is the panel's, board drags recorded the way the panel records
+# them (UCI in, the move lines out).
+_STANDING_ASK = (
+    "only knights from now on — whenever I tell you to pick for me, pick a knight move"
+)
+_STANDING_MOVES = (
+    "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O",
+)  # fmt: skip
+_STANDING_THREAD: tuple[tuple[str, str], ...] = (
+    ("e2e4", "e4. e5."),
+    (_STANDING_ASK, "Bet. When you hand me the wheel, it's a knight move."),
+    ("g1f3", "Nf3. Nc6."),
+    ("what's the plan here?", "Develop, castle, fight for the center."),
+    ("f1c4", "Bc4. Bc5."),
+    ("talk less", "Word."),
+    ("c2c3", "c3. Nf6."),
+    ("how's the material?", "Dead even."),
+    ("d2d3", "d3. d6."),
+    ("talk more", "Back to full commentary, I got you."),
+    ("e1g1", "O-O. O-O."),
+    ("who's better right now?", "Pretty level, you've got a slight edge."),
+)
+_STANDING_PICK = "pick one for me"
+
+
+def test_eval_standing_ask_survives_the_thread(engine: EnginePlayer) -> None:
+    """A standing ask from eleven turns back still governs the ask it was for.
+
+    Decision 3 on #372: standing asks live in what the phases are shown of the
+    past — since #372 the player's own requests, quoted, and never a model's
+    summary — rather than in a record of their own. This is the measure. If it
+    fails, the fix is a state-block record like `open_question`, not a prompt
+    rule.
+
+    Passes when "pick one for me" plays exactly one move, a knight's, and
+    nothing else moves; the reply is held to the turn's facts like any other.
+    """
+
+    def setup(app: EvalApp) -> None:
+        session = GameSession()
+        for san in _STANDING_MOVES:
+            assert session.submit_move(san).legal, san
+        app.ctx.session = session
+        for said, replied in _STANDING_THREAD:
+            app.ctx.transcript.record(said, replied)
+        _stays_a_model_eval(_STANDING_PICK, session.fen())
+        knights = [m for m in session.legal_moves() if m.startswith("N")]
+        others = [m for m in session.legal_moves() if not m.startswith("N")]
+        assert knights and others, "the premise: a knight move is a choice"
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        _assert_speech_backed(app.tracer.last)
+        moves = _legal_moves(assistant)
+        assert len(moves) == 1, (
+            f"expected exactly one move played, got {len(moves)}: "
+            + (_trajectory(assistant) or "no tool calls")
+        )
+        mutated = [call["tool"] for call in _board_mutations(assistant)]
+        assert mutated == ["make_move"], _trajectory(assistant)
+        played = app.ctx.session.move_history()[len(_STANDING_MOVES)]
+        assert played.startswith("N"), f"the standing ask was knights; played {played}"
+
+    floor = _FLOORS["standing_ask_survives_the_thread"]
+    result = _pass_rate(
+        engine,
+        "standing_ask_survives_the_thread",
+        _STANDING_PICK,
+        check,
+        floor=floor,
+        setup=setup,
+        runner=_run_panel,
     )
 
     _assert_floor(result, floor)

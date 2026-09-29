@@ -169,16 +169,15 @@ class ScriptedBrain:
         self.dispatcher = dispatcher
         self.calls: list[tuple[dict, str]] = []
         self.narrate_calls: list[tuple[dict, list]] = []
-        self.transcripts: list[list] = []
-        self.narrate_earlier: list[str] = []
-        self.earlier: list[str] = []
+        # What came before each turn (#372, `conversation.Recall`), as handed.
+        self.narrate_earlier: list = []
+        self.earlier: list = []
         self.narrate_commands: list[str] = []
 
     def get_agent_response(
-        self, board_state: dict, command: str, transcript=(), *, earlier: str = ""
+        self, board_state: dict, command: str, *, earlier=None
     ) -> AgentResponse:
         self.calls.append((board_state, command))
-        self.transcripts.append(list(transcript))
         self.earlier.append(earlier)
         scripted = self._responses.pop(0)
         if not scripted.tool_calls or self.dispatcher is None:
@@ -200,7 +199,7 @@ class ScriptedBrain:
         return scripted if isinstance(scripted, Answer) else Answer(verdict=scripted)
 
     def narrate(
-        self, board_state: dict, changes: list, *, command: str = "", earlier: str = ""
+        self, board_state: dict, changes: list, *, command: str = "", earlier=None
     ) -> Narration:
         self.narrate_calls.append((board_state, changes))
         self.narrate_commands.append(command)

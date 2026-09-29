@@ -396,9 +396,9 @@ class ConversationStore:
         self, conversation: StoredConversation
     ) -> list[dict[str, str]]:
         """Prior turns as chat messages, every text turn, for the pipeline's
-        ``conversation``: it condenses them for the planner by the same policy
-        the web panel's get (`conversation.condense`, `docs/turn-memory.md`),
-        and renders them as data for the narrator (#372). Text turns only —
+        ``conversation``, which both model phases read as data by the same
+        policy as the web panel's (`conversation.Recall`, `docs/turn-memory.md`,
+        #372). Text turns only —
         persisted tool trajectories are for display/audit and are deliberately
         never round-tripped into model context.
 

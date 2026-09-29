@@ -108,7 +108,7 @@ from chessapp.brain import (
     ModelCall,
     Narration,
 )
-from chessapp.conversation import DEFAULT_WINDOW_TURNS, condense, recall
+from chessapp.conversation import Recall
 from chessapp.coordinator import (
     ReplySettlement,
     TurnCoordinator,
@@ -126,7 +126,6 @@ from chessapp.facts import (
 )
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
-from chessapp.handoff import NARRATOR_REPLY_LABEL
 from chessapp.ledger import render_record
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
@@ -1142,8 +1141,8 @@ def _remembered_facts(
     The app's lines are never remembered as Glitch's. The old honesty guard's
     canned corrections (retired 2026-09-10, the guard itself in #368) were
     written in the first person, and recording one as the assistant's turn
-    handed the narrator its own apology as something it said — `condense`
-    gives the last few turns back verbatim, so Glitch read it and imitated the
+    handed the narrator its own apology as something it said — the last few
+    turns went back to him verbatim, so Glitch read it and imitated the
     register. Live, one such line was enough to have him volunteering "I
     almost said something that didn't happen. That's my bad." The rule
     outlives those lines: the stuck line and the move confirmation are the
@@ -1153,8 +1152,8 @@ def _remembered_facts(
     about it. A move turn has a line for that already — the same one verbosity=low
     and a dead provider fall back to — and every route puts its `make_move`
     result in `tool_results`. A turn that moved nothing has no facts to remember
-    and says so with an empty string; `conversation.condense` turns that into the
-    inert ack rather than shipping an empty assistant message at a chat template.
+    and says so with an empty string, which the last exchange shows as "said
+    nothing" (`conversation.Recall`).
     """
     for record in tool_results:
         result = record["result"]
@@ -1669,7 +1668,7 @@ def create_app(
     def _narrate(
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
-        earlier: str,
+        earlier: Recall,
         correlation_id: str,
         command: str = "",
     ) -> Narration:
@@ -1812,21 +1811,17 @@ def create_app(
         except WebSocketDisconnect:
             broadcaster.disconnect(websocket)
 
-    def _earlier(conversation: Sequence[dict[str, str]]) -> str:
-        """What came before this turn, for the narrator (#372): the game's
+    def _earlier(conversation: Sequence[dict[str, str]]) -> Recall:
+        """What came before this turn, for both phases (#372): the game's
         record, the player's requests and the last exchange, in place of the
-        chat turns it used to read. Taken as the turn opens, so this turn's own
-        events are the handoff's to tell, not the record's."""
+        chat turns they used to read. Taken as the turn opens, so this turn's
+        own events are the handoff's to tell, not the record's."""
         ctx.observe_ledger()
-        return recall(
-            list(conversation),
-            render_record(ctx.ledger.current()),
-            reply_label=NARRATOR_REPLY_LABEL,
-        )
+        return Recall.of(list(conversation), render_record(ctx.ledger.current()))
 
     def _play_move(
         move: str,
-        earlier: str,
+        earlier: Recall,
         correlation_id: str,
         command: str = "",
     ) -> _MoveBeats:
@@ -2678,10 +2673,8 @@ def create_app(
         # one that no longer stands on this board is dropped here and reported
         # once, as `expired`.
         question, expired = ctx.live_clarification(origin)
-        # The conversation as the caller keeps it, every text turn: the planner
-        # still reads it condensed (`docs/turn-memory.md`), and the narrator
-        # reads it as data instead of chat (#372, `_earlier`).
-        transcript = condense(list(conversation)[-2 * DEFAULT_WINDOW_TURNS :])
+        # The conversation as the caller keeps it, every text turn, read by
+        # both phases as data rather than chat (#372, `_earlier`).
         earlier = _earlier(conversation)
         if not conversation:
             # This conversation's first command: what "where we started" means.
@@ -2976,7 +2969,6 @@ def create_app(
                             ctx.opening_difficulty.get(origin),
                         ),
                         text,
-                        transcript,
                     )
                     tool_results = list(response.tool_results)
                     tool_args = [call.args for call in response.tool_calls]
@@ -2993,7 +2985,6 @@ def create_app(
                     # Which per-turn budget ended the planning phase (#288),
                     # the same way: only this route has a loop to report one.
                     traced["budget"] = response.budget
-                    traced["input_trimmed"] = response.input_trimmed
                     # A budget stop with nothing done carries no commentary: no
                     # narrator ran (#288; one after real work is narrated). A provider
                     # stop is left empty here — what it should say depends on

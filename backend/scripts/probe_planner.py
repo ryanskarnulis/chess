@@ -82,6 +82,7 @@ import httpx
 
 from chessapp import clarification
 from chessapp.api import _agent_state_dict, planner_state
+from chessapp.conversation import PLANNER_REPLY_LABEL, Recall
 from chessapp.coordinator import TurnCoordinator
 from chessapp.fastparse import parse_move
 from chessapp.game import GameSession
@@ -147,8 +148,9 @@ class Item:
     rule: Rule
     held_out: bool = False
     note: str = ""
-    # Prior conversation as (role, content) pairs, final answers only — what
-    # `LlamaBrain._messages` puts between the system prompt and the command.
+    # Prior conversation as (role, content) pairs, final answers only —
+    # rendered as the app renders it (#372): the player's requests and the last
+    # exchange, as data ahead of the board in the one opening message.
     transcript: tuple[tuple[str, str], ...] = ()
     question: Question | None = None
 
@@ -1424,7 +1426,8 @@ def prepare(
     open_record, closed = question_records(item.question)
     state = arm.view(planner_state(_agent_state_dict(ctx), open_record, closed))
     transcript = [{"role": role, "content": text} for role, text in item.transcript]
-    messages = brain._messages(state, item.utterance, transcript)
+    earlier = Recall.of(transcript, ()).render(PLANNER_REPLY_LABEL)
+    messages = brain._messages(state, item.utterance, earlier)
     return Prepared(
         messages=messages,
         tools=tools,
