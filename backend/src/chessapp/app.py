@@ -42,6 +42,7 @@ from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider, LlamaCppProvider
 from chessapp.serving import ServingManifest, ServingProbe, app_revision
+from chessapp.story import ChatSummarizer, Summarizer
 from chessapp.tools import (
     ToolContext,
     brain_tool_definitions,
@@ -77,6 +78,7 @@ def build_app(
     tracer: Tracer | None = None,
     planner_temperature: float | None = _PLANNER_TEMPERATURE,
     context_capture: ContextCapture | None = None,
+    story: bool = False,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -239,7 +241,25 @@ def build_app(
         coordinator=coordinator,
         progress=progress,
         serving_identity=serving_identity,
+        summarizer=story_summarizer(getattr(brain, "provider", None), enabled=story),
     )
+
+
+def story_summarizer(
+    provider: ChatProvider | None, *, enabled: bool
+) -> Summarizer | None:
+    """The story's summarizer (#372), on the brain's own provider — the same
+    server, decision 4 — or None when the story is off or there is no provider
+    to share (an injected brain). Trace-only for now, so off unless
+    `CHESSAPP_STORY` turns it on (`story_from_env`); the eval harness builds
+    it here too."""
+    if not enabled or provider is None:
+        return None
+    return ChatSummarizer(provider)
+
+
+def story_from_env() -> bool:
+    return os.environ.get("CHESSAPP_STORY", "").strip().lower() in ("1", "on", "true")
 
 
 def _engine_from_env() -> EnginePlayer | None:
@@ -345,6 +365,7 @@ def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
         tracer=_tracer_from_env(),
         planner_temperature=_planner_temperature_from_env(),
         context_capture=_context_capture_from_env(),
+        story=story_from_env(),
     )
 
 

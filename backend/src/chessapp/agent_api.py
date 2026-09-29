@@ -49,6 +49,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from chessapp.conversation import DEFAULT_WINDOW_TURNS, condense
 from chessapp.provider import ProviderError
+from chessapp.story import StoryState
 from chessapp.tools import _write_json_atomic, delegate_origin
 
 if TYPE_CHECKING:
@@ -213,6 +214,8 @@ class StoredConversation:
     updated_at: datetime
     deleted_at: datetime | None = None
     messages: list[StoredMessage] = field(default_factory=list)
+    # This thread's story of the game (#372), made on its first turn.
+    story: StoryState | None = None
 
 
 CONVERSATIONS_FILENAME = "conversations.json"
@@ -443,6 +446,7 @@ def _conversation_to_dict(conversation: StoredConversation) -> dict[str, Any]:
             else None
         ),
         "messages": [_message_to_dict(m) for m in conversation.messages],
+        "story": conversation.story.to_dict() if conversation.story else None,
     }
 
 
@@ -493,6 +497,7 @@ def _conversation_from_dict(data: Any) -> StoredConversation:
         updated_at=datetime.fromisoformat(data["updated_at"]),
         deleted_at=datetime.fromisoformat(deleted_at) if deleted_at else None,
         messages=messages,
+        story=StoryState.from_dict(data["story"]) if data.get("story") else None,
     )
 
 

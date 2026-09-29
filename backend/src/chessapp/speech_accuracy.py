@@ -38,6 +38,7 @@ from chessapp.facts import (
     assemble,
     destructive_succeeded,
     settings_changed_by,
+    story_facts,
 )
 from chessapp.game import GameSession
 from chessapp.honesty import CLAIM_NAMES, Claim, VerifiedFacts, claims
@@ -434,3 +435,69 @@ def merge(summaries: Iterable[Mapping[str, Any] | None]) -> dict[str, Any]:
             total.unscored_made[name] += counts["made"]
             total.unscored_backed[name] += counts["backed"]
     return total.as_dict()
+
+
+# --- the story of the game (#372) ------------------------------------------------
+
+# What a story's reading leaves unscored, and why: a story is history, so it
+# may name a value a setting held earlier ("verbosity went from normal to
+# low"), while the facts hold each setting's latest value. The change itself
+# is scored (`verbosity_change`, off `settings_changed`).
+STORY_UNSCORED: Mapping[str, str] = {
+    "voice": "a story may name a value the setting held before",
+    "difficulty": "a story may name a value the setting held before",
+    "verbosity": "a story may name a value the setting held before",
+}
+
+# The story is third person; the reading was written for Glitch's first and
+# second person ("I played", "you took"). The story's two subjects are mapped
+# onto those before it is read, possessives first. A scorer's convenience,
+# never a rewrite of anything a model is shown.
+_STORY_SUBJECTS = (
+    (re.compile(r"\bthe player's\b", re.IGNORECASE), "your"),
+    (re.compile(r"\bthe player\b", re.IGNORECASE), "you"),
+    (re.compile(r"\b(?:Glitch|the engine)'s\b", re.IGNORECASE), "my"),
+    (re.compile(r"\b(?:Glitch|the engine)\b", re.IGNORECASE), "I"),
+    # A story tells things in order, and "then" is its connective; the reading
+    # takes "then" for the second half of a conditional and skips the
+    # sentence (the #384 hedge). Dropped, so a sequence is read as reported.
+    (re.compile(r"\bthen,?\s+", re.IGNORECASE), ""),
+    # The story numbers its moves ("6... exf4"); the reading splits sentences
+    # on the dots and would part the move from its number's sentence, so a
+    # capture was read against whatever move came before it. Numbers go.
+    (re.compile(r"\b\d+\.(?:\.\.)?\s*(?=[KQRBNa-hO])"), ""),
+)
+
+
+def story_reading(text: str) -> str:
+    """The story in the reading's own persons: the player as "you", Glitch
+    (and "the engine") as "I"."""
+    for pattern, person in _STORY_SUBJECTS:
+        text = pattern.sub(person, text)
+    return text
+
+
+def score_story(record: Mapping[str, Any]) -> TurnScore | None:
+    """A `story` record's story, read against the evidence of every turn it
+    covers; None for any other record, or a run that wrote no story."""
+    if record.get("kind") != "story" or not record.get("story"):
+        return None
+    facts = story_facts(record.get("evidence") or {})
+    return TurnScore(
+        _meaningful(
+            claims(story_reading(record["story"]), facts), facts, reply_judged=False
+        ),
+        frozenset(UNSCORED) | frozenset(STORY_UNSCORED),
+        legacy=False,
+    )
+
+
+def story_tally(records: Iterable[Mapping[str, Any]]) -> Tally:
+    """Speech accuracy over every story the records hold: each `story` record
+    counts as one "turn" of the tally."""
+    result = Tally()
+    for record in records:
+        score = score_story(record)
+        if score is not None:
+            result.add(record, score)
+    return result

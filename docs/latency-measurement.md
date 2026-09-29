@@ -10,14 +10,19 @@ real session.
 
 Setting `CHESSAPP_TRACE_PATH` (on by default in the home deployment:
 `/data/saves/turns.jsonl`) makes the app append one JSONL record per event.
-Every record carries `schema` (currently 2) and `kind`:
+Every record carries `schema` (currently 4) and `kind`:
 
 | `kind` | Written by | When | Key fields |
 | --- | --- | --- | --- |
 | `serving` | server | At startup, and whenever what serves the app changes | `manifest_id`, `session`, `app.revision`, `client` (sampling, token limits, budgets), `server` (`model_path`, `model_ftype`, `build_info`, `n_ctx`, llama-swap `cmd`, `source`) |
 | `turn` | server | Once per interaction that reached the pipeline | `interaction_id`, `correlation_id`, `route`, `calls[]` (phase, status, `ms`, `server_ms`, `cached_tokens`, `budget_ms`), `spans_ms`, `planning`, `serving.manifest_id` |
 | `speech` | server | Once per STT or TTS round trip | `op` (`stt` or `tts`), `interaction_id`, `ms`, `status`, and the byte and character counts |
+| `story` | server, off the turn's path | Once per summarizer run (#372; only with `CHESSAPP_STORY=1`) | `origin`, `covered`, `status`, `call`/`calls` (phase `summarizer`, `ms`, `cached_tokens`), `waited[]` (`correlation_id`, `lag_ms`: how long after a turn began the story caught up), `story`, `evidence` |
 | `voice` | browser, via `POST /api/telemetry/voice` | Once the interaction settles, or is abandoned after 180 s | `interaction_id`, `correlation_id`, `origin`, `start`, `marks`, `outcome`, `censored` |
+
+A `turn` record's `story` field (`pending`, `covered_through`) says whether
+its conversation's story had caught up as it began; the wait itself is on the
+`story` record that caught up (`docs/story-and-ledger.md`).
 
 `speech` records never store audio or text. `voice` records carry the
 browser's timing marks and nothing the player said.

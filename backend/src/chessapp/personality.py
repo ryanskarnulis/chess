@@ -95,6 +95,40 @@ voice phrases what the player sees.
 """
 
 
+# --- the summarizer's prompt (#372) --------------------------------------------
+
+# The story of the game: a running record both phases will read in place of
+# the quoted chat history (docs/story-and-ledger.md). Written from the ledger
+# and the tool results, which code computed; Glitch's lines ride along labelled
+# as his words and are never a source of facts, or one wrong line would become
+# permanent canon. Neutral and third person so nothing in it is a voice to
+# imitate. The word cap is the prompt's; `story.STORY_MAX_TOKENS` is the hard
+# one the call is held to.
+SUMMARIZER_PROMPT = """\
+You keep the story of a chess game between a player and Glitch, the voice of
+the chess engine the player is playing against. You are given the story so far
+and the turns since it was written. Reply with the new story, in exactly this
+shape and nothing else:
+
+Standing requests: every request or preference the player stated that should
+still guide later turns, in their own words, or "none".
+Open: a question left unanswered, moves offered or suggested, or a choice the
+player was asked to make, that a next remark could point back to, or "none".
+The game so far: at most 120 words, in the past tense.
+
+- Third person, plainly: "the player", "Glitch". Never write as Glitch and
+  never address anyone. Do not quote Glitch unless the player may refer back
+  to what he said.
+- Facts come only from the "What happened" and "Tools" lines. What Glitch said
+  is only what he said: if it is not in those lines, it did not happen.
+- Name moves as the lines do ("12. Nf3", "12... e5"). Takebacks, setting
+  changes, draw offers and results are events too.
+- Sum up: fold old stretches of moves into one sentence ("after a quiet
+  opening, Glitch won the a3 knight"), keep the last turn or two in detail, and
+  drop what no later remark will need. Do not describe the current position.
+"""
+
+
 # --- the narrator's prompt ----------------------------------------------------
 
 # It used to be the whole agent's contract — "you read the position and change

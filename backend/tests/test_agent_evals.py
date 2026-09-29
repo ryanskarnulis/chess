@@ -151,7 +151,11 @@ from chessapp.api import (
     narrator_facts,
     planner_board_refresh,
 )
-from chessapp.app import _planner_temperature_from_env
+from chessapp.app import (
+    _planner_temperature_from_env,
+    story_from_env,
+    story_summarizer,
+)
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
@@ -630,6 +634,10 @@ def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
             registry=registry,
             coordinator=coordinator,
             tracer=tracer,
+            # The story (#372), exactly as build_app decides it — and on the
+            # meter's inner provider, so a scenario's model-call counts stay
+            # the turn's own: the summarizer runs off the turn's path.
+            summarizer=story_summarizer(provider.inner, enabled=story_from_env()),
         )
     )
     return EvalApp(client=client, ctx=ctx, provider=provider, tracer=tracer)
