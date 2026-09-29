@@ -3330,16 +3330,19 @@ def test_eval_constraint_survives_a_live_thread(engine: EnginePlayer) -> None:
 # #372's scenario: a standing ask made early in a real game, many turns before
 # the ask it governs. The game is played from the start (so the ledger holds it)
 # and the thread is the panel's, board drags recorded the way the panel records
-# them (UCI in, the move lines out).
-_STANDING_ASK = (
-    "only knights from now on — whenever I tell you to pick for me, pick a knight move"
-)
+# them (UCI in, the move lines out). The ask defines a word the player uses
+# later: "pineapple" means nothing in chess, so only the standing ask can make
+# it a takeback. ("oops" was the first word tried; without the ask it was
+# taken back 5/5 anyway, so it measured nothing.) (A first version asked for "pick one for me" to be a knight move;
+# it failed the same way on the old memory, on #351's pick-by-position rule
+# rather than on memory, and is #408.)
+_STANDING_ASK = "from now on, when I say pineapple, take back my last move"
 _STANDING_MOVES = (
     "e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O",
 )  # fmt: skip
 _STANDING_THREAD: tuple[tuple[str, str], ...] = (
     ("e2e4", "e4. e5."),
-    (_STANDING_ASK, "Bet. When you hand me the wheel, it's a knight move."),
+    (_STANDING_ASK, "Bet. Say pineapple and it comes back."),
     ("g1f3", "Nf3. Nc6."),
     ("what's the plan here?", "Develop, castle, fight for the center."),
     ("f1c4", "Bc4. Bc5."),
@@ -3351,11 +3354,11 @@ _STANDING_THREAD: tuple[tuple[str, str], ...] = (
     ("e1g1", "O-O. O-O."),
     ("who's better right now?", "Pretty level, you've got a slight edge."),
 )
-_STANDING_PICK = "pick one for me"
+_STANDING_WORD = "pineapple"
 
 
 def test_eval_standing_ask_survives_the_thread(engine: EnginePlayer) -> None:
-    """A standing ask from eleven turns back still governs the ask it was for.
+    """A standing ask from eleven turns back still governs the word it defined.
 
     Decision 3 on #372: standing asks live in what the phases are shown of the
     past — since #372 the player's own requests, quoted, and never a model's
@@ -3363,8 +3366,8 @@ def test_eval_standing_ask_survives_the_thread(engine: EnginePlayer) -> None:
     fails, the fix is a state-block record like `open_question`, not a prompt
     rule.
 
-    Passes when "pick one for me" plays exactly one move, a knight's, and
-    nothing else moves; the reply is held to the turn's facts like any other.
+    Passes when "pineapple" takes back the last exchange (the player's O-O and the
+    reply) and nothing else moves; the reply is held to the turn's facts.
     """
 
     def setup(app: EvalApp) -> None:
@@ -3374,28 +3377,25 @@ def test_eval_standing_ask_survives_the_thread(engine: EnginePlayer) -> None:
         app.ctx.session = session
         for said, replied in _STANDING_THREAD:
             app.ctx.transcript.record(said, replied)
-        _stays_a_model_eval(_STANDING_PICK, session.fen())
-        knights = [m for m in session.legal_moves() if m.startswith("N")]
-        others = [m for m in session.legal_moves() if not m.startswith("N")]
-        assert knights and others, "the premise: a knight move is a choice"
+        _stays_a_model_eval(_STANDING_WORD, session.fen())
 
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         _assert_speech_backed(app.tracer.last)
-        moves = _legal_moves(assistant)
-        assert len(moves) == 1, (
-            f"expected exactly one move played, got {len(moves)}: "
+        mutated = [call["tool"] for call in _board_mutations(assistant)]
+        assert mutated == ["undo"], (
+            "pineapple, by the player's standing ask, is one takeback: "
             + (_trajectory(assistant) or "no tool calls")
         )
-        mutated = [call["tool"] for call in _board_mutations(assistant)]
-        assert mutated == ["make_move"], _trajectory(assistant)
-        played = app.ctx.session.move_history()[len(_STANDING_MOVES)]
-        assert played.startswith("N"), f"the standing ask was knights; played {played}"
+        history = app.ctx.session.move_history()
+        assert history == list(_STANDING_MOVES[:-2]), (
+            f"expected the last exchange taken back, and the history is {history}"
+        )
 
     floor = _FLOORS["standing_ask_survives_the_thread"]
     result = _pass_rate(
         engine,
         "standing_ask_survives_the_thread",
-        _STANDING_PICK,
+        _STANDING_WORD,
         check,
         floor=floor,
         setup=setup,

@@ -245,7 +245,11 @@ nothing can be captured, so no question about which pawn),
 difficulty" rules out the one lever there is, so no setting moves),
 `constraint_survives_a_live_thread` (the same ask in the walkthrough's own
 thread — panel seam, verbosity `low`, eleven turns deep — the condition that
-reproduces the live miss), `pgn_is_handed_over_not_recited` ("export the pgn"
+reproduces the live miss), `standing_ask_survives_the_thread` (#372: "from now
+on, when I say pineapple, take back my last move" eleven turns back in a real
+game on the panel; "pineapple" must take back the last exchange and nothing
+else. A word with no chess meaning: without the ask it moves nothing, 0/5,
+where "oops" was taken back 5/5 anyway), `pgn_is_handed_over_not_recited` ("export the pgn"
 calls `export_pgn` and says it is ready — the notation is app-owned text now,
 rendered with a copy button, so a reply carrying the headers or the movetext
 is the old dump reappearing), and the long-transcript family
