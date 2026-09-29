@@ -270,3 +270,42 @@ def last_exchange(messages: list[dict[str, str]]) -> tuple[str, str] | None:
         ):
             return messages[index - 1]["content"], messages[index]["content"]
     return None
+
+
+# How much of the last exchange is shown: whole in practice, cut only when a
+# pasted wall of text would crowd out the brief.
+LAST_EXCHANGE_CHARS = 600
+
+
+def recall(
+    messages: list[dict[str, str]], record: list[str], *, reply_label: str
+) -> str:
+    """What came before this turn, as data for a model phase (#372): the
+    game's record (`ledger.render_record`, code's), the player's requests in
+    their own words, and the last exchange. Empty parts are left out, and an
+    empty conversation on a fresh game is "". `reply_label` names the last
+    reply for whoever reads it — the narrator reads it as what *he* said."""
+    parts = []
+    if record:
+        parts.append(
+            "The game's record, kept by the app (what happened earlier in "
+            "this game besides the moves themselves):\n"
+            + "\n".join(f"- {line}" for line in record)
+        )
+    requests = player_requests(messages)
+    if requests:
+        parts.append(
+            "What the player asked for earlier, in their own words, oldest "
+            "first:\n"
+            + "\n".join(f"- {r}" if r.startswith("(") else f'- "{r}"' for r in requests)
+        )
+    last = last_exchange(messages)
+    if last is not None:
+        said, reply = (
+            _truncate(" ".join(t.split()), LAST_EXCHANGE_CHARS) for t in last
+        )
+        parts.append(
+            f'The last exchange:\nThe player said: "{said}"\n'
+            + (f'{reply_label}: "{reply}"' if reply else f"{reply_label}: nothing.")
+        )
+    return "\n\n".join(parts)

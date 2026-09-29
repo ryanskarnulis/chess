@@ -347,7 +347,9 @@ def test_delegate_move_broadcasts_to_the_web_board():
 
 def test_provider_failure_is_502_and_keeps_the_user_message():
     class BoomBrain:
-        def get_agent_response(self, board_state, command, transcript=()):
+        def get_agent_response(
+            self, board_state, command, transcript=(), *, earlier=""
+        ):
             raise ProviderRequestError("connect timeout")
 
         def react(self, board_state, changes, transcript=()):  # pragma: no cover
@@ -731,7 +733,9 @@ def test_a_retry_after_a_restart_is_answered_from_disk(tmp_path):
 
 def test_a_key_whose_exchange_never_finished_is_refused():
     class BoomBrain:
-        def get_agent_response(self, board_state, command, transcript=()):
+        def get_agent_response(
+            self, board_state, command, transcript=(), *, earlier=""
+        ):
             raise ProviderRequestError("llama-server down")
 
     client, _, _ = make_client(brain=BoomBrain())

@@ -14,8 +14,9 @@ chat history (`docs/turn-memory.md`), in four parts, all written by code:
    one" and "undo that" point at.
 4. **The state block**, as today, `open_question` included.
 
-Nothing reads them yet (PR 3); the narrator will (PR 4), then the planner, with
-the chat history removed from both (PR 5, the milestone gate).
+The narrator reads them in place of its chat turns (PR 4, `conversation.recall`
+at the head of its brief; `docs/planner-narrator.md`); the planner will next,
+with the chat history removed from both (PR 5, the milestone gate).
 
 ## Why no model writes it
 

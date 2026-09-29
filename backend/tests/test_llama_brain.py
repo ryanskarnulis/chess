@@ -1561,10 +1561,25 @@ def test_the_narrator_sees_the_utterance_and_what_the_turn_did():
     assert json.dumps({"legal": True, "san": "e4"}) in narrator  # what happened
 
 
-def test_the_narrator_gets_the_transcript():
+def test_the_narrator_reads_what_came_before_as_data_not_chat():
+    """#372: the planner still reads the transcript; the narrator reads what
+    came before as one labelled section of its brief, never as chat turns it
+    would take for its own past lines."""
     brain, provider = make_brain(text_turn("nothing to do"), text_turn("ok"))
-    brain.get_agent_response(board_state={}, command="hi", transcript=TRANSCRIPT)
-    assert provider.calls[-1]["messages"][1:3] == TRANSCRIPT
+    brain.get_agent_response(
+        board_state={},
+        command="hi",
+        transcript=TRANSCRIPT,
+        earlier="The last exchange: the player asked for a hint.",
+    )
+    planner, narrator = provider.calls[0], provider.calls[-1]
+    assert planner["messages"][1:3] == TRANSCRIPT
+    roles = [m["role"] for m in narrator["messages"]]
+    assert roles == ["system", "user"]
+    brief = narrator["messages"][1]["content"]
+    assert brief.startswith(
+        "Before this turn:\n\nThe last exchange: the player asked for a hint."
+    )
 
 
 @pytest.mark.parametrize(
@@ -2098,14 +2113,22 @@ def test_narrate_sends_no_tools():
     assert provider.calls[0]["tools"] is None
 
 
-def test_narrate_includes_the_transcript():
+def test_narrate_reads_what_came_before_in_its_brief():
     brain, provider = make_brain(text_turn("ok"))
     brain.narrate(
         board_state={"fen": "8/8/8/8"},
         changes=[{"name": "make_move", "result": {"san": "Nf3"}}],
-        transcript=TRANSCRIPT,
+        earlier="The game's record: took back Qh5.",
     )
-    assert provider.calls[0]["messages"][1:3] == TRANSCRIPT
+    messages = provider.calls[0]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert "took back Qh5" in messages[1]["content"]
+
+
+def test_nothing_before_the_turn_adds_no_section():
+    brain, provider = make_brain(text_turn("ok"))
+    brain.narrate(board_state={}, changes=[])
+    assert "Before this turn" not in provider.calls[0]["messages"][1]["content"]
 
 
 def test_narrate_null_content_becomes_empty_string():

@@ -510,6 +510,8 @@ class LlamaBrain:
         board_state: dict[str, Any],
         command: str,
         transcript: Sequence[dict[str, str]] = (),
+        *,
+        earlier: str = "",
     ) -> AgentResponse:
         # The offer and the schemas it is validated against are one list,
         # resolved here and again only where the planner is re-shown a board
@@ -562,7 +564,7 @@ class LlamaBrain:
                 # flight is bounded by its `max_tokens`, and what it asked for
                 # has already run. This only declines to start another.
                 return self._budget_stop(
-                    run, command, transcript, "budget", "wall_time", dispatched
+                    run, command, earlier, "budget", "wall_time", dispatched
                 )
             if self._over_input_budget(messages, tools):
                 # The run's own results have grown the prompt past the budget
@@ -570,7 +572,7 @@ class LlamaBrain:
                 # help without rewriting what the planner already read, so the
                 # phase ends here — spoken from what ran, like any budget.
                 return self._budget_stop(
-                    run, command, transcript, "budget", "input", dispatched
+                    run, command, earlier, "budget", "input", dispatched
                 )
             self._report(BRAIN_PLANNING)
             try:
@@ -591,7 +593,7 @@ class LlamaBrain:
                     return self._budget_stop(
                         run,
                         command,
-                        transcript,
+                        earlier,
                         "correction_limit",
                         "corrections",
                         dispatched,
@@ -633,12 +635,12 @@ class LlamaBrain:
                     # phase, let the narrator close from what the turn
                     # verified, under the loop's own note.
                     return self._close(
-                        run, command, _NO_PROGRESS_NOTE, transcript, "no_progress"
+                        run, command, _NO_PROGRESS_NOTE, earlier, "no_progress"
                     )
                 # The planner is done. Its text is a handoff note, never the
                 # reply — the narrator turns the turn's verified results into
                 # what the player actually reads.
-                return self._close(run, command, result.content or "", transcript)
+                return self._close(run, command, result.content or "", earlier)
 
             # Tool calls, so `finish_reason` is deliberately not consulted:
             # the provider parsed every call's arguments before this result
@@ -707,12 +709,12 @@ class LlamaBrain:
                 # player's choice back. Terminal at the call itself (#314): the
                 # rest of the batch was answered unrun above, so a planner that
                 # asked cannot go on to play one of the candidates anyway.
-                return self._close(run, command, "", transcript)
+                return self._close(run, command, "", earlier)
             if tripped:
                 # A cap refused part of this batch, so the next iteration could
                 # only be refused more of the same: the phase ends here.
                 return self._budget_stop(
-                    run, command, transcript, "budget", tripped, dispatched
+                    run, command, earlier, "budget", tripped, dispatched
                 )
             current = self._current_board()
             version = _board_version_of(current)
@@ -736,7 +738,7 @@ class LlamaBrain:
                     return self._budget_stop(
                         run,
                         command,
-                        transcript,
+                        earlier,
                         "correction_limit",
                         "corrections",
                         dispatched,
@@ -756,11 +758,11 @@ class LlamaBrain:
                 # loop's own, because the planner never reached the turn that
                 # writes one — see `_NO_PROGRESS_NOTE`.
                 return self._close(
-                    run, command, _NO_PROGRESS_NOTE, transcript, "no_progress"
+                    run, command, _NO_PROGRESS_NOTE, earlier, "no_progress"
                 )
 
         return self._budget_stop(
-            run, command, transcript, "max_iterations", "iterations", dispatched
+            run, command, earlier, "max_iterations", "iterations", dispatched
         )
 
     def _over_budget(self, name: str, dispatched: int, expensive: int) -> str:
@@ -776,7 +778,7 @@ class LlamaBrain:
         self,
         run: _RunState,
         command: str,
-        transcript: Sequence[dict[str, str]],
+        earlier: str,
         stop_reason: str,
         budget: str,
         dispatched: int,
@@ -793,7 +795,7 @@ class LlamaBrain:
         run.budget = budget
         if not dispatched:
             return run.response("", stop_reason)
-        return self._close(run, command, _BUDGET_NOTE, transcript, stop_reason)
+        return self._close(run, command, _BUDGET_NOTE, earlier, stop_reason)
 
     def _over_input_budget(
         self,
@@ -838,9 +840,9 @@ class LlamaBrain:
         self,
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
-        transcript: Sequence[dict[str, str]] = (),
         *,
         command: str = "",
+        earlier: str = "",
     ) -> Narration:
         # The narrator for a turn the loop never ran: the fast path, a board
         # drag, a confirmed op or a resignation. One narrator (#369): the same
@@ -864,8 +866,7 @@ class LlamaBrain:
         started = self.clock()
         with model_phase(PHASE_NARRATOR):
             narration = self._speak(
-                render_handoff(handoff, command, changes),
-                transcript,
+                render_handoff(handoff, command, changes, earlier=earlier),
                 thinking=self.enable_thinking,
                 timeout=self.narrate_timeout,
             )
@@ -944,7 +945,7 @@ class LlamaBrain:
         run: _RunState,
         command: str,
         note: str,
-        transcript: Sequence[dict[str, str]],
+        earlier: str,
         stop_reason: str = "completed",
     ) -> AgentResponse:
         """The narrator phase: speak as Glitch from what the turn actually did.
@@ -974,7 +975,7 @@ class LlamaBrain:
             facts=facts,
         )
         self._report(BRAIN_NARRATING)
-        brief = render_handoff(handoff, command, run.tool_results)
+        brief = render_handoff(handoff, command, run.tool_results, earlier=earlier)
         thinking = self._thinking(run)
         # The tight budget is for a closer that is only reacting to a move
         # turn: the mutation lock and the player's next move wait on it. One
@@ -990,7 +991,7 @@ class LlamaBrain:
             # thread's call is tagged too.
             with model_phase(PHASE_NARRATOR):
                 if wait is None:
-                    narration = self._speak(brief, transcript, thinking=thinking)
+                    narration = self._speak(brief, thinking=thinking)
                 else:
                     # Only the speech runs on the bounded thread (#316). The
                     # plan has finished and every tool it called has run, so
@@ -1000,7 +1001,6 @@ class LlamaBrain:
                     narration = within_budget(
                         lambda: self._speak(
                             brief,
-                            transcript,
                             thinking=thinking,
                             timeout=wait + _HANG_UP_MARGIN_S,
                         ),
@@ -1054,34 +1054,28 @@ class LlamaBrain:
     def _speak(
         self,
         brief: str,
-        transcript: Sequence[dict[str, str]],
         *,
         thinking: bool,
         timeout: float | None = None,
     ) -> Narration:
-        """One narrator round trip: the persona prompt, the conversation, a
-        brief describing what happened — and no tools, so this phase cannot
-        act on anything it reads.
+        """One narrator round trip: the persona prompt and a brief describing
+        what happened — and no tools, so this phase cannot act on anything it
+        reads. No chat turns (#372): what came before this turn rides in the
+        brief as data (`earlier`: the game's record, the player's requests and
+        the last exchange), never as turns Glitch would read as his own.
 
         `timeout` is the read ceiling for a call someone has a deadline on:
         the observe beat (`_NARRATE_TIMEOUT`) and the loop's closer (its budget
         plus `_HANG_UP_MARGIN_S`). A call that sends none keeps the
         client's."""
-        system = self._resolve_system_prompt()
-
-        def build(kept: Sequence[dict[str, str]]) -> list[dict[str, Any]]:
-            return [
-                {"role": "system", "content": system},
-                *kept,
-                {"role": "user", "content": brief},
-            ]
-
-        kept, _ = self._admit(build, transcript)
-        messages = build(kept)
+        messages = [
+            {"role": "system", "content": self._resolve_system_prompt()},
+            {"role": "user", "content": brief},
+        ]
         if self._over_input_budget(messages):
-            # Even the conversation's latest exchange does not leave room for
-            # this brief: nothing is sent, and the empty reply is the one every
-            # caller already knows how to stand in for — a cut-off narration's.
+            # The brief alone does not fit: nothing is sent, and the empty
+            # reply is the one every caller already knows how to stand in for
+            # — a cut-off narration's.
             logger.warning("narration_over_input_budget")
             # Nothing was sent, so nothing is counted: a call that never
             # happened is not a fast one (#317).

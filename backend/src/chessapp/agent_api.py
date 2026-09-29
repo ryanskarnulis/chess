@@ -47,7 +47,6 @@ from typing import TYPE_CHECKING, Annotated, Any, Protocol
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from chessapp.conversation import DEFAULT_WINDOW_TURNS, condense
 from chessapp.provider import ProviderError
 from chessapp.tools import _write_json_atomic, delegate_origin
 
@@ -396,26 +395,23 @@ class ConversationStore:
     def history_for_loop(
         self, conversation: StoredConversation
     ) -> list[dict[str, str]]:
-        """Prior turns as chat messages for the pipeline's ``transcript``.
-
-        Text turns only — persisted tool trajectories are for display/audit and
-        are deliberately never round-tripped into model context. Condensed by
-        the same policy the web panel uses (`conversation.condense`) so the two
-        entry points have one memory, not two: recent turns verbatim behind a
-        digest of what the caller asked for earlier. The store keeps everything;
-        only the model's view is reduced.
+        """Prior turns as chat messages, every text turn, for the pipeline's
+        ``conversation``: it condenses them for the planner by the same policy
+        the web panel's get (`conversation.condense`, `docs/turn-memory.md`),
+        and renders them as data for the narrator (#372). Text turns only —
+        persisted tool trajectories are for display/audit and are deliberately
+        never round-tripped into model context.
 
         A turn whose `memory` diverges from its `content` replays the former,
         for the same reason the panel's does: the caller is owed the correction
         the app made, and the model must not be handed a first-person apology as
         something it said.
         """
-        text_turns = [
+        return [
             {"role": m.role, "content": m.content if m.memory is None else m.memory}
             for m in conversation.messages
             if m.content is not None
         ]
-        return condense(text_turns[-2 * DEFAULT_WINDOW_TURNS :])
 
 
 def _message_to_dict(message: StoredMessage) -> dict[str, Any]:
@@ -630,7 +626,7 @@ class RunCommand(Protocol):
     def __call__(
         self,
         text: str,
-        transcript: Sequence[dict[str, str]],
+        conversation: Sequence[dict[str, str]],
         version: int | None = None,
         *,
         origin: str,

@@ -170,14 +170,16 @@ class ScriptedBrain:
         self.calls: list[tuple[dict, str]] = []
         self.narrate_calls: list[tuple[dict, list]] = []
         self.transcripts: list[list] = []
-        self.narrate_transcripts: list[list] = []
+        self.narrate_earlier: list[str] = []
+        self.earlier: list[str] = []
         self.narrate_commands: list[str] = []
 
     def get_agent_response(
-        self, board_state: dict, command: str, transcript=()
+        self, board_state: dict, command: str, transcript=(), *, earlier: str = ""
     ) -> AgentResponse:
         self.calls.append((board_state, command))
         self.transcripts.append(list(transcript))
+        self.earlier.append(earlier)
         scripted = self._responses.pop(0)
         if not scripted.tool_calls or self.dispatcher is None:
             return scripted
@@ -198,11 +200,11 @@ class ScriptedBrain:
         return scripted if isinstance(scripted, Answer) else Answer(verdict=scripted)
 
     def narrate(
-        self, board_state: dict, changes: list, transcript=(), *, command: str = ""
+        self, board_state: dict, changes: list, *, command: str = "", earlier: str = ""
     ) -> Narration:
         self.narrate_calls.append((board_state, changes))
         self.narrate_commands.append(command)
-        self.narrate_transcripts.append(list(transcript))
+        self.narrate_earlier.append(earlier)
         scripted = self._narrations.pop(0) if self._narrations else "(commentary)"
         if isinstance(scripted, Exception):
             raise scripted
