@@ -126,7 +126,6 @@ from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
-from chessapp.story import StoryKeeper, StoryState, Summarizer
 from chessapp.tools import (
     CONFIRM_QUESTIONS,
     PANEL_ORIGIN,
@@ -136,14 +135,12 @@ from chessapp.tools import (
     build_registry,
     confirm_pending,
     current_difficulty,
-    delegate_origin,
     live_checkpoint,
     pgn_headers,
     saved_game_names,
     write_live_checkpoint,
 )
 from chessapp.trace import KIND_SPEECH as TRACE_SPEECH
-from chessapp.trace import KIND_STORY as TRACE_STORY
 from chessapp.trace import KIND_VOICE as TRACE_VOICE
 from chessapp.trace import (
     ROUTE_BOARD,
@@ -1450,7 +1447,6 @@ def create_app(
     progress: ProgressReporter | None = None,
     reaction_budget: float = NARRATION_BUDGET_S,
     serving_identity: Callable[[], dict[str, str]] | None = None,
-    summarizer: Summarizer | None = None,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
     does), so what the agent is offered is exactly what the app runs; omit it
@@ -1533,7 +1529,7 @@ def create_app(
 
     # What the live checkpoint last recorded, so an unchanged game is not
     # rewritten on every request that happened to take the lock.
-    last_checkpoint: tuple[int, ...] | None = None
+    last_checkpoint: tuple[int, int, int, int] | None = None
 
     def _checkpoint() -> None:
         """Write the live game to disk if it changed (#291, `live.json`).
@@ -1556,10 +1552,6 @@ def create_app(
             ctx.board_version,
             id(ctx.transcript),
             len(ctx.transcript.to_dict()),
-            # The panel's story moves on its own thread (#372): a note
-            # queued, or the story rewritten. Written at the next guard exit.
-            id(ctx.story),
-            ctx.story.version,
             # A declined draw offer or a setting moves the ledger (#372)
             # and nothing else.
             ctx.ledger.next_seq,
@@ -1644,49 +1636,6 @@ def create_app(
     store = ConversationStore(
         ctx.save_dir / CONVERSATIONS_FILENAME if ctx.save_dir is not None else None
     )
-
-    def _story_state(origin: str) -> StoryState | None:
-        """The story a conversation keeps (#372): the panel's rides on the
-        context beside its transcript, a delegate thread's on the thread. A
-        thread's first is made on its first turn, opening at the current
-        game's start so it hears the game so far."""
-        if origin == PANEL_ORIGIN:
-            return ctx.story
-        prefix = delegate_origin(0).removesuffix("0")
-        if not origin.startswith(prefix):
-            return None
-        try:
-            conversation = store.get(int(origin.removeprefix(prefix)))
-        except ValueError:
-            return None
-        if conversation is None:
-            return None
-        if conversation.story is None:
-            current = ctx.ledger.current()
-            conversation.story = StoryState(
-                cursor=current[0].seq if current else ctx.ledger.next_seq
-            )
-        return conversation.story
-
-    # The story of the game (#372), written off the turns' path. Trace-only
-    # for now: it is kept and recorded, and nothing reads it yet.
-    stories = (
-        StoryKeeper(
-            summarizer,
-            states=_story_state,
-            ledger=lambda: ctx.ledger,
-            record=lambda fields: _trace_event(TRACE_STORY, fields),
-        )
-        if summarizer is not None
-        else None
-    )
-    if stories is not None:
-        # A restart with turns the story had not yet taken in catches up.
-        if ctx.story.pending:
-            stories.kick(PANEL_ORIGIN)
-        for conversation in store.list_active():
-            if conversation.story is not None and conversation.story.pending:
-                stories.kick(delegate_origin(conversation.id))
 
     @asynccontextmanager
     async def _lifespan() -> AsyncIterator[None]:
@@ -1859,35 +1808,6 @@ def create_app(
         except WebSocketDisconnect:
             broadcaster.disconnect(websocket)
 
-    def _note_story(
-        origin: str,
-        correlation_id: str,
-        turn_id: int,
-        route: str,
-        words: str | None,
-        tool_args: Sequence[dict[str, Any]],
-        tool_results: Sequence[dict[str, Any]],
-        draft: str,
-    ) -> None:
-        """Hand a finished turn to the story (#372). The ledger is caught up
-        first — the engine's reply lands through the coordinator, not a
-        dispatch — so the note carries every event of the turn. Glitch's own
-        words only (`draft`): the app's lines are never his."""
-        assert stories is not None
-        ctx.observe_ledger()
-        stories.enqueue(
-            origin,
-            correlation_id=correlation_id,
-            turn_id=turn_id,
-            route=route,
-            words=words,
-            tools=[
-                {"name": r["name"], "args": args, "result": r["result"]}
-                for args, r in zip(tool_args, tool_results, strict=False)
-            ],
-            draft=draft,
-        )
-
     def _play_move(
         move: str,
         transcript: Sequence[dict[str, str]],
@@ -2024,11 +1944,6 @@ def create_app(
         # so a dragged candidate answers it like a spoken one.
         question, expired = ctx.live_clarification(PANEL_ORIGIN)
         asked_about = _question_trace(question, expired)
-        story_start = (
-            stories.turn_started(PANEL_ORIGIN, correlation_id)
-            if stories is not None
-            else None
-        )
         with progress.interaction(correlation_id, turn_id):
             transcript = ctx.transcript.memory()
             beats = await _offloop(_play_move, move, transcript, correlation_id)
@@ -2111,22 +2026,8 @@ def create_app(
                 clarification=asked_about,
                 draft=draft,
                 evidence=turn_evidence.as_trace() if turn_evidence else None,
-                story=story_start,
                 **beats.cost.as_trace(),
             )
-            if stories is not None and beats.legal:
-                # A drag has no words: the note says the player moved on the
-                # board, and the ledger says what the move was.
-                _note_story(
-                    PANEL_ORIGIN,
-                    correlation_id,
-                    turn_id,
-                    ROUTE_BOARD,
-                    None,
-                    [{"move": move}],
-                    beats.changes,
-                    draft,
-                )
             return {
                 "legal": beats.legal,
                 "san": result.get("san"),
@@ -2859,8 +2760,6 @@ def create_app(
                 "fen_before": before["fen"],
                 "clarification": _question_trace(question, expired),
             }
-            if stories is not None:
-                traced["story"] = stories.turn_started(origin, correlation_id)
             # The candidates of a question this turn asked (`clarify` handoff).
             asked: tuple[str, ...] = ()
             try:
@@ -3332,17 +3231,6 @@ def create_app(
                 traced["tool_calls"] = tool_args[:pairs]
                 traced["tool_results"] = tool_results[:pairs]
                 _trace_turn(**traced)
-                if stories is not None and "error" not in traced:
-                    _note_story(
-                        origin,
-                        correlation_id,
-                        turn_id,
-                        route,
-                        text,
-                        tool_args[:pairs],
-                        tool_results[:pairs],
-                        traced.get("draft") or "",
-                    )
 
     @app.post("/api/command")
     async def command(request: CommandRequest) -> dict[str, Any]:

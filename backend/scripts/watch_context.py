@@ -9,18 +9,14 @@ server's chat template rendered — the text the model tokenized — then the ra
 response body, thought block and tool-call text included. With `--trace`
 pointing at the `CHESSAPP_TRACE_PATH` file, the turn's decisions follow its
 calls once the turn record is written: the tools run and what they returned,
-the engine's reply, what Glitch drafted, and what the player was told. The
-story of the game (#372) shows up the same way: the summarizer's call under
-the turn it caught up to, then the `story` record — the new story, what the
-call cost, and how long any turn would have waited on it.
+the engine's reply, what Glitch drafted, and what the player was told.
 
 The captured content is printed exactly as captured — no wrapping, no
 re-indenting, no pretty-printing. Separators and headers are the only
 additions, and the decisions block (read from the trace, which is already a
 summary) is the only formatted part.
 
-`--phase` follows one phase (planner, narrator, answer, summarizer; records
-before #369 say closer and reaction);
+`--phase` follows one phase (planner, closer, reaction, answer);
 `--json` prints the request body instead of the rendered prompt; `--from-start`
 replays the files from the top instead of waiting for new lines.
 """
@@ -38,7 +34,6 @@ from typing import Any, TextIO
 # literals so the watcher runs from any checkout with nothing but the files.
 KIND_MODEL_CALL = "model_call"
 KIND_TURN = "turn"
-KIND_STORY = "story"
 SOURCE_CONTEXT = "context"
 SOURCE_TRACE = "trace"
 
@@ -77,8 +72,6 @@ class Watcher:
         elif source == SOURCE_TRACE and kind in (KIND_TURN, None):
             self._header(record)
             self._write(render_turn(record))
-        elif source == SOURCE_TRACE and kind == KIND_STORY:
-            self._write(render_story(record))
 
     def _header(self, record: dict[str, Any]) -> None:
         group = (record.get("correlation_id"), record.get("turn_id"))
@@ -156,30 +149,6 @@ def render_turn(record: dict[str, Any]) -> str:
     if record.get("error"):
         lines.append(f"error: {record['error']}\n")
     lines.append(f"commentary: {record.get('commentary', '')}\n")
-    story = record.get("story")
-    if story and story.get("pending"):
-        lines.append(f"story: {story['pending']} earlier turn(s) not yet told\n")
-    return "".join(lines)
-
-
-def render_story(record: dict[str, Any]) -> str:
-    """One summarizer run (#372): what it cost, who waited on it, and the
-    story it wrote, verbatim."""
-    call = record.get("call") or {}
-    turns = len(record.get("covered") or [])
-    lines = [
-        f"── story · {record.get('origin', '?')} · {turns} turn(s) · "
-        f"{record.get('status', '?')} ──\n",
-        f"call: {call.get('ms')} ms · prompt {call.get('prompt_tokens')} "
-        f"(cached {call.get('cached_tokens')}) · out {call.get('completion_tokens')}\n",
-    ]
-    for waited in record.get("waited") or []:
-        lines.append(
-            f"waited: {waited.get('lag_ms')} ms ({waited.get('correlation_id')})\n"
-        )
-    if record.get("pending_after"):
-        lines.append(f"still pending: {record['pending_after']}\n")
-    lines.append(_verbatim(record.get("story") or "(no story: the call wrote none)"))
     return "".join(lines)
 
 

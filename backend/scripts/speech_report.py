@@ -32,7 +32,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from chessapp.speech_accuracy import STORY_UNSCORED, UNSCORED, Tally, story_tally, tally
+from chessapp.speech_accuracy import UNSCORED, Tally, tally
 
 
 def select(
@@ -57,43 +57,20 @@ def _percent(backed: int, made: int) -> str:
     return f"{backed / made:.1%}" if made else "—"
 
 
-def render(result: Tally, story: Tally | None = None) -> str:
+def render(result: Tally) -> str:
     """The report as Markdown: the headline, the per-family table, and the
-    unbacked lines — then the same for the story of the game (#372), when the
-    trace holds any."""
-    lines = _section(result, "# Speech accuracy", "turns", UNSCORED)
-    if story is not None and story.turns:
-        lines += [
-            "",
-            *_section(
-                story,
-                "# The story of the game",
-                "stories",
-                {**UNSCORED, **STORY_UNSCORED},
-            ),
-        ]
-    return "\n".join(lines)
-
-
-def _section(
-    result: Tally, title: str, unit: str, unscored: dict[str, str]
-) -> list[str]:
+    unbacked lines."""
     summary = result.as_dict()
     lines = [
-        title,
+        "# Speech accuracy",
         "",
         f"**{_percent(summary['backed'], summary['made'])}** — "
         f"{summary['backed']}/{summary['made']} claims backed, over "
-        f"{summary['turns']} {unit} ({summary['legacy_turns']} legacy records).",
-    ]
-    if unit == "turns":
-        lines += [
-            "",
-            f"Reply said: {summary['replies']['announced']}/"
-            f"{summary['replies']['owed']} turns that owed the engine's move in "
-            "words named it (#365).",
-        ]
-    lines += [
+        f"{summary['turns']} turns ({summary['legacy_turns']} legacy records).",
+        "",
+        f"Reply said: {summary['replies']['announced']}/"
+        f"{summary['replies']['owed']} turns that owed the engine's move in "
+        "words named it (#365).",
         "",
         "| family | made | backed | unbacked | accuracy |",
         "| --- | ---: | ---: | ---: | ---: |",
@@ -116,7 +93,7 @@ def _section(
             "| --- | ---: | --- |",
         ]
         for name, counts in summary["unscored"].items():
-            why = unscored.get(name, "not decidable from a legacy record")
+            why = UNSCORED.get(name, "not decidable from a legacy record")
             lines.append(f"| `{name}` | {counts['made']} | {why} |")
     lines += ["", "## Unbacked lines", ""]
     if not result.unbacked:
@@ -126,7 +103,7 @@ def _section(
             f'- `{item.family}` on {item.said!r} — "{item.sentence}" '
             f"({item.route}, {item.ts[:19]}, asked {item.utterance!r})"
         )
-    return lines
+    return "\n".join(lines)
 
 
 def _read(paths: Sequence[Path]) -> list[dict[str, Any]]:
@@ -147,14 +124,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     records = select(_read(args.traces), since=args.since, route=args.route)
     result = tally(records)
-    story = story_tally(records)
     if args.json:
-        summary = result.as_dict()
-        if story.turns:
-            summary["story"] = story.as_dict()
-        print(json.dumps(summary, indent=2))
+        print(json.dumps(result.as_dict(), indent=2))
     else:
-        print(render(result, story))
+        print(render(result))
     return 0
 
 

@@ -1166,31 +1166,3 @@ def test_every_traced_turn_is_scored_into_the_suite_and_the_scenario(monkeypatch
     }
     assert totals.scenario.claims_made == 1
     assert totals.scenario.summary().startswith("speech 0/1 (0.0%)")
-
-
-def test_the_harness_keeps_the_story_as_assembly_does(monkeypatch) -> None:
-    """The story of the game (#372) runs beside every turn once it is on, on
-    the same server, so a gate run with it off and a shipped app with it on
-    measure different GPUs. Both resolve it through `story_from_env` and build
-    it through `story_summarizer`, and this pins that they agree, off and on."""
-    import chessapp.app
-    import test_agent_evals
-
-    def asked(module, build) -> list[bool]:
-        seen: list[bool] = []
-
-        def spy(provider, *, enabled):
-            seen.append(enabled)
-            return None
-
-        monkeypatch.setattr(module, "story_summarizer", spy)
-        build()
-        return seen
-
-    for value, expected in (("", False), ("1", True)):
-        monkeypatch.setenv("CHESSAPP_STORY", value)
-        shipped = asked(chessapp.app, chessapp.app.build_app_from_env)
-        measured = asked(
-            test_agent_evals, lambda: test_agent_evals._build_eval_app(FakeEngine())
-        )
-        assert shipped == measured == [expected]
