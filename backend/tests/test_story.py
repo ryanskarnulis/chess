@@ -53,9 +53,11 @@ class FakeSummarizer:
         self.fail = fail
         self.gate = gate
         self.calls: list[tuple[str, list[TurnNote], int]] = []
+        self.entered = threading.Event()
 
     def summarize(self, previous, notes, first):
         self.calls.append((previous, list(notes), first))
+        self.entered.set()
         if self.gate is not None:
             self.gate.wait(5)
         if self.fail:
@@ -294,15 +296,17 @@ def test_a_backlog_is_caught_up_in_one_call_and_the_wait_is_measured():
     summarizer = FakeSummarizer(gate=gate)
     keeper, state, records = _keeper(summarizer)
     _enqueue(keeper, "one")
+    # Held inside its first call, so the next two pile up behind it.
+    assert summarizer.entered.wait(5)
     _enqueue(keeper, "two")
     _enqueue(keeper, "three")
     # A turn begins while the story is behind: it is remembered.
     started = keeper.turn_started("panel", "waiting-turn")
-    assert started["pending"] >= 2
+    assert started["pending"] == 3
     gate.set()
     assert keeper.wait_idle(5)
-    assert state.text.endswith("two three")
-    assert len(summarizer.calls) <= 2, "at most the first call, then one catch-up"
+    assert state.text == "one | two three"
+    assert [len(batch) for _, batch, _ in summarizer.calls] == [1, 2]
     [waited] = [w for r in records for w in r["waited"]]
     assert waited["correlation_id"] == "waiting-turn" and waited["lag_ms"] >= 0
 
