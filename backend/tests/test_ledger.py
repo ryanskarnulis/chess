@@ -19,6 +19,7 @@ from chessapp.ledger import (
     GAME_END,
     MOVE,
     NEW_GAME,
+    OFFER,
     RESUMED,
     TAKEBACK,
     Ledger,
@@ -26,6 +27,7 @@ from chessapp.ledger import (
     difficulty_label,
     followed_settings,
     from_session,
+    render_record,
 )
 from chessapp.tools import (
     LIVE_CHECKPOINT_FILENAME,
@@ -493,3 +495,81 @@ def test_a_ledger_that_cannot_observe_never_fails_the_call(monkeypatch):
     monkeypatch.setattr(ctx.ledger, "observe", boom)
     result = registry.dispatch("make_move", {"move": "e4"})
     assert result["legal"] is True
+
+
+# --- what was offered (#372) ------------------------------------------------------
+
+
+def test_a_hint_a_question_and_a_refusals_alternatives_are_offers():
+    engine = FakeEngine()
+    ctx = ToolContext(session=GameSession(), engine=engine)
+    registry = build_registry(ctx, TurnCoordinator(ctx), atomic_exchange=False)
+    ctx.note_offer(
+        "get_best_moves", {"ok": True, "moves": [{"san": "e4"}, {"san": "d4"}]}
+    )
+    registry.dispatch("ask_player", {"piece": "knight"})
+    registry.dispatch("make_move", {"move": "Ke2"})
+    offers = [e.details for e in ctx.ledger.current() if e.kind == OFFER]
+    assert offers[0] == {"source": "hint", "moves": ["e4", "d4"]}
+    assert offers[1]["source"] == "question"
+    assert sorted(offers[1]["moves"]) == ["Na3", "Nc3", "Nf3", "Nh3"]
+    assert offers[2]["source"] == "alternatives" and offers[2]["moves"]
+
+
+def test_a_result_that_offered_nothing_records_nothing():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    registry = build_registry(ctx, TurnCoordinator(ctx), atomic_exchange=False)
+    registry.dispatch("make_move", {"move": "e4"})
+    ctx.note_offer("get_best_moves", {"ok": False, "error": "no engine"})
+    assert not [e for e in ctx.ledger.current() if e.kind == OFFER]
+
+
+# --- the record -------------------------------------------------------------------
+
+
+def test_the_record_keys_what_the_move_list_cannot_show_to_it():
+    session = GameSession()
+    ledger = _observed("e4", "e5", "Qh5", session=session)
+    session.undo(1)
+    ledger.observe(session, SETTINGS)
+    low = {**SETTINGS, "verbosity": "low"}
+    ledger.observe(session, low)
+    ledger.note_offer(
+        session, low, "get_best_moves", {"ok": True, "moves": [{"san": "Nf3"}]}
+    )
+    _played(session, "Nf3", "Nc6")
+    ledger.observe(session, low)
+    assert render_record(ledger.current()) == [
+        "A new game began; the player has white.",
+        "after 2. Qh5: took back 2. Qh5.",
+        "after 1... e5: verbosity changed from normal to low.",
+        "after 1... e5: a hint offered Nf3.",
+    ]
+
+
+def test_the_record_ends_a_game_and_offers_a_draw_in_words():
+    ctx, _, registry = tooled(DEAD_DRAWN_ROOK_ENDGAME)
+    registry.dispatch("offer_draw", {})
+    lines = render_record(ctx.ledger.current())
+    assert lines[-2].endswith("the player offered a draw; the engine accepted.")
+    assert lines[-1].endswith("the game ended by agreement; a draw (1/2-1/2).")
+
+
+def test_the_record_names_a_resume_and_lists_no_moves():
+    session = _played(GameSession(), "e4", "e5")
+    ledger = Ledger()
+    ledger.expect_resume("keep")
+    ledger.observe(session, SETTINGS)
+    assert render_record(ledger.current()) == [
+        "The saved game 'keep' was resumed; the player has white."
+    ]
+
+
+def test_a_long_record_keeps_the_newest_and_says_how_many_went():
+    session = GameSession()
+    ledger = _observed(session=session)
+    for level in ("low", "high") * 5:
+        ledger.observe(session, {**SETTINGS, "verbosity": level})
+    lines = render_record(ledger.current(), max_lines=4)
+    assert lines[0] == "(7 earlier events not listed)"
+    assert len(lines) == 5 and lines[-1].endswith("to high.")

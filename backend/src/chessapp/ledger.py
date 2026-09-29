@@ -8,11 +8,12 @@ but the trace — and the UI buttons and MCP write no trace. The ledger is that
 record: an append-only list of events, keyed to the move list, written by code
 and never by a model.
 
-It is the ground truth the story of the game is written from (the summarizer,
-`docs/story-and-ledger.md`) and the oracle the story's claims are scored
-against (speech accuracy, #367). #373 grows it into `lookup(this_game)`, so the
-queries are shaped for that: the moves, the captures, the material by ply, the
-takebacks and the setting changes of one game.
+It is what the model phases read in place of the chat history (#372, rendered
+by `render_record`; `docs/game-record.md`): no model writes or rewrites it, so
+it cannot hold a fact that did not happen. #373 grows it into
+`lookup(this_game)`, so the queries are shaped for that: the moves, the
+captures, the material by ply, the takebacks and the setting changes of one
+game.
 
 **Observed, not hooked.** `observe` diffs the session and the settings against
 the last state it saw: the common prefix of the two move lines is kept, what was
@@ -23,8 +24,8 @@ the board — the tools, the coordinator's engine replies, the undo and difficul
 buttons, MCP — and the first one missed would be a silent gap. A diff needs
 only to be called often enough: after every tool dispatch, which keeps "undo,
 then play e4" as two events in order, and wherever a request that can mutate
-lets go of the board. `note_draw_offer` and `expect_resume` are the two facts
-no board shows.
+lets go of the board. `note_draw_offer`, `note_offer` and `expect_resume` are
+the facts no board shows.
 
 Only the current game is persisted (`live.json`). A restored ledger is kept
 only if its events replay to the session's move line; otherwise it is rebuilt
@@ -49,16 +50,27 @@ TAKEBACK = "takeback"
 SETTING = "setting"
 DRAW_OFFER = "draw_offer"
 GAME_END = "game_end"
-KINDS = frozenset({NEW_GAME, RESUMED, MOVE, TAKEBACK, SETTING, DRAW_OFFER, GAME_END})
+OFFER = "offer"
+KINDS = frozenset(
+    {NEW_GAME, RESUMED, MOVE, TAKEBACK, SETTING, DRAW_OFFER, GAME_END, OFFER}
+)
+
+# Which tool results put moves in front of the player, what the ledger calls
+# them, and where the moves are in the result. A read of the result, never of
+# anybody's words: what was offered is what the tool answered.
+OFFER_SOURCES = {
+    "get_best_moves": "hint",
+    "ask_player": "question",
+    "make_move": "alternatives",
+}
 
 # The settings the ledger follows, named as the facts name them
 # (`facts.settings_of`): what a player can change and hear about.
 SETTING_NAMES = ("difficulty", "verbosity", "voice")
 
 # How many events of earlier games are kept in memory beside the current
-# game's. The story reads events by `seq` once per turn, so an earlier game's
-# are only needed until the next turn has read them; this bounds a process
-# that plays for days. Never persisted.
+# game's, for a reader that asks about the game before this one (#373's
+# lookup); this bounds a process that plays for days. Never persisted.
 EARLIER_GAMES_KEPT = 500
 
 _PIECE_VALUES = {
@@ -188,6 +200,28 @@ class Ledger:
                 DRAW_OFFER,
                 session.game_id,
                 {"accepted": accepted, "reason": reason},
+            )
+
+    def note_offer(
+        self,
+        session: GameSession,
+        settings: Mapping[str, Any],
+        tool: str,
+        result: Mapping[str, Any],
+    ) -> None:
+        """The moves a tool result offered the player — a hint's candidates,
+        a question's choices, a refused move's alternatives — which "the
+        second one" may point back to long after the result has scrolled out
+        of view. Nothing is recorded for a result that offered nothing."""
+        moves = offered_moves(tool, result)
+        if not moves:
+            return
+        with self._lock:
+            self._observe(session, followed_settings(settings))
+            self._append(
+                OFFER,
+                session.game_id,
+                {"source": OFFER_SOURCES[tool], "moves": moves},
             )
 
     def expect_resume(self, name: str) -> None:
@@ -416,6 +450,18 @@ class Ledger:
         return ledger
 
 
+def offered_moves(tool: str, result: Mapping[str, Any]) -> list[str]:
+    """The moves `result` offered, by `tool`: none unless it is one of
+    `OFFER_SOURCES` and the call did what it offers."""
+    if tool == "get_best_moves" and result.get("ok") is True:
+        return [m["san"] for m in result.get("moves", ()) if m.get("san")]
+    if tool == "ask_player" and result.get("ok") is True:
+        return list(result.get("candidates", ()))
+    if tool == "make_move" and result.get("legal") is False:
+        return list(result.get("alternatives", ()))
+    return []
+
+
 def from_session(session: GameSession, settings: Mapping[str, Any]) -> Ledger:
     """A ledger for a game nobody watched being played: its start and its
     standing line (moves marked `restored`), and its ending if it has one."""
@@ -485,3 +531,91 @@ def _material(board: chess.Board, player: chess.Color) -> int:
         for color in (chess.WHITE, chess.BLACK):
             totals[color] += value * len(board.pieces(piece_type, color))
     return totals[player] - totals[not player]
+
+
+# --- the record of the game, as the model phases will read it -------------------
+
+# How many lines the record keeps, newest last. Past it the oldest go, with a
+# count: a record that quietly forgets reads like one that never heard.
+RECORD_MAX_LINES = 30
+
+_OFFER_WORDS = {
+    "hint": "a hint offered {moves}",
+    "question": "the player was asked to choose between {moves}",
+    "alternatives": "a move could not be played; the alternatives offered were {moves}",
+}
+
+
+def render_record(
+    events: Sequence[LedgerEvent], max_lines: int = RECORD_MAX_LINES
+) -> list[str]:
+    """The game's events that its move list cannot show — takebacks, setting
+    changes, draw offers, what was offered, the ending, the game's start —
+    one line each, keyed to the move list ("after 12... e5: ..."). Moves are
+    not listed: the state block's `history` holds them, and a second copy
+    would be the ageing duplicate `docs/turn-memory.md` forbids. Written by
+    code from the ledger, so it cannot say what did not happen."""
+    lines: list[str] = []
+    standing: list[str] = []
+
+    def at() -> str:
+        return f"after {standing[-1]}" if standing else "before the first move"
+
+    for event in events:
+        d = event.details
+        kind = event.kind
+        if kind == MOVE:
+            standing.append(_label(d))
+        elif kind in (NEW_GAME, RESUMED):
+            start = (
+                f"The saved game '{d.get('name')}' was resumed"
+                if kind == RESUMED
+                else "A new game began"
+            )
+            start += f"; the player has {d.get('player_color')}"
+            if d.get("root_fen"):
+                start += ", from a set-up position"
+            lines.append(start + ".")
+        elif kind == TAKEBACK:
+            plies = min(int(d.get("plies", 0)), len(standing))
+            before = at()
+            undone = list(reversed(standing[len(standing) - plies :]))
+            del standing[len(standing) - plies :]
+            lines.append(f"{before}: took back {', '.join(undone)}.")
+        elif kind == SETTING:
+            lines.append(
+                f"{at()}: {d.get('name')} changed from {d.get('before')} "
+                f"to {d.get('after')}."
+            )
+        elif kind == DRAW_OFFER:
+            answer = "accepted" if d.get("accepted") else "declined"
+            reason = str(d.get("reason") or "").replace("_", " ")
+            lines.append(
+                f"{at()}: the player offered a draw; the engine {answer}"
+                + (f" ({reason})." if reason and not d.get("accepted") else ".")
+            )
+        elif kind == GAME_END:
+            winner = {"player": "the player won", "opponent": "the engine won"}.get(
+                d.get("winner"), "a draw"
+            )
+            termination = str(d.get("termination", "")).replace("_", " ")
+            result = d.get("result")
+            lines.append(
+                f"{at()}: the game ended by {termination}; {winner} ({result})."
+            )
+        elif kind == OFFER:
+            words = _OFFER_WORDS.get(str(d.get("source")), "{moves} were offered")
+            lines.append(
+                f"{at()}: " + words.format(moves=", ".join(d.get("moves", ()))) + "."
+            )
+    if len(lines) > max_lines:
+        dropped = len(lines) - max_lines
+        lines = [f"({dropped} earlier events not listed)", *lines[-max_lines:]]
+    return lines
+
+
+def _label(details: Mapping[str, Any]) -> str:
+    number, san = details.get("move_number", "?"), details.get("san")
+    return (
+        f"{number}. {san}" if details.get("color") == "white" else f"{number}... {san}"
+    )

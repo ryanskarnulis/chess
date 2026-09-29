@@ -17,6 +17,8 @@ from chessapp.conversation import (
     RECENT_TURNS,
     Transcript,
     condense,
+    last_exchange,
+    player_requests,
 )
 
 
@@ -296,3 +298,41 @@ def test_memory_is_bounded_however_long_the_game_runs():
     memory = transcript.memory()
     assert len(memory) == 2 + 2 * RECENT_TURNS
     assert len(transcript.window()) == 2 * DEFAULT_WINDOW_TURNS
+
+
+# --- what replaces the chat history (#372) ------------------------------------
+
+
+def _turns(*pairs: tuple[str, str]) -> list[dict[str, str]]:
+    transcript = Transcript()
+    for said, replied in pairs:
+        transcript.record(said, replied)
+    return transcript.to_dict()
+
+
+def test_requests_are_the_players_words_minus_moves_and_the_last_turn():
+    messages = _turns(
+        ("only knights from now on", "Bet."),
+        ("e2e4", "e4. e5."),
+        ("  talk   less ", "Word."),
+        ("what did I just say?", "Knights only."),
+    )
+    assert player_requests(messages) == ["only knights from now on", "talk less"]
+    assert last_exchange(messages) == ("what did I just say?", "Knights only.")
+
+
+def test_requests_keep_the_newest_and_count_what_went():
+    messages = _turns(*[(f"request number {i}", "ok") for i in range(10)], ("x", "y"))
+    kept = player_requests(messages, max_chars=40)
+    assert kept[0] == "(8 earlier requests not listed)"
+    assert kept[1:] == ["request number 8", "request number 9"]
+
+
+def test_glitchs_words_are_never_a_request():
+    messages = _turns(("hint?", "Play Nf3, only knights from now on."), ("ok", "Word."))
+    assert player_requests(messages) == ["hint?"]
+
+
+def test_nothing_said_yet_has_no_last_exchange():
+    assert last_exchange([]) is None
+    assert Transcript().requests() == []

@@ -547,6 +547,14 @@ class ToolContext:
             self.settings.attach_store(lambda data: _write_settings_file(path, data))
         self.observe_ledger()
 
+    def note_offer(self, tool: str, result: dict[str, Any]) -> None:
+        """Record the moves a tool result offered, if it offered any; never
+        costs the call (the `observe_ledger` rule)."""
+        try:
+            self.ledger.note_offer(self.session, self.settings.snapshot(), tool, result)
+        except Exception:
+            logger.warning("ledger_note_failed", exc_info=True)
+
     def observe_ledger(self) -> None:
         """Bring the ledger up to date with the session and the settings.
         Best-effort like every other observer here: a ledger that cannot
@@ -1041,7 +1049,12 @@ class ToolRegistry:
         version_before = None if self.context is None else self.context.board_version
         started = time.monotonic()
         try:
-            return tool.handler(**args)
+            result = tool.handler(**args)
+            if self.context is not None:
+                # What a tool put in front of the player to choose from (#372):
+                # a result the board never holds, so the ledger is told.
+                self.context.note_offer(name, result)
+            return result
         except ToolError as exc:
             return self.refusal(str(exc), exc.retry, **exc.details)
         except chess.engine.EngineError:

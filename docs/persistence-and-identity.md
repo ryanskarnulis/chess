@@ -29,7 +29,7 @@ thinking is settled on restore, as a resumed save is. The file sits at the
 save dir's root, outside `games/`, and nests the session under a key, so it
 is never listed as a save nor swept up by the legacy-save migration.
 
-The current game's **ledger** (#372, `docs/story-and-ledger.md`) rides in the
+The current game's **ledger** (#372, `docs/game-record.md`) rides in the
 same file under `ledger`, so a takeback, a setting change or a declined draw
 offer made before a restart is still on record after it. A change to the
 ledger alone (a declined offer, a setting) is a change worth a write. It is
