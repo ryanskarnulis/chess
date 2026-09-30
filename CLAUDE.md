@@ -90,5 +90,6 @@ file also holds `serving` manifests (the weights, build and settings actually se
 `scripts/latency_report.py`. `docs/turn-coordinator.md` and
 `docs/planner-narrator.md` explain the turn architecture;
 `docs/persistence-and-identity.md` says what survives a restart
-(`live.json`, `conversations.json`), which tools ask before they run, and what
+(`live.json`, `conversations.json`, the cross-game `results.jsonl`), which
+tools ask before they run, and what
 a delegate can bind to (`version`, `game_id`, `Idempotency-Key`).

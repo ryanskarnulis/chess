@@ -16,6 +16,7 @@ Under `CHESSAPP_SAVE_DIR` (the `/data/saves` volume in the container):
 | `games/<name>.json` | a named save: the game plus the panel transcript | by `save_game`, atomically |
 | `live.json` | the live game: board, panel transcript, `game_id`, board version, the game's ledger (#372) | on every change, atomically, best-effort |
 | `conversations.json` | every delegate thread: turns, soft deletes, id counters, idempotency keys | on every change, atomically, best-effort |
+| `results.jsonl` | every game that ended: its result, or its withdrawal (#373) | appended when a game ends or an ending is taken back, best-effort |
 
 **Restart** (#291). `live.json` is written whenever the board version or the
 panel transcript changes — from the mutation guard's exit and from the
@@ -37,6 +38,27 @@ kept only if its events replay to the restored session's move line; a
 checkpoint without one, or with one that does not replay, gets a ledger
 rebuilt from the session, moves only. Named saves do not carry it: a resumed
 save is a `resumed` event followed by its line replayed as moves.
+
+The **results log** (#373, `results.py`) is the one record that spans games:
+"how many games have you won?" has no other answer, because `autosave` is
+overwritten and a game nobody saved leaves no file. One JSON line per event,
+appended, never rewritten:
+
+- a game ended (`game_id`, `ended_at`, `player_color`, `difficulty`, `result`,
+  `winner` from the player's side, `termination`, `from_setup`);
+- an ending was taken back (`game_id`, `withdrawn: true`): the board no
+  longer holds that result, so neither does the tally.
+
+The latest line for a `game_id` is the one that counts, so a game mated,
+taken back and mated again is one result. It is fed from the ledger's events
+(`ToolContext.follow_results`, by a cursor), so every road to an ending — a
+move, a resignation, an agreed or claimed draw, the engine's reply — is
+recorded once. A finished save resumed, or a finished game a restart
+restores, was counted when it ended and is not counted again (the ledger
+marks that ending `restored`). A line that does not parse is skipped with a
+warning. The tally of the standing results (`ResultsLog.tally`: games, wins
+each way and draws, overall and per difficulty) rides in the state block and
+the narrator's facts as `results`.
 
 What does **not** survive a restart:
 

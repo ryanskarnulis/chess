@@ -59,7 +59,7 @@ record above is rendered from, and what #373 grows into `lookup(this_game)`.
 | `takeback` | moves come off the board | `undone` (SAN, last first), `plies` |
 | `setting` | difficulty, verbosity or voice changes | `name`, `before`, `after` |
 | `draw_offer` | the player offers a draw | `accepted`, `reason` (`draw_offer`'s) |
-| `game_end` | the game finishes, however | `termination`, `result`, `winner` (`player`/`opponent`/None) |
+| `game_end` | the game finishes, however | `termination`, `result`, `winner` (`player`/`opponent`/None), `restored` when the game arrived already over (#373) |
 | `offer` | a tool result offers moves (below) | `source`, `moves` (SAN), `origin`, `board_version` |
 | `review` | `review_game` names moves (below) | `moves`: each `move_number`, `color`, `by`, `san`, `classification`, `cp_loss`, `best` |
 
@@ -95,6 +95,11 @@ game's events carry its `game_id`, and earlier games' are kept in memory up to
 `EARLIER_GAMES_KEPT`.
 Only the current game is persisted, in `live.json`
 (`docs/persistence-and-identity.md`).
+
+**Endings feed the results log** (#373, `docs/persistence-and-identity.md`):
+every `game_end` not marked `restored` is a result appended to
+`results.jsonl`, and a `takeback` in a game with a standing result withdraws
+it. The log is the one record across games; the ledger stays this game's.
 
 ## What was offered
 

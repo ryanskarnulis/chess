@@ -25,6 +25,7 @@ from chessapp.analysis import captured_piece
 from chessapp.engine import MATE_CP, pov_cp
 from chessapp.game import GameSession
 from chessapp.honesty import VerifiedFacts
+from chessapp.results import counts_of
 from chessapp.tools import DESTRUCTIVE_TOOLS
 
 # Board symbol → the word commentary uses for it, for the capture claim class.
@@ -252,6 +253,9 @@ class TurnEvidence:
     fen_before: str
     fens_observed: tuple[str, ...] = ()
     pending_reply_fen: str | None = None
+    # The results tally the turn was shown (`ResultsLog.tally`, #373), or
+    # None on a record from before it (trace schema 4 and earlier).
+    results: Mapping[str, Any] | None = None
 
     def as_trace(self) -> dict[str, Any]:
         return {
@@ -261,6 +265,7 @@ class TurnEvidence:
             "fen_before": self.fen_before,
             "fens_observed": list(self.fens_observed),
             "pending_reply_fen": self.pending_reply_fen,
+            "results": dict(self.results) if self.results is not None else None,
         }
 
     @classmethod
@@ -279,6 +284,7 @@ class TurnEvidence:
             fen_before=evidence["fen_before"],
             fens_observed=tuple(evidence.get("fens_observed", ())),
             pending_reply_fen=evidence.get("pending_reply_fen"),
+            results=evidence.get("results"),
         )
 
 
@@ -432,6 +438,7 @@ def assemble(evidence: TurnEvidence) -> VerifiedFacts:
         openings=frozenset(
             openings.normalized(name) for name in openings.names_on_line(session)
         ),
+        results=counts_of(evidence.results) if evidence.results is not None else None,
         # Board truth, and the one fact here no tool has to have run for: who
         # is ahead is a piece count, so it is always available on every board
         # the turn held — including the one the reaction was written from.

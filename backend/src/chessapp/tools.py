@@ -70,8 +70,16 @@ from chessapp.engine import (
     player_view,
 )
 from chessapp.game import GameSession, MoveResult
-from chessapp.ledger import Ledger
+from chessapp.ledger import (
+    GAME_END,
+    NEW_GAME,
+    RESUMED,
+    TAKEBACK,
+    Ledger,
+    difficulty_label,
+)
 from chessapp.move_parts import PartsError
+from chessapp.results import RESULTS_FILENAME, ResultsLog
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +352,9 @@ def restore_live_checkpoint(ctx: "ToolContext") -> bool:
     ctx.session = session
     ctx.transcript = transcript
     ctx.ledger = Ledger.restore(data.get("ledger"), session, ctx.settings.snapshot())
+    # The restored game's events were read before the restart, if its ending
+    # was: nothing in them is new to the results log.
+    ctx._results_seq = ctx.ledger.next_seq
     return True
 
 
@@ -511,6 +522,9 @@ class ToolContext:
     # What happened in the game, as code saw it (#372, `ledger`): observed
     # after every dispatch and wherever a request lets go of the board.
     ledger: Ledger = field(default_factory=Ledger)
+    # Every game that ended, across games and restarts (#373, `results`):
+    # fed from the ledger's events by `follow_results`, read off the save dir.
+    results: ResultsLog = field(default_factory=ResultsLog)
     pending: PendingOp | None = None
     # The open question per origin (#319, `clarification`): one slot for each
     # conversation, read through `live_clarification`, never persisted.
@@ -526,6 +540,8 @@ class ToolContext:
     # Carried across session swaps so the version never goes backwards; see
     # `replace_session`. Not a public counter — `board_version` is.
     _version_base: int = 0
+    # The first ledger event `follow_results` has not read yet.
+    _results_seq: int = 0
     # Plain and non-reentrant on purpose. Plain because the async transport
     # acquires it off the event loop and releases it back on it — an owner-bound
     # `RLock` would refuse that release. Non-reentrant because there is exactly
@@ -545,6 +561,7 @@ class ToolContext:
             path = self.save_dir / SETTINGS_FILENAME
             _restore_settings(self.settings, path)
             self.settings.attach_store(lambda data: _write_settings_file(path, data))
+            self.results = ResultsLog.load(self.save_dir / RESULTS_FILENAME)
         self.observe_ledger()
 
     def note_result(self, tool: str, result: dict[str, Any]) -> None:
@@ -580,6 +597,47 @@ class ToolContext:
             self.ledger.observe(self.session, self.settings.snapshot())
         except Exception:
             logger.warning("ledger_observe_failed", exc_info=True)
+        self.follow_results()
+
+    def follow_results(self) -> None:
+        """Bring the results log up to date with the ledger (#373): a game
+        that ended is recorded, and a takeback of an ending withdraws it. An
+        ending the ledger marked `restored` (a finished save resumed) was
+        counted when it happened, if it happened here, and is skipped. Read
+        by a cursor over the ledger's events, so an ending any road recorded
+        is read exactly once. Best-effort, the `observe_ledger` rule."""
+        try:
+            events = self.ledger.since(self._results_seq)
+            for event in events:
+                if event.kind == GAME_END and not event.details.get("restored"):
+                    # The game's side and start are its own opening event's:
+                    # by the time this reads, a later call may have started
+                    # another game.
+                    start = next(
+                        (
+                            e.details
+                            for e in self.ledger.events(event.game_id)
+                            if e.kind in (NEW_GAME, RESUMED)
+                        ),
+                        {},
+                    )
+                    self.results.record(
+                        event.game_id,
+                        player_color=str(
+                            start.get("player_color", self.session.player_color)
+                        ),
+                        difficulty=difficulty_label(self.settings.snapshot()),
+                        result=str(event.details.get("result")),
+                        winner=event.details.get("winner"),
+                        termination=str(event.details.get("termination")),
+                        from_setup="root_fen" in start,
+                    )
+                elif event.kind == TAKEBACK:
+                    self.results.withdraw(event.game_id)
+            if events:
+                self._results_seq = events[-1].seq + 1
+        except Exception:
+            logger.warning("results_follow_failed", exc_info=True)
 
     @property
     def board_version(self) -> int:

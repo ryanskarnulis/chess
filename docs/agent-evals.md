@@ -349,6 +349,22 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Targeted run 2026-09-29 on the results tally (#373, second half).** A
+results log (`results.jsonl`) records every game that ended; its tally rides
+in the state block and the narrator's facts as `results`, and speech accuracy
+gains the `results` class (evidence field `results`, trace schema 5).
+- `long_capture` 5/5 in all three conditions; speech 14/14, reply said 15/15.
+- Frontier `results_so_far` (not appended to the history): dev 7/10 and
+  held-out 7/10, speech 7/7 and 7/7 backed, no unbacked line. **Every one of
+  the 20 answers was right by hand review** (for example "I've taken three of
+  your games, bro." and "yo, we're at six games so far."). The misses are the
+  reading's recall, not the model: the first run read 5 of 20 until the class
+  learned Glitch's verbs ("taken", "got you", "we're at", "had"). Re-read
+  offline after the last widening, 16 of 20 read, all backed. The rest are
+  "you're 2-3", "Two times.", "we've done six so far", and a sentence holding
+  "once", which is a shared hedge. The seeded record gives the player two
+  wins rather than one for that reason.
+
 **Targeted run 2026-09-29 on the opening's name (#373, roadmap #366 step 13,
 first half).** The state block and the narrator's facts gain `opening`
 (`openings.opening_of`: the book's name and ECO code for the line), and

@@ -838,6 +838,13 @@ def test_the_narrator_facts_hold_no_side_to_move_and_no_history():
         "outcome": None,
         "captured": ctx.session.captured_pieces(),
         "opening": None,
+        "results": {
+            "games": 0,
+            "player_won": 0,
+            "engine_won": 0,
+            "drawn": 0,
+            "by_difficulty": {},
+        },
         "engine_reply": None,
         "reply_owed": False,
         # Lifted out by the brain before the facts are shown (#320).

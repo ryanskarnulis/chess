@@ -50,7 +50,8 @@ Per scenario: whole-task passes out of N with a one-sided 95% Wilson
 interval, the **rubric score** (the mean fraction of checkpoints met — the
 number that moves while whole-task passes are still near zero), each
 checkpoint's hit count, the normalised failure modes, infra deaths, and every
-sample's turns (route, stop reason, tools, history). It also reports
+sample's turns (what was said and what Glitch answered, route, stop reason,
+tools, history). It also reports
 **speech accuracy** (#367): every traced turn's draft re-judged against its
 facts, as claims made and backed per family, for the scenario (`speech`) and
 for each sample (`speech`, with the `unbacked` lines quoted). Like the rubric

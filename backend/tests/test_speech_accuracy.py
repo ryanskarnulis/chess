@@ -49,6 +49,7 @@ def _record(
         engine_reply_san=reply,
         fen_before=fen_before,
         pending_reply_fen=pending,
+        results=fields.pop("results", None),
     )
     return {
         "ts": "2026-09-26T12:00:00",
@@ -402,7 +403,7 @@ def test_unbacked_leaves_out_what_the_scorer_does_not_score():
 
 
 def test_a_record_with_no_words_to_judge_has_nothing_unbacked():
-    assert unbacked({"kind": "serving", "schema": 4}) == ()
+    assert unbacked({"kind": "serving", "schema": 5}) == ()
 
 
 # --- #320: who is better, from the player's side --------------------------------
@@ -446,3 +447,34 @@ def test_a_system_named_inside_another_family_is_backed():
     assert _counts(score_record(_record("Going for the London, I see.", session))) == [
         ("opening", True)
     ]
+
+
+# --- #373: the results tally, from the record's evidence ------------------------
+
+_TALLY = {
+    "games": 2,
+    "player_won": 0,
+    "engine_won": 2,
+    "drawn": 0,
+    "by_difficulty": {
+        "casual": {"games": 2, "player_won": 0, "engine_won": 2, "drawn": 0}
+    },
+}
+
+
+def test_a_count_is_scored_against_the_tally_the_turn_was_shown():
+    session = _session("e4", "e5")
+    backed = score_record(_record("I've won 2 games.", session, results=_TALLY))
+    assert _counts(backed) == [("results", True)]
+    wrong = score_record(_record("You've won 2 games.", session, results=_TALLY))
+    assert [
+        c.claim
+        for c in unbacked(_record("You've won 2 games.", session, results=_TALLY))
+    ] == ["results"]
+    assert _counts(wrong) == [("results", False)]
+
+
+def test_a_record_with_no_tally_leaves_a_count_unscored():
+    record = _record("I've won 2 games.", _session("e4", "e5"))
+    assert "results" in score_record(record).unscored
+    assert unbacked(record) == ()

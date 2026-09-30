@@ -1310,6 +1310,7 @@ LEVEL = VerifiedFacts(
         ("You're at -3.5 here.", "evaluation"),
         ("You're up a knight.", "material"),
         ("Classic Sicilian Defence.", "opening"),
+        ("I've won 3 games against you.", "results"),
     ],
 )
 def test_every_claim_class_reads_an_unbacked_line(text, claim):
@@ -1541,3 +1542,75 @@ def test_opening_talk_that_is_not_a_claim(text):
 
 def test_no_opening_is_sayable_without_one():
     assert unverified_claims("Classic Ruy Lopez.", LEVEL) == ("opening",)
+
+
+# --- the results tally (#373) ----------------------------------------------------
+
+# Five games: Glitch won three, the player one, one drawn; all at casual.
+FIVE_PLAYED = VerifiedFacts(
+    results=frozenset(
+        {("games", 5), ("engine_won", 3), ("player_won", 1), ("drawn", 1)}
+    )
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I've won 3 games against you.",
+        "I have won three games.",
+        "You've lost three times.",
+        "You beat me 1 time.",
+        "We've played five games.",
+        "I've got 3 wins.",
+        "You've got 1 win.",
+        "You have 3 losses.",
+        "One win, three losses, one draw.",
+        # Glitch's own ways of saying it, from the first live run.
+        "I've taken three of your games, bro.",
+        "I've taken three of 'em.",
+        "I've got you three times, bro.",
+        "I've taken three from you so far, bro.",
+        "Yo, we're at five games so far.",
+        "Yo, we've had 5 games so far.",
+        "We've done five games so far.",
+        "We've clocked five games so far, bro.",
+        "I've taken three of 'em from you, bro.",
+    ],
+)
+def test_a_count_the_tally_holds_is_backed(text):
+    assert [(c.claim, c.backed) for c in claims(text, FIVE_PLAYED)] == [
+        ("results", True)
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You've won 3 games.",
+        "I won 4 games.",
+        "You beat me twice.",
+        "We played 4 games.",
+        "You have 2 losses.",
+        "Two wins apiece.",
+        "You've taken four of my games.",
+    ],
+)
+def test_a_count_the_tally_does_not_hold_is_unbacked(text):
+    assert unverified_claims(text, FIVE_PLAYED) == ("results",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You lost 3 pawns in that trade.",
+        "I won that game.",
+        "Want to play 5 games?",
+        "If you win 3 games I'll be impressed.",
+        "I'll win ten games in a row.",
+        "I've got three pawns on the kingside.",
+        "You took 2 of my pawns.",
+    ],
+)
+def test_talk_that_is_not_a_record(text):
+    assert "results" not in unverified_claims(text, FIVE_PLAYED)
