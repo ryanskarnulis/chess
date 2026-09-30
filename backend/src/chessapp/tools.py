@@ -551,7 +551,14 @@ class ToolContext:
         """Record the moves a tool result offered, if it offered any; never
         costs the call (the `observe_ledger` rule)."""
         try:
-            self.ledger.note_offer(self.session, self.settings.snapshot(), tool, result)
+            self.ledger.note_offer(
+                self.session,
+                self.settings.snapshot(),
+                tool,
+                result,
+                origin=self.origin,
+                board_version=self.board_version,
+            )
         except Exception:
             logger.warning("ledger_note_failed", exc_info=True)
 
@@ -1685,29 +1692,37 @@ def _san(session: "GameSession", move: str) -> str | None:
 def _check_positional_pick(ctx: "ToolContext", move: str) -> None:
     """Refuse a move picked by position when there is nothing to pick from.
 
-    A pick by position is only a move when a question this conversation was
-    asked still stands and the move is one of the options it offered. Read
-    without consuming: the turn already read the record once
-    (`live_clarification` drops an expired one as it reports it), so a record
-    still in its slot is one that turn found standing — this re-checks it
-    against the board as it is now rather than trusting that.
+    A pick by position is only a move when this conversation has a list on
+    the table and the move is on it: the options of a question that still
+    stands, or else the moves last offered it on this board — a hint's, a
+    refused move's alternatives (#409: "go with your first choice" after a
+    hint was refused, because a hint is not a question). Read without
+    consuming: the turn already read the question once (`live_clarification`
+    drops an expired one as it reports it), so a record still in its slot is
+    one that turn found standing — this re-checks it against the board as it
+    is now rather than trusting that.
     """
     record = ctx.clarifications.get(ctx.origin)
     stands = record is not None and not staleness(
         record, game_id=ctx.session.game_id, board_version=ctx.board_version
     )
-    if not stands:
+    if stands:
+        options, offered_by = list(record.candidates), "the open question offered"
+    else:
+        options = ctx.ledger.standing_offer(ctx.origin, ctx.board_version)
+        offered_by = "were last offered on this board"
+    if not options:
         raise ToolError(
-            "no question stands in this conversation, so a pick by position"
-            " names no move; nothing was played — say what the player must"
-            " be asked",
+            "no question or offer stands in this conversation, so a pick by"
+            " position names no move; nothing was played — say what the"
+            " player must be asked",
             retry=RETRY_NEVER,
         )
-    if _san(ctx.session, move) not in record.candidates:
+    if _san(ctx.session, move) not in options:
         raise ToolError(
-            "a pick by position must be one of the moves the open question"
-            f" offered: {', '.join(record.candidates)} — resubmit the one the"
-            " player picked, exactly as written there, still picked_by_position",
+            f"a pick by position must be one of the moves {offered_by}:"
+            f" {', '.join(options)} — resubmit the one the player picked,"
+            " exactly as written there, still picked_by_position",
             retry=RETRY_DIFFERENT_ARGS,
         )
 

@@ -208,21 +208,29 @@ class Ledger:
         settings: Mapping[str, Any],
         tool: str,
         result: Mapping[str, Any],
+        *,
+        origin: str | None = None,
+        board_version: int | None = None,
     ) -> None:
         """The moves a tool result offered the player — a hint's candidates,
         a question's choices, a refused move's alternatives — which "the
         second one" may point back to long after the result has scrolled out
-        of view. Nothing is recorded for a result that offered nothing."""
+        of view. Nothing is recorded for a result that offered nothing.
+
+        `origin` and `board_version` say which conversation was offered them
+        and on which board: what `standing_offer` needs to tell an offer a
+        pick by position may still choose from (#409)."""
         moves = offered_moves(tool, result)
         if not moves:
             return
+        details: dict[str, Any] = {"source": OFFER_SOURCES[tool], "moves": moves}
+        if origin is not None:
+            details["origin"] = origin
+        if board_version is not None:
+            details["board_version"] = board_version
         with self._lock:
             self._observe(session, followed_settings(settings))
-            self._append(
-                OFFER,
-                session.game_id,
-                {"source": OFFER_SOURCES[tool], "moves": moves},
-            )
+            self._append(OFFER, session.game_id, details)
 
     def expect_resume(self, name: str) -> None:
         """The next new game this ledger observes is the save `name` coming
@@ -405,6 +413,20 @@ class Ledger:
             elif event.kind == TAKEBACK:
                 del standing[len(standing) - event.details["plies"] :]
         return standing
+
+    def standing_offer(self, origin: str, board_version: int) -> list[str] | None:
+        """The moves last offered to `origin` in the current game, while the
+        board is still the one they were offered on; None when nothing was,
+        or the newest offer is about a board that has since changed (#409).
+        Only the newest counts: a later offer is what "the first one" means,
+        and an older one was made on an older board."""
+        for event in reversed(self.current()):
+            if event.kind != OFFER or event.details.get("origin") != origin:
+                continue
+            if event.details.get("board_version") != board_version:
+                return None
+            return list(event.details.get("moves", ()))
+        return None
 
     def material_by_ply(self, game_id: str | None = None) -> dict[int, int]:
         """The player's material after each ply of the standing line."""

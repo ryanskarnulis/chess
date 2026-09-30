@@ -11,6 +11,9 @@ one the shipped loop builds; nothing here reads the model's words.
 
 import json
 
+import pytest
+
+from chessapp.agent_api import reset_rate_limit
 from chessapp.clarification import (
     ANSWERED,
     ASKED_AGAIN,
@@ -21,6 +24,7 @@ from chessapp.clarification import (
     SUPERSEDED,
 )
 from chessapp.conversation import Transcript
+from chessapp.engine import CandidateMove
 from chessapp.game import GameSession
 from chessapp.tools import PANEL_ORIGIN, ToolContext, delegate_origin
 from fakes import FakeEngine, text_turn, tool_calls_turn
@@ -29,6 +33,15 @@ from test_closing_pass import CollectedTurns, make_client
 KNIGHT_ASK = "move my kings knight"
 ASK = tool_calls_turn(("ask_player", {"piece": "knight", "which": "kings"}))
 QUESTION = text_turn("Nf3 or Nh3?")
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    """The delegate limiter is module-global; one test's posts must not count
+    against another's."""
+    reset_rate_limit()
+    yield
+    reset_rate_limit()
 
 
 def _asked(ctx: ToolContext | None = None):
@@ -475,7 +488,7 @@ def test_a_pick_by_position_with_nothing_asked_moves_nothing():
     refused = _last_tool_result(provider)
     assert refused["ok"] is False
     assert refused["retry"] == "never"
-    assert "no question stands" in refused["error"]
+    assert "no question or offer stands" in refused["error"]
 
 
 def test_a_pick_by_position_on_a_stale_question_moves_nothing():
@@ -491,7 +504,7 @@ def test_a_pick_by_position_on_a_stale_question_moves_nothing():
     client.post("/api/command", json={"text": "the first one"})
 
     assert ctx.session.move_history() == before
-    assert "no question stands" in _last_tool_result(provider)["error"]
+    assert "no question or offer stands" in _last_tool_result(provider)["error"]
 
 
 def test_a_pick_by_position_off_the_question_is_corrected_not_played():
@@ -507,6 +520,88 @@ def test_a_pick_by_position_off_the_question_is_corrected_not_played():
     assert ctx.clarifications[PANEL_ORIGIN].candidates == ("Nf3", "Nh3")
 
 
+# --- a pick from what was offered (#409) --------------------------------------------
+#
+# A hint is not a question, but "go with your first choice" after one is still
+# a pick from a list on the table: the frontier's `long_session` refused it
+# 3/3. With no question standing, the pick is checked against the moves last
+# offered to this conversation on this board (`Ledger.standing_offer`).
+
+HINT = (
+    CandidateMove(uci="d2d4", san="d4", score_cp=40, mate_in=None),
+    CandidateMove(uci="c2c4", san="c4", score_cp=35, mate_in=None),
+)
+
+
+def _hinted():
+    """A client whose panel has just been offered d4 and c4 by a hint."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(best_moves=HINT))
+    client, provider, ctx = make_client(
+        tool_calls_turn(("get_best_moves", {"n": 2})),
+        text_turn("note"),
+        text_turn("d4 or c4."),
+        ctx=ctx,
+    )[:3]
+    client.post("/api/command", json={"text": "any suggestion for me here?"})
+    return client, provider, ctx
+
+
+def test_a_pick_by_position_takes_the_hints_first_choice():
+    client, provider, ctx = _hinted()
+
+    _pick(provider, "d4")
+    client.post("/api/command", json={"text": "go with your first choice"})
+
+    assert ctx.session.move_history()[:1] == ["d4"]
+
+
+def test_a_pick_by_position_off_the_hint_is_corrected_not_played():
+    client, provider, ctx = _hinted()
+
+    _pick(provider, "e4")
+    client.post("/api/command", json={"text": "the third one"})
+
+    assert ctx.session.move_history() == []
+    refused = _last_tool_result(provider)
+    assert refused["retry"] == "different_args"
+    assert "were last offered on this board: d4, c4" in refused["error"]
+
+
+def test_a_hint_about_a_board_that_changed_is_nothing_to_pick_from():
+    client, provider, ctx = _hinted()
+    ctx.settings.verbosity = "low"
+    thread = client.post("/api/agent/conversations", json={}).json()["id"]
+    client.post(f"/api/agent/conversations/{thread}/messages", json={"content": "e4"})
+    before = ctx.session.move_history()
+
+    _pick(provider, "d4")
+    client.post("/api/command", json={"text": "go with your first choice"})
+
+    assert ctx.session.move_history() == before
+    assert "no question or offer stands" in _last_tool_result(provider)["error"]
+
+
+def test_another_threads_hint_is_nothing_to_pick_from():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine(best_moves=HINT))
+    client, provider, ctx = make_client(
+        tool_calls_turn(("get_best_moves", {"n": 2})),
+        text_turn("note"),
+        text_turn("d4 or c4."),
+        ctx=ctx,
+    )[:3]
+    thread = client.post("/api/agent/conversations", json={}).json()["id"]
+    client.post(
+        f"/api/agent/conversations/{thread}/messages",
+        json={"content": "any suggestion for me here?"},
+    )
+
+    _pick(provider, "d4")
+    client.post("/api/command", json={"text": "go with your first choice"})
+
+    assert ctx.session.move_history() == []
+    assert "no question or offer stands" in _last_tool_result(provider)["error"]
+
+
 def test_another_threads_question_is_nothing_to_pick_from():
     client, provider, ctx = make_client(ASK, QUESTION, ctx=None)[:3]
     first = client.post("/api/agent/conversations", json={}).json()["id"]
@@ -519,4 +614,4 @@ def test_another_threads_question_is_nothing_to_pick_from():
     client.post("/api/command", json={"text": "the first one"})
 
     assert ctx.session.move_history() == []
-    assert "no question stands" in _last_tool_result(provider)["error"]
+    assert "no question or offer stands" in _last_tool_result(provider)["error"]

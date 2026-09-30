@@ -105,6 +105,14 @@ anybody's words. A question also stands in the state block as `open_question`
 while it is open (#319); the offer stays in the record after it closes, which
 is what "the second one you suggested" reaches for three turns later.
 
+Each offer also keeps the conversation it was made to (`origin`) and the
+board it was about (`board_version`). That is what lets code check a pick by
+position (`make_move` with `source: picked_by_position`) when no question is
+open (#409): "go with your first choice" after a hint picks from the moves
+last offered to that conversation, and only while the board has not changed
+since (`Ledger.standing_offer`). An open question still comes first; with
+neither, the pick is refused and nothing moves.
+
 ## The record (`render_record`)
 
 One line per event, prefixed by where the move list stood: "after 2. Qh5: took

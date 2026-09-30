@@ -31,6 +31,7 @@ from chessapp.ledger import (
 )
 from chessapp.tools import (
     LIVE_CHECKPOINT_FILENAME,
+    PANEL_ORIGIN,
     Settings,
     ToolContext,
     build_registry,
@@ -510,10 +511,42 @@ def test_a_hint_a_question_and_a_refusals_alternatives_are_offers():
     registry.dispatch("ask_player", {"piece": "knight"})
     registry.dispatch("make_move", {"move": "Ke2"})
     offers = [e.details for e in ctx.ledger.current() if e.kind == OFFER]
-    assert offers[0] == {"source": "hint", "moves": ["e4", "d4"]}
+    assert offers[0] == {
+        "source": "hint",
+        "moves": ["e4", "d4"],
+        "origin": PANEL_ORIGIN,
+        "board_version": ctx.board_version,
+    }
     assert offers[1]["source"] == "question"
     assert sorted(offers[1]["moves"]) == ["Na3", "Nc3", "Nf3", "Nh3"]
     assert offers[2]["source"] == "alternatives" and offers[2]["moves"]
+
+
+def test_the_standing_offer_is_the_newest_one_to_that_origin_on_this_board():
+    """What a pick by position may choose from when no question stands
+    (#409): the newest offer made to that conversation, and only while the
+    board is the one it was made on."""
+    session = GameSession()
+    ledger = Ledger()
+    hint = {"ok": True, "moves": [{"san": "e4"}, {"san": "d4"}]}
+    other = {"ok": True, "moves": [{"san": "c4"}]}
+    ledger.note_offer(
+        session, SETTINGS, "get_best_moves", hint, origin="a", board_version=1
+    )
+    ledger.note_offer(
+        session, SETTINGS, "get_best_moves", other, origin="b", board_version=1
+    )
+
+    assert ledger.standing_offer("a", 1) == ["e4", "d4"]
+    assert ledger.standing_offer("b", 1) == ["c4"]
+    assert ledger.standing_offer("c", 1) is None
+    assert ledger.standing_offer("a", 2) is None
+
+    ledger.note_offer(
+        session, SETTINGS, "get_best_moves", other, origin="a", board_version=2
+    )
+    assert ledger.standing_offer("a", 2) == ["c4"]
+    assert ledger.standing_offer("a", 1) is None
 
 
 def test_a_result_that_offered_nothing_records_nothing():
