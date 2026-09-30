@@ -162,7 +162,8 @@ class Ledger:
     - `setting`: `name` (`SETTING_NAMES`), `before`, `after`.
     - `draw_offer`: `accepted`, `reason` (`draw_offer.judge_draw_offer`'s).
     - `game_end`: `termination`, `result`, `winner` (`player`, `opponent`, or
-      None for a draw).
+      None for a draw), and `restored` when the game arrived already over (a
+      finished save resumed) rather than ending here (#373).
     - `offer`: `source` (`OFFER_SOURCES`), `moves` (SAN), and `origin` and
       `board_version` when the caller knows them (`standing_offer`).
     - `review`: `moves`, the moves `review_game` named, worst first, each with
@@ -270,11 +271,15 @@ class Ledger:
 
     def _observe(self, session: GameSession, settings: dict[str, str]) -> None:
         game_id = session.game_id
-        if game_id != self._game_id:
+        started = game_id != self._game_id
+        if started:
             self._start_game(session)
         else:
             self._follow_line(session)
-        self._follow_outcome(session)
+        # A game that arrives already over (a finished save resumed, a
+        # rebuilt checkpoint) did not end here: its ending is `restored`, and
+        # the results log does not count it a second time (#373).
+        self._follow_outcome(session, restored=started)
         if self._settings is not None:
             for name in SETTING_NAMES:
                 before, after = self._settings[name], settings[name]
@@ -354,7 +359,7 @@ class Ledger:
             self._sans.append(details["san"])
             self._append(MOVE, session.game_id, details)
 
-    def _follow_outcome(self, session: GameSession) -> None:
+    def _follow_outcome(self, session: GameSession, *, restored: bool = False) -> None:
         outcome = session.outcome()
         if outcome is None:
             self._ended = False
@@ -365,15 +370,14 @@ class Ledger:
         winner = None
         if outcome.winner is not None:
             winner = "player" if outcome.winner == session.player_color else "opponent"
-        self._append(
-            GAME_END,
-            session.game_id,
-            {
-                "termination": outcome.termination,
-                "result": outcome.result,
-                "winner": winner,
-            },
-        )
+        details: dict[str, Any] = {
+            "termination": outcome.termination,
+            "result": outcome.result,
+            "winner": winner,
+        }
+        if restored:
+            details["restored"] = True
+        self._append(GAME_END, session.game_id, details)
 
     def _append(self, kind: str, game_id: str, details: dict[str, Any]) -> None:
         self._events.append(

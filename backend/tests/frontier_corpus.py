@@ -29,6 +29,7 @@ from typing import Any
 import chess.pgn
 
 from chessapp.game import GameSession
+from chessapp.results import RESULTS_FILENAME, ResultsLog
 from chessapp.speech_accuracy import score_record
 from frontier import VERDICT_TOOLS, Checkpoint, Episode, Say, Scenario, Turn, Variant
 from test_agent_evals import _TIER_STRENGTH, EvalApp
@@ -1510,6 +1511,71 @@ NAME_THE_OPENING = Scenario(
     checkpoints=(said_backed("opening"), still(1), completed(1)),
 )
 
+# Six games before this one: Glitch won three, the player two, one drawn.
+# Casual 2–1–0 (Glitch first), advanced 1–1–1. The player has two wins, not
+# one, because "once" is a shared hedge the speech reading never reads
+# ("once you castle"), so "you've beaten me once" could never be graded.
+_PAST_RESULTS = (
+    ("opponent", "casual"),
+    ("opponent", "casual"),
+    ("player", "casual"),
+    ("opponent", "advanced"),
+    ("player", "advanced"),
+    (None, "advanced"),
+)
+
+
+def with_results(app: EvalApp) -> None:
+    """A fresh board and a results log of five earlier games, loaded the way
+    the app loads one off its save dir at startup."""
+    _save_dir(app)
+    path = app.ctx.save_dir / RESULTS_FILENAME
+    log = ResultsLog(path)
+    for index, (winner, level) in enumerate(_PAST_RESULTS):
+        log.record(
+            f"{index:032x}",
+            player_color="white",
+            difficulty=level,
+            result={"player": "1-0", "opponent": "0-1", None: "1/2-1/2"}[winner],
+            winner=winner,
+            termination="checkmate" if winner else "stalemate",
+            from_setup=False,
+        )
+    app.ctx.results = ResultsLog.load(path)
+
+
+RESULTS_SO_FAR = Scenario(
+    name="results_so_far",
+    tier=1,
+    why=(
+        "#373: results across games. Nothing recorded a result once a game was "
+        "gone; since #373 a results log does, and its tally rides in the state "
+        "block and the narrator's facts. The answer needs no tool, so the "
+        "speech class grades it."
+    ),
+    dev=(
+        Variant(
+            "how_many_won",
+            (Say("how many games have you won against me?"),),
+            with_results,
+        ),
+        Variant("my_record", (Say("what's my record against you?"),), with_results),
+    ),
+    heldout=(
+        Variant(
+            "games_played",
+            (Say("how many games have we played so far?"),),
+            with_results,
+        ),
+        Variant(
+            "times_beaten",
+            (Say("how many times have I beaten you?"),),
+            with_results,
+        ),
+    ),
+    checkpoints=(said_backed("results"), still(1), completed(1)),
+)
+
 SCENARIOS: tuple[Scenario, ...] = (
     UNDO_REPLACE_AND_JUDGE,
     SETTINGS_MOVE_AND_VERDICT,
@@ -1537,4 +1603,5 @@ SCENARIOS: tuple[Scenario, ...] = (
     QUEEN_ASK_LONG_CHAT_THEN_FIRST,
     VERDICT_AS_BLACK_FACING_MATE,
     NAME_THE_OPENING,
+    RESULTS_SO_FAR,
 )

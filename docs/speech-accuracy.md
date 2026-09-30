@@ -35,6 +35,7 @@ per class per sentence as **made** and **backed**.
 | material | `material` | the count on some board the turn held |
 | advantage | `advantage` | the direction of an engine verdict the turn reported, from the player's side (#320) |
 | opening | `opening` | a name the game's line passed through, from the record's own session (#373) |
+| results | `results` | a count the results tally the turn was shown holds, overall or for a difficulty (#373) |
 
 Three classes pass by construction where their fact does not apply. That is
 right for a guard and wrong for a count, so the scorer drops them there:
@@ -178,6 +179,18 @@ the deployed trace (1,055 records, 2026-09-29) the class fired twice, both
 2. Bf4, backed, and over 1. d4 e6 2. Bf4, which the book files as the Horwitz
 Defense, so unbacked. The book is the authority here: a London *setup* the
 book does not name is not one the scorer can back.
+
+**The results class (#373).** It reads a count of games across the tally:
+"I've won 3 games", "you beat me twice", "we've played five games", "you've
+got 1 win", and a record read with no side named ("one win, three losses"),
+which either side's count backs. A count is required (a bare "I won" is the
+outcome class's, about this game), and so is a word that makes it games
+("games", "times", "twice", a win/loss/draw noun), so "you lost 3 pawns" is
+not read. Glitch speaks, so "I" is the engine. A count is backed when the
+tally holds it, overall or for any one difficulty. The tally is evidence
+field `results` (trace schema 5); an older record has none, and its counts
+are left unscored. "Once" is a shared hedge ("once you castle"), so a
+sentence holding it is not read at all.
 
 **What the scorer is lenient about, by design.** These errors inflate
 accuracy and never count against the model:

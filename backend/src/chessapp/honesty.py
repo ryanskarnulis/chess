@@ -273,6 +273,11 @@ class VerifiedFacts:
     # in the Morphy Defense. Empty before the first move and from a set-up
     # position, where no opening is sayable.
     openings: frozenset[str] = frozenset()
+    # Every count the results tally the turn was shown states, as `(what, n)`
+    # (`results.counts_of`, #373): games, player_won, engine_won, drawn,
+    # overall and per difficulty. None for a record that holds no tally,
+    # which the scorer leaves unscored rather than failing.
+    results: frozenset[tuple[str, int]] | None = None
 
 
 _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
@@ -949,6 +954,100 @@ def _opening_on_line(match: re.Match[str], facts: VerifiedFacts) -> bool:
     return any(within.search(name) for name in facts.openings)
 
 
+# A count of games across the tally (#373): "I've won 3 games", "you beat me
+# twice", "we've drawn once", "we've played five games", "you've got 2 wins",
+# and a record read out with no side named ("one win, three losses"), which
+# either side's count backs.
+# A count is required — a bare "I won" is the outcome class's, about this
+# game — and so is a word that makes it games rather than material ("games",
+# "times", "once", "twice", or a win/loss/draw noun): "you lost 3 pawns" is
+# not a record. Glitch speaks, so "I" is the engine and "you" the player.
+# "once" is also a shared hedge ("once you castle"), so a sentence holding it
+# is never read; it is here for completeness of the mapping.
+_COUNT_WORDS = {
+    "zero": 0,
+    "one": 1,
+    "once": 1,
+    "two": 2,
+    "twice": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+_COUNT = (
+    r"(?P<count> \d+ | zero | one | two | three | four | five | six | seven"
+    r" | eight | nine | ten )"
+)
+_RESULTS = re.compile(
+    rf"""
+    \b (?P<subject> i | you | we )
+        (?: \s* (?: 've | 're ) | \s+ (?: have | are ) )? \s+
+        (?: (?: already | only | now | just | so \s+ far ) \s+ )?
+        (?P<verb> won | lost | drawn | drew | tied | played | had | done | at | clocked
+                | taken | took | got | beaten | beat )
+        (?: \s+ (?P<object> me | you ) (?: \s+ down )? )?
+        \s+ (?: (?P<times> once | twice )
+               | {_COUNT} \s+
+                 (?: games? \b | times? \b
+                   # "three of your games", "three of 'em", never "of my pawns"
+                   | of \s+ (?: your | my | our | the | 'em | them )
+                     (?: \s+ games | \s+ from \s+ (?: you | me ) | (?! \s* \w ) )
+                   | from \s+ (?: you | me ) \b ) )
+    | \b (?: (?P<owner> i | you ) (?: \s* (?: 've | \s have ) )? \s+
+            (?: got \s+ )? )?
+        {_COUNT.replace("count", "tally")} \s+
+        (?P<noun> wins? | loss (?: es )? | draws? )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# The verbs that say the subject won: "won", and the ways Glitch says it
+# ("I've taken three of your games", "I've got you three times").
+_WON = frozenset({"won", "taken", "took", "got", "beaten", "beat"})
+# The verbs that only count games: "we've played five", "we're at five games".
+_PLAYED = frozenset({"played", "had", "done", "at", "clocked"})
+
+
+def _results_claimed(match: re.Match[str]) -> tuple[str, int]:
+    """The tally key a count names and the count: `("engine_won", 3)`."""
+    said = {k: (v or "").lower() for k, v in match.groupdict().items()}
+    raw = said["count"] or said["tally"] or said["times"]
+    count = int(raw) if raw.isdigit() else _COUNT_WORDS[raw]
+    if said["noun"]:
+        owner, noun = said["owner"], said["noun"]
+        if noun.startswith("draw"):
+            return "drawn", count
+        if not owner:
+            # "one win, three losses": a record read out with no side named.
+            return "either_won", count
+        glitch_ahead = (owner == "i") == noun.startswith("win")
+        return ("engine_won" if glitch_ahead else "player_won"), count
+    subject, verb = said["subject"], said["verb"]
+    if verb in _PLAYED:
+        return "games", count
+    if verb in ("drawn", "drew", "tied"):
+        return "drawn", count
+    if subject == "we":
+        # "we won three" has no side; read it as nothing the tally can back.
+        return "", count
+    won = verb in _WON
+    return ("engine_won" if (subject == "i") == won else "player_won"), count
+
+
+def _results_match(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    if facts.results is None:
+        return False
+    key, count = _results_claimed(match)
+    if key == "either_won":
+        return bool({("engine_won", count), ("player_won", count)} & facts.results)
+    return (key, count) in facts.results
+
+
 def _reply_not_named(match: re.Match[str], facts: VerifiedFacts) -> bool:
     return not _names(match.group(0), facts.unplayed_replies)
 
@@ -1073,6 +1172,7 @@ _CLAIM_CLASSES = (
     _ClaimClass("material", _MATERIAL, _material_matches),
     _ClaimClass("advantage", _ADVANTAGE, _advantage_matches),
     _ClaimClass("opening", _opening_pattern(), _opening_on_line),
+    _ClaimClass("results", _RESULTS, _results_match),
 )
 
 

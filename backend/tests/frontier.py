@@ -537,6 +537,9 @@ def _sample_record(
         "turns": [
             {
                 "said": turn.say.text,
+                # What Glitch answered: the only view of a row graded by a
+                # speech class (#373), where no tool shows what happened.
+                "answered": turn.commentary,
                 "origin": turn.say.origin,
                 "route": turn.route,
                 "stop_reason": turn.stop_reason,

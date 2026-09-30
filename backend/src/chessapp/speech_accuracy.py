@@ -198,7 +198,10 @@ def score_record(record: Mapping[str, Any]) -> TurnScore | None:
                 reply_judged=evidence.pending_reply_fen is not None
                 or reply is not None,
             ),
-            frozenset(UNSCORED),
+            # A record from before the results tally (#373) holds none to
+            # back a count with: its `results` claims are counted, not held.
+            frozenset(UNSCORED)
+            | (frozenset({"results"}) if evidence.results is None else frozenset()),
             legacy=False,
             reply_announced=names_reply(draft, reply)
             if reply and draft.strip() and evidence.pending_reply_fen is None

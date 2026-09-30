@@ -36,8 +36,9 @@ from chessapp.brain import ModelCall
 # `schema` is version 1. 3 adds `draft` and `evidence`, which make a turn's
 # speech re-judgeable offline (#367). 4 drops the live honesty guard's
 # fields (`guarded`, `suppressed`, `rewrite`, …) with the guard itself (#368):
-# `draft` is what Glitch said. Bump it on any change a reader must branch on.
-TRACE_SCHEMA = 4
+# `draft` is what Glitch said. 5 adds `evidence.results`, the results tally
+# the turn was shown (#373). Bump it on any change a reader must branch on.
+TRACE_SCHEMA = 5
 # What a record in the trace file is. A turn, or a `serving` manifest
 # (`serving.KIND_SERVING`), written at startup and whenever what serves the app
 # changes; the kind is on every record so a reader never mistakes one for the

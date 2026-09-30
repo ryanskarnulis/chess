@@ -28,7 +28,8 @@ board and the command) and at the head of the narrator's brief:
 
 Then the state block, fresh every turn, `open_question` included. Since
 #373 it also names the opening (`opening`: the deepest book position the line
-has reached, `openings.opening_of`), which the narrator's facts carry too.
+has reached, `openings.opening_of`) and carries the results tally across games
+(`results`, from `results.jsonl`), both of which the narrator's facts carry too.
 
 **Why not chat turns.** The planner read Glitch's slang replies as its own past
 turns — in-context examples of answering in prose and calling nothing (#361) —

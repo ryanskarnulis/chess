@@ -498,6 +498,12 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     has reached (`openings.opening_of`, #373), or None. For the `captures`
     reason once more: the app can read it off the board exactly, and a 12B
     asked "what opening is this?" names one from memory, often wrongly.
+
+    `results` is the tally of every game that ended (`ResultsLog.tally`,
+    #373): wins, losses and draws from the player's side, overall and per
+    difficulty. No board or save holds it — autosave is overwritten and an
+    unsaved game leaves no file — so before it "how many games have you
+    won?" had nothing true to answer from. Zeros when none has ended.
     """
     session = ctx.session
     return {
@@ -512,6 +518,7 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
         "legal_moves": session.legal_moves(),
         "captures": session.legal_captures(),
         "opening": openings.opening_of(session),
+        "results": ctx.results.tally(),
         "saved_games": saved_game_names(ctx),
         "settings": _agent_settings_dict(ctx),
     }
@@ -698,8 +705,9 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
     line saying the reply never came. `board_version` is lifted out the same
     way and dates the turn's analysis results against this board (#320).
 
-    `opening` is the state block's (#373): "what opening is this?" needs no
-    tool, so on that turn nothing but these facts can tell the narrator.
+    `opening` and `results` are the state block's (#373): "what opening is
+    this?" and "how many have you won?" need no tool, so on those turns
+    nothing but these facts can tell the narrator.
     """
     settled = coordinator.settlement
     return {
@@ -709,6 +717,7 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
         "outcome": relative_outcome(ctx.session),
         "captured": ctx.session.captured_pieces(),
         "opening": openings.opening_of(ctx.session),
+        "results": ctx.results.tally(),
         "engine_reply": _reply_facts(settled.reply)
         if settled is not None and settled.reply is not None
         else None,
@@ -1074,6 +1083,7 @@ def _turn_evidence(
         fen_before=fen_before,
         fens_observed=tuple(fens_observed),
         pending_reply_fen=pending_reply_fen,
+        results=ctx.results.tally(),
     )
 
 

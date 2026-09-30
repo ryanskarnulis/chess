@@ -62,6 +62,7 @@ from chessapp.llama_brain import (
     create_llama_brain,
 )
 from chessapp.provider import ChatResult, ProviderError
+from chessapp.results import RESULTS_FILENAME
 from chessapp.tools import LIVE_CHECKPOINT_FILENAME
 from fakes import ScriptedProvider, text_turn, tool_calls_turn
 
@@ -374,6 +375,13 @@ class Harness:
             return None
         return json.loads(path.read_text())
 
+    def results_log(self) -> list[dict[str, Any]]:
+        """The results log's lines on disk, oldest first (#373)."""
+        path = self.save_dir / RESULTS_FILENAME
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
     @contextmanager
     def failures(self, step: Step) -> Iterator[None]:
         """The step's injected failures, switched on for it alone."""
@@ -617,6 +625,8 @@ class Observed:
     original: Observed | None = None
     # The live checkpoint after the step (#372), or None before any.
     checkpoint: dict[str, Any] | None = None
+    # The results log's lines after the step (#373), oldest first.
+    results_log: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _delegate_results(response: dict[str, Any]) -> list[dict[str, Any]]:
@@ -701,6 +711,7 @@ def run_step(
     observed.after = harness.state()
     observed.turns = harness.tracer.records[traced:]
     observed.checkpoint = harness.checkpoint()
+    observed.results_log = harness.results_log()
     return observed
 
 
@@ -1191,6 +1202,43 @@ def check_ledger_follows_the_board(observed: Observed) -> None:
         )
 
 
+def check_results_follow_the_endings(observed: Observed) -> None:
+    """A game the checkpoint shows ended here has its result standing in the
+    results log, and the same result (#373): whatever road ended it, and
+    however often it was taken back and ended again. Read one way only: a
+    restart settles an owed reply without writing a checkpoint, so the log
+    may be a step ahead of the file, never behind it. An ending the ledger
+    marked `restored` (a finished save resumed) was never this game's to
+    count."""
+    checkpoint = observed.checkpoint
+    if checkpoint is None or "ledger" not in checkpoint:
+        return
+    session = GameSession.from_dict(checkpoint["session"])
+    outcome = session.outcome()
+    if outcome is None:
+        return
+    endings = [
+        e
+        for e in checkpoint["ledger"]
+        if e["kind"] == "game_end" and e["game_id"] == session.game_id
+    ]
+    if not endings or endings[-1].get("restored"):
+        return
+    standing: dict[str, Any] | None = None
+    for line in observed.results_log:
+        if line["game_id"] == session.game_id:
+            standing = None if line.get("withdrawn") else line
+    if standing is None:
+        raise InvariantBreach(
+            f"game {session.game_id} ended ({outcome.result}) and the results "
+            "log holds no result for it"
+        )
+    if standing["result"] != outcome.result:
+        raise InvariantBreach(
+            f"the results log says {standing['result']}, the board {outcome.result}"
+        )
+
+
 INVARIANTS: tuple[Callable[[Observed], None], ...] = (
     check_status,
     check_clarification_moves_nothing,
@@ -1208,6 +1256,7 @@ INVARIANTS: tuple[Callable[[Observed], None], ...] = (
     check_stall_is_bounded,
     check_budgets_cap_the_turn,
     check_ledger_follows_the_board,
+    check_results_follow_the_endings,
 )
 
 
