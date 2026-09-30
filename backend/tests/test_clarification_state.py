@@ -564,7 +564,7 @@ def test_a_pick_by_position_off_the_hint_is_corrected_not_played():
     assert ctx.session.move_history() == []
     refused = _last_tool_result(provider)
     assert refused["retry"] == "different_args"
-    assert "were last offered on this board: d4, c4" in refused["error"]
+    assert "one of the moves last offered on this board: d4, c4" in refused["error"]
 
 
 def test_a_hint_about_a_board_that_changed_is_nothing_to_pick_from():

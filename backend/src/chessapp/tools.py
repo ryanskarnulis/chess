@@ -1710,7 +1710,7 @@ def _check_positional_pick(ctx: "ToolContext", move: str) -> None:
         options, offered_by = list(record.candidates), "the open question offered"
     else:
         options = ctx.ledger.standing_offer(ctx.origin, ctx.board_version)
-        offered_by = "were last offered on this board"
+        offered_by = "last offered on this board"
     if not options:
         raise ToolError(
             "no question or offer stands in this conversation, so a pick by"
