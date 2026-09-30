@@ -87,7 +87,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from chessapp import clarification
+from chessapp import clarification, openings
 from chessapp.agent_api import (
     CONVERSATIONS_FILENAME,
     MAX_AGENT_MESSAGE_LENGTH,
@@ -493,6 +493,11 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
     turn can satisfy by talking more — which it did, twice, while the setting
     stayed `low` on disk and the next turn was terse again. A player-owned
     setting the model cannot see is one it cannot be asked to change.
+
+    `opening` is the name and ECO code of the deepest book position the line
+    has reached (`openings.opening_of`, #373), or None. For the `captures`
+    reason once more: the app can read it off the board exactly, and a 12B
+    asked "what opening is this?" names one from memory, often wrongly.
     """
     session = ctx.session
     return {
@@ -506,6 +511,7 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
         "captured": session.captured_pieces(),
         "legal_moves": session.legal_moves(),
         "captures": session.legal_captures(),
+        "opening": openings.opening_of(session),
         "saved_games": saved_game_names(ctx),
         "settings": _agent_settings_dict(ctx),
     }
@@ -691,6 +697,9 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
     answer did, which since #365 means the engine died on it — and becomes the
     line saying the reply never came. `board_version` is lifted out the same
     way and dates the turn's analysis results against this board (#320).
+
+    `opening` is the state block's (#373): "what opening is this?" needs no
+    tool, so on that turn nothing but these facts can tell the narrator.
     """
     settled = coordinator.settlement
     return {
@@ -699,6 +708,7 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
         "game_over": ctx.session.is_game_over(),
         "outcome": relative_outcome(ctx.session),
         "captured": ctx.session.captured_pieces(),
+        "opening": openings.opening_of(ctx.session),
         "engine_reply": _reply_facts(settled.reply)
         if settled is not None and settled.reply is not None
         else None,

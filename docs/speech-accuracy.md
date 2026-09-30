@@ -34,6 +34,7 @@ per class per sentence as **made** and **backed**.
 | engine numbers | `evaluation` | a number an analysis tool reported |
 | material | `material` | the count on some board the turn held |
 | advantage | `advantage` | the direction of an engine verdict the turn reported, from the player's side (#320) |
+| opening | `opening` | a name the game's line passed through, from the record's own session (#373) |
 
 Three classes pass by construction where their fact does not apply. That is
 right for a guard and wrong for a count, so the scorer drops them there:
@@ -158,6 +159,25 @@ The first `judgment_as_black` run is why the class reads colors. The player
 was Black and a queen up, and all five narrations said White was ahead
 ("You're cooked, man. White's up big."). None of them named "you" or "I".
 Those five lines are the corpus's must-fire table, verbatim.
+
+**The opening class (#373).** It reads an opening *named*: a family in full
+anywhere ("Ruy Lopez", "Sicilian Defence"), or a family's head after an
+article ("the Sicilian", "a Caro-Kann"). The vocabulary is read off the
+vendored book (`openings.spoken_names`), every family and nothing narrower,
+so a variation named alone ("the Najdorf") is not read. Heads that are
+ordinary or chess words ("the English", "your king's knight", "the four
+knights") are only read in their full family name. A name is backed when it
+is whole words in any name the line passed through (`openings.names_on_line`,
+re-derived from the record's session, so no evidence field was added): a
+family names its variations, and a system filed under another family is
+still itself — the deployed trace's "The London's here" over 1. d4 d5 2. Bf4,
+which the book files as the Queen's Pawn Game: Accelerated London System.
+Before the first move and from a set-up position no opening is sayable. On
+the deployed trace (1,055 records, 2026-09-29) the class fired twice, both
+"the London" on pre-schema-3 records (so unscored there): over 1. d4 d5
+2. Bf4, backed, and over 1. d4 e6 2. Bf4, which the book files as the Horwitz
+Defense, so unbacked. The book is the authority here: a London *setup* the
+book does not name is not one the scorer can back.
 
 **What the scorer is lenient about, by design.** These errors inflate
 accuracy and never count against the model:

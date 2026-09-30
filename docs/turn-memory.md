@@ -26,7 +26,9 @@ board and the command) and at the head of the narrator's brief:
    record: "Glitch said then (his words, not a record)" to the planner, "What
    you said then (your words, not a record)" to the narrator.
 
-Then the state block, fresh every turn, `open_question` included.
+Then the state block, fresh every turn, `open_question` included. Since
+#373 it also names the opening (`opening`: the deepest book position the line
+has reached, `openings.opening_of`), which the narrator's facts carry too.
 
 **Why not chat turns.** The planner read Glitch's slang replies as its own past
 turns — in-context examples of answering in prose and calling nothing (#361) —

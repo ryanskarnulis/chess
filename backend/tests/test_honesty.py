@@ -1309,6 +1309,7 @@ LEVEL = VerifiedFacts(
         ("Alright, more detail from now on.", "verbosity_change"),
         ("You're at -3.5 here.", "evaluation"),
         ("You're up a knight.", "material"),
+        ("Classic Sicilian Defence.", "opening"),
     ],
 )
 def test_every_claim_class_reads_an_unbacked_line(text, claim):
@@ -1473,3 +1474,70 @@ def test_a_sentence_is_one_claim_per_class_unbacked_if_any_part_is():
 def test_hedged_talk_is_no_claim_at_all():
     assert claims("One more move and it's checkmate.", NOTHING) == ()
     assert claims("I'll take your knight next.", NOTHING) == ()
+
+
+# --- the opening (#373) ---------------------------------------------------------
+
+# A game at 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6: every name its line passed through.
+IN_THE_MORPHY = VerifiedFacts(
+    openings=frozenset(
+        {
+            "king's pawn game",
+            "king's knight opening",
+            "king's knight opening: normal variation",
+            "ruy lopez",
+            "ruy lopez: morphy defense",
+        }
+    )
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Classic Ruy Lopez.",
+        "We're deep in the Ruy Lopez: Morphy Defense.",
+        "the ruy lopez, my favourite.",
+        "King’s Pawn Game from move one.",
+    ],
+)
+def test_an_opening_the_line_passed_through_is_backed(text):
+    assert [(c.claim, c.backed) for c in claims(text, IN_THE_MORPHY)] == [
+        ("opening", True)
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "This is the Sicilian.",
+        "Textbook Italian Game.",
+        "We're in the Grünfeld Defence.",
+        "Ah, the Caro Kann.",
+    ],
+)
+def test_an_opening_the_line_never_reached_is_unbacked(text):
+    assert unverified_claims(text, IN_THE_MORPHY) == ("opening",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Pieces and ordinary words the vocabulary leaves out.
+        "Your king's knight is loose.",
+        "The four knights on the board are staring at each other.",
+        "Say it in English.",
+        # A head with no article is not read.
+        "Italian food after this?",
+        # Questions, conditions and plans stay talk.
+        "Want to try the Sicilian next game?",
+        "If you play c5 it's the Sicilian.",
+        "I'll steer this into a French Defense.",
+    ],
+)
+def test_opening_talk_that_is_not_a_claim(text):
+    assert "opening" not in unverified_claims(text, IN_THE_MORPHY)
+
+
+def test_no_opening_is_sayable_without_one():
+    assert unverified_claims("Classic Ruy Lopez.", LEVEL) == ("opening",)

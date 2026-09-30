@@ -32,6 +32,8 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 
+from chessapp import openings
+
 # What a won or lost *thing* looks like after the verb: an amount of material or
 # evaluation, not a game. "You lost like 817 centipawns there" is a review line
 # and "I won a pawn" is a trade; read as results, both were false endings in the
@@ -266,6 +268,11 @@ class VerifiedFacts:
     advantages: tuple[int, ...] = ()
     # Which color the player has, so "White's way ahead" can be read as a side.
     player_color: str | None = None
+    # Every opening name the game's line passed through, normalized
+    # (`openings.names_on_line`, #373): "the Ruy Lopez" is true of a game now
+    # in the Morphy Defense. Empty before the first move and from a set-up
+    # position, where no opening is sayable.
+    openings: frozenset[str] = frozenset()
 
 
 _PIECE_WORDS = r"(?: pawn | knight | bishop | rook | queen | king | horse )"
@@ -884,6 +891,64 @@ _RESTART = re.compile(
 )
 
 
+# An opening named (#373): a family in full anywhere ("Ruy Lopez", "Sicilian
+# Defence"), or its head after an article ("the Sicilian", "a Caro-Kann"),
+# the vocabulary read off the vendored book (`openings.spoken_names`), never
+# a hand list. A head alone is not read: "Italian" can be anything, "the
+# Italian" in a chess game is the opening. Heads that are ordinary or chess
+# words ("the English", "your king's knight") are only read in full.
+_ACCENTED = {"a": "aáàâä", "e": "eéèêë", "i": "iíìîï", "o": "oóòôö", "u": "uúùûü"}
+
+
+def _spoken(name: str) -> str:
+    """A normalized name as a pattern for the words as written: any accent,
+    either spelling of "defense", either apostrophe, hyphen or space."""
+    out = []
+    for word in name.split():
+        if word == "defense":
+            out.append("defen[cs]e")
+            continue
+        out.append(
+            "".join(
+                f"[{_ACCENTED[c]}]"
+                if c in _ACCENTED
+                else "['’]"
+                if c == "'"
+                else re.escape(c)
+                for c in word
+            )
+        )
+    return r"[-\s]+".join(out)
+
+
+def _opening_pattern() -> re.Pattern[str]:
+    full, heads = openings.spoken_names()
+
+    def alternatives(names: Iterable[str]) -> str:
+        return "|".join(_spoken(n) for n in sorted(names, key=len, reverse=True))
+
+    return re.compile(
+        rf"""
+        \b(?P<full> {alternatives(full)} )\b
+        | \b(?: the | a | an | this | that | your | my | our ) \s+
+            (?P<head> {alternatives(heads)} )\b
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+
+def _opening_on_line(match: re.Match[str], facts: VerifiedFacts) -> bool:
+    """True when the opening named is in a name the game's line passed
+    through, as whole words anywhere in it: a family names any of its
+    variations ("the Sicilian" of "Sicilian Defense: Najdorf Variation"),
+    and a system is often a variation of another family ("the London" of
+    "Queen's Pawn Game: Accelerated London System", which the deployed trace
+    showed Glitch saying truthfully)."""
+    named = openings.normalized(match.group("full") or match.group("head"))
+    within = re.compile(rf"(?<![\w']){re.escape(named)}(?![\w'])")
+    return any(within.search(name) for name in facts.openings)
+
+
 def _reply_not_named(match: re.Match[str], facts: VerifiedFacts) -> bool:
     return not _names(match.group(0), facts.unplayed_replies)
 
@@ -1007,6 +1072,7 @@ _CLAIM_CLASSES = (
     _ClaimClass("evaluation", _EVALUATION, _number_reported),
     _ClaimClass("material", _MATERIAL, _material_matches),
     _ClaimClass("advantage", _ADVANTAGE, _advantage_matches),
+    _ClaimClass("opening", _opening_pattern(), _opening_on_line),
 )
 
 

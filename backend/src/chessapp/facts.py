@@ -20,6 +20,7 @@ from typing import Any
 
 import chess
 
+from chessapp import openings
 from chessapp.analysis import captured_piece
 from chessapp.engine import MATE_CP, pov_cp
 from chessapp.game import GameSession
@@ -428,6 +429,9 @@ def assemble(evidence: TurnEvidence) -> VerifiedFacts:
         numbers=frozenset(analysis_numbers(tool_results)),
         advantages=analysis_advantages(tool_results, session.player_color),
         player_color=session.player_color,
+        openings=frozenset(
+            openings.normalized(name) for name in openings.names_on_line(session)
+        ),
         # Board truth, and the one fact here no tool has to have run for: who
         # is ahead is a piece count, so it is always available on every board
         # the turn held — including the one the reaction was written from.

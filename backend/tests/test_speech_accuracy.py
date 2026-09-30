@@ -426,3 +426,23 @@ def test_a_pre_320_white_pov_score_is_turned_to_the_players_side():
     assert ("advantage", False) in _counts(told_ahead)
     told_behind = score_record(_record("I'm ahead.", session, tools=[legacy]))
     assert _counts(told_behind) == [("advantage", True)]
+
+
+# --- #373: the opening, re-derived from the record's own session ----------------
+
+
+def test_an_opening_is_scored_against_the_line_the_record_holds():
+    session = _session("e4", "e5", "Nf3", "Nc6", "Bb5")
+    backed = score_record(_record("Classic Ruy Lopez.", session))
+    assert _counts(backed) == [("opening", True)]
+    wrong = score_record(_record("Textbook Italian Game.", session))
+    assert _counts(wrong) == [("opening", False)]
+
+
+def test_a_system_named_inside_another_family_is_backed():
+    """The deployed trace's "the London's here": the book files 1. d4 d5
+    2. Bf4 under the Queen's Pawn Game, as its Accelerated London System."""
+    session = _session("d4", "d5", "Bf4")
+    assert _counts(score_record(_record("Going for the London, I see.", session))) == [
+        ("opening", True)
+    ]
