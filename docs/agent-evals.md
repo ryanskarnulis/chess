@@ -349,6 +349,18 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Targeted run 2026-09-29 on the opening's name (#373, roadmap #366 step 13,
+first half).** The state block and the narrator's facts gain `opening`
+(`openings.opening_of`: the book's name and ECO code for the line), and
+speech accuracy gains the `opening` class. Not a full gate run: the state
+block touches every prompt, so `long_capture`, plus the new frontier row.
+- `long_capture` 5/5 in all three conditions; speech 15/15, reply said 15/15.
+- Frontier `name_the_opening` (not appended to the history, which holds whole
+  runs): dev 10/10 and held-out 10/10, speech 20/20 backed. The answer needs
+  no tool, but the planner read `describe_position` first on "which opening
+  are we in right now?" (3 of 5) and "what's this setup called?" (5 of 5),
+  which costs one call and changes nothing.
+
 **Milestone 4 close, 2026-09-29: full gate and both frontier splits on #372
 (roadmap #366 step 12, the record of the game).**
 

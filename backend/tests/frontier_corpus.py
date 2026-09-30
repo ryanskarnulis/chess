@@ -29,6 +29,7 @@ from typing import Any
 import chess.pgn
 
 from chessapp.game import GameSession
+from chessapp.speech_accuracy import score_record
 from frontier import VERDICT_TOOLS, Checkpoint, Episode, Say, Scenario, Turn, Variant
 from test_agent_evals import _TIER_STRENGTH, EvalApp
 
@@ -1453,6 +1454,62 @@ VERDICT_AS_BLACK_FACING_MATE = Scenario(
     ),
 )
 
+
+def said_backed(family: str) -> Checkpoint:
+    """Glitch made a `family` claim and every one he made was backed: the
+    scorer's reading (`speech_accuracy`), never the words themselves. For an
+    ask no tool answers, so no board or result can grade it."""
+
+    def check(e: Episode) -> bool:
+        found = [
+            claim
+            for record in e.traces
+            if (score := score_record(record)) is not None
+            for claim in score.claims
+            if claim.claim == family
+        ]
+        return bool(found) and all(claim.backed for claim in found)
+
+    return Checkpoint(f"said_{family}_backed", check)
+
+
+# 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6: the Ruy Lopez, Morphy Defense (C70).
+_MORPHY = ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6")
+# 1. e4 e6 2. d4 d5: the French Defense (C00).
+_FRENCH = ("e4", "e6", "d4", "d5")
+# 1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 a6: the Najdorf (B90).
+_NAJDORF = ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6")
+# 1. d4 d5 2. c4 e6: the Queen's Gambit Declined (D30).
+_QGD = ("d4", "d5", "c4", "e6")
+
+NAME_THE_OPENING = Scenario(
+    name="name_the_opening",
+    tier=1,
+    why=(
+        "#373: the opening's name. The 12B's memory of opening names is "
+        "unreliable; since #373 the state block and the narrator's facts "
+        "carry the book's name for the line, and the answer needs no tool. "
+        "Graded by the speech class, since nothing else can see it."
+    ),
+    dev=(
+        Variant("what_opening", (Say("what opening is this?"),), after(*_MORPHY)),
+        Variant(
+            "what_are_we_playing",
+            (Say("which opening are we in right now?"),),
+            after(*_FRENCH),
+        ),
+    ),
+    heldout=(
+        Variant("name_it", (Say("does this opening have a name?"),), after(*_NAJDORF)),
+        Variant(
+            "what_is_this_called",
+            (Say("what's this setup called?"),),
+            after(*_QGD),
+        ),
+    ),
+    checkpoints=(said_backed("opening"), still(1), completed(1)),
+)
+
 SCENARIOS: tuple[Scenario, ...] = (
     UNDO_REPLACE_AND_JUDGE,
     SETTINGS_MOVE_AND_VERDICT,
@@ -1479,4 +1536,5 @@ SCENARIOS: tuple[Scenario, ...] = (
     ASK_ASIDE_THEN_SECOND,
     QUEEN_ASK_LONG_CHAT_THEN_FIRST,
     VERDICT_AS_BLACK_FACING_MATE,
+    NAME_THE_OPENING,
 )
