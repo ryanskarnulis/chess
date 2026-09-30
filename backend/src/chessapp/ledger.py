@@ -51,8 +51,9 @@ SETTING = "setting"
 DRAW_OFFER = "draw_offer"
 GAME_END = "game_end"
 OFFER = "offer"
+REVIEW = "review"
 KINDS = frozenset(
-    {NEW_GAME, RESUMED, MOVE, TAKEBACK, SETTING, DRAW_OFFER, GAME_END, OFFER}
+    {NEW_GAME, RESUMED, MOVE, TAKEBACK, SETTING, DRAW_OFFER, GAME_END, OFFER, REVIEW}
 )
 
 # Which tool results put moves in front of the player, what the ledger calls
@@ -162,6 +163,11 @@ class Ledger:
     - `draw_offer`: `accepted`, `reason` (`draw_offer.judge_draw_offer`'s).
     - `game_end`: `termination`, `result`, `winner` (`player`, `opponent`, or
       None for a draw).
+    - `offer`: `source` (`OFFER_SOURCES`), `moves` (SAN), and `origin` and
+      `board_version` when the caller knows them (`standing_offer`).
+    - `review`: `moves`, the moves `review_game` named, worst first, each with
+      `move_number`, `color`, `by` (`player` or `engine`), `san`,
+      `classification`, `cp_loss` and `best` (#409).
     """
 
     def __init__(self) -> None:
@@ -231,6 +237,30 @@ class Ledger:
         with self._lock:
             self._observe(session, followed_settings(settings))
             self._append(OFFER, session.game_id, details)
+
+    def note_review(
+        self,
+        session: GameSession,
+        settings: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> None:
+        """The moves a game review named — each side's worst, with what was
+        best there. "Take me back to before that move" points at one of them
+        a turn or more later, and no board holds a review (#409: without it
+        the planner had only Glitch's words and undid the last move instead).
+        Nothing is recorded for a failed review or a clean game."""
+        if result.get("ok") is not True:
+            return
+        moves = [
+            {**_reviewed(m), "by": _by(m.get("color"), session.player_color)}
+            for m in result.get("critical", ())
+            if isinstance(m, Mapping) and m.get("san")
+        ]
+        if not moves:
+            return
+        with self._lock:
+            self._observe(session, followed_settings(settings))
+            self._append(REVIEW, session.game_id, {"moves": moves})
 
     def expect_resume(self, name: str) -> None:
         """The next new game this ledger observes is the save `name` coming
@@ -484,6 +514,17 @@ def offered_moves(tool: str, result: Mapping[str, Any]) -> list[str]:
     return []
 
 
+_REVIEWED_KEYS = ("move_number", "color", "san", "classification", "cp_loss", "best")
+
+
+def _reviewed(move: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: move.get(key) for key in _REVIEWED_KEYS}
+
+
+def _by(color: Any, player_color: str) -> str:
+    return "player" if color == player_color else "engine"
+
+
 def from_session(session: GameSession, settings: Mapping[str, Any]) -> Ledger:
     """A ledger for a game nobody watched being played: its start and its
     standing line (moves marked `restored`), and its ending if it has one."""
@@ -624,6 +665,8 @@ def render_record(
             lines.append(
                 f"{at()}: the game ended by {termination}; {winner} ({result})."
             )
+        elif kind == REVIEW:
+            lines.append(f"{at()}: {_review_words(d.get('moves', ()))}.")
         elif kind == OFFER:
             words = _OFFER_WORDS.get(str(d.get("source")), "{moves} were offered")
             lines.append(
@@ -633,6 +676,34 @@ def render_record(
         dropped = len(lines) - max_lines
         lines = [f"({dropped} earlier events not listed)", *lines[-max_lines:]]
     return lines
+
+
+def _review_words(moves: Sequence[Mapping[str, Any]]) -> str:
+    """ "the review named the player's worst move 7. d3 (a blunder; best was
+    7. Bxc4); and the engine's ..." — worst first, the player's side first,
+    each keyed to its move number so "just before that move" has a number to
+    go back to. No centipawns: the record is not speech evidence
+    (`facts.assemble` reads the turn's own results), so a number here is one
+    Glitch could repeat turns later with nothing to back it."""
+    parts = []
+    for side, whose in (("player", "the player's"), ("engine", "the engine's")):
+        named = [
+            _reviewed_words(m)
+            for m in moves
+            if isinstance(m, Mapping) and m.get("by") == side
+        ]
+        if named:
+            noun = "worst move" if len(named) == 1 else "worst moves"
+            parts.append(f"{whose} {noun} {', '.join(named)}")
+    return "the review named " + "; and ".join(parts)
+
+
+def _reviewed_words(move: Mapping[str, Any]) -> str:
+    what = str(move.get("classification") or "mistake")
+    said = f"{'an' if what[:1] in 'aeiou' else 'a'} {what}"
+    if move.get("best"):
+        said += f"; best was {_label({**move, 'san': move['best']})}"
+    return f"{_label(move)} ({said})"
 
 
 def _label(details: Mapping[str, Any]) -> str:

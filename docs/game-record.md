@@ -60,6 +60,8 @@ record above is rendered from, and what #373 grows into `lookup(this_game)`.
 | `setting` | difficulty, verbosity or voice changes | `name`, `before`, `after` |
 | `draw_offer` | the player offers a draw | `accepted`, `reason` (`draw_offer`'s) |
 | `game_end` | the game finishes, however | `termination`, `result`, `winner` (`player`/`opponent`/None) |
+| `offer` | a tool result offers moves (below) | `source`, `moves` (SAN), `origin`, `board_version` |
+| `review` | `review_game` names moves (below) | `moves`: each `move_number`, `color`, `by`, `san`, `classification`, `cp_loss`, `best` |
 
 Every event carries `seq` (process-wide order), `game_id`, and `ply` — the
 length of the move line right after it, which is what keys it to the move list.
@@ -80,7 +82,7 @@ in order), on the mutation guard's way out and before every checkpoint write
 guard, and after a restart settles an owed reply. The facts no board shows
 are told to it directly: `offer_draw` notes the offer and its answer (before
 an accepted one ends the game, so the offer reads first), every dispatch
-notes what its result offered (below), and `resume_game` tells it the next
+notes what its result offered or a review named (below), and `resume_game` tells it the next
 new game is a save coming back. An observation that fails is
 logged and never costs the call (`ToolContext.observe_ledger`).
 
@@ -112,6 +114,20 @@ open (#409): "go with your first choice" after a hint picks from the moves
 last offered to that conversation, and only while the board has not changed
 since (`Ledger.standing_offer`). An open question still comes first; with
 neither, the pick is refused and nothing moves.
+
+## What a review named
+
+A review is the other result no board holds: `review_game`'s `critical`
+moves, each side's worst with what was best there, are recorded as a `review`
+event (`ToolContext.note_result` → `Ledger.note_review`), each move marked the
+player's or the engine's. Before this, "take me back to just before that move"
+a turn after a review had only Glitch's words to go on, labelled not a record,
+and the planner undid the last move instead (#409). The record names them by
+move number, the player's first: "after 75... Kb7: the review named the
+player's worst move 7. d3 (a blunder; best was 7. Bxc4); and the engine's
+worst move 5... Bg4 (a blunder; best was 5... Nxa6)." The centipawn loss is
+kept in the event but never rendered: the record is not speech evidence, so a
+number in it is one Glitch could repeat turns later with nothing to back it.
 
 ## The record (`render_record`)
 

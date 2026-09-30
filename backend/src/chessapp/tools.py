@@ -547,6 +547,16 @@ class ToolContext:
             self.settings.attach_store(lambda data: _write_settings_file(path, data))
         self.observe_ledger()
 
+    def note_result(self, tool: str, result: dict[str, Any]) -> None:
+        """Tell the ledger what a tool result showed the player that no board
+        holds: the moves it offered, and the moves a review named (#409)."""
+        self.note_offer(tool, result)
+        if tool == "review_game":
+            try:
+                self.ledger.note_review(self.session, self.settings.snapshot(), result)
+            except Exception:
+                logger.warning("ledger_note_failed", exc_info=True)
+
     def note_offer(self, tool: str, result: dict[str, Any]) -> None:
         """Record the moves a tool result offered, if it offered any; never
         costs the call (the `observe_ledger` rule)."""
@@ -1058,9 +1068,10 @@ class ToolRegistry:
         try:
             result = tool.handler(**args)
             if self.context is not None:
-                # What a tool put in front of the player to choose from (#372):
-                # a result the board never holds, so the ledger is told.
-                self.context.note_offer(name, result)
+                # What a tool put in front of the player (#372, #409): the
+                # moves it offered or a review named, which the board never
+                # holds, so the ledger is told.
+                self.context.note_result(name, result)
             return result
         except ToolError as exc:
             return self.refusal(str(exc), exc.retry, **exc.details)
