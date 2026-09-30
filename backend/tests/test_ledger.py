@@ -6,10 +6,12 @@ side here is a false fact everywhere downstream.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from chessapp import tools
 from chessapp.api import create_app
 from chessapp.app import build_app
 from chessapp.coordinator import TurnCoordinator
@@ -21,6 +23,7 @@ from chessapp.ledger import (
     NEW_GAME,
     OFFER,
     RESUMED,
+    REVIEW,
     TAKEBACK,
     Ledger,
     LedgerEvent,
@@ -555,6 +558,101 @@ def test_a_result_that_offered_nothing_records_nothing():
     registry.dispatch("make_move", {"move": "e4"})
     ctx.note_offer("get_best_moves", {"ok": False, "error": "no engine"})
     assert not [e for e in ctx.ledger.current() if e.kind == OFFER]
+
+
+# --- what a review named (#409) ------------------------------------------------------
+
+REVIEW_RESULT = {
+    "ok": True,
+    "plies": 4,
+    "critical": [
+        {
+            "move_number": 2,
+            "color": "black",
+            "san": "Nc6",
+            "classification": "blunder",
+            "cp_loss": 900,
+            "best": "d6",
+        },
+        {
+            "move_number": 2,
+            "color": "white",
+            "san": "Qh5",
+            "classification": "mistake",
+            "cp_loss": 300,
+            "best": "Nf3",
+        },
+        {
+            "move_number": 1,
+            "color": "white",
+            "san": "e4",
+            "classification": "inaccuracy",
+            "cp_loss": 60,
+            "best": "d4",
+        },
+    ],
+}
+
+
+def test_a_dispatched_review_is_recorded_with_whose_moves_they_were(monkeypatch):
+    """The regression: "take me back to just before that move" a turn after a
+    review undid the last move, because the review was nowhere but in
+    Glitch's words (#409). The dispatch chokepoint now tells the ledger."""
+    critical = [
+        SimpleNamespace(**{**m, "best_san": m["best"]})
+        for m in REVIEW_RESULT["critical"]
+    ]
+    monkeypatch.setattr(
+        tools,
+        "_review_game",
+        lambda engine, session: SimpleNamespace(
+            moves=[None] * 4, accuracy={}, counts={}
+        ),
+    )
+    monkeypatch.setattr(tools, "_critical_moves", lambda review: critical)
+    session = _played(GameSession(), "e4", "e5", "Qh5", "Nc6")
+    ctx = ToolContext(session=session, engine=FakeEngine())
+    registry = build_registry(ctx, TurnCoordinator(ctx), atomic_exchange=False)
+
+    assert registry.dispatch("review_game", {})["ok"] is True
+
+    (review,) = [e for e in ctx.ledger.current() if e.kind == REVIEW]
+    assert review.ply == 4
+    assert [(m["san"], m["by"]) for m in review.details["moves"]] == [
+        ("Nc6", "engine"),
+        ("Qh5", "player"),
+        ("e4", "player"),
+    ]
+    assert render_record(ctx.ledger.current())[-1] == (
+        "after 2... Nc6: the review named the player's worst moves 2. Qh5 "
+        "(a mistake; best was 2. Nf3), 1. e4 (an inaccuracy; best was 1. d4); "
+        "and the engine's worst move 2... Nc6 (a blunder; best was 2... d6)."
+    )
+
+
+def test_a_review_as_black_names_blacks_moves_the_players():
+    session = _played(GameSession(player_color="black"), "e4", "e5", "Qh5", "Nc6")
+    ledger = Ledger()
+    ledger.note_review(session, SETTINGS, REVIEW_RESULT)
+    moves = ledger.current()[-1].details["moves"]
+    assert [m["by"] for m in moves] == ["player", "engine", "engine"]
+
+
+def test_a_failed_or_clean_review_records_nothing():
+    session = GameSession()
+    ledger = Ledger()
+    ledger.note_review(session, SETTINGS, {"ok": False, "error": "no engine"})
+    ledger.note_review(session, SETTINGS, {"ok": True, "plies": 0, "critical": []})
+    assert not [e for e in ledger.current() if e.kind == REVIEW]
+
+
+def test_a_review_round_trips_through_the_checkpoint():
+    session = _played(GameSession(), "e4", "e5", "Qh5", "Nc6")
+    ledger = Ledger()
+    ledger.note_review(session, SETTINGS, REVIEW_RESULT)
+    data = json.loads(json.dumps(ledger.to_dict()))
+    restored = Ledger.restore(data, session, SETTINGS)
+    assert [e.to_dict() for e in restored.current()] == data
 
 
 # --- the record -------------------------------------------------------------------
