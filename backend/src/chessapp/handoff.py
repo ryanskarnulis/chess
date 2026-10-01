@@ -62,6 +62,7 @@ READ_TOOLS = frozenset(
         "analyze_last_move",
         "review_game",
         "export_pgn",
+        "lookup",
     }
 )
 

@@ -40,7 +40,8 @@ from chessapp.facts import (
     settings_changed_by,
 )
 from chessapp.game import GameSession
-from chessapp.honesty import CLAIM_NAMES, Claim, VerifiedFacts, claims
+from chessapp.honesty import CLAIM_NAMES, Claim, VerifiedFacts, claims, named_moves
+from chessapp.openings import normalized
 
 # The families the reading cannot score reliably, and why. Their claims are
 # counted and shown, never held against the model (docs/speech-accuracy.md).
@@ -148,8 +149,8 @@ _CENTIPAWN_STEPS = (10, 50, 100)
 def _widened(
     facts: VerifiedFacts, tool_results: Iterable[Mapping[str, Any]]
 ) -> VerifiedFacts:
-    """The turn's facts, plus two things the reading gets wrong on correct
-    lines, which the scorer backs (#367).
+    """The turn's facts, plus three things the reading gets wrong on correct
+    lines, which the scorer backs (#367, #374).
 
     Found by hand-labelling the first schema-3 frontier run: both unbacked
     lines of `late_game_review_undo_replay` were true.
@@ -161,6 +162,11 @@ def _widened(
     - A rounded centipawn count. "Lost like 800 centipawns" for a reported
       816 is the number, said the way people say numbers; the evaluation
       class accepts exact counts and pawn tenths only.
+    - What a lookup said (#374). "The Najdorf goes ...Nf6 and ...a6" or "the
+      Sicilian is sharp" on a turn that looked them up quotes the notes, not
+      the board: the moves a passage names back the move class, and the
+      passage's words back an opening named from it, in a game that is in
+      another opening or none.
 
     Scorer-only: they were kept out of the live guard's facts while it ran,
     and the guard is retired (#368).
@@ -173,11 +179,29 @@ def _widened(
         for key in ("san", "best")
         if move.get(key)
     }
+    passages = [
+        passage
+        for result in tool_results
+        if result["name"] == "lookup" and result["result"].get("ok") is True
+        for passage in result["result"].get("passages", ())
+    ]
+    looked_up = {
+        san for passage in passages for san in named_moves(passage.get("text", ""))
+    }
+    openings = set(facts.openings) | {
+        normalized(f"{passage.get('topic', '')} {passage.get('text', '')}")
+        for passage in passages
+    }
     numbers = set(facts.numbers)
     for number in facts.numbers:
         if number.lstrip("+-").isdigit() and abs(value := int(number)) >= 100:
             numbers.update(str(round(value / step) * step) for step in _CENTIPAWN_STEPS)
-    return replace(facts, moves=facts.moves | reviewed, numbers=frozenset(numbers))
+    return replace(
+        facts,
+        moves=facts.moves | reviewed | looked_up,
+        numbers=frozenset(numbers),
+        openings=frozenset(openings),
+    )
 
 
 def score_record(record: Mapping[str, Any]) -> TurnScore | None:

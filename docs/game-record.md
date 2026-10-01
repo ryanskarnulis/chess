@@ -49,7 +49,9 @@ and a declined draw offer changes no state at all. Before the ledger, the only
 record of those was the turn trace, and the undo, difficulty and voice buttons
 and MCP write none. The ledger is that record: an append-only list of events,
 keyed to the move list, written by code and never by a model. It is what the
-record above is rendered from, and what #373 grows into `lookup(this_game)`.
+record above is rendered from. It stays in context rather than moving behind
+`lookup`: #374 decided this game's facts are worth no extra planner round trip
+(`docs/second-brain.md`).
 
 | kind | when | details |
 |---|---|---|

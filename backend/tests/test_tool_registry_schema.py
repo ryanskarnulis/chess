@@ -355,6 +355,7 @@ PLANNER_OFFER_ORDER = [
     "set_difficulty",
     "set_verbosity",
     "set_voice_output",
+    "lookup",
     "ask_player",
 ]
 

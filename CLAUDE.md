@@ -87,7 +87,10 @@ heavy, so leave it off otherwise. The trace
 file also holds `serving` manifests (the weights, build and settings actually serving the app) and the
 `speech`/`voice` records that follow one voice interaction end to end.
 `docs/latency-measurement.md` has the record kinds, the clock rules and
-`scripts/latency_report.py`. `docs/turn-coordinator.md` and
+`scripts/latency_report.py`. Knowledge questions ("what's the idea behind the
+Sicilian?") go to `lookup`, which searches the local notes in
+`backend/src/chessapp/data/knowledge/`. `docs/second-brain.md` covers the notes,
+the search and its retrieval tests. `docs/turn-coordinator.md` and
 `docs/planner-narrator.md` explain the turn architecture;
 `docs/persistence-and-identity.md` says what survives a restart
 (`live.json`, `conversations.json`, the cross-game `results.jsonl`), which

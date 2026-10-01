@@ -1576,6 +1576,165 @@ RESULTS_SO_FAR = Scenario(
     checkpoints=(said_backed("results"), still(1), completed(1)),
 )
 
+
+# --- the second brain (#374) -----------------------------------------------------
+
+
+def looked_up(index: int, *topics: str) -> Checkpoint:
+    """Turn `index` ran `lookup` and its best passage is one of `topics`: the
+    note that answers the ask, whatever words the planner chose for it."""
+
+    def check(e: Episode) -> bool:
+        result = e.turn(index).result("lookup") or {}
+        passages = result.get("passages") or []
+        return bool(passages) and passages[0].get("topic") in topics
+
+    return Checkpoint(f"looked_up_{index}", check)
+
+
+def no_lookup(index: int) -> Checkpoint:
+    return Checkpoint(f"no_lookup_{index}", lambda e: not e.turn(index).ran("lookup"))
+
+
+# The note each variant's ask is answered by, by variant name.
+_KNOWLEDGE_ANSWERS = {
+    "sicilian_idea": "Sicilian Defense",
+    "en_passant": "En passant",
+    "bishop_pair": "The bishop pair",
+    "first_champion": "Wilhelm Steinitz",
+}
+
+KNOWLEDGE_QUESTION = Scenario(
+    name="knowledge_question",
+    tier=1,
+    why=(
+        "#374: a question about chess, not about this game. The 12B knows some "
+        "of the answer and makes up the rest; since #374 `lookup` answers from "
+        "the local notes. Graded on the note the lookup found, never on wording."
+    ),
+    dev=(
+        Variant(
+            "sicilian_idea",
+            (Say("what's the main idea behind the Sicilian?"),),
+            AFTER_E4_E5,
+        ),
+        Variant("en_passant", (Say("how does en passant actually work?"),), FRESH),
+    ),
+    heldout=(
+        Variant(
+            "bishop_pair",
+            (Say("why do people say having two bishops is an advantage?"),),
+            AFTER_E4_E5,
+        ),
+        Variant(
+            "first_champion",
+            (Say("who was the very first world chess champion?"),),
+            FRESH,
+        ),
+    ),
+    checkpoints=(
+        Checkpoint(
+            "found_the_note",
+            lambda e: looked_up(1, _KNOWLEDGE_ANSWERS.get(e.variant, "")).check(e),
+        ),
+        still(1),
+        completed(1),
+    ),
+)
+
+# The Ruy Lopez notes a "this opening" ask after the Morphy line can land on.
+_RUY_LOPEZ_NOTES = ("Ruy Lopez: Morphy Defense", "Ruy Lopez", "Ruy Lopez: Closed")
+
+THIS_OPENINGS_IDEAS = Scenario(
+    name="this_openings_ideas",
+    tier=1,
+    why=(
+        '#374: knowledge about the game on the board. "This opening" names '
+        "nothing in the words; the state block names it (#373), and the "
+        "planner must carry that name into the lookup."
+    ),
+    dev=(
+        Variant(
+            "plan_here",
+            (Say("what's the usual plan for me in this opening?"),),
+            after(*_MORPHY),
+        ),
+    ),
+    heldout=(
+        Variant(
+            "ideas_of_line",
+            (Say("explain the ideas of the opening we're playing"),),
+            after(*_MORPHY),
+        ),
+    ),
+    checkpoints=(looked_up(1, *_RUY_LOPEZ_NOTES), still(1), completed(1)),
+)
+
+NOT_A_LOOKUP = Scenario(
+    name="not_a_lookup",
+    tier=1,
+    why=(
+        "#374's near misses: the best move here and who is winning are this "
+        "game's facts, answered by the engine, not by the notes. A new tool on "
+        "the menu must not draw them away."
+    ),
+    dev=(
+        Variant(
+            "best_move_here",
+            (Say("what's the best move for me in this position?"),),
+            AFTER_E4_E5,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "what_to_play_now",
+            (Say("what would a strong player play here?"),),
+            AFTER_E4_E5,
+        ),
+    ),
+    checkpoints=(
+        Checkpoint("hinted_1", lambda e: bool(e.turn(1).ran("get_best_moves"))),
+        no_lookup(1),
+        still(1),
+        completed(1),
+    ),
+)
+
+KNOWLEDGE_ASIDE_THEN_MOVE = Scenario(
+    name="knowledge_aside_then_move",
+    tier=2,
+    why=(
+        "#374 in a thread: a knowledge question mid-game, then a move. The "
+        "lookup moves nothing, and the move after it lands as asked."
+    ),
+    dev=(
+        Variant(
+            "italian_then_bc4",
+            (
+                Say("quick one: what's the point of the Italian Game?"),
+                Say("cool, put my bishop on c4 then"),
+            ),
+            AFTER_E4_E5_NF3_NC6,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "italian_why_then_bc4",
+            (
+                Say("before I move, why do people like the Italian opening?"),
+                Say("alright, bishop to c4"),
+            ),
+            AFTER_E4_E5_NF3_NC6,
+        ),
+    ),
+    checkpoints=(
+        looked_up(1, "Italian Game"),
+        still(1),
+        Checkpoint("played_Bc4", lambda e: e.history(after_turn=2)[4:5] == ["Bc4"]),
+        completed(2),
+    ),
+)
+
 SCENARIOS: tuple[Scenario, ...] = (
     UNDO_REPLACE_AND_JUDGE,
     SETTINGS_MOVE_AND_VERDICT,
@@ -1604,4 +1763,8 @@ SCENARIOS: tuple[Scenario, ...] = (
     VERDICT_AS_BLACK_FACING_MATE,
     NAME_THE_OPENING,
     RESULTS_SO_FAR,
+    KNOWLEDGE_QUESTION,
+    THIS_OPENINGS_IDEAS,
+    NOT_A_LOOKUP,
+    KNOWLEDGE_ASIDE_THEN_MOVE,
 )

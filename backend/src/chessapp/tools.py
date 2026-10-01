@@ -46,6 +46,7 @@ import jsonschema
 from mcp.server.fastmcp.utilities.func_metadata import func_metadata
 from pydantic import Field
 
+from chessapp import knowledge
 from chessapp.analysis import analyze_last_move as _analyze_last_move
 from chessapp.analysis import critical_moves as _critical_moves
 from chessapp.analysis import review_game as _review_game
@@ -85,6 +86,8 @@ logger = logging.getLogger(__name__)
 
 GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
+# A lookup is a few words naming a topic, not a paragraph.
+LOOKUP_QUERY_MAX = 200
 # Save names become filenames: one path segment, no traversal.
 SAVE_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
@@ -2733,6 +2736,42 @@ def build_registry(
         the voice off"."""
         ctx.settings.voice_output = enabled
         return {"ok": True, "voice_output": enabled}
+
+    # The second brain (#374). Last before `ask_player`, so every schema the
+    # planner was offered before it keeps its place and its cached prefix.
+    @registry.tool()
+    def lookup(
+        query: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=LOOKUP_QUERY_MAX,
+                description="What to look up, in a few words, naming the opening "
+                "or topic.",
+            ),
+        ],
+    ) -> dict[str, Any]:
+        """Look something up in the chess notes: openings and their ideas, strategy,
+        tactics, endgames, the rules, and chess history. For "what's the idea behind
+        the Sicilian?", "why is the bishop pair good?", "how does en passant work?",
+        "who was Capablanca?". This game's position, who is winning and the best move
+        are the other tools."""
+        if not knowledge.tokens(query):
+            raise ToolError(
+                "say what to look up: the opening, rule or idea the player asked about",
+                retry=RETRY_DIFFERENT_ARGS,
+            )
+        notes = knowledge.lookup(query)
+        if not notes:
+            return {
+                "ok": True,
+                "passages": [],
+                "summary": "Nothing in the chess notes matches that.",
+            }
+        return {
+            "ok": True,
+            "passages": [{"topic": note.title, "text": note.text} for note in notes],
+        }
 
     if not atomic_exchange:
         # The planner's typed clarification (#289, PR 2). Registered only on the
