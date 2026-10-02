@@ -349,6 +349,52 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Gate run 2026-10-01 on `lookup` (#374, roadmap #366 step 14).** The planner
+gains `lookup(query)` over the local chess notes (`docs/second-brain.md`),
+offered last before `ask_player`. A new tool changes the offer, so the full
+gate ran, plus the four new frontier rows and a live check (`ab9ebd0`).
+- **Gate: 56 of 56 passed** in one run of 17 m 16 s, every scenario 5/5 with
+  no escalation (`position_is_described` and `pgn_is_handed_over_not_recited`
+  included, both 4/5 at #372). `long_capture` 5/5 in all three conditions.
+  No gate turn called `lookup`. Speech 141/142 over 304 turns, the one
+  unbacked line in `my_mistake_is_mine` ("you played c3, but Re1 was the
+  move.", `owned_move`); reply said 87/87.
+- **Frontier** (not appended to the history, which holds whole runs), 10
+  samples each:
+
+  | scenario | dev | held-out | speech dev | speech held-out |
+  | --- | --- | --- | --- | --- |
+  | `knowledge_question` | 10/10 | 10/10 | 0/0 | 0/0 |
+  | `this_openings_ideas` | 10/10 | 10/10 | 8/8 | 17/17 |
+  | `not_a_lookup` | 10/10 | 10/10 | 8/8 | 10/10 |
+  | `knowledge_aside_then_move` | 10/10 | 10/10 | 2/2 | 14/14 |
+
+  Every checkpoint hit on every sample: the planner found the note
+  (Sicilian, en passant, bishop pair, Steinitz), carried the state block's
+  "Ruy Lopez: Morphy Defense" into the query, sent "best move here" and
+  "what would a strong player play" to `get_best_moves` with no lookup, and
+  played Bc4 after the Italian aside. `knowledge_question` scores 0/0 because
+  its answers name no move, opening or number: speech accuracy cannot read
+  prose about chess, so the hand review below is the check.
+- **Live** (scratch server on the Morphy position, trace and context capture
+  on): "what's the idea behind the Sicilian?" → `lookup("Sicilian")`, "how
+  does en passant work?" → `lookup("en passant")`, "what's the plan in this
+  opening?" → `lookup("Ruy Lopez: Morphy Defense")`, and "what's the best move
+  here?" → `get_best_moves(n=3)`, no lookup. Speech 2/2.
+- **Lookup-turn latency**: live 4.8 s, 5.3 s and 10.2 s total (the last turn's
+  second planner call took 6.1 s), search 0–26 ms; over the 60 frontier lookup
+  turns p50 5.4 s, p90 9.2 s, max 10.7 s. The narrator does not think on a
+  lookup turn. The near miss took 22.8 s, nearly all of it the narrator's one
+  thinking turn after an analysis tool (`get_best_moves`, unchanged by #374;
+  `not_a_lookup` samples 9–26 s).
+- **Hand review** of all 63 lookup answers (60 frontier, 3 live) against the
+  passages: faithful, no fact from outside the notes. Glitch compresses
+  (en passant drops the fifth-rank condition) and makes the odd slip:
+  "puts that bishop right on f7" for a bishop aiming at f7 (1 of 20 Italian
+  answers), "pretty much the deepest opening there is" for the note's "one of
+  the deepest", and "you're pinning my knight" at move 3, taken from the
+  Morphy note's "break the pin".
+
 **Targeted run 2026-09-29 on the results tally (#373, second half).** A
 results log (`results.jsonl`) records every game that ended; its tally rides
 in the state block and the narrator's facts as `results`, and speech accuracy

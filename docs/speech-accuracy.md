@@ -117,8 +117,8 @@ A family the reading cannot score reliably would be reported as unscored
   reads 60/60.
 
 **Where the scorer backs more than the old guard did.**
-`speech_accuracy._widened` adds two facts the live guard lacked. Each was found as a scorer error on a
-true line:
+`speech_accuracy._widened` adds three facts the live guard lacked. The first
+two were found as scorer errors on true lines:
 
 - **A review's alternatives.** `review_game` reports each critical move's
   `best`, but the guard's move facts cover only moves the turn played, could
@@ -127,10 +127,16 @@ true line:
   its roundings to 10, 50 and 100. The evaluation class otherwise accepts only
   exact counts and pawn tenths.
 
-Both were kept out of the live guard while it ran, since widening it would
-have changed what the player hears; #368 retired it. Both lines are labelled tests in
-`test_speech_accuracy.py`, beside a count and a move no review backs, which
-stay unbacked.
+- **What a lookup said (#374).** A `lookup` turn quotes the notes, not the
+  board: the moves a passage names back the move class, and the passage's
+  words back an opening named from it ("the Ruy Lopez is all about Bb5" in a
+  game in another opening, or none). Added with the tool, before a run could
+  find it, because the eval gate fails a sample on any unbacked claim.
+
+The first two were kept out of the live guard while it ran, since widening it
+would have changed what the player hears; #368 retired it. All three are
+labelled tests in `test_speech_accuracy.py`, beside a count, a move no review
+backs and a move the notes never named, which stay unbacked.
 
 **Scores from the player's side (#320).** `evaluate_position` and
 `get_best_moves` report `player_advantage_cp` (positive: the player is ahead)

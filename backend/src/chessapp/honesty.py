@@ -396,6 +396,13 @@ _SAN = r"""
 
 _SAN_CLAIM = re.compile(_SAN, re.VERBOSE)
 
+
+def named_moves(text: str) -> frozenset[str]:
+    """Every move `text` names the way the move classes read one: what a
+    passage that quotes moves can back (#374)."""
+    return frozenset(match.group(0) for match in _SAN_CLAIM.finditer(text))
+
+
 # Who played it, when the sentence says. `moves` is wide by design and so it
 # verifies "I played Nf3" off the player's own Nf3 — the credit was the one part
 # of a move claim nothing checked. Only a *played* move can be credited, so the

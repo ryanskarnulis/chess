@@ -478,3 +478,57 @@ def test_a_record_with_no_tally_leaves_a_count_unscored():
     record = _record("I've won 2 games.", _session("e4", "e5"))
     assert "results" in score_record(record).unscored
     assert unbacked(record) == ()
+
+
+# --- what a lookup said (#374) ----------------------------------------------------
+
+_LOOKUP = (
+    "lookup",
+    {
+        "ok": True,
+        "passages": [
+            {
+                "topic": "Ruy Lopez",
+                "text": "1. e4 e5 2. Nf3 Nc6 3. Bb5. White plans c3 and d4, often "
+                "with the knight travelling Nb1-d2-f1-g3.",
+            }
+        ],
+    },
+)
+
+
+def test_a_lookups_moves_and_opening_are_backed():
+    """Glitch quoting the notes on a turn that looked them up is quoting a
+    fact, in a game that is in another opening (here, none at all)."""
+    session = _session("d4")
+
+    score = score_record(
+        _record(
+            "The Ruy Lopez is all about Bb5, pressuring the knight.",
+            session,
+            tools=[_LOOKUP],
+        )
+    )
+
+    assert sorted(_counts(score)) == [("move", True), ("opening", True)]
+
+
+def test_without_the_lookup_the_same_words_are_unbacked():
+    session = _session("d4")
+
+    score = score_record(
+        _record("The Ruy Lopez is all about Bb5, pressuring the knight.", session)
+    )
+
+    assert sorted(_counts(score)) == [("move", False), ("opening", False)]
+
+
+def test_a_move_the_notes_never_named_is_still_unbacked():
+    session = _session("d4")
+
+    score = score_record(
+        _record("In the Ruy Lopez, Qh5 is the main idea.", session, tools=[_LOOKUP])
+    )
+
+    assert ("move", False) in _counts(score)
+    assert ("opening", True) in _counts(score)

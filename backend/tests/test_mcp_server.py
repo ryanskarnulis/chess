@@ -104,7 +104,7 @@ async def test_list_tools_matches_registry_definitions():
     input schema (modulo the golden test's harmless normalizations)."""
     ctx = ToolContext(session=GameSession())
     registry_definitions = build_registry(ctx).definitions()
-    assert len(registry_definitions) == 21
+    assert len(registry_definitions) == 22
 
     async with mcp_client(ctx) as client:
         listed = await client.list_tools()
@@ -576,7 +576,7 @@ async def test_the_advertised_tools_carry_no_confirmation():
     async with mcp_client(ctx) as client:
         listed = await client.list_tools()
 
-    assert len(listed.tools) == 21
+    assert len(listed.tools) == 22
     assert not [t.name for t in listed.tools if "confirm" in t.name]
     for tool in listed.tools:
         assert "confirm" not in (tool.inputSchema.get("properties") or {})
