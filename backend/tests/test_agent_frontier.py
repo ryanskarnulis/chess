@@ -38,6 +38,7 @@ from frontier import Scenario, measure
 from frontier_corpus import SCENARIOS
 from test_agent_evals import (  # noqa: F401 - `engine` is a fixture
     _SEED_BASE,
+    CRUTCHES,
     LLAMACPP_MODEL,
     PHASE_MODELS,
     PLANNER_TEMPERATURE,
@@ -63,7 +64,7 @@ def _sha(text: str) -> str:
 def configuration() -> dict[str, str]:
     """The shas of what the model is shown: both prompts, and the tool offer
     on an opening board (the same `brain_tool_definitions` assembly uses)."""
-    ctx = ToolContext(session=GameSession())
+    ctx = ToolContext(session=GameSession(), crutches=CRUTCHES)
     registry = build_registry(ctx, TurnCoordinator(ctx), atomic_exchange=False)
     offer = brain_tool_definitions(registry, ctx)
     return {
@@ -82,6 +83,7 @@ def _frontier_header() -> Generator[None, None, None]:
             "git_sha": _git_sha(),
             "model": LLAMACPP_MODEL,
             "phase_models": PHASE_MODELS,
+            "crutches": sorted(CRUTCHES),
             "planner_temperature": PLANNER_TEMPERATURE,
             "runs": RUNS,
             "split": SPLIT,

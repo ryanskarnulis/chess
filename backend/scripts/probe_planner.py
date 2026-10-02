@@ -82,7 +82,7 @@ import httpx
 
 from chessapp import clarification
 from chessapp.api import _agent_state_dict, planner_state
-from chessapp.app import phase_models_from_env
+from chessapp.app import crutches_from_env, phase_models_from_env
 from chessapp.conversation import PLANNER_REPLY_LABEL, Recall
 from chessapp.coordinator import TurnCoordinator
 from chessapp.fastparse import parse_move
@@ -1418,7 +1418,13 @@ def prepare(
     item: Item, arm: Arm, provider: LlamaCppProvider, base_url: str, model: str
 ) -> Prepared:
     session = position(item)
-    ctx = ToolContext(session=session, engine=None, settings=Settings())
+    # The crutches the app would give this arm's model (#375).
+    ctx = ToolContext(
+        session=session,
+        engine=None,
+        settings=Settings(),
+        crutches=crutches_from_env(model),
+    )
     coordinator = TurnCoordinator(ctx)
     registry = build_registry(ctx, coordinator, atomic_exchange=False)
     tools = arm.offer(brain_tool_definitions(registry, ctx))
