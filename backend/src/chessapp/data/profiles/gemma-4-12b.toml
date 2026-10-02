@@ -1,0 +1,56 @@
+# gemma-4-12b: the brain the app shipped on (chessapp/profiles.py, #375).
+# docs/model-profiles.md has the format. Every number here was measured on
+# this model; a new model gets its own file, not an edit to this one.
+
+# The fleet's tool-calling sampling, copied from
+# ../agent-standard/model-profile.md (re-copy on drift, never edit here;
+# tests/test_profiles.py checks it when the sibling repo is present).
+# top_k is a llama-server body field, not OpenAI's.
+thinking_kwarg = "enable_thinking"
+
+quirks = [
+    # docs/agent-evals.md "Standing results".
+    "Never minimize the tool schemas: stripping pydantic keys collapses undo_and_replace.",
+    # #191: why every phase has a max_tokens.
+    "A planner call can runaway-generate 20k+ thought tokens; every phase is capped.",
+]
+
+# The 12B's crutches (docs/model-profiles.md, #375's 2026-09-29 comment):
+# guidance that exists only because this model needed it. Each was measured
+# to fix a gemma-4-12b failure; a model that holds the gate without them
+# ships without them (#298).
+crutches = [
+    "move_source_required",        # #351: "the first one" played legal_moves[0] 20/20
+    "undo_call_again",             # undo_twice_and_replace read as undo(plies=2)
+    "ask_player_examples",         # #371 arm parts_ask5, word for word
+    "pick_resubmit_script",        # frontier undo_then_ambiguous_bishop
+    "difficulty_constraint_rule",  # "go easy without changing the difficulty"
+]
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+
+# The planner's job is a parse, and a parse wants the mode. Measured
+# 2026-09-17 (#286, docs/knight-ask-campaign.md): "move my kings knight" on a
+# fresh board was played rather than asked 6/40 at 1.0, 3/40 at 0.6, 0/40 at
+# 0.3, and nothing the same rule governs got worse. It never thinks and its
+# real output is tool calls or a one-line note (tens of tokens), so 2048 is
+# ~20x headroom and bounds a runaway thought loop to ~30 s (#191).
+# CHESSAPP_PLANNER_TEMPERATURE still overrides the temperature.
+[phases.planner]
+temperature = 0.3
+max_tokens = 2048
+
+# Words want the spread, so the narrator samples at the fleet's 1.0. Its one
+# thinking turn legitimately reaches ~2.6k tokens (docs/agent-evals.md; a
+# live 2,408 on 2026-07-27), so 4096 keeps every real narration whole and
+# bounds a runaway to ~60 s.
+[phases.narrator]
+max_tokens = 4096
+
+# One word, plus whatever punctuation a 12B wraps it in. This call sits in
+# front of a destructive op and must not be a place a thought loop can live.
+[phases.answer]
+max_tokens = 16

@@ -5,18 +5,20 @@ llama.cpp's server speaks the OpenAI chat API, so a provider is just a POST to
 wire models at the boundary: a malformed body, or tool-call arguments that
 aren't a JSON object, raise a typed error rather than being best-effort parsed.
 
-This is the one place that knows the model is Gemma-4 behind llama.cpp; the
-`Brain` on top (`llama_brain.py`) sees only `ChatResult`. Two Gemma quirks are
-handled here:
+This is the one place that speaks the wire to llama.cpp; the `Brain` on top
+(`llama_brain.py`) sees only `ChatResult`. What the request says about the
+*model* — its sampling and how its thinking channel is switched — comes from
+the model's profile (`profiles.py`, #375), never from constants here. Two
+wire quirks are handled here:
 
 - Chain-of-thought arrives in a separate `reasoning_content` field. It is
   validated (so an unexpected shape fails loudly) but never surfaced as answer
   text and never serialized back into history — `to_message()` drops it (the
   binding invariant: final answers only, never thought blocks).
 - Thinking is toggled per request via the non-standard `chat_template_kwargs`
-  field (default OFF, for fast tool calls); llama-server also takes `top_k` as
-  a plain body field. Both ride in the JSON payload directly — no SDK
-  `extra_body` indirection.
+  field, under the key the profile names (default OFF, for fast tool calls);
+  llama-server also takes `top_k` as a plain body field. Both ride in the JSON
+  payload directly — no SDK `extra_body` indirection.
 
 Correction retries on bad tool calls live in the `Brain`, not here (that is
 where the retry budget and schema validation already are), which is why
@@ -41,17 +43,9 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from chessapp.context_capture import CallStamp, ContextCapture
+from chessapp.profiles import ModelProfile, load_profile
 
 logger = logging.getLogger(__name__)
-
-# BRIEF-mandated sampling for Gemma-4 tool calling. The canonical set lives in
-# ../agent-standard/model-profile.md; the provider always sets it per request
-# so a drift in the shared server config never changes chess's behavior.
-# `_TEMPERATURE` is the default a caller gets by saying nothing — `chat` takes a
-# per-request override for the planner phase's cooler sampling.
-_TEMPERATURE = 1.0
-_TOP_P = 0.95
-_TOP_K = 64
 
 # One generous read timeout, not a special-cased first request: a cold model
 # load through llama-swap is ~100s before the first byte, warm calls never get
@@ -343,6 +337,12 @@ class LlamaCppProvider:
     not bit-reproducible across batch sizes or slots (ggml-org/llama.cpp#7052)
     — but never worse than unpaired. `None`, the default and what the app
     always uses, omits the field.
+
+    `profile` is what the requests say about the model (`profiles.py`): the
+    sampling sent on every call, so a drift in the shared server config never
+    changes chess's behaviour, and the thinking toggle's key. `None` — the
+    default — is `model`'s own profile, which is what every caller wants
+    except a test pinning one.
     """
 
     def __init__(
@@ -354,8 +354,10 @@ class LlamaCppProvider:
         client: httpx.Client | None = None,
         capture: ContextCapture | None = None,
         seed: int | None = None,
+        profile: ModelProfile | None = None,
     ) -> None:
         self.seed = seed
+        self.profile = load_profile(model) if profile is None else profile
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._capture = capture
@@ -371,8 +373,9 @@ class LlamaCppProvider:
     @property
     def sampling(self) -> dict[str, float | int]:
         """The sampling every request sends unless a caller overrides it — the
-        client half of a serving configuration, for the manifest (#317)."""
-        return {"temperature": _TEMPERATURE, "top_p": _TOP_P, "top_k": _TOP_K}
+        client half of a serving configuration, for the manifest (#317). Only
+        what the profile sets: a key it leaves out is never sent."""
+        return dict(self.profile.sampling)
 
     def close(self) -> None:
         self._client.close()
@@ -432,17 +435,23 @@ class LlamaCppProvider:
         cache_prompt: bool | None = None,
         seed: int | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": list(messages),
-            # `None` resolves to the module default rather than omitting the
-            # field, so a caller with no opinion sends the same bytes as ever.
-            "temperature": _TEMPERATURE if temperature is None else temperature,
-            "top_p": _TOP_P,
-            # llama-server takes these OpenAI extensions as plain body fields.
-            "top_k": _TOP_K,
-            "chat_template_kwargs": {"enable_thinking": enable_thinking},
-        }
+        sampling = self.profile.sampling
+        payload: dict[str, Any] = {"model": self._model, "messages": list(messages)}
+        # `None` resolves to the profile's temperature rather than omitting the
+        # field, so a caller with no opinion sends the same bytes as ever; a
+        # profile with no opinion either leaves it to the server.
+        if temperature is None:
+            temperature = sampling.get("temperature")
+        if temperature is not None:
+            payload["temperature"] = temperature
+        # llama-server takes `top_k` (not OpenAI's) as a plain body field.
+        for key in ("top_p", "top_k"):
+            if key in sampling:
+                payload[key] = sampling[key]
+        if self.profile.thinking_kwarg is not None:
+            payload["chat_template_kwargs"] = {
+                self.profile.thinking_kwarg: enable_thinking
+            }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if cache_prompt is not None:

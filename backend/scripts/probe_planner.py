@@ -86,12 +86,9 @@ from chessapp.conversation import PLANNER_REPLY_LABEL, Recall
 from chessapp.coordinator import TurnCoordinator
 from chessapp.fastparse import parse_move
 from chessapp.game import GameSession
-from chessapp.llama_brain import (
-    _PLANNER_MAX_TOKENS,
-    _PLANNER_TEMPERATURE,
-    create_llama_brain,
-)
+from chessapp.llama_brain import FROM_PROFILE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT
+from chessapp.profiles import PLANNER
 from chessapp.provider import ChatResult, LlamaCppProvider, ProviderError
 from chessapp.tools import (
     Settings,
@@ -510,7 +507,9 @@ class Arm:
 
     name: str
     prompt: str = PLANNER_PROMPT
-    temperature: float | None = _PLANNER_TEMPERATURE
+    # The arm's model's own planner temperature unless the arm names one
+    # (`temperature_for`), so a `model=` arm samples the way that model ships.
+    temperature: float | None = FROM_PROFILE
     cache_prompt: bool | None = None
     model: str | None = None
     tool_text: dict[str, str] = field(default_factory=dict)
@@ -521,6 +520,12 @@ class Arm:
     state_view: str | None = None
     tool_schema: str | None = None
     thinking: bool = False
+
+    def temperature_for(self, provider: LlamaCppProvider) -> float | None:
+        """The temperature this arm's planner call is sent at."""
+        if self.temperature is FROM_PROFILE:
+            return provider.profile.phase(PLANNER).temperature
+        return self.temperature
 
     def view(self, state: dict[str, Any]) -> dict[str, Any]:
         """The planner's opening state as this arm shows it."""
@@ -1520,8 +1525,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prepared.messages,
                 tools=prepared.tools,
                 enable_thinking=arm.thinking,
-                max_tokens=_PLANNER_MAX_TOKENS,
-                temperature=arm.temperature,
+                max_tokens=providers[model].profile.phase(PLANNER).max_tokens,
+                temperature=arm.temperature_for(providers[model]),
                 cache_prompt=arm.cache_prompt,
                 seed=args.seed,
             )
@@ -1581,8 +1586,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared.messages,
                     tools=prepared.tools,
                     enable_thinking=arm.thinking,
-                    max_tokens=_PLANNER_MAX_TOKENS,
-                    temperature=arm.temperature,
+                    max_tokens=provider.profile.phase(PLANNER).max_tokens,
+                    temperature=arm.temperature_for(provider),
                     cache_prompt=arm.cache_prompt,
                     seed=seed,
                 )
@@ -1625,7 +1630,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "prompt_sha": prepared.prompt_sha,
                 "offer_sha": prepared.offer_sha,
                 "model": model,
-                "temperature": arm.temperature,
+                "temperature": arm.temperature_for(provider),
                 "cache_prompt": arm.cache_prompt,
                 "seed": seed,
                 "state_view": arm.state_view,

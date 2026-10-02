@@ -37,8 +37,9 @@ from chessapp.coordinator import TurnCoordinator
 from chessapp.deadline import NARRATION_BUDGET_S
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
-from chessapp.llama_brain import _PLANNER_TEMPERATURE, create_llama_brain
+from chessapp.llama_brain import FROM_PROFILE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
+from chessapp.profiles import PLANNER, load_profile
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider, LlamaCppProvider
 from chessapp.serving import ServingManifest, ServingProbe, app_revision
@@ -75,7 +76,7 @@ def build_app(
     speech: SpeechClient | None = None,
     static_dir: Path | None = None,
     tracer: Tracer | None = None,
-    planner_temperature: float | None = _PLANNER_TEMPERATURE,
+    planner_temperature: float | None = FROM_PROFILE,
     context_capture: ContextCapture | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
@@ -85,8 +86,8 @@ def build_app(
     prompts from `ctx.settings` on every command so `set_verbosity` takes
     effect live. `provider` injects a fake `ChatProvider` into that default
     brain without a real llama-server. `planner_temperature` samples the
-    planner phase apart from the narrator, the brain's `_PLANNER_TEMPERATURE`
-    unless overridden (None: both on the provider's default).
+    planner phase apart from the narrator, the model profile's unless
+    overridden (None: both on the provider's default).
     `context_capture` keeps every model call's exact bytes (#359); it rides the
     default provider, so an injected `provider` is left exactly as given.
 
@@ -311,17 +312,22 @@ def _context_capture_from_env() -> ContextCapture | None:
     return JsonlContextCapture(Path(path)) if path else None
 
 
-def _planner_temperature_from_env() -> float:
+def _planner_temperature_from_env(model: str | None = None) -> float | None:
     """The planner phase's sampling temperature.
 
-    Unset (the default) means the brain's own `_PLANNER_TEMPERATURE`, the
-    number the knight-ask campaign measured (#286). The variable stays the
+    Unset (the default) means `model`'s profile's — for gemma-4-12b the 0.3 the
+    knight-ask campaign measured (#286) — and `model` defaults to the one
+    `LLAMACPP_MODEL` names. The variable stays the
     experiment's knob: a measurement run sets it and needs no code change, and
     the eval harness resolves its temperature through this same function so
     a gate can never sample the planner differently from the app it gates.
     """
     value = os.environ.get("CHESSAPP_PLANNER_TEMPERATURE")
-    return float(value) if value else _PLANNER_TEMPERATURE
+    if value:
+        return float(value)
+    if model is None:
+        model = os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL)
+    return load_profile(model).phase(PLANNER).temperature
 
 
 def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:

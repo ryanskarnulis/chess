@@ -55,12 +55,12 @@ from chessapp.app import build_app
 from chessapp.engine import CandidateMove, Evaluation
 from chessapp.game import GameSession
 from chessapp.llama_brain import (
-    _ANSWER_MAX_TOKENS,
     _DEFAULT_MAX_ANALYSIS_CALLS,
     _DEFAULT_MAX_TOOL_CALLS,
     _EXPENSIVE_TOOLS,
     create_llama_brain,
 )
+from chessapp.profiles import ANSWER, load_profile
 from chessapp.provider import ChatResult, ProviderError
 from chessapp.results import RESULTS_FILENAME
 from chessapp.tools import LIVE_CHECKPOINT_FILENAME
@@ -115,6 +115,9 @@ DELEGATES = ("d0", "d1")
 _MESSAGES = "/api/agent/conversations/{id}/messages"
 
 _LATE_GAME = Path(__file__).with_name("late_game_84_plies.pgn")
+
+# The answer reader's cap, which is how a speech call is told from it.
+_ANSWER_MAX_TOKENS = load_profile("gemma-4-12b").phase(ANSWER).max_tokens
 
 
 class LegalEngine:

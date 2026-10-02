@@ -346,7 +346,7 @@ def test_a_truncated_reading_leaves_the_armed_resignation_un_run():
         tool_calls_turn(("resign", {})),
         text_turn("asked first"),
         text_turn("That's the game if you mean it. Resign?"),
-        # The reading, cut off mid-word by `_ANSWER_MAX_TOKENS`.
+        # The reading, cut off mid-word by the answer phase's `max_tokens`.
         text_turn("confirm", finish_reason="length"),
         text_turn("nothing to do"),
         text_turn("Still your move, then."),
