@@ -135,7 +135,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -163,7 +163,7 @@ from chessapp.brain import (
     ToolDispatcher,
     _RunState,
 )
-from chessapp.context_capture import model_phase
+from chessapp.context_capture import ContextCapture, model_phase
 from chessapp.conversation import (
     NARRATOR_REPLY_LABEL,
     PLANNER_REPLY_LABEL,
@@ -190,10 +190,10 @@ from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING
 from chessapp.provider import (
     ChatProvider,
     ChatResult,
-    LlamaCppProvider,
     ProviderError,
     ToolCallArgumentsError,
     Usage,
+    providers_for,
 )
 from chessapp.provider import ToolCall as ProviderToolCall
 
@@ -429,6 +429,10 @@ class LlamaBrain:
     # provider is a protocol and keeps its own private). Empty for a brain
     # built around an injected provider with nothing to name.
     serving_labels: dict[str, str] = field(default_factory=dict)
+    # The profile each phase runs on (#375), by phase, as `create_llama_brain`
+    # resolved it — what the manifest records. Empty for a brain built
+    # directly, which then reports its provider's own profile.
+    phase_profiles: dict[str, ModelProfile] = field(default_factory=dict)
     # Told what the server said about every call that came back (#317) — its
     # build fingerprint above all. The serving manifest listens here to notice
     # a server that changed under the app and re-read what it is running. The
@@ -462,12 +466,26 @@ class LlamaBrain:
         inferred from here. A provider's own defaults are included when the
         provider publishes them."""
         sampling = getattr(self.provider, "sampling", None)
-        profile = getattr(self.provider, "profile", None)
+        profiles = dict(self.phase_profiles)
+        own = getattr(self.provider, "profile", None)
+        if not profiles and isinstance(own, ModelProfile):
+            profiles = dict.fromkeys((PLANNER, NARRATOR, ANSWER), own)
         return {
             "provider_sampling": dict(sampling) if isinstance(sampling, dict) else None,
-            "profile": profile.describe()
-            if isinstance(profile, ModelProfile)
-            else None,
+            # Which model and profile each phase runs on, and each profile in
+            # full once (#375).
+            "phases": {
+                phase: {
+                    "model": self.serving_labels.get(
+                        f"{phase}_model", self.serving_labels.get("model")
+                    ),
+                    "profile": profile.name,
+                }
+                for phase, profile in profiles.items()
+            },
+            "profiles": {
+                profile.name: profile.describe() for profile in profiles.values()
+            },
             "planner_temperature": self.planner_temperature,
             "narrator_temperature": self.narrator_temperature,
             "answer_temperature": self.answer_temperature,
@@ -1475,6 +1493,8 @@ def create_llama_brain(
     narrator_facts: Callable[[], dict[str, Any] | None] | None = None,
     settle_reply: Callable[[], object] | None = None,
     on_server: Callable[[ServerStamp], None] | None = None,
+    phase_models: Mapping[str, str] | None = None,
+    capture: ContextCapture | None = None,
 ) -> LlamaBrain:
     """Build a LlamaBrain against a real llama-server (e.g. localhost:8200/v1).
 
@@ -1492,9 +1512,16 @@ def create_llama_brain(
     app-assembly wires both to read `ctx.settings`). Either way the brain stays
     prompt-agnostic: it just carries a string or a callable.
 
-    Each phase's temperature and generation ceiling come from the model's
-    profile (`profiles.py`, #375): an injected provider's own `profile` when it
-    carries one, `model`'s otherwise. `planner_temperature` overrides the
+    `phase_models` names a model per phase (`planner`, `narrator`, `answer`);
+    a phase it leaves out runs on `model`. With no `provider` the factory
+    builds the one `provider.providers_for` makes of that map — a plain
+    `LlamaCppProvider` when every phase is on `model` — with `capture` on
+    every client. An injected provider is used as given and must route the
+    phases itself.
+
+    Each phase's temperature and generation ceiling come from its model's
+    profile (`profiles.py`, #375): the routed provider's own `profile` when it
+    carries one, the phase model's file otherwise. `planner_temperature` overrides the
     planner's (`CHESSAPP_PLANNER_TEMPERATURE` reaches it this way); None leaves
     it on the provider's default.
 
@@ -1521,13 +1548,27 @@ def create_llama_brain(
     `on_server` hears what the server said about each call that came back
     (#317) — the serving manifest's way of noticing the server changed.
     """
+    models = {phase: model for phase in (PLANNER, NARRATOR, ANSWER)}
+    models.update(phase_models or {})
     if provider is None:
-        provider = LlamaCppProvider(base_url, model)
-    profile = getattr(provider, "profile", None)
-    if not isinstance(profile, ModelProfile):
-        profile = load_profile(model)
+        provider = providers_for(base_url, models, model, capture=capture)
+
+    def profile_for(phase: str) -> ModelProfile:
+        route = getattr(provider, "provider_for", None)
+        routed = route(phase) if route is not None else provider
+        own = getattr(routed, "profile", None)
+        if isinstance(own, ModelProfile) and getattr(routed, "model", None) in (
+            None,
+            models[phase],
+        ):
+            return own
+        return load_profile(models[phase])
+
+    profiles = {phase: profile_for(phase) for phase in models}
     if planner_temperature is FROM_PROFILE:
-        planner_temperature = profile.phase(PLANNER).temperature
+        planner_temperature = profiles[PLANNER].phase(PLANNER).temperature
+    labels = {"model": model, "server": base_url}
+    labels.update({f"{phase}_model": m for phase, m in models.items() if m != model})
     system_prompt: str | Callable[[], str] = (
         system_prompt_provider
         if system_prompt_provider is not None
@@ -1548,15 +1589,16 @@ def create_llama_brain(
         max_iterations=max_iterations,
         max_corrections=max_corrections,
         planner_temperature=planner_temperature,
-        narrator_temperature=profile.phase(NARRATOR).temperature,
-        answer_temperature=profile.phase(ANSWER).temperature,
-        planner_max_tokens=profile.phase(PLANNER).max_tokens,
-        narrator_max_tokens=profile.phase(NARRATOR).max_tokens,
-        answer_max_tokens=profile.phase(ANSWER).max_tokens,
+        narrator_temperature=profiles[NARRATOR].phase(NARRATOR).temperature,
+        answer_temperature=profiles[ANSWER].phase(ANSWER).temperature,
+        planner_max_tokens=profiles[PLANNER].phase(PLANNER).max_tokens,
+        narrator_max_tokens=profiles[NARRATOR].phase(NARRATOR).max_tokens,
+        answer_max_tokens=profiles[ANSWER].phase(ANSWER).max_tokens,
+        phase_profiles=profiles,
         on_phase=on_phase,
         board_refresh=board_refresh,
         narrator_facts=narrator_facts,
         settle_reply=settle_reply,
-        serving_labels={"model": model, "server": base_url},
+        serving_labels=labels,
         on_server=on_server,
     )

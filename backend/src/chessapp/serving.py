@@ -47,7 +47,7 @@ import os
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -56,6 +56,7 @@ import httpx
 
 from chessapp import __version__
 from chessapp.brain import ServerStamp
+from chessapp.profiles import load_profile
 from chessapp.trace import TRACE_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,15 @@ _SERVER_FIELDS = (
     "sampling",
     "cmd",
     "fingerprint",
+    "thinking_toggle",
 )
+
+# Whether the chat template the server runs reads the profile's thinking key
+# (#375): `ok` when it does, `absent` when it does not — the toggle the app
+# sends would then be silently ignored — and `null` when there was no
+# template or no key to look for.
+THINKING_OK = "ok"
+THINKING_ABSENT = "absent"
 
 # How long a probe waits on each request. Short: it runs on its own thread,
 # but a server that takes longer than this to describe itself is not one whose
@@ -162,6 +171,7 @@ class ServingManifest:
         experiment: str = "",
         session_id: str | None = None,
         on_change: Callable[[dict[str, Any]], None] | None = None,
+        other_models: Sequence[str] = (),
     ) -> None:
         self._lock = threading.Lock()
         self._session = {
@@ -172,17 +182,31 @@ class ServingManifest:
         self._client = {"model": model, "base_url": base_url, **client}
         self._server: dict[str, Any] = dict.fromkeys(_SERVER_FIELDS)
         self._server["source"] = SOURCE_UNPROBED
+        # The server half of every *other* model a phase runs on (#375),
+        # keyed by model. Empty — and absent from the record — when every
+        # phase is on `model`.
+        self._servers: dict[str, dict[str, Any]] = {
+            other: {**dict.fromkeys(_SERVER_FIELDS), "source": SOURCE_UNPROBED}
+            for other in other_models
+            if other != model
+        }
+        self._model = model
         self.on_change = on_change
 
     def _id(self) -> str:
-        return _digest(
-            {"app": self._app, "client": self._client, "server": self._server}
-        )
+        whole: dict[str, Any] = {
+            "app": self._app,
+            "client": self._client,
+            "server": self._server,
+        }
+        if self._servers:
+            whole["servers"] = self._servers
+        return _digest(whole)
 
     def record(self) -> dict[str, Any]:
         """The manifest as the trace's `serving` record."""
         with self._lock:
-            return {
+            record = {
                 "schema": TRACE_SCHEMA,
                 "kind": KIND_SERVING,
                 "manifest_id": self._id(),
@@ -191,6 +215,11 @@ class ServingManifest:
                 "client": json.loads(json.dumps(self._client, default=str)),
                 "server": dict(self._server),
             }
+            if self._servers:
+                record["servers"] = {
+                    model: dict(fields) for model, fields in self._servers.items()
+                }
+            return record
 
     def label(self) -> dict[str, str]:
         """What a turn record carries to point at this manifest."""
@@ -206,16 +235,30 @@ class ServingManifest:
         with self._lock:
             return dict(self._server)
 
-    def update_server(self, fields: Mapping[str, Any]) -> bool:
-        """Merge what was learned about the server; tell `on_change` if that
-        changed anything. Unknown field names are ignored rather than
-        recorded — the server half says only what it was built to say."""
+    def server_for(self, model: str | None) -> dict[str, Any]:
+        """The server half for `model` — the main one for `None` or `model`."""
         with self._lock:
-            before = dict(self._server)
+            return dict(self._slot(model))
+
+    def _slot(self, model: str | None) -> dict[str, Any]:
+        if model is None or model == self._model:
+            return self._server
+        return self._servers[model]
+
+    def update_server(
+        self, fields: Mapping[str, Any], model: str | None = None
+    ) -> bool:
+        """Merge what was learned about the server (`model`'s, for a phase on
+        another model); tell `on_change` if that changed anything. Unknown
+        field names are ignored rather than recorded — the server half says
+        only what it was built to say."""
+        with self._lock:
+            slot = self._slot(model)
+            before = dict(slot)
             for key, value in fields.items():
-                if key in self._server:
-                    self._server[key] = value
-            changed = self._server != before
+                if key in slot:
+                    slot[key] = value
+            changed = slot != before
         if changed:
             self.announce()
         return changed
@@ -250,8 +293,15 @@ class ServingProbe:
         clock: Callable[[], float] = time.monotonic,
         spawn: Callable[[Callable[[], None]], None] | None = None,
         retry_s: float = _RETRY_S,
+        thinking_kwarg: str | None = None,
+        slot: str | None = None,
     ) -> None:
         self._manifest = manifest
+        # The profile's thinking key, looked for in the server's template.
+        self._thinking_kwarg = thinking_kwarg
+        # Which of the manifest's server halves this probe fills: `None` for
+        # the main model's, a model id for a phase on another one.
+        self._slot = slot
         root = base_url.rstrip("/")
         self._root = root[: -len("/v1")] if root.endswith("/v1") else root
         self._model = model
@@ -270,7 +320,7 @@ class ServingProbe:
             changed = fingerprint is not None and fingerprint != self._fingerprint
             if changed:
                 self._fingerprint = fingerprint
-            settled = self._manifest.server["source"] == SOURCE_PROPS
+            settled = self._manifest.server_for(self._slot)["source"] == SOURCE_PROPS
             waited = (
                 self._last_attempt is None
                 or self._clock() - self._last_attempt >= self._retry_s
@@ -280,7 +330,7 @@ class ServingProbe:
                 self._inflight = True
                 self._last_attempt = self._clock()
         if changed:
-            self._manifest.update_server({"fingerprint": fingerprint})
+            self._update({"fingerprint": fingerprint})
         if due:
             self._spawn(self._run)
 
@@ -289,7 +339,7 @@ class ServingProbe:
             self.probe()
         except Exception:
             logger.warning("serving_probe_failed", exc_info=True)
-            self._manifest.update_server({"source": SOURCE_UNAVAILABLE})
+            self._update({"source": SOURCE_UNAVAILABLE})
         finally:
             with self._lock:
                 self._inflight = False
@@ -321,22 +371,63 @@ class ServingProbe:
             cmd = entry.get("cmd") if isinstance(entry.get("cmd"), str) else None
             props_url = f"{self._root}/upstream/{self._model}/props"
         else:
-            self._manifest.update_server({"source": SOURCE_UNAVAILABLE})
+            self._update({"source": SOURCE_UNAVAILABLE})
             return
         props = self._get(props_url)
         if props is None:
             return
         if props.status_code != 200:
-            self._manifest.update_server({"source": SOURCE_UNAVAILABLE})
+            self._update({"source": SOURCE_UNAVAILABLE})
             return
-        self._manifest.update_server({**read_props(_json(props)), "cmd": cmd})
+        body = _json(props)
+        self._update(
+            {
+                **read_props(body),
+                "cmd": cmd,
+                "thinking_toggle": thinking_toggle(body, self._thinking_kwarg),
+            }
+        )
+
+    def _update(self, fields: Mapping[str, Any]) -> None:
+        self._manifest.update_server(fields, model=self._slot)
 
     def _get(self, url: str) -> httpx.Response | None:
         try:
             return self._client.get(url, timeout=_PROBE_TIMEOUT_S)
         except httpx.HTTPError:
-            self._manifest.update_server({"source": SOURCE_UNAVAILABLE})
+            self._update({"source": SOURCE_UNAVAILABLE})
             return None
+
+
+def probes_for(
+    manifest: ServingManifest,
+    *,
+    base_url: str,
+    model: str,
+    phase_models: Mapping[str, str],
+) -> list[ServingProbe]:
+    """One probe per model a phase runs on (#375), plus `model`'s — the
+    manifest's main server half — each looking for its own profile's
+    thinking key in its own server's template. The manifest must have been
+    built with the other models (`other_models`)."""
+    return [
+        ServingProbe(
+            manifest,
+            base_url=base_url,
+            model=served,
+            thinking_kwarg=load_profile(served).thinking_kwarg,
+            slot=None if served == model else served,
+        )
+        for served in sorted({model, *phase_models.values()})
+    ]
+
+
+def thinking_toggle(props: Mapping[str, Any], kwarg: str | None) -> str | None:
+    """Whether the template the server runs reads `kwarg` (#375)."""
+    template = props.get("chat_template")
+    if not kwarg or not isinstance(template, str) or not template:
+        return None
+    return THINKING_OK if kwarg in template else THINKING_ABSENT
 
 
 def read_props(props: Mapping[str, Any]) -> dict[str, Any]:

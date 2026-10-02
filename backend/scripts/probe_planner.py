@@ -82,6 +82,7 @@ import httpx
 
 from chessapp import clarification
 from chessapp.api import _agent_state_dict, planner_state
+from chessapp.app import phase_models_from_env
 from chessapp.conversation import PLANNER_REPLY_LABEL, Recall
 from chessapp.coordinator import TurnCoordinator
 from chessapp.fastparse import parse_move
@@ -101,7 +102,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 from evalstats import format_paired, paired_counts, sample_seed  # noqa: E402
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8200/v1"
-DEFAULT_MODEL = "gemma-4-12b"
+# The planner's model as the app resolves it (#375): `CHESSAPP_PLANNER_MODEL`,
+# else `LLAMACPP_MODEL`, else the app's default.
+DEFAULT_MODEL = phase_models_from_env()[PLANNER]
 # The first sample's seed; any fixed number pairs the arms, and a campaign
 # that wants fresh streams passes another.
 DEFAULT_SEED = 363

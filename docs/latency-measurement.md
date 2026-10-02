@@ -14,7 +14,7 @@ Every record carries `schema` (currently 2) and `kind`:
 
 | `kind` | Written by | When | Key fields |
 | --- | --- | --- | --- |
-| `serving` | server | At startup, and whenever what serves the app changes | `manifest_id`, `session`, `app.revision`, `client` (sampling, token limits, budgets), `server` (`model_path`, `model_ftype`, `build_info`, `n_ctx`, llama-swap `cmd`, `source`) |
+| `serving` | server | At startup, and whenever what serves the app changes | `manifest_id`, `session`, `app.revision`, `client` (sampling, token limits, budgets, and since #375 `phases` (each phase's model and profile) and `profiles`), `server` (`model_path`, `model_ftype`, `build_info`, `n_ctx`, llama-swap `cmd`, `thinking_toggle`, `source`), and `servers` (the same fields, keyed by model, only when a phase runs on another model) |
 | `turn` | server | Once per interaction that reached the pipeline | `interaction_id`, `correlation_id`, `route`, `calls[]` (phase, status, `ms`, `server_ms`, `cached_tokens`, `budget_ms`), `spans_ms`, `planning`, `serving.manifest_id` |
 | `speech` | server | Once per STT or TTS round trip | `op` (`stt` or `tts`), `interaction_id`, `ms`, `status`, and the byte and character counts |
 | `voice` | browser, via `POST /api/telemetry/voice` | Once the interaction settles, or is abandoned after 180 s | `interaction_id`, `correlation_id`, `origin`, `start`, `marks`, `outcome`, `censored` |

@@ -32,6 +32,7 @@ CHESSAPP_AGENT_FRONTIER=1 pytest tests/test_agent_frontier.py -v -s   # frontier
 python scripts/frontier_report.py trend                  # frontier history, per split
 python scripts/speech_report.py /tmp/turns.jsonl          # speech accuracy of a trace (docs/speech-accuracy.md)
 CHESSAPP_TRAJ_SEED=7 pytest tests/test_trajectories.py -k replay -s   # replay one composed walk
+python scripts/check_profile.py gemma-4-12b              # a model's profile vs its server (docs/model-profiles.md)
 ```
 
 Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
@@ -51,6 +52,12 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   what he was shown (context, history, tool results, prompts) and measure it
   as speech accuracy, offline. So no regex fast paths or literal parsers for
   language, and no speech guards. Glitch should feel alive, not canned.
+- **Model knowledge lives in profiles.** Sampling, the thinking toggle,
+  per-phase temperature and caps, and the 12B's crutches live in
+  `backend/src/chessapp/data/profiles/<model>.toml`, never in code. Each phase
+  can run on its own model (`CHESSAPP_PLANNER_MODEL` and friends). The default
+  config's request bytes are pinned by `tests/test_profile_bytes.py`
+  (`docs/model-profiles.md`).
 - **Personality is tone only** — never move choice, difficulty, or settings.
   The global Glitch text is vendored from `../agent-standard/`; fix drift by
   re-copying, never by editing the copy.

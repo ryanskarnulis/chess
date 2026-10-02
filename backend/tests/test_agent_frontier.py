@@ -39,6 +39,7 @@ from frontier_corpus import SCENARIOS
 from test_agent_evals import (  # noqa: F401 - `engine` is a fixture
     _SEED_BASE,
     LLAMACPP_MODEL,
+    PHASE_MODELS,
     PLANNER_TEMPERATURE,
     _build_eval_app,
     _git_sha,
@@ -80,6 +81,7 @@ def _frontier_header() -> Generator[None, None, None]:
             "started": datetime.now(UTC).isoformat(),
             "git_sha": _git_sha(),
             "model": LLAMACPP_MODEL,
+            "phase_models": PHASE_MODELS,
             "planner_temperature": PLANNER_TEMPERATURE,
             "runs": RUNS,
             "split": SPLIT,

@@ -18,6 +18,49 @@ writing its profile, not editing code.
 Loading is strict. An unknown key, phase or crutch fails to load, because a
 typo would mean running a model on settings nobody chose.
 
+## A model per phase
+
+Each phase runs on `LLAMACPP_MODEL` unless told otherwise:
+
+| Variable | Phase |
+|---|---|
+| `CHESSAPP_PLANNER_MODEL` | the planner (tool choice) |
+| `CHESSAPP_NARRATOR_MODEL` | the narrator (Glitch's words) |
+| `CHESSAPP_ANSWER_MODEL` | the yes/no reader in front of a destructive op |
+
+`app.phase_models_from_env` resolves them, and the eval harness, the
+frontier tier and `scripts/probe_planner.py` resolve through it too, so a
+split arm such as #298's (planner on a tool-strong model, narrator on Gemma)
+is a config change that the gate measures as shipped.
+
+- Each phase uses its own model's profile for sampling, temperature and caps.
+- With one model everywhere, the provider is the single `LlamaCppProvider`
+  the app always built. With a split, a `PhasedProvider` routes each call by
+  the phase the brain named around it (`context_capture.model_phase`).
+- Both models must fit in VRAM together. If llama-swap swaps between phases,
+  each turn pays a model load and the gain is gone.
+
+The serving manifest records `client.phases` (model and profile per phase)
+and every profile in full. It probes each model on its own, so its server
+fields go to `server` for `LLAMACPP_MODEL` and to `servers.<model>` for any
+other.
+
+### The thinking-toggle check
+
+The probe reads each model's `chat_template` from `/props` and records
+`thinking_toggle`:
+
+- `ok`: the template reads the profile's `thinking_kwarg`.
+- `absent`: it does not, so the toggle the app sends does nothing.
+- `null`: it can't tell.
+
+Before running a new candidate, check it with:
+
+```bash
+python scripts/check_profile.py <model>          # leaves an unloaded model alone
+python scripts/check_profile.py <model> --load   # loads it to look
+```
+
 ## A model with no profile
 
 It runs on the built-in default profile (`profiles.DEFAULT_PROFILE`), and a

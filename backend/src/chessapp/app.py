@@ -39,10 +39,15 @@ from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import FROM_PROFILE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
-from chessapp.profiles import PLANNER, load_profile
+from chessapp.profiles import ANSWER, NARRATOR, PHASES, PLANNER, load_profile
 from chessapp.progress import ProgressReporter
-from chessapp.provider import ChatProvider, LlamaCppProvider
-from chessapp.serving import ServingManifest, ServingProbe, app_revision
+from chessapp.provider import ChatProvider
+from chessapp.serving import (
+    ServingManifest,
+    ServingProbe,
+    app_revision,
+    probes_for,
+)
 from chessapp.tools import (
     ToolContext,
     brain_tool_definitions,
@@ -78,6 +83,7 @@ def build_app(
     tracer: Tracer | None = None,
     planner_temperature: float | None = FROM_PROFILE,
     context_capture: ContextCapture | None = None,
+    phase_models: dict[str, str] | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -90,6 +96,8 @@ def build_app(
     overridden (None: both on the provider's default).
     `context_capture` keeps every model call's exact bytes (#359); it rides the
     default provider, so an injected `provider` is left exactly as given.
+    `phase_models` puts a phase on its own model (#375); a phase it leaves out
+    runs on `model`.
 
     `agent_enabled=False` is **direct mode**: no brain is constructed at all, so
     `/api/command` 503s and the board plays the deterministic exchange. It needs
@@ -160,10 +168,12 @@ def build_app(
     # What serves a turn, for the trace (#290). Only the brain built here can
     # say: an injected one brings no guarantee it knows its prompts or server.
     serving_identity = None
-    # The probe that learns what the server is running (#317), bound below
-    # once the manifest it writes to exists; the brain's listener reaches it
-    # through this name, so the two can be built in either order.
-    probe: ServingProbe | None = None
+    # The probes that learn what the server is running (#317), one per model a
+    # phase runs on (#375), bound below once the manifest they write to
+    # exists; the brain's listener reaches them through this name, so the two
+    # can be built in either order.
+    probes: list[ServingProbe] = []
+    models = {phase: (phase_models or {}).get(phase, model) for phase in PHASES}
     if brain is None and agent_enabled:
         brain = create_llama_brain(
             base_url=llama_base_url,
@@ -179,9 +189,9 @@ def build_app(
             system_prompt_provider=lambda: system_prompt_for(ctx.settings.verbosity),
             planner_prompt_provider=lambda: PLANNER_PROMPT,
             planner_temperature=planner_temperature,
-            provider=provider
-            if provider is not None or context_capture is None
-            else LlamaCppProvider(llama_base_url, model, capture=context_capture),
+            provider=provider,
+            phase_models=phase_models,
+            capture=context_capture,
             # The brain's own two phases, live (`progress.py`). Nothing else
             # can see inside `get_agent_response`, and the narrator half of it
             # is the observe beat.
@@ -199,8 +209,10 @@ def build_app(
             # And the engine's reply, settled before those facts are read, so
             # the narrator speaks over it and says it (#365).
             settle_reply=coordinator.settle_owed_reply,
-            # Each call's server stamp, to the probe once it exists (#317).
-            on_server=lambda stamp: probe.observe(stamp) if probe else None,
+            # Each call's server stamp, to the probes once they exist (#317).
+            # A stamp does not say which model answered, so every probe hears
+            # it; each one reads only its own model, and only once it is warm.
+            on_server=lambda stamp: [probe.observe(stamp) for probe in probes],
         )
         # Read off rather than assumed: a factory stubbed out in tests hands
         # back a brain with nothing to say about what serves it.
@@ -220,11 +232,19 @@ def build_app(
                 revision=app_revision(),
                 experiment=os.environ.get("CHESSAPP_EXPERIMENT", ""),
                 on_change=tracer.record if tracer is not None else None,
+                other_models=sorted(set(models.values()) - {model}),
             )
             if provider is None:
                 # Only a real server is asked what it runs: an injected
                 # provider has no server behind it to describe.
-                probe = ServingProbe(manifest, base_url=llama_base_url, model=model)
+                probes.extend(
+                    probes_for(
+                        manifest,
+                        base_url=llama_base_url,
+                        model=model,
+                        phase_models=models,
+                    )
+                )
             manifest.announce()
 
             def serving_identity() -> dict[str, str]:
@@ -317,7 +337,7 @@ def _planner_temperature_from_env(model: str | None = None) -> float | None:
 
     Unset (the default) means `model`'s profile's — for gemma-4-12b the 0.3 the
     knight-ask campaign measured (#286) — and `model` defaults to the one
-    `LLAMACPP_MODEL` names. The variable stays the
+    planner runs on (`phase_models_from_env`). The variable stays the
     experiment's knob: a measurement run sets it and needs no code change, and
     the eval harness resolves its temperature through this same function so
     a gate can never sample the planner differently from the app it gates.
@@ -326,8 +346,27 @@ def _planner_temperature_from_env(model: str | None = None) -> float | None:
     if value:
         return float(value)
     if model is None:
-        model = os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL)
+        model = phase_models_from_env()[PLANNER]
     return load_profile(model).phase(PLANNER).temperature
+
+
+_PHASE_MODEL_ENV = {
+    PLANNER: "CHESSAPP_PLANNER_MODEL",
+    NARRATOR: "CHESSAPP_NARRATOR_MODEL",
+    ANSWER: "CHESSAPP_ANSWER_MODEL",
+}
+
+
+def phase_models_from_env() -> dict[str, str]:
+    """Which model each phase runs on (#375): `CHESSAPP_<PHASE>_MODEL` when
+    set, `LLAMACPP_MODEL` (or the default) otherwise. The eval harness and the
+    planner probe resolve through this same function, so a gate never
+    measures a different wiring than the app ships."""
+    default = os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL)
+    return {
+        phase: os.environ.get(variable) or default
+        for phase, variable in _PHASE_MODEL_ENV.items()
+    }
 
 
 def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
@@ -340,6 +379,7 @@ def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
     """
     save_dir_env = os.environ.get("CHESSAPP_SAVE_DIR")
     static_dir_env = os.environ.get("CHESSAPP_STATIC_DIR")
+    phase_models = phase_models_from_env()
     return build_app(
         llama_base_url=os.environ.get("LLAMACPP_BASE_URL", DEFAULT_LLAMA_BASE_URL),
         model=os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL),
@@ -349,8 +389,9 @@ def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
         speech=_speech_from_env(),
         static_dir=Path(static_dir_env) if static_dir_env else None,
         tracer=_tracer_from_env(),
-        planner_temperature=_planner_temperature_from_env(),
+        planner_temperature=_planner_temperature_from_env(phase_models[PLANNER]),
         context_capture=_context_capture_from_env(),
+        phase_models=phase_models,
     )
 
 
