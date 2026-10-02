@@ -151,7 +151,7 @@ from chessapp.api import (
     narrator_facts,
     planner_board_refresh,
 )
-from chessapp.app import _planner_temperature_from_env
+from chessapp.app import _planner_temperature_from_env, phase_models_from_env
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
@@ -159,8 +159,9 @@ from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
-from chessapp.provider import LlamaCppProvider
-from chessapp.serving import ServingManifest, ServingProbe, app_revision
+from chessapp.profiles import PLANNER
+from chessapp.provider import providers_for
+from chessapp.serving import ServingManifest, app_revision, probes_for
 from chessapp.speech_accuracy import Tally, score_record, unbacked
 from chessapp.tools import (
     DESTRUCTIVE_TOOLS,
@@ -211,7 +212,10 @@ STOCKFISH_PATH = os.environ.get("CHESSAPP_STOCKFISH", "/usr/bin/stockfish")
 # measurement run is `CHESSAPP_PLANNER_TEMPERATURE=1.0 CHESSAPP_AGENT_EVALS=1
 # pytest …` — the baseline it produces is the app's own behavior at that
 # number, and `test_eval_harness.py` pins that the two cannot drift apart.
-PLANNER_TEMPERATURE = _planner_temperature_from_env()
+# Which model each phase runs on (#375), resolved by the same function too: a
+# split arm (`CHESSAPP_PLANNER_MODEL=…`) is the app's own wiring at that map.
+PHASE_MODELS = phase_models_from_env()
+PLANNER_TEMPERATURE = _planner_temperature_from_env(PHASE_MODELS[PLANNER])
 
 # Generous request timeout: a cold llama-swap load is ~100 s before the first
 # byte (the provider's own read timeout is 300 s). TestClient's ASGI transport
@@ -452,6 +456,7 @@ def _report_session() -> Generator[None, None, None]:
             "revision": app_revision(),
             "experiment": _EXPERIMENT,
             "model": LLAMACPP_MODEL,
+            "phase_models": PHASE_MODELS,
             "planner_temperature": PLANNER_TEMPERATURE,
             "knobs": {
                 "block_runs": _BLOCK_RUNS,
@@ -567,9 +572,10 @@ def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
     registry = build_registry(ctx, coordinator, atomic_exchange=False)
     # The only departure from build_app: the real provider is wrapped so every
     # model round trip is counted and timed. create_llama_brain builds exactly
-    # this provider when none is passed, so the wire itself is unchanged.
+    # this provider when none is passed (one client per phase model, #375), so
+    # the wire itself is unchanged.
     provider = CountingProvider(
-        LlamaCppProvider(LLAMACPP_BASE_URL, LLAMACPP_MODEL, seed=seed)
+        providers_for(LLAMACPP_BASE_URL, PHASE_MODELS, LLAMACPP_MODEL, seed=seed)
     )
 
     def offered_tools() -> list[dict[str, Any]]:
@@ -597,6 +603,7 @@ def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
         planner_prompt_provider=lambda: PLANNER_PROMPT,
         planner_temperature=PLANNER_TEMPERATURE,
         provider=provider,
+        phase_models=PHASE_MODELS,
         # Wired exactly as build_app wires it, through the *same* function: the
         # planner's mid-command view of the board is part of what is being
         # measured, and a harness whose loop is told about its own mutations
@@ -608,7 +615,7 @@ def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
         narrator_facts=lambda: narrator_facts(ctx, coordinator),
         settle_reply=coordinator.settle_owed_reply,
         # Observation only (#317): the server stamps reach the run's probe.
-        on_server=lambda stamp: _SERVING["probe"].observe(stamp),
+        on_server=lambda stamp: [p.observe(stamp) for p in _SERVING["probes"]],
     )
     if not _SERVING:
         manifest = ServingManifest(
@@ -617,10 +624,14 @@ def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
             client=brain.client_settings(),
             revision=app_revision(),
             experiment=_EXPERIMENT,
+            other_models=sorted(set(PHASE_MODELS.values()) - {LLAMACPP_MODEL}),
         )
         _SERVING["manifest"] = manifest
-        _SERVING["probe"] = ServingProbe(
-            manifest, base_url=LLAMACPP_BASE_URL, model=LLAMACPP_MODEL
+        _SERVING["probes"] = probes_for(
+            manifest,
+            base_url=LLAMACPP_BASE_URL,
+            model=LLAMACPP_MODEL,
+            phase_models=PHASE_MODELS,
         )
     # The second departure, and it is observation only: the app's existing
     # tracer seam is pointed at a list. Nothing the model sees changes — a

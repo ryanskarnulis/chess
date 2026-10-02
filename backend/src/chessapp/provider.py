@@ -35,14 +35,14 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any, Protocol
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from chessapp.context_capture import CallStamp, ContextCapture
+from chessapp.context_capture import CallStamp, ContextCapture, current_phase
 from chessapp.profiles import ModelProfile, load_profile
 
 logger = logging.getLogger(__name__)
@@ -371,6 +371,11 @@ class LlamaCppProvider:
         )
 
     @property
+    def model(self) -> str:
+        """The model id every request names."""
+        return self._model
+
+    @property
     def sampling(self) -> dict[str, float | int]:
         """The sampling every request sends unless a caller overrides it — the
         client half of a serving configuration, for the manifest (#317). Only
@@ -633,6 +638,101 @@ class LlamaCppProvider:
             usage=completion.usage,
             server=ServerMeta.read(completion),
         )
+
+
+class PhasedProvider:
+    """One `ChatProvider` that sends each phase to its own model (#375).
+
+    The planner, the narrator and the answer reader are separate jobs, and the
+    best model for a parse need not be the best for words. Each call goes to
+    the provider for the phase the brain named around it (`model_phase`, the
+    same `ContextVar` the context capture reads), and to `default`'s when no
+    phase is named, so the brain and every wrapper around it (the eval
+    harness's `CountingProvider`) see one provider and stay as they are.
+
+    `sampling` and `profile` are `default`'s — the planner's, by the factory's
+    convention — so a single-model reader still finds what it expects;
+    `phases` says what each phase talks to.
+    """
+
+    def __init__(
+        self, routes: Mapping[str, LlamaCppProvider], default: LlamaCppProvider
+    ) -> None:
+        self._routes = dict(routes)
+        self._default = default
+
+    def provider_for(self, phase: str) -> LlamaCppProvider:
+        return self._routes.get(phase, self._default)
+
+    @property
+    def model(self) -> str:
+        return self._default.model
+
+    @property
+    def sampling(self) -> dict[str, float | int]:
+        return self._default.sampling
+
+    @property
+    def profile(self) -> ModelProfile:
+        return self._default.profile
+
+    @property
+    def phases(self) -> dict[str, dict[str, str]]:
+        return {
+            phase: {"model": provider.model, "profile": provider.profile.name}
+            for phase, provider in self._routes.items()
+        }
+
+    def close(self) -> None:
+        for provider in {id(p): p for p in self._all()}.values():
+            provider.close()
+
+    def _all(self) -> list[LlamaCppProvider]:
+        return [self._default, *self._routes.values()]
+
+    def chat(
+        self,
+        messages: Sequence[dict[str, Any]],
+        *,
+        tools: Sequence[dict[str, Any]] | None = None,
+        enable_thinking: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout: float | None = None,
+    ) -> ChatResult:
+        return self.provider_for(current_phase()).chat(
+            messages,
+            tools=tools,
+            enable_thinking=enable_thinking,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+        )
+
+
+def providers_for(
+    base_url: str,
+    phase_models: Mapping[str, str],
+    default_model: str,
+    *,
+    capture: ContextCapture | None = None,
+    seed: int | None = None,
+) -> LlamaCppProvider | PhasedProvider:
+    """The provider for a phase-to-model map: a plain `LlamaCppProvider` when
+    every phase names `default_model` — exactly the provider a single-model
+    app always built — and a `PhasedProvider` otherwise, with one client per
+    distinct model, each carrying that model's profile."""
+    models = {default_model, *phase_models.values()}
+    built = {
+        model: LlamaCppProvider(base_url, model, capture=capture, seed=seed)
+        for model in sorted(models)
+    }
+    default = built[default_model]
+    if models == {default_model}:
+        return default
+    return PhasedProvider(
+        {phase: built[model] for phase, model in phase_models.items()}, default
+    )
 
 
 def _body_text(body: bytes) -> str:

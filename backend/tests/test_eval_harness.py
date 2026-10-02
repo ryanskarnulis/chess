@@ -1001,6 +1001,11 @@ def _brain_kwargs(monkeypatch, module, build) -> dict[str, Any]:
         return None
 
     monkeypatch.setattr(module, "create_llama_brain", spy)
+    if hasattr(module, "_SERVING"):
+        # The harness builds its manifest from the first brain; a spy builds
+        # none, so the run's serving record is stood in for, whatever order
+        # the suite ran in.
+        monkeypatch.setattr(module, "_SERVING", {"manifest": None, "probes": []})
     build()
     return captured
 
@@ -1166,3 +1171,42 @@ def test_every_traced_turn_is_scored_into_the_suite_and_the_scenario(monkeypatch
     }
     assert totals.scenario.claims_made == 1
     assert totals.scenario.summary().startswith("speech 0/1 (0.0%)")
+
+
+def test_the_harness_puts_each_phase_on_the_model_assembly_does(
+    monkeypatch,
+) -> None:
+    """A split arm (#375: planner on one model, narrator on another) is a
+    config change, and only a measurement of the app if the harness reads the
+    same config the app does. Both resolve it through
+    `app.phase_models_from_env`; this pins that they hand the brain the same
+    map, by default and split."""
+    import chessapp.app
+    import test_agent_evals
+
+    def both() -> tuple[Any, Any]:
+        monkeypatch.setattr(
+            test_agent_evals, "PHASE_MODELS", chessapp.app.phase_models_from_env()
+        )
+        shipped = _brain_kwargs(
+            monkeypatch, chessapp.app, lambda: chessapp.app.build_app_from_env()
+        )
+        measured = _brain_kwargs(
+            monkeypatch,
+            test_agent_evals,
+            lambda: test_agent_evals._build_eval_app(FakeEngine()),
+        )
+        return shipped["phase_models"], measured["phase_models"]
+
+    for name in ("CHESSAPP_PLANNER_MODEL", "CHESSAPP_NARRATOR_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LLAMACPP_MODEL", "gemma-4-12b")
+    shipped, measured = both()
+    assert shipped == measured
+    assert set(shipped.values()) == {"gemma-4-12b"}
+
+    monkeypatch.setenv("CHESSAPP_PLANNER_MODEL", "parser-model")
+    shipped, measured = both()
+    assert shipped == measured
+    assert shipped["planner"] == "parser-model"
+    assert shipped["narrator"] == "gemma-4-12b"

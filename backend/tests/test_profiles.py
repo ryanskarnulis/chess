@@ -153,7 +153,8 @@ def test_the_factory_applies_the_profile_per_phase():
     assert (brain.narrator_temperature, brain.narrator_max_tokens) == (0.9, 200)
     assert (brain.answer_temperature, brain.answer_max_tokens) == (None, 8)
     settings = brain.client_settings()
-    assert settings["profile"]["name"] == "tuned"
+    assert settings["phases"]["planner"] == {"model": "tuned", "profile": "tuned"}
+    assert settings["profiles"]["tuned"]["phases"]["answer"]["max_tokens"] == 8
     assert settings["answer_max_tokens"] == 8
     # An explicit planner temperature still wins over the profile's.
     override = create_llama_brain(
