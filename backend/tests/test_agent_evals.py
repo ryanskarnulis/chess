@@ -151,7 +151,11 @@ from chessapp.api import (
     narrator_facts,
     planner_board_refresh,
 )
-from chessapp.app import _planner_temperature_from_env, phase_models_from_env
+from chessapp.app import (
+    _planner_temperature_from_env,
+    crutches_from_env,
+    phase_models_from_env,
+)
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
@@ -216,6 +220,8 @@ STOCKFISH_PATH = os.environ.get("CHESSAPP_STOCKFISH", "/usr/bin/stockfish")
 # split arm (`CHESSAPP_PLANNER_MODEL=…`) is the app's own wiring at that map.
 PHASE_MODELS = phase_models_from_env()
 PLANNER_TEMPERATURE = _planner_temperature_from_env(PHASE_MODELS[PLANNER])
+# And the planner's crutches (#375): `CHESSAPP_CRUTCHES=none` is a bake-off arm.
+CRUTCHES = crutches_from_env(PHASE_MODELS[PLANNER])
 
 # Generous request timeout: a cold llama-swap load is ~100 s before the first
 # byte (the provider's own read timeout is 300 s). TestClient's ASGI transport
@@ -457,6 +463,7 @@ def _report_session() -> Generator[None, None, None]:
             "experiment": _EXPERIMENT,
             "model": LLAMACPP_MODEL,
             "phase_models": PHASE_MODELS,
+            "crutches": sorted(CRUTCHES),
             "planner_temperature": PLANNER_TEMPERATURE,
             "knobs": {
                 "block_runs": _BLOCK_RUNS,
@@ -558,7 +565,9 @@ def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
     `CountingProvider` wrapping the live wire so a scenario can assert how many
     times the model was actually called. `seed` is the sampling seed every
     model call of this app sends (#363); `None` sends none."""
-    ctx = ToolContext(session=GameSession(), engine=engine, settings=Settings())
+    ctx = ToolContext(
+        session=GameSession(), engine=engine, settings=Settings(), crutches=CRUTCHES
+    )
     # Mirror build_app: never leave the engine unconfigured — play at the
     # settings default so reported difficulty and real strength agree.
     if ctx.settings.tier is not None:

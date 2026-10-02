@@ -39,7 +39,14 @@ from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
 from chessapp.llama_brain import FROM_PROFILE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
-from chessapp.profiles import ANSWER, NARRATOR, PHASES, PLANNER, load_profile
+from chessapp.profiles import (
+    ANSWER,
+    KNOWN_CRUTCHES,
+    NARRATOR,
+    PHASES,
+    PLANNER,
+    load_profile,
+)
 from chessapp.progress import ProgressReporter
 from chessapp.provider import ChatProvider
 from chessapp.serving import (
@@ -84,6 +91,7 @@ def build_app(
     planner_temperature: float | None = FROM_PROFILE,
     context_capture: ContextCapture | None = None,
     phase_models: dict[str, str] | None = None,
+    crutches: frozenset[str] | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -97,7 +105,8 @@ def build_app(
     `context_capture` keeps every model call's exact bytes (#359); it rides the
     default provider, so an injected `provider` is left exactly as given.
     `phase_models` puts a phase on its own model (#375); a phase it leaves out
-    runs on `model`.
+    runs on `model`. `crutches` is the 12B-only guidance the brain's offer and
+    refusals carry (#375); `None` is the planner model's profile's.
 
     `agent_enabled=False` is **direct mode**: no brain is constructed at all, so
     `/api/command` 503s and the board plays the deterministic exchange. It needs
@@ -108,7 +117,15 @@ def build_app(
     """
     if brain is not None and not agent_enabled:
         raise ValueError("agent_enabled=False cannot be combined with a brain")
-    ctx = ToolContext(session=GameSession(), engine=engine, save_dir=save_dir)
+    models = {phase: (phase_models or {}).get(phase, model) for phase in PHASES}
+    ctx = ToolContext(
+        session=GameSession(),
+        engine=engine,
+        save_dir=save_dir,
+        crutches=load_profile(models[PLANNER]).crutches
+        if crutches is None
+        else crutches,
+    )
     # The game that was on the board when the app last stopped (#291). Before
     # anything reads the session, so the first state document a client gets is
     # the restored one.
@@ -173,7 +190,6 @@ def build_app(
     # exists; the brain's listener reaches them through this name, so the two
     # can be built in either order.
     probes: list[ServingProbe] = []
-    models = {phase: (phase_models or {}).get(phase, model) for phase in PHASES}
     if brain is None and agent_enabled:
         brain = create_llama_brain(
             base_url=llama_base_url,
@@ -369,6 +385,25 @@ def phase_models_from_env() -> dict[str, str]:
     }
 
 
+def crutches_from_env(planner_model: str) -> frozenset[str]:
+    """The crutches the brain's offer carries (#375): the planner model's
+    profile's, unless `CHESSAPP_CRUTCHES` says `none`, `all`, or a comma list
+    of names — the bake-off's knob for running a model with and without them
+    (#298). Strict, like `CHESSAPP_AGENT`: a misspelt name refuses to start."""
+    value = os.environ.get("CHESSAPP_CRUTCHES", "").strip()
+    if not value:
+        return load_profile(planner_model).crutches
+    if value == "none":
+        return frozenset()
+    if value == "all":
+        return KNOWN_CRUTCHES
+    names = frozenset(name.strip() for name in value.split(",") if name.strip())
+    unknown = names - KNOWN_CRUTCHES
+    if unknown:
+        raise ValueError(f"CHESSAPP_CRUTCHES names unknown crutches {sorted(unknown)}")
+    return names
+
+
 def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
     """`build_app` configured from environment variables (for `main`/ASGI).
 
@@ -392,6 +427,7 @@ def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
         planner_temperature=_planner_temperature_from_env(phase_models[PLANNER]),
         context_capture=_context_capture_from_env(),
         phase_models=phase_models,
+        crutches=crutches_from_env(phase_models[PLANNER]),
     )
 
 

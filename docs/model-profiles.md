@@ -99,9 +99,18 @@ the experiment knob.
 
 These are the 12B-specific items from #375's 2026-09-29 comment. Each was
 measured to fix a gemma-4-12b failure, so the gemma profile lists all five.
-The list is recorded in the profile and the serving manifest now. The tool
-offer starts reading it in #375's crutch PR, and until then every model gets
-all five.
+The planner's profile decides which crutches the brain gets
+(`ToolContext.crutches`). A crutch the profile leaves out is cut from the
+brain's copy of the offer: the description text goes, and `make_move`'s
+`source` stays labelled but optional. The pick refusal drops its resubmit
+script too.
+
+The registry keeps every word, so the MCP server and the delegate wire see
+no change. A bare `ToolContext` carries all five. The text crutches are
+matched by exact wording (`tools._TEXT_CRUTCHES`), and `tests/test_crutches.py`
+fails if a docstring is reworded so that one no longer matches. With the
+gemma profile, the offer is pinned to the one recorded before the switch
+existed.
 
 | Name | Where | Why it exists (measured) |
 |---|---|---|
@@ -115,4 +124,14 @@ The code checks behind them stay for every model: whether a list stands to
 pick from (#351/#411), and the step arithmetic (#338).
 
 For #298, run each candidate both with and without the crutch set. A model
-that holds the gate without them ships without them.
+that holds the gate without them ships without them. `CHESSAPP_CRUTCHES`
+overrides the profile for one run, in the app, the gate, the frontier tier
+and the planner probe alike:
+
+```bash
+CHESSAPP_CRUTCHES=none CHESSAPP_AGENT_EVALS=1 pytest tests/test_agent_evals.py
+CHESSAPP_CRUTCHES=undo_call_again,move_source_required chessapp
+```
+
+`all` gives every crutch, and an unknown name refuses to start. The eval and
+frontier headers record the `crutches` a run used.

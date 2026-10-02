@@ -31,6 +31,7 @@ whole iteration budget asking what is legal.
 import inspect
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -80,6 +81,14 @@ from chessapp.ledger import (
     difficulty_label,
 )
 from chessapp.move_parts import PartsError
+from chessapp.profiles import (
+    ASK_PLAYER_EXAMPLES,
+    DIFFICULTY_CONSTRAINT_RULE,
+    KNOWN_CRUTCHES,
+    MOVE_SOURCE_REQUIRED,
+    PICK_RESUBMIT_SCRIPT,
+    UNDO_CALL_AGAIN,
+)
 from chessapp.results import RESULTS_FILENAME, ResultsLog
 
 logger = logging.getLogger(__name__)
@@ -539,6 +548,11 @@ class ToolContext:
     # conversation this process did not see open has no start to report.
     opening_difficulty: dict[str, dict[str, Any]] = field(default_factory=dict)
     origin: str = PANEL_ORIGIN
+    # The planner model's crutches (#375, `profiles.KNOWN_CRUTCHES`): which
+    # 12B-only guidance the brain's offer and refusals carry. Every crutch by
+    # default, so the MCP server and the delegate wire keep today's words;
+    # app assembly sets it from the planner's profile.
+    crutches: frozenset[str] = KNOWN_CRUTCHES
     _confirming: bool = False
     # Carried across session swaps so the version never goes backwards; see
     # `replace_session`. Not a public counter — `board_version` is.
@@ -855,6 +869,7 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
 
 # The planner's clarification tool (`build_registry`, the split registry only).
 ASK_PLAYER = "ask_player"
+SET_DIFFICULTY = "set_difficulty"
 
 # `ask_player`'s schema, exactly as the #371 probe screened it (arm
 # `parts_ask5`): every part optional, the handler asks for at least one.
@@ -918,12 +933,61 @@ UNDO = "undo"
 UNDO_PLIES = "plies"
 
 
+# The text crutches (#375): guidance in a tool's description that exists only
+# because gemma-4-12b needed it, cut from the brain's copy of the offer when
+# the planner's profile does not list it. Each is (tool, the text as the
+# registry words it, what stands in its place); the registry keeps every word,
+# so the MCP server and the delegate wire see no change. Matched with any run
+# of whitespace standing for a space, because a docstring's line breaks are
+# not the wording, and `test_crutches.py` pins that every one is still found.
+_TEXT_CRUTCHES: dict[str, tuple[str, str, str]] = {
+    UNDO_CALL_AGAIN: (
+        UNDO,
+        "When the player names several moves to take back, call this again "
+        "for each further named move. ",
+        "",
+    ),
+    ASK_PLAYER_EXAMPLES: (
+        ASK_PLAYER,
+        ': "move my king\'s knight" is piece and which; "push the e pawn" is '
+        'piece and which; "take the pawn" is takes, with no piece; "castle" '
+        "is castle.",
+        ".",
+    ),
+    DIFFICULTY_CONSTRAINT_RULE: (
+        SET_DIFFICULTY,
+        ": if they ask for an easier game but rule out changing the "
+        "difficulty, there is nothing left to change — say so and ask, do not "
+        "call this.",
+        ".",
+    ),
+}
+
+
+def _text_pattern(text: str) -> re.Pattern[str]:
+    words = text.split()
+    tail = r"\s*" if text.endswith(" ") else ""
+    return re.compile(r"\s+".join(re.escape(word) for word in words) + tail)
+
+
+def strip_crutch(description: str, crutch: str) -> str:
+    """`description` without the text crutch `crutch`, or unchanged (with a
+    warning) when the registry no longer words it that way."""
+    _, text, stand_in = _TEXT_CRUTCHES[crutch]
+    stripped, count = _text_pattern(text).subn(stand_in, description, count=1)
+    if not count:
+        logger.warning("crutch_text_not_found crutch=%s", crutch)
+    return stripped
+
+
 def brain_tool_definitions(
     registry: "ToolRegistry", ctx: ToolContext
 ) -> list[dict[str, Any]]:
     """What the brain is offered this command: the registry minus
-    `brain_tool_exclusions`, with `make_move`'s `source` required and `undo`'s
-    `plies` left out (#338). Resolved at
+    `brain_tool_exclusions`, with `make_move`'s `source` labelled (and
+    required, the `move_source_required` crutch) and `undo`'s `plies` left
+    out (#338). Text crutches the planner's profile does not list
+    (`ctx.crutches`, #375) are cut from the descriptions. Resolved at
     the start of each command and again each time the loop re-shows the
     planner a board (#315).
 
@@ -953,7 +1017,11 @@ def brain_tool_definitions(
                 "enum": [MOVE_SAID, MOVE_BY_POSITION],
                 "description": _MOVE_SOURCE_DESCRIPTION,
             }
-            parameters["required"] = [*parameters.get("required", []), MOVE_SOURCE]
+            if MOVE_SOURCE_REQUIRED in ctx.crutches:
+                parameters["required"] = [
+                    *parameters.get("required", []),
+                    MOVE_SOURCE,
+                ]
             function["parameters"] = parameters
         elif function["name"] == UNDO:
             # The planner takes back one move per call, or back to a move
@@ -962,6 +1030,9 @@ def brain_tool_definitions(
             parameters = json.loads(json.dumps(function["parameters"]))
             parameters.get("properties", {}).pop(UNDO_PLIES, None)
             function["parameters"] = parameters
+        for crutch, (tool, _, _) in _TEXT_CRUTCHES.items():
+            if function["name"] == tool and crutch not in ctx.crutches:
+                function["description"] = strip_crutch(function["description"], crutch)
     return offered
 
 
@@ -1746,6 +1817,12 @@ _MOVE_SOURCE_DESCRIPTION = (
 )
 
 
+_PICK_RESUBMIT = (
+    " — resubmit the one the player picked, exactly as written there,"
+    " still picked_by_position"
+)
+
+
 def _san(session: "GameSession", move: str) -> str | None:
     """`move` as SAN on the current board, or None when it is not a legal
     move here (the move path then refuses it with its alternatives)."""
@@ -1791,10 +1868,12 @@ def _check_positional_pick(ctx: "ToolContext", move: str) -> None:
             retry=RETRY_NEVER,
         )
     if _san(ctx.session, move) not in options:
+        # The resubmit script is a 12B crutch (#375): it scripts the next
+        # call, and fixes one frontier scenario on that model.
+        script = _PICK_RESUBMIT if PICK_RESUBMIT_SCRIPT in ctx.crutches else ""
         raise ToolError(
             f"a pick by position must be one of the moves {offered_by}:"
-            f" {', '.join(options)} — resubmit the one the player picked,"
-            " exactly as written there, still picked_by_position",
+            f" {', '.join(options)}{script}",
             retry=RETRY_DIFFERENT_ARGS,
         )
 

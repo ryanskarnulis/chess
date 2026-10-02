@@ -1345,6 +1345,11 @@ move-choice variance, not the schema collapse the tripwire exists for), #252
 
 ## Standing results
 
+The model-specific items here are also recorded in the model's profile
+(`backend/src/chessapp/data/profiles/gemma-4-12b.toml`, `quirks` and
+`crutches`; docs/model-profiles.md). A new model gets its own profile and
+re-measures these, not inherits them.
+
 - **`long_capture` is release-blocking and must stay green.** The
   planner/narrator split cured it (poisoned 1/5 → 5/5, 2026-07-25) by removing
   persona/tool-decision competition; a change that sends it red does not merge.
