@@ -414,7 +414,8 @@ The fast path is unchanged (0 calls at verbosity=low, 1 otherwise); brain
 turns pay one extra short tool-free completion (plain move 2 → 3 calls).
 Until #368 a guarded turn paid one more for the rewrite (6 of 150 deployed
 turns were guarded when the rewrite landed, four of them false positives).
-Ceilings: planner 2048 / narrator 4096 `max_tokens`; a truncated call is a
+Ceilings (the model profile's; gemma-4-12b's): planner 2048 / narrator 4096
+`max_tokens`; a truncated call is a
 failed turn, never a truncated reply that travels — and the reader in front of
 the destructive gate fails the same way, to the `unrelated` that changes
 nothing. A truncated planner response that nevertheless *carries tool calls*
@@ -422,8 +423,8 @@ runs them and the loop goes on (decided 2026-09-05): the provider parses each
 call's arguments before the response exists, so a call that arrived is a whole
 call, and only the prose is lost — the fragment beside them is never the
 handoff note.
-The planner samples at 0.3 (`llama_brain._PLANNER_TEMPERATURE`) and the
-narrator at the model profile's 1.0: a parse wants the mode, words want the
+On gemma-4-12b the planner samples at 0.3 and the narrator at the fleet's
+1.0 (both in the model's profile, `data/profiles/gemma-4-12b.toml`, #375): a parse wants the mode, words want the
 spread. The number is measured, not chosen — at 1.0 the planner played one of
 two knights on "move my kings knight" 6/40, at 0.6 3/40, at 0.3 0/40, with no
 single-fit ask over-asked (2026-09-17, #286, `docs/knight-ask-campaign.md`).

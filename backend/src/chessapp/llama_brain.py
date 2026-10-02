@@ -104,11 +104,12 @@ Model-specific quirks, split across the two layers:
   flips ON, and only when an analysis tool answered during the run it closes
   (the turn that comments on an evaluation is analysis work, the turn that
   parses "knight f3" is not). One thinking turn per analysis question.
-- Every call carries a per-phase `max_tokens` ceiling (`_PLANNER_MAX_TOKENS` /
-  `_NARRATOR_MAX_TOKENS`), because a degenerate thought loop with no cap
-  generates until the read timeout (300 s) instead of for seconds. A cut-off
-  call's *words* never travel: the planner's fragment is dropped and the phase
-  ends under `no_progress` with the loop's own note, a cut-off narration
+- Every call carries a per-phase `max_tokens` ceiling (the model profile's,
+  `profiles.py`; gemma-4-12b's file has the sizing), because a degenerate
+  thought loop with no cap generates until the read timeout (300 s) instead
+  of for seconds. A cut-off call's *words* never travel: the planner's
+  fragment is dropped and the phase ends under `no_progress` with the loop's
+  own note, a cut-off narration
   becomes the empty reply the pipeline already knows how to stand in for, and a
   cut-off confirmation reading is `unrelated` — the answer that changes
   nothing. Its *tool calls* are a different matter and do run: the provider
@@ -177,6 +178,14 @@ from chessapp.deadline import (
 from chessapp.handoff import build as build_handoff
 from chessapp.handoff import render as render_handoff
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
+from chessapp.profiles import (
+    ANSWER,
+    DEFAULT_PROFILE,
+    NARRATOR,
+    PLANNER,
+    ModelProfile,
+    load_profile,
+)
 from chessapp.progress import BRAIN_NARRATING, BRAIN_PLANNING
 from chessapp.provider import (
     ChatProvider,
@@ -204,7 +213,7 @@ _DEFAULT_MAX_CORRECTIONS = 2
 # calls in any turn, planning p99 8.7 s) and the eval suite's multi-step asks
 # (3–4 calls), generous side up — a budget that cuts a legitimate turn is the
 # worse failure. The deadline is checked between planner round trips and never
-# interrupts one; with `_PLANNER_MAX_TOKENS` bounding a runaway call to ~30 s,
+# interrupts one; with the planner's `max_tokens` bounding a runaway call to ~30 s,
 # the planning phase ends within about 90 s whatever the model does.
 _DEFAULT_MAX_TOOL_CALLS = 8
 _DEFAULT_MAX_ANALYSIS_CALLS = 3
@@ -219,41 +228,11 @@ _DEFAULT_PLANNING_DEADLINE_S = 60.0
 _DEFAULT_INPUT_BUDGET_TOKENS = 32_000
 _CHARS_PER_TOKEN = 3
 
-# Hard ceilings on what one model call may generate (`max_tokens`; thinking
-# tokens count toward it on this server). Without one, llama-server runs
-# n_predict -1 and a degenerate thought loop generates until the provider's
-# 300 s read timeout fires — observed live twice on 2026-07-27, 20k+ tokens on
-# ordinary planner calls, the player watching "thinking" for five minutes and
-# the GPU still grinding after the disconnect (cancellation does not reliably
-# propagate through llama-swap). The numbers are sized from measured output,
-# generous side up, because truncating a legitimate turn is the worse failure:
-# the planner never thinks and its real output is tool calls or a one-line
-# note (tens of tokens), so 2048 is ~20× headroom and bounds a runaway to
-# ~30 s; the narrator's one thinking turn legitimately reaches ~2.6k tokens
-# (docs/agent-evals.md; a live 2,408 in the 2026-07-27 trace), so 4096 keeps
-# every observed real narration intact and bounds a runaway to ~60 s.
-_PLANNER_MAX_TOKENS = 2048
-_NARRATOR_MAX_TOKENS = 4096
-# The planner's sampling temperature. The narrator keeps the model profile's
-# 1.0 (`provider._TEMPERATURE`, agent-standard/model-profile.md): its job is
-# words, and words want the spread. The planner's job is a parse — which tool,
-# if any, and with what arguments — and a parse wants the mode. Measured, not
-# derived (2026-09-17, #286, `docs/knight-ask-campaign.md`): "move my kings
-# knight" on a fresh board must be asked about, never played, and at 1.0 the
-# planner played one of the two knights 6/40; at 0.6, 3/40; at 0.3, 0/40 —
-# arms round-robin per sample on one server, the interleaving the correlated
-# server makes necessary. Cooling it did not make a wrong parse consistent
-# anywhere the rule also governs: the STT knight, the rook ask, both
-# refusals, castling and the undo-then-replace first call all read 20/20 at
-# both temperatures, and the harness confirm and the full gate are recorded
-# in `docs/agent-evals.md`. `CHESSAPP_PLANNER_TEMPERATURE` still overrides
-# it, so the next measurement needs no code change either.
-_PLANNER_TEMPERATURE = 0.3
-# The answer-reading phase writes one word. Sized for the word plus whatever
-# punctuation or preamble a 12B insists on wrapping it in, and nothing more:
-# this call sits in front of a destructive op and must not be a place a
-# thought loop can live.
-_ANSWER_MAX_TOKENS = 16
+# The per-phase generation ceilings and temperatures are the model's, not the
+# loop's: they live in its profile (`profiles.py`, #375), where gemma-4-12b's
+# file keeps the measurements behind every number. A brain built directly gets
+# the default profile's caps; `create_llama_brain` applies the model's.
+_DEFAULT_PHASES = DEFAULT_PROFILE.phases
 
 # How long one `narrate` round trip may take before the socket is closed on it.
 # The *pipeline* is what gives up first: it stops waiting for the reaction at
@@ -376,17 +355,21 @@ class LlamaBrain:
     # The largest prompt one call may send, in estimated tokens (#288; see
     # `_DEFAULT_INPUT_BUDGET_TOKENS`). `None` disables the guard.
     input_budget_tokens: int | None = _DEFAULT_INPUT_BUDGET_TOKENS
-    # Per-phase sampling: the planner runs cooler than the narrator, which
-    # keeps the provider's default. The shipped number is `_PLANNER_TEMPERATURE`,
-    # applied by `create_llama_brain`; here None still means "whatever the
-    # provider samples at", so a direct construction changes nothing it did not
-    # ask for.
+    # Per-phase sampling: on gemma-4-12b the planner runs cooler than the
+    # narrator, which keeps the provider's default. The shipped numbers are the
+    # model profile's, applied by `create_llama_brain`; here None still means
+    # "whatever the provider samples at", so a direct construction changes
+    # nothing it did not ask for.
     planner_temperature: float | None = None
-    # Per-phase generation ceilings (see the module constants for the sizing).
-    # A call the ceiling cuts off is a failed turn, never a truncated one that
-    # travels: the loop and `_speak` both check `finish_reason == "length"`.
-    planner_max_tokens: int = _PLANNER_MAX_TOKENS
-    narrator_max_tokens: int = _NARRATOR_MAX_TOKENS
+    narrator_temperature: float | None = None
+    answer_temperature: float | None = None
+    # Per-phase generation ceilings (the profile's; gemma-4-12b's file has the
+    # sizing). A call the ceiling cuts off is a failed turn, never a truncated
+    # one that travels: the loop and `_speak` both check
+    # `finish_reason == "length"`.
+    planner_max_tokens: int = _DEFAULT_PHASES[PLANNER].max_tokens
+    narrator_max_tokens: int = _DEFAULT_PHASES[NARRATOR].max_tokens
+    answer_max_tokens: int = _DEFAULT_PHASES[ANSWER].max_tokens
     # The observe beat's own read ceiling (see `_NARRATE_TIMEOUT`). Only
     # `narrate` carries one, because it is the only phase whose caller has
     # already decided it will not wait; `None` disables it.
@@ -479,12 +462,18 @@ class LlamaBrain:
         inferred from here. A provider's own defaults are included when the
         provider publishes them."""
         sampling = getattr(self.provider, "sampling", None)
+        profile = getattr(self.provider, "profile", None)
         return {
             "provider_sampling": dict(sampling) if isinstance(sampling, dict) else None,
+            "profile": profile.describe()
+            if isinstance(profile, ModelProfile)
+            else None,
             "planner_temperature": self.planner_temperature,
+            "narrator_temperature": self.narrator_temperature,
+            "answer_temperature": self.answer_temperature,
             "planner_max_tokens": self.planner_max_tokens,
             "narrator_max_tokens": self.narrator_max_tokens,
-            "answer_max_tokens": _ANSWER_MAX_TOKENS,
+            "answer_max_tokens": self.answer_max_tokens,
             "enable_thinking": self.enable_thinking,
             "max_iterations": self.max_iterations,
             "max_corrections": self.max_corrections,
@@ -874,7 +863,8 @@ class LlamaBrain:
                     messages,
                     tools=None,
                     enable_thinking=False,
-                    max_tokens=_ANSWER_MAX_TOKENS,
+                    max_tokens=self.answer_max_tokens,
+                    temperature=self.answer_temperature,
                 )
         except ProviderError as exc:
             logger.warning("answer_reading_failed", exc_info=True)
@@ -1065,6 +1055,7 @@ class LlamaBrain:
             tools=None,
             enable_thinking=thinking,
             max_tokens=self.narrator_max_tokens,
+            temperature=self.narrator_temperature,
             timeout=timeout,
         )
         prompt_tokens, completion_tokens = _usage_ints(result.usage)
@@ -1455,6 +1446,17 @@ def _wire_correction(exc: ToolCallArgumentsError) -> str:
     )
 
 
+class _FromProfile:
+    """The default that means "the model profile's value" (`create_llama_brain`),
+    because `None` already means "the provider's own"."""
+
+    def __repr__(self) -> str:
+        return "FROM_PROFILE"
+
+
+FROM_PROFILE: Any = _FromProfile()
+
+
 def create_llama_brain(
     *,
     base_url: str,
@@ -1466,7 +1468,7 @@ def create_llama_brain(
     enable_thinking: bool = False,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS,
-    planner_temperature: float | None = _PLANNER_TEMPERATURE,
+    planner_temperature: float | None = FROM_PROFILE,
     provider: ChatProvider | None = None,
     on_phase: Callable[[str], None] | None = None,
     board_refresh: Callable[[], dict[str, Any] | None] | None = None,
@@ -1490,9 +1492,11 @@ def create_llama_brain(
     app-assembly wires both to read `ctx.settings`). Either way the brain stays
     prompt-agnostic: it just carries a string or a callable.
 
-    `planner_temperature` samples the planner phase apart from the narrator,
-    `_PLANNER_TEMPERATURE` (0.3) unless a caller says otherwise; None leaves
-    both on the provider's default.
+    Each phase's temperature and generation ceiling come from the model's
+    profile (`profiles.py`, #375): an injected provider's own `profile` when it
+    carries one, `model`'s otherwise. `planner_temperature` overrides the
+    planner's (`CHESSAPP_PLANNER_TEMPERATURE` reaches it this way); None leaves
+    it on the provider's default.
 
     `provider` is injected in tests / alternate backends; otherwise the factory
     builds a real `LlamaCppProvider` against `base_url` + `model` (no API key —
@@ -1519,6 +1523,11 @@ def create_llama_brain(
     """
     if provider is None:
         provider = LlamaCppProvider(base_url, model)
+    profile = getattr(provider, "profile", None)
+    if not isinstance(profile, ModelProfile):
+        profile = load_profile(model)
+    if planner_temperature is FROM_PROFILE:
+        planner_temperature = profile.phase(PLANNER).temperature
     system_prompt: str | Callable[[], str] = (
         system_prompt_provider
         if system_prompt_provider is not None
@@ -1539,6 +1548,11 @@ def create_llama_brain(
         max_iterations=max_iterations,
         max_corrections=max_corrections,
         planner_temperature=planner_temperature,
+        narrator_temperature=profile.phase(NARRATOR).temperature,
+        answer_temperature=profile.phase(ANSWER).temperature,
+        planner_max_tokens=profile.phase(PLANNER).max_tokens,
+        narrator_max_tokens=profile.phase(NARRATOR).max_tokens,
+        answer_max_tokens=profile.phase(ANSWER).max_tokens,
         on_phase=on_phase,
         board_refresh=board_refresh,
         narrator_facts=narrator_facts,

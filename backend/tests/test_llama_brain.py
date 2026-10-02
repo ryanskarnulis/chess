@@ -43,13 +43,11 @@ from chessapp.game import GameSession
 from chessapp.handoff import build as build_handoff
 from chessapp.handoff import render as render_handoff
 from chessapp.llama_brain import (
-    _ANSWER_MAX_TOKENS,
     _BUDGET_NOTE,
     _CHARS_PER_TOKEN,
     _HANG_UP_MARGIN_S,
     _NO_PROGRESS_NOTE,
     _NOT_RUN,
-    _PLANNER_TEMPERATURE,
     _REFRESH_LABEL,
     LlamaBrain,
     _estimate_tokens,
@@ -2297,15 +2295,17 @@ def test_create_llama_brain_defaults_to_the_glitch_prompt():
 def test_create_llama_brain_defaults_to_the_planner_prompt_for_the_loop():
     brain = create_llama_brain(
         base_url="http://localhost:8200/v1",
-        model="gemma",
+        model="gemma-4-12b",
         dispatcher=FakeDispatcher(),
         tool_definitions=[],
     )
     assert brain.planner_prompt == PLANNER_PROMPT
     # The shipped planner samples cooler than the narrator (#286); a bare
     # `LlamaBrain(...)` still leaves it on the provider's default, so the
-    # policy lives in one place — the factory every real assembly goes through.
-    assert brain.planner_temperature == _PLANNER_TEMPERATURE == 0.3
+    # policy lives in one place — the model's profile, which the factory every
+    # real assembly goes through applies.
+    assert brain.planner_temperature == 0.3
+    assert brain.narrator_temperature is None
     assert (
         LlamaBrain(
             provider=ScriptedProvider(),
@@ -2644,7 +2644,7 @@ def test_read_answer_offers_no_tools_and_does_not_think():
     call = provider.calls[0]
     assert call["tools"] is None
     assert call["enable_thinking"] is False
-    assert call["max_tokens"] == _ANSWER_MAX_TOKENS
+    assert call["max_tokens"] == brain.answer_max_tokens == 16
 
 
 def test_read_answer_carries_the_question_and_the_reply():

@@ -17,7 +17,7 @@ import pytest
 
 import campaign_report
 from chessapp.fastparse import parse_move
-from chessapp.llama_brain import _PLANNER_TEMPERATURE
+from chessapp.llama_brain import FROM_PROFILE
 from chessapp.personality import PLANNER_PROMPT
 from chessapp.provider import ChatResult, LlamaCppProvider, ToolCall
 from chessapp.tools import BOARD_STATE_TOOLS
@@ -180,7 +180,9 @@ def test_control_is_the_shipped_planner() -> None:
     arm = parse_arm("control")
     assert arm == Arm(name="control")
     assert arm.prompt == PLANNER_PROMPT
-    assert arm.temperature == _PLANNER_TEMPERATURE  # the shipped planner's, #286
+    assert arm.temperature is FROM_PROFILE  # the model's own planner
+    shipped = LlamaCppProvider("http://llm.test/v1", "gemma-4-12b")
+    assert arm.temperature_for(shipped) == 0.3  # gemma-4-12b's, #286
     assert (arm.cache_prompt, arm.model) == (None, None)
 
 
