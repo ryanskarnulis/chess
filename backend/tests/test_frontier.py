@@ -41,10 +41,18 @@ from frontier import (
     measure,
 )
 from frontier_corpus import (
+    _BLUNDERED,
+    _DESCRIBED,
+    _EVENTS,
     _KNOWLEDGE_ANSWERS,
+    AFTER_A_BLUNDER,
+    AFTER_A_SOUND_MOVE,
     BISHOP_TO_MOVE,
+    CONDITIONAL_TAKEBACK,
     KNOWLEDGE_QUESTION,
+    PICK_BY_DESCRIPTION,
     QUEEN_TO_MOVE,
+    REWIND_TO_AN_EVENT,
     SCENARIOS,
     WORDINGS_PER_SPLIT,
     after,
@@ -420,6 +428,36 @@ def test_every_knowledge_wording_names_the_note_that_answers_it():
     for v in wordings:
         (say,) = v.says
         assert knowledge.lookup(say.text)[0].title == _KNOWLEDGE_ANSWERS[v.name]
+
+
+# --- the harder scenarios' premises (#339) ---------------------------------------
+
+
+def test_every_description_names_one_of_the_queens_moves():
+    """`pick_by_description` grades each wording on the move it describes:
+    every wording has one, and it is a queen move the ask can offer."""
+    wordings = PICK_BY_DESCRIPTION.dev + PICK_BY_DESCRIPTION.heldout
+    assert {v.name for v in wordings} == set(_DESCRIBED)
+    app = _SetupOnly()
+    QUEEN_TO_MOVE(app)
+    queen_moves = {m for m in app.ctx.session.legal_moves() if m.startswith("Q")}
+    assert set(_DESCRIBED.values()) == queen_moves == {"Qe2", "Qf3", "Qg4", "Qh5"}
+
+
+def test_every_rewind_wording_names_its_event():
+    wordings = REWIND_TO_AN_EVENT.dev + REWIND_TO_AN_EVENT.heldout
+    assert {v.name for v in wordings} == set(_EVENTS)
+
+
+def test_each_split_meets_both_sides_of_the_condition():
+    """Half the takebacks follow a blunder, half a sound move, and each split
+    holds both, so neither always undoing nor never undoing passes a split."""
+    for split in ("dev", "heldout"):
+        setups = {v.setup for v in CONDITIONAL_TAKEBACK.variants(split)}
+        assert setups == {AFTER_A_BLUNDER, AFTER_A_SOUND_MOVE}, split
+    app = _SetupOnly()
+    AFTER_A_BLUNDER(app)
+    assert tuple(app.ctx.session.move_history()) == _BLUNDERED
 
 
 def test_heldout_wordings_are_not_dev_wordings():

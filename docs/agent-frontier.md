@@ -192,6 +192,27 @@ scenarios are kept, solved or not (see "Solved scenarios stay").
   samples' `answered` text before blaming the model for a low row. That
   matters most when two models phrase things differently.
 
+### The harder nine
+
+Corpus v1's solved scenarios stay. These nine stand beside them for headroom,
+each one step past a task the 12B already does, written and dealt like the
+rest:
+
+| Tier | Scenario | One step past | Graded on |
+| --- | --- | --- | --- |
+| 1 | `self_correction_mid_utterance` | a plain move and verdict: "knight to f3, no wait, c3" | Nc3 played, Nf3 never played, a verdict after the move |
+| 1 | `conditional_takeback` | undo and judge: "if that was a blunder, take it back" | a verdict before any takeback; undone after 3.Qxe5+?? Nxe5, left alone after 2.Nf3 Nc6 (half the wordings each, both in each split) |
+| 1 | `save_before_move_then_judge` | four intents whose order the words set | the save holds no Nf3, Nf3 played, a verdict after it, verbosity low |
+| 2 | `pick_by_description` | an ordinal pick: "the one that attacks your e-pawn" | the queen was asked about, then the described move (a target per wording) |
+| 2 | `undo_chain_as_black` | `undo_chain_across_turns`, with the player as Black | each takeback on the right ply, then d5 and one reply |
+| 2 | `settings_restore_all` | one setting back: three changed over three turns, then "put everything back" | each change, then difficulty, voice and verbosity all as at the start |
+| 2 | `en_passant_explained_then_taken` | a lookup then a move: "what's en passant, can I do it here?" then "do it" | the En passant note, nothing moved, then exd6 |
+| 2 | `first_suggestion_after_all` | playing a suggestion: two hints with a3 between, then "undo a3 and play what you suggested before it" | both hints, a3 taken back, the first hint played, one exchange |
+| 3 | `rewind_to_an_event` | a rewind to a move number: "before my queen first moved", "before my first capture" (84-ply game) | history cut at ply 22 or 20, the best move there played |
+
+A checkpoint that reads which item a wording names (`_DESCRIBED`, `_EVENTS`)
+is tested to cover every wording.
+
 ## Baseline v1 (2026-09-24)
 
 Corpus v1: 17 scenarios (5 tier-1, 8 tier-2, 4 tier-3), 10 samples each on

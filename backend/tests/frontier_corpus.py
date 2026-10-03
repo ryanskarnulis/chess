@@ -2665,6 +2665,775 @@ KNOWLEDGE_ASIDE_THEN_MOVE = Scenario(
     ),
 )
 
+# --- harder scenarios (#339) ----------------------------------------------------------
+#
+# The solved scenarios above stay: a future model shows on them that it holds
+# the line. These nine stand beside them, each one step past a solved task: a
+# correction inside the utterance, a takeback conditioned on a verdict, an
+# order the utterance sets, a pick by description, the player as Black, three
+# settings remembered, a rule explained and then used, a suggestion from before
+# a move that was taken back, and a rewind to an event named in words.
+
+
+def played_in(turn: Turn) -> list[str]:
+    """The SANs the turn's successful `make_move` calls played, in order."""
+    return [r["result"].get("san") for r in turn.ran("make_move")]
+
+
+SELF_CORRECTION_MID_UTTERANCE = Scenario(
+    name="self_correction_mid_utterance",
+    tier=1,
+    why=(
+        "A correction inside the utterance ('f3, no wait, c3'): the corrected "
+        "move lands, the one corrected is never played, and the verdict comes "
+        "after the move."
+    ),
+    dev=wordings(
+        AFTER_E4_E5,
+        oops_i_mean=(
+            "I'll play knight to f3... oops, I mean knight to c3. am I doing well?"
+        ),
+        no_on_c3_instead=(
+            "put the knight on f3, no, on c3 instead, and tell me if that's a good move"
+        ),
+        nf3_actually_nc3=(
+            "play Nf3, actually no, make it Nc3, then tell me if I'm better"
+        ),
+        wait_no_knight_c3="knight f3, wait no, knight c3, then evaluate the position",
+        sorry_i_mean_c3=(
+            "move my knight to f3... sorry, I mean c3. am I better after that?"
+        ),
+    ),
+    heldout=wordings(
+        AFTER_E4_E5,
+        scratch_that_nc3_eval="Nf3 — scratch that, Nc3 — and give me an evaluation",
+        b_knight_instead=(
+            "develop the g-knight to f3 — no, actually the b-knight "
+            "to c3 — and judge it"
+        ),
+        f3_no_wait_c3="knight to f3 — no wait, c3 — and is that good for me?",
+        hmm_no_nc3="let's go Nf3. hmm, no, Nc3. is that strong?",
+        double_correction=(
+            "knight to c3 — no wait, f3 — no, c3 after all. how am I doing?"
+        ),
+    ),
+    checkpoints=(
+        Checkpoint("played_Nc3", lambda e: e.history()[2:3] == ["Nc3"]),
+        Checkpoint("never_played_Nf3", lambda e: "Nf3" not in played_in(e.turn(1))),
+        Checkpoint(
+            "judged_after_the_move", lambda e: verdict_after_the_move(e.turn(1))
+        ),
+        completed(1),
+    ),
+)
+
+# 1. e4 e5 2. Qh5 Nc6 3. Qxe5+?? Nxe5: the player's last move gave the queen for
+# a pawn, a blunder at any depth. 1. e4 e5 2. Nf3 Nc6: a sound one.
+_BLUNDERED = ("e4", "e5", "Qh5", "Nc6", "Qxe5+", "Nxe5")
+_SOUND = ("e4", "e5", "Nf3", "Nc6")
+AFTER_A_BLUNDER = after(*_BLUNDERED)
+AFTER_A_SOUND_MOVE = after(*_SOUND)
+
+
+def _judged_before_acting(e: Episode) -> bool:
+    """A verdict tool ran, and before any takeback: the condition was read
+    off a verdict, not guessed."""
+    names = e.turn(1).succeeded()
+    verdicts = [i for i, name in enumerate(names) if name in VERDICT_TOOLS]
+    if not verdicts:
+        return False
+    return "undo" not in names or verdicts[0] < names.index("undo")
+
+
+def _acted_on_the_verdict(e: Episode) -> bool:
+    """Taken back after the blunder, left alone after the sound move: graded
+    on the setup, which no engine depth disagrees with."""
+    start = e.start["history"]
+    blundered = tuple(start) == _BLUNDERED
+    return e.history(after_turn=1) == (start[:-2] if blundered else start)
+
+
+CONDITIONAL_TAKEBACK = Scenario(
+    name="conditional_takeback",
+    tier=1,
+    why=(
+        "A takeback conditioned on a verdict ('if it was a blunder, take it "
+        "back'): the move is judged first and undone only if it was one. Half "
+        "the wordings follow a blunder and half a sound move, so neither "
+        "always undoing nor never undoing passes."
+    ),
+    dev=(
+        Variant(
+            "if_i_blundered",
+            (
+                Say(
+                    "if I just blundered, take the move back. if I didn't, "
+                    "leave the board alone"
+                ),
+            ),
+            AFTER_A_BLUNDER,
+        ),
+        Variant(
+            "analyse_undo_only_if",
+            (Say("analyse the move I just made and undo it only if it's a blunder"),),
+            AFTER_A_SOUND_MOVE,
+        ),
+        Variant(
+            "blunder_take_it_back",
+            (
+                Say(
+                    "if that last move of mine was a blunder, take it back; "
+                    "otherwise leave it"
+                ),
+            ),
+            AFTER_A_BLUNDER,
+        ),
+        Variant(
+            "check_and_undo_if",
+            (Say("check my last move — if it was a blunder, undo it, if not keep it"),),
+            AFTER_A_SOUND_MOVE,
+        ),
+        Variant(
+            "did_i_blunder",
+            (Say("did I blunder just now? undo it if I did"),),
+            AFTER_A_BLUNDER,
+        ),
+    ),
+    heldout=(
+        Variant(
+            "only_if_engine_says",
+            (Say("take back my last move, but only if the engine calls it a blunder"),),
+            AFTER_A_SOUND_MOVE,
+        ),
+        Variant(
+            "was_it_a_blunder",
+            (Say("was my last move a blunder? if so, take it back"),),
+            AFTER_A_BLUNDER,
+        ),
+        Variant(
+            "real_blunder_only",
+            (Say("only undo my last move if it was a real blunder"),),
+            AFTER_A_SOUND_MOVE,
+        ),
+        Variant(
+            "previous_move_blunder",
+            (
+                Say(
+                    "if my previous move was a blunder, go back; otherwise "
+                    "leave things as they are"
+                ),
+            ),
+            AFTER_A_BLUNDER,
+        ),
+        Variant(
+            "rate_and_reverse",
+            (Say("rate my last move, and if it's a blunder, reverse it"),),
+            AFTER_A_SOUND_MOVE,
+        ),
+    ),
+    checkpoints=(
+        Checkpoint("judged_before_acting", _judged_before_acting),
+        Checkpoint("acted_on_the_verdict", _acted_on_the_verdict),
+        completed(1),
+    ),
+)
+
+SAVE_BEFORE_MOVE_THEN_JUDGE = Scenario(
+    name="save_before_move_then_judge",
+    tier=1,
+    why=(
+        "Four intents in an order the utterance sets: the save comes first, so "
+        "it must not hold the move; then the move, a verdict after it, and a "
+        "verbosity change that stands."
+    ),
+    dev=wordings(
+        AFTER_E4_E5,
+        save_then_nf3_short=(
+            "save the game as before_nf3, then play Nf3, tell me if "
+            "it's a good move, and keep your replies short from now "
+            "on"
+        ),
+        keep_it_short_now=(
+            "from now on keep it short. now: save as before_nf3, "
+            "play Nf3, and tell me whether that's good for me"
+        ),
+        save_first_talk_less=(
+            "save first as before_nf3, then Nf3, then the "
+            "evaluation — and talk less from now on"
+        ),
+        before_anything_save=(
+            "before you play anything, save as before_nf3; then "
+            "play Nf3 and evaluate it. shorter answers from now on "
+            "too"
+        ),
+        less_wordy_only_then=(
+            "please be less wordy from now on. also save the game "
+            "as before_nf3 and only then play Nf3, then tell me if "
+            "it's an improvement"
+        ),
+    ),
+    heldout=wordings(
+        AFTER_E4_E5,
+        store_before_moving=(
+            "store this game as before_nf3 before moving, then "
+            "develop my knight to f3 and tell me how good that is; "
+            "also, brief answers from now on"
+        ),
+        brief_first_save=(
+            "keep it brief from now on. first save this as "
+            "before_nf3, then knight to f3, then tell me if I'm "
+            "better"
+        ),
+        first_make_a_save=(
+            "first make a save called before_nf3, then play the "
+            "knight to f3, then judge the position, and be terse "
+            "from here on"
+        ),
+        backup_then_g_knight=(
+            "save a backup called before_nf3, move the g-knight to "
+            "f3, then evaluate — and be concise going forward"
+        ),
+        shorter_save_verdict=(
+            "shorter replies please. save the game under "
+            "before_nf3, play Nf3, and give me your verdict"
+        ),
+    ),
+    checkpoints=(
+        Checkpoint(
+            "saved_before_the_move", lambda e: e.saved("before_nf3") == ["e4", "e5"]
+        ),
+        Checkpoint("played_Nf3", lambda e: e.history()[2:3] == ["Nf3"]),
+        Checkpoint(
+            "judged_after_the_move", lambda e: verdict_after_the_move(e.turn(1))
+        ),
+        Checkpoint("terse", lambda e: e.settings(1)["verbosity"] == "low"),
+        completed(1),
+    ),
+)
+
+# The move each `pick_by_description` wording describes, by name. After 1.e4 e5
+# the queen can go to e2, f3, g4 or h5, and each description fits exactly one:
+# h5 attacks e5 and is on the edge and furthest up; e2 is in front of the king
+# and closest to home; g4 is on the g-file and hits g7 and d7; f3 is on the
+# f-file and the third rank.
+_DESCRIBED = {
+    "attacks_e_pawn": "Qh5",
+    "in_front_of_king": "Qe2",
+    "on_the_g_file": "Qg4",
+    "on_the_f_file": "Qf3",
+    "furthest_up": "Qh5",
+    "closest_to_home": "Qe2",
+    "hits_g_pawn": "Qg4",
+    "third_rank": "Qf3",
+    "on_the_edge": "Qh5",
+    "aims_at_d_pawn": "Qg4",
+}
+
+PICK_BY_DESCRIPTION = Scenario(
+    name="pick_by_description",
+    tier=2,
+    why=(
+        "A question answered by a description rather than a square or a "
+        "place in the list ('the one that attacks your e-pawn'): which move "
+        "fits is the model's to work out from the board."
+    ),
+    dev=wordings(
+        QUEEN_TO_MOVE,
+        in_front_of_king=("bring my queen out", "the one right in front of my king"),
+        third_rank=("develop the queen", "the one on the third rank"),
+        aims_at_d_pawn=(
+            "I'd like to play a queen move",
+            "the one aiming at your d-pawn",
+        ),
+        furthest_up=(
+            "let's move my queen — where can she go?",
+            "the one that goes furthest up the board",
+        ),
+        closest_to_home=("make a queen move", "the one that stays closest to home"),
+    ),
+    heldout=wordings(
+        QUEEN_TO_MOVE,
+        on_the_f_file=("queen move please", "put her on the f-file"),
+        on_the_g_file=("I want to move the queen", "the one on the g-file"),
+        on_the_edge=("get my queen moving", "the one out on the edge of the board"),
+        hits_g_pawn=("play my queen", "the one that hits your g-pawn"),
+        attacks_e_pawn=("move my queen", "the one that attacks your e-pawn"),
+    ),
+    checkpoints=(
+        asked(1),
+        Checkpoint(
+            "played_the_described",
+            lambda e: e.history(after_turn=2)[2:3] == [_DESCRIBED[e.variant]],
+        ),
+    ),
+)
+
+
+def as_black_after(*sans: str) -> Callable[[EvalApp], None]:
+    """The player as Black, with the moves placed through the session (the
+    engine, White, made the first), ending on the player's turn."""
+
+    def setup(app: EvalApp) -> None:
+        _save_dir(app)
+        app.ctx.replace_session(GameSession(player_color="black"), app.ctx.transcript)
+        for san in sans:
+            assert app.ctx.session.submit_move(san).legal, san
+        assert app.ctx.session.turn == "black"
+
+    return setup
+
+
+# 1. e4 e5 2. Nf3 Nc6 3. Bc4, the player Black and to move.
+AS_BLACK_AFTER_BC4 = as_black_after("e4", "e5", "Nf3", "Nc6", "Bc4")
+
+
+UNDO_CHAIN_AS_BLACK = Scenario(
+    name="undo_chain_as_black",
+    tier=2,
+    why=(
+        "undo_chain_across_turns with the player as Black: 'my last move' is "
+        "Black's, the reply in front of it White's, and each takeback lands on "
+        "the player's turn."
+    ),
+    dev=wordings(
+        AS_BLACK_AFTER_BC4,
+        previous_one_more=("undo my previous move", "undo one more", "then play d5"),
+        rewind_rewind=(
+            "rewind my last move",
+            "rewind one more",
+            "push my d-pawn up two",
+        ),
+        knight_then_e_pawn=(
+            "take back my knight move",
+            "and take back my e-pawn move too",
+            "now push the d-pawn two squares",
+        ),
+        scratch_scratch=(
+            "scratch my last move",
+            "scratch the one before as well",
+            "now d5 for me",
+        ),
+        undo_by_name=("undo Nc6", "and undo e5 as well", "now play d5 instead"),
+    ),
+    heldout=wordings(
+        AS_BLACK_AFTER_BC4,
+        let_me_take_back=(
+            "let me take back my last move",
+            "actually one more as well",
+            "play the queen's pawn two squares",
+        ),
+        go_back_another=("go back a move", "go back another one", "play d5 now"),
+        can_you_take_back=(
+            "can you take back my last move?",
+            "and the move before that too, please",
+            "then go d5",
+        ),
+        id_like_to_undo=(
+            "I'd like to undo my last move",
+            "undo the previous one too",
+            "and then d5 please",
+        ),
+        last_and_before=(
+            "take back my last move",
+            "and the one before it",
+            "now play d5",
+        ),
+    ),
+    checkpoints=(
+        Checkpoint(
+            "first_takeback", lambda e: e.history(after_turn=1) == ["e4", "e5", "Nf3"]
+        ),
+        Checkpoint("second_takeback", lambda e: e.history(after_turn=2) == ["e4"]),
+        Checkpoint("played_d5", lambda e: e.history()[:2] == ["e4", "d5"]),
+        Checkpoint("exactly_one_more_exchange", lambda e: len(e.history()) == 3),
+    ),
+)
+
+SETTINGS_RESTORE_ALL = Scenario(
+    name="settings_restore_all",
+    tier=2,
+    why=(
+        "Three settings changed over three turns, then all of them put back "
+        "in one ask: what each was at the start is only in the record of what "
+        "changed."
+    ),
+    dev=wordings(
+        FRESH,
+        harder_voice_name_all=(
+            "make it harder",
+            "turn voice on",
+            "talk less from now on",
+            "put the difficulty, voice and verbosity back to how they started",
+        ),
+        tougher_aloud_original=(
+            "I want a tougher opponent",
+            "talk to me out loud",
+            "be brief from now on",
+            "restore all my original settings",
+        ),
+        tougher_voice_revert=(
+            "tougher engine please",
+            "voice on, please",
+            "make your replies shorter",
+            "revert all the settings to how they were originally",
+        ),
+        step_speak_undo_changes=(
+            "step the difficulty up",
+            "speak your answers out loud",
+            "keep it short from now on",
+            "undo all my settings changes",
+        ),
+        crank_speaking_starting=(
+            "crank the difficulty up one step",
+            "start speaking your replies",
+            "brief answers from here",
+            "return every setting to its starting value",
+        ),
+    ),
+    heldout=wordings(
+        FRESH,
+        bump_read_started_with=(
+            "bump the strength up a bit",
+            "read your replies aloud",
+            "terse answers from here on",
+            "go back to the settings we started this game with",
+        ),
+        raise_audio_beginning=(
+            "raise the level by one",
+            "enable audio replies",
+            "less wordy please",
+            "change everything back to how it was at the beginning",
+        ),
+        notch_switch_reset=(
+            "increase the difficulty a notch",
+            "switch voice output on",
+            "shorter replies from now on",
+            "reset every setting to what it was at the start of our chat",
+        ),
+        stronger_voice_defaults=(
+            "can you play a little stronger?",
+            "I'd like voice output on",
+            "please be more concise",
+            "set everything back to the defaults we had at the start",
+        ),
+        harder_voice_short_back=(
+            "make the engine a bit harder",
+            "turn on spoken replies",
+            "keep your answers short",
+            "now put all my settings back the way they were when we started",
+        ),
+    ),
+    checkpoints=(
+        Checkpoint(
+            "harder_1", lambda e: strength(e.settings(1)) > strength(e.settings(0))
+        ),
+        Checkpoint("voice_on_2", lambda e: e.settings(2)["voice_output"] is True),
+        Checkpoint("terse_3", lambda e: e.settings(3)["verbosity"] == "low"),
+        Checkpoint(
+            "difficulty_restored",
+            lambda e: strength(e.settings(4)) == strength(e.settings(0)),
+        ),
+        Checkpoint(
+            "voice_restored",
+            lambda e: e.settings(4)["voice_output"] == e.settings(0)["voice_output"],
+        ),
+        Checkpoint(
+            "verbosity_restored",
+            lambda e: e.settings(4)["verbosity"] == e.settings(0)["verbosity"],
+        ),
+        Checkpoint("no_moves", lambda e: e.history() == []),
+    ),
+)
+
+# 1. e4 Nf6 2. e5 d5: Black's d-pawn has just passed e5, so exd6 en passant is
+# the player's for this move only.
+_EN_PASSANT_ON = ("e4", "Nf6", "e5", "d5")
+
+
+def en_passant_on(app: EvalApp) -> None:
+    after(*_EN_PASSANT_ON)(app)
+    assert "exd6" in app.ctx.session.legal_moves()
+
+
+EN_PASSANT_EXPLAINED_THEN_TAKEN = Scenario(
+    name="en_passant_explained_then_taken",
+    tier=2,
+    why=(
+        "A rule asked about on a board where it applies, then used: the "
+        "lookup explains it and moves nothing, and 'do it' is the en passant "
+        "capture, legal on this move only."
+    ),
+    dev=wordings(
+        en_passant_on,
+        use_it_here=(
+            "how does en passant work? can I use it in this position?",
+            "ok, capture en passant",
+        ),
+        can_i_do_it_here=("what's en passant, and can I do it here?", "do it then"),
+        legal_for_me=(
+            "en passant: what is it, and is it legal for me now?",
+            "ok, take it",
+        ),
+        capture_right_now=(
+            "can I capture en passant right now? explain the rule",
+            "do the en passant capture",
+        ),
+        remind_me=(
+            "remind me how en passant works and whether I can play it",
+            "cool, play the en passant",
+        ),
+    ),
+    heldout=wordings(
+        en_passant_on,
+        available_to_me=(
+            "is en passant available to me here? what is it exactly?",
+            "alright, play it",
+        ),
+        possible_right_now=(
+            "explain en passant — is it possible for me right now?",
+            "great, take en passant",
+        ),
+        heard_about_it=(
+            (
+                "I heard about en passant. can I do it in this "
+                "position, and how does it work?"
+            ),
+            "sure, make that capture",
+        ),
+        do_i_have_it=(
+            "what's this en passant thing, and do I have it now?",
+            "then go for it",
+        ),
+        does_it_apply=(
+            "tell me about the en passant rule. does it apply on this board?",
+            "nice, let's make that capture",
+        ),
+    ),
+    checkpoints=(
+        looked_up(1, "En passant"),
+        still(1),
+        Checkpoint(
+            "took_en_passant", lambda e: e.history(after_turn=2)[4:5] == ["exd6"]
+        ),
+        completed(2),
+    ),
+)
+
+FIRST_SUGGESTION_AFTER_ALL = Scenario(
+    name="first_suggestion_after_all",
+    tier=2,
+    why=(
+        "Two suggestions on two boards with a move between them, then 'take "
+        "that back and play what you suggested before it': only the "
+        "conversation says which suggestion, and its board is back only after "
+        "the takeback."
+    ),
+    dev=wordings(
+        AFTER_E4_E5,
+        originally_recommended=(
+            "which move do you recommend?",
+            Say("a3", model=False),
+            "and which do you recommend now?",
+            "take back a3 and play what you originally recommended",
+        ),
+        recommended_before_it=(
+            "what's your top move here?",
+            Say("a3", model=False),
+            "and your top move now?",
+            "never mind. undo a3 and play the move you recommended before it",
+        ),
+        right_the_first_time=(
+            "what's the best move here?",
+            Say("a3", model=False),
+            "and what's best now?",
+            (
+                "you were right the first time: take my a3 back and "
+                "play the move you suggested before it"
+            ),
+        ),
+        regret_a3=(
+            "best move in this position?",
+            Say("a3", model=False),
+            "and in this one?",
+            "I regret a3. take it back and play your original suggestion",
+        ),
+        before_my_a3=(
+            "suggest a move for me",
+            Say("a3", model=False),
+            "now what do you suggest?",
+            "go back to before my a3 and play what you suggested there",
+        ),
+    ),
+    heldout=wordings(
+        AFTER_E4_E5,
+        original_after_all=(
+            "what should I play here?",
+            Say("a3", model=False),
+            "and what should I play now?",
+            "take back a3; I'll take your original suggestion after all",
+        ),
+        before_i_played_a3=(
+            "got a move for me here?",
+            Say("a3", model=False),
+            "ok, what's the best move now?",
+            "undo my last move and go with the move you suggested before I played a3",
+        ),
+        strongest_from_before=(
+            "what's the strongest move here?",
+            Say("a3", model=False),
+            "and what's strongest now?",
+            "undo my a3 and play the strongest move from before it",
+        ),
+        should_have_listened=(
+            "what would you play here?",
+            Say("a3", model=False),
+            "what would you play now?",
+            "I should have listened. undo a3 and play what you suggested before it",
+        ),
+        stockfish_liked=(
+            "what does Stockfish like here?",
+            Say("a3", model=False),
+            "and what does it like now?",
+            "undo a3 and play the move Stockfish liked before it",
+        ),
+    ),
+    checkpoints=(
+        Checkpoint("consulted_1", lambda e: suggested(e.turn(1)) is not None),
+        still(1),
+        Checkpoint("consulted_3", lambda e: suggested(e.turn(3)) is not None),
+        still(3),
+        Checkpoint(
+            "took_a3_back",
+            lambda e: (
+                e.history(after_turn=4)[:2] == ["e4", "e5"]
+                and e.history(after_turn=4)[2:3] != ["a3"]
+            ),
+        ),
+        Checkpoint(
+            "played_the_first_suggestion",
+            lambda e: (
+                suggested(e.turn(1)) is not None
+                and e.history(after_turn=4)[2:3] == [suggested(e.turn(1))]
+            ),
+        ),
+        Checkpoint("exactly_one_exchange", lambda e: len(e.history(after_turn=4)) == 4),
+    ),
+)
+
+# The ply each `rewind_to_an_event` wording names, by name: in the 84-ply game
+# the player's first capture is 11. fxg5 (ply 20) and first queen move 12. Qb3
+# (ply 22). `late_84_events` asserts both.
+_FIRST_CAPTURE, _FIRST_QUEEN_MOVE = 20, 22
+_EVENTS = {
+    "before_first_queen_move": _FIRST_QUEEN_MOVE,
+    "queens_first_move": _FIRST_QUEEN_MOVE,
+    "queen_came_out": _FIRST_QUEEN_MOVE,
+    "undo_to_first_queen_move": _FIRST_QUEEN_MOVE,
+    "before_i_moved_the_queen": _FIRST_QUEEN_MOVE,
+    "before_first_capture": _FIRST_CAPTURE,
+    "captured_anything": _FIRST_CAPTURE,
+    "first_capture_of_the_game": _FIRST_CAPTURE,
+    "undo_to_first_capture": _FIRST_CAPTURE,
+    "set_back_first_capture": _FIRST_CAPTURE,
+}
+
+
+def late_84_events(app: EvalApp) -> None:
+    LATE_84(app)
+    mine = app.ctx.session.move_history()[::2]
+    first_capture = next(i for i, san in enumerate(mine) if "x" in san)
+    first_queen = next(i for i, san in enumerate(mine) if san.startswith("Q"))
+    assert (2 * first_capture, 2 * first_queen) == (_FIRST_CAPTURE, _FIRST_QUEEN_MOVE)
+
+
+def _back_before_the_event(e: Episode) -> bool:
+    ply = _EVENTS[e.variant]
+    return e.history(after_turn=1) == e.start["history"][:ply]
+
+
+def _played_best_at_the_event(e: Episode) -> bool:
+    ply = _EVENTS[e.variant]
+    best = suggested(e.turn(2))
+    history = e.history(after_turn=3)
+    return (
+        best is not None
+        and history[:ply] == e.start["history"][:ply]
+        and history[ply : ply + 1] == [best]
+    )
+
+
+REWIND_TO_AN_EVENT = Scenario(
+    name="rewind_to_an_event",
+    tier=3,
+    why=(
+        "An 84-ply game rewound to an event named in words ('before my queen "
+        "first moved', 'before my first capture'): the ply is the model's to "
+        "find in the move list, and the best move there is then played."
+    ),
+    dev=wordings(
+        late_84_events,
+        set_back_first_capture=(
+            "set the board back to right before my first capture",
+            "what would you have played?",
+            "play your move",
+        ),
+        queen_came_out=(
+            "go back to before my queen came out the first time",
+            "what does the engine suggest there?",
+            "make that move",
+        ),
+        first_capture_of_the_game=(
+            "go back to before my first capture of the game",
+            "what does Stockfish recommend there?",
+            "play its recommendation",
+        ),
+        before_first_queen_move=(
+            "take me back to just before I first moved my queen",
+            "what should I have played there instead?",
+            "play that",
+        ),
+        captured_anything=(
+            "rewind to right before I captured anything for the first time",
+            "what was best there?",
+            "play that one",
+        ),
+    ),
+    heldout=wordings(
+        late_84_events,
+        undo_to_first_queen_move=(
+            "undo everything back to just before my first queen move",
+            "best move in that position?",
+            "play the best move",
+        ),
+        undo_to_first_capture=(
+            "undo back to just before I captured for the first time",
+            "what's the best move in that spot?",
+            "make it",
+        ),
+        before_i_moved_the_queen=(
+            "return the game to the moment before I moved my queen for the first time",
+            "what's the strongest move there?",
+            "go with that",
+        ),
+        before_first_capture=(
+            "take the game back to just before my first capture",
+            "what should I have played instead?",
+            "play that move",
+        ),
+        queens_first_move=(
+            "rewind to the position right before my queen's first move",
+            "what was the best move at that point?",
+            "play it",
+        ),
+    ),
+    checkpoints=(
+        Checkpoint("back_before_the_event", _back_before_the_event),
+        Checkpoint("consulted", lambda e: suggested(e.turn(2)) is not None),
+        still(2),
+        Checkpoint("played_the_best_there", _played_best_at_the_event),
+    ),
+)
+
 SCENARIOS: tuple[Scenario, ...] = (
     UNDO_REPLACE_AND_JUDGE,
     SETTINGS_MOVE_AND_VERDICT,
@@ -2697,4 +3466,13 @@ SCENARIOS: tuple[Scenario, ...] = (
     THIS_OPENINGS_IDEAS,
     NOT_A_LOOKUP,
     KNOWLEDGE_ASIDE_THEN_MOVE,
+    SELF_CORRECTION_MID_UTTERANCE,
+    CONDITIONAL_TAKEBACK,
+    SAVE_BEFORE_MOVE_THEN_JUDGE,
+    PICK_BY_DESCRIPTION,
+    UNDO_CHAIN_AS_BLACK,
+    SETTINGS_RESTORE_ALL,
+    EN_PASSANT_EXPLAINED_THEN_TAKEN,
+    FIRST_SUGGESTION_AFTER_ALL,
+    REWIND_TO_AN_EVENT,
 )
