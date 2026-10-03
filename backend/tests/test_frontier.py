@@ -10,6 +10,7 @@ so all of it runs here, in CI, over the shipped app with a scripted provider.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import pytest
@@ -188,6 +189,41 @@ def test_the_result_reports_counts_interval_rubric_and_modes():
 def test_an_unknown_split_is_refused():
     with pytest.raises(ValueError):
         scenario(variant()).variants("train")
+
+
+def test_a_fingerprint_moves_with_what_the_number_measures():
+    """#339: the history compares two runs of a scenario only on one
+    fingerprint, so it must move with the wordings, the checkpoints and the
+    revision — and with nothing that leaves the measurement alone."""
+    base = scenario(variant("a"), variant("b"))
+    before = base.fingerprint("dev")
+
+    assert scenario(variant("a"), variant("b")).fingerprint("dev") == before
+    reworded = scenario(variant("a"), variant("b", text="undo it and play d4"))
+    assert reworded.fingerprint("dev") != before
+    regraded = scenario(variant("a"), variant("b"), checkpoints=CHECKS[:1])
+    assert regraded.fingerprint("dev") != before
+    assert dataclasses.replace(base, revision=2).fingerprint("dev") != before
+    retiered = dataclasses.replace(base, tier=3, why="something else")
+    assert retiered.fingerprint("dev") == before
+    # Each split is its own measurement.
+    split = dataclasses.replace(base, heldout=(variant("c", text="scratch it, d4"),))
+    assert split.fingerprint("heldout") != split.fingerprint("dev") == before
+
+
+def test_the_record_names_its_fingerprint_and_passes_per_wording():
+    measured = scenario(variant("a"), variant("b"))
+
+    result = measure(
+        measured, runs=3, split="dev", app_factory=scripted_factory(*UNDO_D4_JUDGE)
+    )
+    record = result.record()
+
+    assert record["fingerprint"] == measured.fingerprint("dev")
+    assert record["variants"] == {
+        "a": {"passed": 2, "runs": 2},
+        "b": {"passed": 1, "runs": 1},
+    }
 
 
 # --- the runner, end to end over a scripted provider ---------------------------------

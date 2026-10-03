@@ -33,6 +33,12 @@ scenario carries `dev` variants for iterating on prompts and `heldout`
 variants that nobody tunes against (`CHESSAPP_FRONTIER_SPLIT`). An
 improvement claimed on `dev` alone is not believed.
 
+A number is only comparable with another of the same thing, so each result
+carries its split's fingerprint (`Scenario.fingerprint`: the wordings, the
+checkpoints and a hand-bumped revision) and its passes per wording (#339).
+The history then never compares a reworded scenario with its old self, and a
+scenario's number shows which phrasings it came from.
+
 Nothing here needs a GPU: the runner takes an app factory, so its wiring is
 tested off the GPU over a scripted provider (`test_frontier.py`), and the live
 module (`test_agent_frontier.py`) only supplies the real one.
@@ -40,6 +46,7 @@ module (`test_agent_frontier.py`) only supplies the real one.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections import Counter
@@ -132,6 +139,10 @@ class Scenario:
     dev: tuple[Variant, ...]
     heldout: tuple[Variant, ...]
     checkpoints: tuple[Checkpoint, ...]
+    # Bumped by hand when what a number means changes in a way the
+    # fingerprint cannot see: a setup, or a checkpoint's logic under its old
+    # name (#352's `first_offered` fix was one).
+    revision: int = 1
 
     def variants(self, split: str) -> tuple[Variant, ...]:
         if split == "dev":
@@ -139,6 +150,23 @@ class Scenario:
         if split == "heldout":
             return self.heldout
         raise ValueError(f"unknown split {split!r}: dev or heldout")
+
+    def fingerprint(self, split: str) -> str:
+        """What a `split` number measured (#339): its wordings, the
+        checkpoints that grade them and the revision. Not the tier or the
+        `why`, which say nothing about what was measured. The history compares
+        two runs of a scenario only when this is the same for both."""
+        measured = {
+            "revision": self.revision,
+            "checkpoints": [c.name for c in self.checkpoints],
+            "variants": [
+                [v.name, [[s.text, s.origin, s.model] for s in v.says]]
+                for v in self.variants(split)
+            ],
+        }
+        return hashlib.sha256(
+            json.dumps(measured, sort_keys=True).encode()
+        ).hexdigest()[:12]
 
 
 # --- what a sample did ---------------------------------------------------------------
@@ -296,10 +324,24 @@ class FrontierResult:
     infra: int = 0
     breaches: list[str] = field(default_factory=list)
     speech: Tally = field(default_factory=Tally)
+    # The split's `Scenario.fingerprint`: which wordings and checkpoints
+    # this number is of.
+    fingerprint: str | None = None
 
     @property
     def runs(self) -> int:
         return len(self.grades)
+
+    @property
+    def variant_passes(self) -> dict[str, dict[str, int]]:
+        """Whole-task passes per wording, in the order the wordings were
+        first sampled: where the scenario's number came from (#339)."""
+        counts: dict[str, dict[str, int]] = {}
+        for sample in self.samples:
+            cell = counts.setdefault(sample["variant"], {"passed": 0, "runs": 0})
+            cell["passed"] += bool(sample["whole"])
+            cell["runs"] += 1
+        return counts
 
     @property
     def passed(self) -> int:
@@ -345,8 +387,10 @@ class FrontierResult:
             "scenario": self.scenario,
             "tier": self.tier,
             "split": self.split,
+            "fingerprint": self.fingerprint,
             "runs": self.runs,
             "passed": self.passed,
+            "variants": self.variant_passes,
             "interval": [low, high],
             "rubric": self.rubric,
             "checkpoint_hits": self.checkpoint_hits,
@@ -595,6 +639,7 @@ def measure(
         tier=scenario.tier,
         split=split,
         checkpoints=tuple(c.name for c in scenario.checkpoints),
+        fingerprint=scenario.fingerprint(split),
     )
     while result.runs < runs:
         variant = variants[result.runs % len(variants)]

@@ -12,12 +12,14 @@ not be measured or cannot be trusted — every sample an infrastructure death, a
 deterministic invariant breached on a live sample (a bug in the app, not the
 model), or a broken scenario (`frontier.ScenarioError`).
 
-Knobs: `CHESSAPP_FRONTIER_RUNS` (samples per scenario, default 10),
-`CHESSAPP_FRONTIER_SPLIT` (`dev`, the default, or `heldout`), and the gate's
-own `CHESSAPP_EVAL_SEED` (paired arms, #363), `CHESSAPP_EVAL_REPORT`,
-`LLAMACPP_*` and `CHESSAPP_STOCKFISH`. The report opens with a header naming
-the build, model, sampling and the shas of both prompts and of the tool offer,
-so each number is tied to what produced it.
+Knobs: `CHESSAPP_FRONTIER_RUNS` (samples per scenario, default 5: one per
+wording, #339), `CHESSAPP_FRONTIER_SPLIT` (`heldout`, the default, or `dev`
+when testing a prompt change), and the gate's own `CHESSAPP_EVAL_SEED`
+(paired arms, #363), `CHESSAPP_EVAL_REPORT`, `LLAMACPP_*` and
+`CHESSAPP_STOCKFISH`. The report opens with a header naming the build, model,
+sampling and the shas of both prompts and of the tool offer, so each number is
+tied to what produced it; each scenario's record names its split's
+fingerprint and its passes per wording.
 """
 
 from __future__ import annotations
@@ -53,8 +55,11 @@ pytestmark = pytest.mark.skipif(
     reason="live frontier evals: set CHESSAPP_AGENT_FRONTIER=1 (needs the GPU)",
 )
 
-RUNS = int(os.environ.get("CHESSAPP_FRONTIER_RUNS", "10"))
-SPLIT = os.environ.get("CHESSAPP_FRONTIER_SPLIT", "dev")
+# One sample per wording (#339): at planner temperature 0.3 repeats of one
+# wording mostly agree, so a scenario's information is in its wordings, and
+# held-out is the number of record — dev is for testing a prompt change.
+RUNS = int(os.environ.get("CHESSAPP_FRONTIER_RUNS", "5"))
+SPLIT = os.environ.get("CHESSAPP_FRONTIER_SPLIT", "heldout")
 
 
 def _sha(text: str) -> str:
@@ -109,6 +114,8 @@ def test_frontier(scenario: Scenario, engine) -> None:  # noqa: F811
     )
     for name, hits in result.checkpoint_hits.items():
         print(f"[frontier]   {hits}/{result.runs} {name}")
+    for name, counts in result.variant_passes.items():
+        print(f"[frontier]   {counts['passed']}/{counts['runs']} wording {name}")
     for mode, count in result.failure_modes.most_common():
         print(f"[frontier]   ×{count} {mode}")
     _report(result.record(why=scenario.why))

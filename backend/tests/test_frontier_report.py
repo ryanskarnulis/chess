@@ -3,7 +3,8 @@
 The history is how a hard scenario's number is watched over months, so the
 thing that writes it and the thing that reads it are tested off the GPU: the
 summary a run becomes, the mark that says a scenario moved (only when the
-intervals separate), and the held-out-only graduation rule.
+intervals separate, and never across a change to the scenario), the corpus
+total, and the held-out-only solved mark.
 """
 
 from __future__ import annotations
@@ -13,7 +14,16 @@ from pathlib import Path
 
 import campaign_report
 import frontier_report
-from frontier_report import GRADUATION_RATE, graduates, moved, summarize, trend
+from frontier_report import (
+    CHANGED,
+    SOLVED_RATE,
+    moved,
+    solved,
+    summarize,
+    total_row,
+    trend,
+    wordings,
+)
 
 
 def header(**extra):
@@ -46,13 +56,20 @@ def record(name, split, passed, runs=10, tier=1, rubric=0.5):
     }
 
 
-def line(split, cells, date="2026-10-01", sha="s"):
+def line(split, cells, date="2026-10-01", sha="s", fingerprint=None):
+    """A history line; `fingerprint` None is a line from before #339."""
     return {
         "date": date,
         "git_sha": sha,
         "split": split,
         "scenarios": {
-            name: {"tier": 1, "passed": p, "runs": 10, "rubric": p / 10}
+            name: {
+                "tier": 1,
+                "passed": p,
+                "runs": 10,
+                "rubric": p / 10,
+                **({"fingerprint": fingerprint} if fingerprint else {}),
+            }
             for name, p in cells.items()
         },
     }
@@ -88,6 +105,33 @@ def test_a_run_becomes_one_line_per_split_with_its_configuration():
     assert "samples" not in json.dumps(lines), "the history keeps counts, not traces"
 
 
+def test_a_line_keeps_what_each_number_measured():
+    """#339: the models and crutches behind a run (#298 compares them), and
+    per scenario the fingerprint and the passes per wording."""
+    per_wording = {"a": {"passed": 1, "runs": 1}, "b": {"passed": 0, "runs": 1}}
+    lines = summarize(
+        [
+            header(
+                phase_models={"planner": "m", "narrator": "m", "answer": "m"},
+                crutches=["c"],
+            ),
+            {
+                **record("x", "heldout", 1, runs=2),
+                "fingerprint": "f1",
+                "variants": per_wording,
+            },
+        ],
+        label="v2",
+        date="2026-10-03",
+    )
+
+    (held,) = lines
+    assert held["phase_models"] == {"planner": "m", "narrator": "m", "answer": "m"}
+    assert held["crutches"] == ["c"]
+    assert held["scenarios"]["x"]["fingerprint"] == "f1"
+    assert held["scenarios"]["x"]["variants"] == per_wording
+
+
 def test_a_mark_needs_the_intervals_to_separate():
     ten = {"passed": 10, "runs": 10}
     assert moved({"passed": 0, "runs": 10}, ten) == "▲"
@@ -96,7 +140,7 @@ def test_a_mark_needs_the_intervals_to_separate():
     assert moved({"passed": 5, "runs": 10}, {"passed": 8, "runs": 10}) == ""
 
 
-def test_graduation_reads_the_last_two_heldout_runs_only():
+def test_solved_reads_the_last_two_heldout_runs_only():
     history = [
         line("heldout", {"solved": 9, "once": 3, "dev_only": 2}),
         line("dev", {"dev_only": 10}),
@@ -104,15 +148,26 @@ def test_graduation_reads_the_last_two_heldout_runs_only():
         line("dev", {"dev_only": 10}),
     ]
 
-    assert graduates(history) == ["solved"]
-    assert GRADUATION_RATE == 0.8
+    assert solved(history) == ["solved"]
+    assert SOLVED_RATE == 0.8
 
 
 def test_one_heldout_run_is_never_enough():
-    assert graduates([line("heldout", {"x": 10})]) == []
+    assert solved([line("heldout", {"x": 10})]) == []
 
 
-def test_the_trend_table_marks_moves_and_candidates():
+def test_solved_needs_both_runs_on_one_fingerprint():
+    """A reworded scenario has one run of its new self, not two."""
+    history = [
+        line("heldout", {"x": 10}),
+        line("heldout", {"x": 10}, fingerprint="v2"),
+    ]
+
+    assert solved(history) == []
+    assert solved([*history, line("heldout", {"x": 9}, fingerprint="v2")]) == ["x"]
+
+
+def test_the_trend_table_marks_moves_and_solved_scenarios():
     history = [
         line("heldout", {"x": 0, "y": 9}, date="d1"),
         line("heldout", {"x": 10, "y": 9}, date="d2"),
@@ -121,10 +176,37 @@ def test_the_trend_table_marks_moves_and_candidates():
     table = trend(history, "heldout")
 
     assert "10/10 (1.00)▲" in table
-    assert table.splitlines()[0].endswith("gate? |")
+    assert table.splitlines()[0].endswith("solved |")
     y_row = next(row for row in table.splitlines() if "`y`" in row)
     assert y_row.endswith("| yes |")
     assert trend(history, "dev") == "no dev runs recorded"
+
+
+def test_a_changed_scenario_is_never_compared_with_its_old_self():
+    history = [
+        line("heldout", {"x": 0}, date="d1"),
+        line("heldout", {"x": 10}, date="d2", fingerprint="v2"),
+        line("heldout", {"x": 0}, date="d3", fingerprint="v2"),
+    ]
+
+    x_row = next(r for r in trend(history, "heldout").splitlines() if "`x`" in r)
+
+    assert f"| 0/10 (0.00) | 10/10 (1.00){CHANGED} | 0/10 (0.00)▼ |" in x_row
+
+
+def test_the_total_is_the_whole_run_marked_only_against_the_same_corpus():
+    same = [
+        line("heldout", {"x": 0, "y": 0}, date="d1", fingerprint="f"),
+        line("heldout", {"x": 10, "y": 10}, date="d2", fingerprint="f"),
+    ]
+    grown = [
+        *same,
+        line("heldout", {"x": 10, "y": 10, "z": 0}, date="d3", fingerprint="f"),
+    ]
+
+    assert total_row(same) == ["0/20 (0.00)", "20/20 (1.00)▲"]
+    assert total_row(grown)[-1] == f"20/30 (0.67){CHANGED}"
+    assert "| total | 0/20 (0.00) | 20/20 (1.00)▲ |" in trend(same, "heldout")
 
 
 def test_append_and_trend_round_trip_through_the_cli(tmp_path: Path, capsys):
@@ -234,6 +316,19 @@ def test_the_trend_carries_the_reply_said_row():
     assert "| reply said | 2/20 (10%) | 19/20 (95%)▲ |" in table
 
 
+def test_speech_is_not_compared_across_a_corpus_change():
+    """A different corpus asks different things, so it makes different
+    claims: its speech rate is not the same quantity as the last run's."""
+    history = [
+        {**line("dev", {"s": 5}, date="d1"), "speech": speech(10, 100)},
+        {**line("dev", {"s": 5, "t": 5}, date="d2"), "speech": speech(95, 100)},
+    ]
+
+    table = trend(history, "dev")
+
+    assert f"| speech accuracy | 10/100 (10%) | 95/100 (95%){CHANGED} |" in table
+
+
 def test_the_speech_flag_prints_the_families(tmp_path: Path, capsys):
     path = tmp_path / "history.jsonl"
     history = [
@@ -256,3 +351,43 @@ def test_the_speech_flag_prints_the_families(tmp_path: Path, capsys):
     out = capsys.readouterr().out
     assert "| `capture` | 1/2 |" in out
     assert "| `move` | 0/1 |" in out
+
+
+# --- per wording (#339) ----------------------------------------------------------
+
+
+def test_the_variants_flag_prints_the_latest_run_per_wording(tmp_path: Path, capsys):
+    cell = {
+        "tier": 2,
+        "passed": 1,
+        "runs": 2,
+        "rubric": 0.5,
+        "fingerprint": "f",
+        "variants": {
+            "plain": {"passed": 1, "runs": 1},
+            "noisy": {"passed": 0, "runs": 1},
+        },
+    }
+    path = tmp_path / "history.jsonl"
+    path.write_text(
+        json.dumps(
+            {"date": "d", "git_sha": "s", "split": "heldout", "scenarios": {"x": cell}}
+        )
+        + "\n"
+    )
+
+    frontier_report.main(
+        ["--history", str(path), "trend", "--split", "heldout", "--variants"]
+    )
+
+    out = capsys.readouterr().out
+    assert "| 2 | `x` | `plain` | 1/1 |" in out
+    assert "| 2 | `x` | `noisy` | 0/1 |" in out
+
+
+def test_a_run_from_before_wordings_were_counted_says_so():
+    assert (
+        wordings([line("heldout", {"x": 3})], "heldout")
+        == "the latest heldout run has no per-wording counts"
+    )
+    assert wordings([], "dev") == "no dev runs recorded"
