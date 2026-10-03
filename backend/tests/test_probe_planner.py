@@ -837,3 +837,15 @@ def test_a_parts_arm_keeps_ask_player_last(schema) -> None:
     arm = parse_arm(f"a:tool_schema={schema}")
     tools = arm.offer(_offer())
     assert tools[-1]["function"]["name"] == "ask_player"
+
+
+def test_arms_take_turns_per_block_when_asked() -> None:
+    # Arms on different models swap the card, so a block holds it (#298).
+    order = list(schedule(3, ["knight", "rook"], ["a", "b"], block=2))
+    assert [arm for _, _, arm in order] == ["a"] * 4 + ["b"] * 4 + ["a"] * 2 + ["b"] * 2
+    # Every (sample, item) still runs once per arm, so the seeds still pair.
+    for arm in ("a", "b"):
+        cells = [(s, i) for s, i, a in order if a == arm]
+        assert sorted(cells) == sorted(
+            (s, i) for s in range(3) for i in ("knight", "rook")
+        )

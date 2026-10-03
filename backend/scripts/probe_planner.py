@@ -29,6 +29,8 @@ Run from `backend/` with llama-swap up:
     python scripts/probe_planner.py --arm control --dry-run          # the exact payload
     python scripts/probe_planner.py --preflight-only                 # is the card free?
     python scripts/probe_planner.py --arm control --arm twin --seed none   # unpaired
+    python scripts/probe_planner.py --arm a:model=gemma-4-12b \\
+        --arm b:model=qwen36-35b-a3b --n 10 --block 5      # models, per block
 
 Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `temperature=0.3`, `cache_prompt=false`, `model=<id>`, `tool_text=<tool>@file`,
@@ -1126,14 +1128,27 @@ def passes(rule: Rule, calls: Sequence[Call]) -> bool:
 
 
 def schedule(
-    n: int, items: Sequence[str], arms: Sequence[str]
+    n: int, items: Sequence[str], arms: Sequence[str], block: int | None = None
 ) -> Iterator[tuple[int, str, str]]:
     """Sample index, item, arm — arms innermost, so consecutive requests to the
-    server alternate arms and any drift lands on all of them alike."""
-    for sample in range(n):
-        for item in items:
-            for arm in arms:
-                yield sample, item, arm
+    server alternate arms and any drift lands on all of them alike.
+
+    With `block`, arms take turns per block of that many samples instead
+    (#298): arms on different models would make llama-swap reload a model on
+    every request, so each model gets the card for a block of every item, and
+    the arms still alternate often enough to share the drift. Sample indices,
+    and so the seeds that pair the arms, are the same either way."""
+    if block is None:
+        for sample in range(n):
+            for item in items:
+                for arm in arms:
+                    yield sample, item, arm
+        return
+    for start in range(0, n, block):
+        for arm in arms:
+            for sample in range(start, min(start + block, n)):
+                for item in items:
+                    yield sample, item, arm
 
 
 # --- statistics ---------------------------------------------------------------
@@ -1493,8 +1508,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"sample i's seed is SEED+i in every arm (default {DEFAULT_SEED}); "
         "'none' samples unseeded",
     )
+    parser.add_argument(
+        "--block",
+        type=int,
+        help="arms take turns per block of this many samples, not per sample: "
+        "for arms on different models, which swap the card (#298)",
+    )
     parser.add_argument("--list", action="store_true", help="print the corpus and exit")
     args = parser.parse_args(argv)
+    if args.block is not None and args.block < 1:
+        raise SystemExit("--block must be at least 1")
 
     if args.list:
         for item in CORPUS:
@@ -1576,7 +1599,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     with out.open("a") as handle:
         for sample, item_name, arm_name in schedule(
-            args.n, [i.name for i in items], [a.name for a in arms]
+            args.n, [i.name for i in items], [a.name for a in arms], args.block
         ):
             item, arm = by_item[item_name], by_arm[arm_name]
             seed = sample_seed(args.seed, sample)
