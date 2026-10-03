@@ -20,38 +20,48 @@ CHESSAPP_AGENT_FRONTIER=1 CHESSAPP_EVAL_REPORT=/tmp/frontier.jsonl \
 
 | Env var | Default | What it does |
 | --- | --- | --- |
-| `CHESSAPP_FRONTIER_RUNS` | 10 | Samples per scenario (fixed; no escalation). |
-| `CHESSAPP_FRONTIER_SPLIT` | `dev` | `dev` or `heldout` variants. |
+| `CHESSAPP_FRONTIER_RUNS` | 5 | Samples per scenario, cycling its wordings: five is one per wording (fixed; no escalation). |
+| `CHESSAPP_FRONTIER_SPLIT` | `heldout` | `heldout` or `dev` variants. |
 | `CHESSAPP_EVAL_REPORT` | — | JSONL report path (shared with the gate). |
 
 The gate's `LLAMACPP_*` and `CHESSAPP_STOCKFISH` apply. Check the shared card
 is idle first, as for any eval run.
 
+**One sample per wording, held-out by default** (#339). At planner
+temperature 0.3, repeats of one wording mostly agree:
+`knight_ask_then_change_of_mind` read exactly 5/10 on dev in three runs in a
+row, alternating two wordings, which looks like one wording always passing
+and the other always failing. A scenario's information is in its wordings,
+not in repeats. Held-out is the number of record. It is the split a model is
+compared on and the one an improvement must move. Run dev
+(`CHESSAPP_FRONTIER_SPLIT=dev`) when testing a prompt change, since dev is
+where one is iterated.
+
 ### Recording a run
 
 ```bash
-CHESSAPP_AGENT_FRONTIER=1 CHESSAPP_FRONTIER_SPLIT=dev \
-    CHESSAPP_EVAL_REPORT=/tmp/frontier.jsonl .venv/bin/pytest tests/test_agent_frontier.py -s
-CHESSAPP_AGENT_FRONTIER=1 CHESSAPP_FRONTIER_SPLIT=heldout \
-    CHESSAPP_EVAL_REPORT=/tmp/frontier.jsonl .venv/bin/pytest tests/test_agent_frontier.py -s
+CHESSAPP_AGENT_FRONTIER=1 CHESSAPP_EVAL_REPORT=/tmp/frontier.jsonl \
+    .venv/bin/pytest tests/test_agent_frontier.py -s
 python scripts/frontier_report.py append /tmp/frontier.jsonl --label "after #340"
-python scripts/frontier_report.py trend            # both splits, last six runs
+python scripts/frontier_report.py trend             # last six runs per split
+python scripts/frontier_report.py trend --variants  # and the latest run per wording
 ```
 
-`append` adds one line per split to `docs/frontier-history.jsonl` (commit it
-with the change it measured); `trend` prints a scenario × run table per split,
-with the run's speech accuracy as its last row (`trend --speech` adds the
-per-family table). Run both splits every time: a dev number alone is not
-believed.
+`append` adds one line per split in the report to `docs/frontier-history.jsonl`
+(commit it with the change it measured). `trend` prints a scenario × run
+table per split, with the corpus total, the run's speech accuracy and its
+reply-said rate as its last rows. `trend --speech` adds the per-family table.
 
 ## What a run reports
 
 Per scenario: whole-task passes out of N with a one-sided 95% Wilson
 interval, the **rubric score** (the mean fraction of checkpoints met — the
-number that moves while whole-task passes are still near zero), each
-checkpoint's hit count, the normalised failure modes, infra deaths, and every
-sample's turns (what was said and what Glitch answered, route, stop reason,
-tools, history). It also reports
+number that moves while whole-task passes are still near zero), the passes
+per wording, each checkpoint's hit count, the normalised failure modes, infra
+deaths, and every sample's turns (what was said and what Glitch answered,
+route, stop reason, tools, history). Each record names its split's
+**fingerprint** (#339): a sha of the split's wordings, the checkpoint names
+and `Scenario.revision`. It also reports
 **speech accuracy** (#367): every traced turn's draft re-judged against its
 facts, as claims made and backed per family, for the scenario (`speech`) and
 for each sample (`speech`, with the `unbacked` lines quoted). Like the rubric
@@ -77,10 +87,21 @@ A low score is never a failure.
 
 - **A mark means the intervals separated.** `trend` puts ▲/▼ on a cell only
   when its one-sided 95% Wilson interval does not overlap the previous run's.
-  At ten samples that takes a big move (5/10 → 8/10 is no mark), and that is
-  deliberate: runs on different days sit on differently-warmed servers, and
-  consecutive samples of one prompt are correlated (`docs/agent-evals.md`).
-  The history shows *trend*; it is not evidence a particular change worked.
+  At ten samples that takes a big move (5/10 → 8/10 is no mark), and at five
+  a bigger one. That is deliberate: runs on different days sit on
+  differently-warmed servers, and consecutive samples of one prompt are
+  correlated (`docs/agent-evals.md`). The history shows *trend*; it is not
+  evidence a particular change worked.
+- **The total is the headline.** The `total` row sums whole-task passes over
+  every scenario in the run (with the scenarios' mean rubric). At one sample
+  per wording a scenario's own five rarely separate from anything, while the
+  corpus's do.
+- **A changed scenario is never compared with its old self** (#339). A cell
+  whose fingerprint differs from the previous cell's is marked `†` instead of
+  compared. It measured other wordings or other checkpoints, and starts a new
+  series. Lines from before #339 carry no fingerprint and read as one series.
+  The total and speech rows are marked only between runs of the same corpus
+  (the same scenarios on the same fingerprints), and are `†` otherwise.
 - **A claim that a change moved a score is an A/B**, alternating blocks on
   one server:
 
@@ -94,24 +115,24 @@ A low score is never a failure.
   each and reports the flipped pairs with a McNemar p, on `whole`
   (`docs/agent-evals.md`, "Arms are paired").
 
-## Graduation and retirement
+## Solved scenarios stay
 
-- **Graduate** a scenario when its held-out whole-task rate is at least 0.8
-  in each of the two most recent held-out runs (`trend` marks it `yes` in the
-  `gate?` column; `frontier_report.GRADUATION_RATE` / `GRADUATION_RUNS`).
-  Graduating means writing it as a gate scenario in `test_agent_evals.py`
-  from its held-out wording, at the family floor (0.8) in `_FLOORS`, running
-  the gate, and removing it from the corpus in the same PR — from then on it
-  blocks merges.
-- **Harden or retire** a scenario that sits at 10/10 on both splits without
-  graduating yet: add a harder variant, or let it graduate. The corpus is
-  only worth running while most of it is not solved; baseline v1 had six such
-  scenarios, and corpus v2 should replace them with harder ones.
+The frontier is the scoreboard every future model is measured on, so a
+scenario the current model has solved stays in it (#339). It is where a new
+model shows it holds that line.
+
+- **`solved` is a mark, not a verdict.** `trend` marks a held-out row `yes`
+  when its whole-task rate is at least 0.8 in each of the two most recent
+  held-out runs, both on one fingerprint (`frontier_report.SOLVED_RATE` /
+  `SOLVED_RUNS`). Nothing moves on it: a solved scenario is neither graduated
+  into the gate nor dropped.
+- **Headroom comes from new scenarios.** When most of the corpus is solved,
+  add harder scenarios beside the solved ones, never in place of them.
 - **Never demote.** A gate scenario that regresses is a regression and fails
   the gate; it does not move here to get quiet.
-- **Never lower the bar to graduate.** A scenario whose checkpoint is found
-  unfair is fixed and re-measured from scratch, with the fix recorded (as in
-  "Scenario fixes made before the baseline" below).
+- **Never lower the bar.** A scenario whose checkpoint is found unfair is
+  fixed and re-measured from scratch, with the fix recorded (as in "Scenario
+  fixes made before the baseline" below).
 
 ## Writing a scenario
 
@@ -131,6 +152,11 @@ after each turn, the tool results, the route and stop reason). The rules:
   improvement only when `heldout` moves too. `test_frontier.py` refuses a
   wording shared between the splits, and any `model` step a parser would
   settle on the opening board or after 1.e4 e5.
+- **Bump `revision` when a number's meaning changes unseen.** A scenario's
+  fingerprint moves by itself when a wording or a checkpoint's name changes.
+  A new setup, or a checkpoint's logic fixed under its old name (#352's
+  `first_offered`), changes what the number means without moving it, so bump
+  `Scenario.revision`, and the history starts a new series.
 - **Tiers:** 1 stretch (several intents in one utterance), 2 multi-turn (later
   turns lean on earlier ones), 3 frontier (long sessions and long games,
   expected near zero).
