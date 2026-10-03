@@ -3293,7 +3293,7 @@ FIRST_SUGGESTION_AFTER_ALL = Scenario(
         stockfish_liked=(
             "what does Stockfish like here?",
             Say("a3", model=False),
-            "and what does it like now?",
+            "and which move does it like now?",
             "undo a3 and play the move Stockfish liked before it",
         ),
     ),
