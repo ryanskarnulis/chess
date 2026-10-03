@@ -95,6 +95,34 @@ bytes, and say so in its PR.
 `CHESSAPP_PLANNER_TEMPERATURE` still overrides the planner's temperature, as
 the experiment knob.
 
+## #298 candidates
+
+Four bake-off candidates have profiles, each named for its llama-swap entry
+(the entry's comment in `../llama-swap/config.yaml` has the serving sweep):
+
+| Profile | Model | Speed on the 3060 | Thinking narrator turn (1 sample) |
+|---|---|---|---|
+| `gemma-4-26b-a4b` | Gemma 4 26B-A4B MoE, QAT Q4 + MTP | ~60 tok/s | 504 tokens, ~10 s |
+| `qwen36-35b-a3b` | Qwen3.6 35B-A3B MoE, Q4 + MTP | ~68 tok/s | 1,679 tokens, ~38 s |
+| `qwen38-27b` | Qwen3.8 27B dense, IQ3_S | ~8 tok/s, prefill ~400 tok/s | 727 tokens, ~93 s |
+| `granite-4.2-8b` | IBM Granite 4.2 8B dense, Q8_0 | ~21 tok/s | 357 tokens, ~17 s |
+
+They are starting values, not results. Each profile has:
+
+- the vendor's published sampling (Qwen's non-thinking set, since one set
+  serves both modes)
+- the 12B's planner temperature of 0.3 and its token caps, carried over
+- all five crutches, so the default arm is like-for-like with gemma-4-12b
+
+`check_profile.py --load` reported `thinking toggle: ok` for all four on
+2026-10-03, and a request with the toggle off returned no reasoning on
+each. Replace each carried value with what the bake-off measures, and say
+so in the file.
+
+`qwen38-27b` and `granite-4.2-8b` serve `-c 32768`, which is enough for the
+32k input budget, but they are chess-only entries. `qwen38-27b` runs one
+slot, so it serves one request at a time.
+
 ## Crutches
 
 These are the 12B-specific items from #375's 2026-09-29 comment. Each was

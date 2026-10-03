@@ -1,0 +1,49 @@
+# qwen36-35b-a3b: #298 bake-off candidate (docs/model-profiles.md). Qwen3.6
+# 35B-A3B MoE, served by ../llama-swap/config.yaml's entry of the same name
+# (UD-Q4_K_XL, -ncmoe 33 + MTP drafter, ~68 tok/s).
+#
+# Starting values, not measurements: nothing here has been run through the
+# gate yet. Replace each with what the bake-off measures, and say so.
+thinking_kwarg = "enable_thinking"
+
+quirks = [
+    # A profile has one sampling set, and the app thinks on only a few
+    # narrator turns, so it gets the non-thinking set. Qwen publishes
+    # 1.0 / 0.95 / 20 for thinking mode.
+    "Sampling is Qwen's non-thinking set; thinking turns run on it too.",
+    # The profile cannot send presence_penalty; llama-swap's cmd sets 1.5,
+    # Qwen's non-thinking value, as the server default.
+    "presence_penalty 1.5 comes from the llama-swap entry, not this profile.",
+    # One narrator-shaped sample each way, 2026-10-03 (#298 setup).
+    "A thinking narrator turn ran 1,679 tokens (~38 s); thinking off, ~30 tokens.",
+]
+
+# The 12B's crutches, carried over so the default arm is like-for-like with
+# gemma-4-12b. #298 runs each candidate with and without them
+# (CHESSAPP_CRUTCHES=none); a model that holds the gate without them ships
+# without them.
+crutches = [
+    "move_source_required",
+    "undo_call_again",
+    "ask_player_examples",
+    "pick_resubmit_script",
+    "difficulty_constraint_rule",
+]
+
+# Qwen3.6's published non-thinking (instruct) sampling.
+[sampling]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+
+# Carried from gemma-4-12b (#286: a parse wants the mode); not yet measured
+# on this model. Caps are the 12B's until a trace says otherwise.
+[phases.planner]
+temperature = 0.3
+max_tokens = 2048
+
+[phases.narrator]
+max_tokens = 4096
+
+[phases.answer]
+max_tokens = 16

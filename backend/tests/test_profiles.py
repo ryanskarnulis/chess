@@ -166,3 +166,25 @@ def test_the_factory_applies_the_profile_per_phase():
         provider=LlamaCppProvider("http://llm.test/v1", "tuned", profile=profile),
     )
     assert override.planner_temperature == 1.0
+
+
+_PROFILE_DIR = Path(__file__).resolve().parents[1] / "src/chessapp/data/profiles"
+_LLAMA_SWAP = Path(__file__).resolve().parents[3] / "llama-swap" / "config.yaml"
+_SHIPPED = sorted(path.stem for path in _PROFILE_DIR.glob("*.toml"))
+
+
+@pytest.mark.parametrize("model", _SHIPPED)
+def test_every_shipped_profile_loads_under_its_own_name(model):
+    # Strict loading means a typo fails here, not on the GPU mid-bake-off.
+    profile = load_profile(model)
+    assert profile.name == model
+    for phase in (PLANNER, NARRATOR, ANSWER):
+        assert profile.phase(phase).max_tokens > 0
+
+
+@pytest.mark.skipif(not _LLAMA_SWAP.is_file(), reason="needs the ../llama-swap sibling")
+def test_every_shipped_profile_names_a_llama_swap_model():
+    # A profile is named for the llama-swap model id it describes; one that
+    # names no entry would never be loaded.
+    served = set(re.findall(r'^ {2}"([^"]+)":', _LLAMA_SWAP.read_text(), re.M))
+    assert set(_SHIPPED) <= served
