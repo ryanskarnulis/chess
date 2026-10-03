@@ -37,7 +37,7 @@ from chessapp.game import GameSession
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
 from frontier import Scenario, measure
-from frontier_corpus import SCENARIOS
+from frontier_corpus import SCENARIOS, WORDINGS_PER_SPLIT
 from test_agent_evals import (  # noqa: F401 - `engine` is a fixture
     _SEED_BASE,
     CRUTCHES,
@@ -58,7 +58,7 @@ pytestmark = pytest.mark.skipif(
 # One sample per wording (#339): at planner temperature 0.3 repeats of one
 # wording mostly agree, so a scenario's information is in its wordings, and
 # held-out is the number of record — dev is for testing a prompt change.
-RUNS = int(os.environ.get("CHESSAPP_FRONTIER_RUNS", "5"))
+RUNS = int(os.environ.get("CHESSAPP_FRONTIER_RUNS", str(WORDINGS_PER_SPLIT)))
 SPLIT = os.environ.get("CHESSAPP_FRONTIER_SPLIT", "heldout")
 
 

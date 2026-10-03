@@ -17,6 +17,14 @@ Every checkpoint must be unambiguous about what the player asked for: the
 first live run graded "how do things stand now?" as a judgment question, the
 model fairly answered it with a description, and the miss was the
 scenario's (`docs/agent-frontier.md`).
+
+Each split holds `WORDINGS_PER_SPLIT` wordings of its task (#339), and a
+default run samples each once: one phrasing measures that phrasing, not the
+task (corpus v1's dev and held-out wordings of one task swung by up to ten
+samples). The wordings v2 added were written as one pool per scenario and
+dealt to the splits by `random.Random(f"339:{name}")`, round-robin across a
+scenario's setups where it has several, never by hand. A wording rewritten
+later stays in its split.
 """
 
 from __future__ import annotations
@@ -111,6 +119,32 @@ def black_facing_mate(app: EvalApp) -> None:
 
 # Kept for the harness's own tests, which script a sample on this position.
 after_e4_e5 = AFTER_E4_E5
+
+# --- wordings ------------------------------------------------------------------------
+
+# Five per split: a default run (`CHESSAPP_FRONTIER_RUNS`) samples each once.
+WORDINGS_PER_SPLIT = 5
+
+
+def wordings(
+    setup: Callable[[EvalApp], None] | None, **said: str | tuple[str | Say, ...]
+) -> tuple[Variant, ...]:
+    """A split's wordings of one task on one setup, by name. Each value is
+    what the player says: one panel utterance, or a sequence of them, in
+    which a `Say` marks a step that is not one (a parser move, a literal
+    answer, a delegate thread's words)."""
+    return tuple(
+        Variant(
+            name,
+            tuple(
+                step if isinstance(step, Say) else Say(step)
+                for step in ((steps,) if isinstance(steps, str) else steps)
+            ),
+            setup,
+        )
+        for name, steps in said.items()
+    )
+
 
 # --- what the checkpoints read --------------------------------------------------------
 
@@ -211,29 +245,43 @@ UNDO_REPLACE_AND_JUDGE = Scenario(
         "order. The gate's undo_and_replace pins the first two; the verdict "
         "has to come off the new position, after the move."
     ),
-    dev=(
-        Variant(
-            "take_back_d4_better",
-            (Say("take that back, play d4 instead, and tell me if it's any better"),),
-            AFTER_E4_E5,
+    dev=wordings(
+        AFTER_E4_E5,
+        take_back_d4_better=(
+            "take that back, play d4 instead, and tell me if it's any better"
         ),
-        Variant(
-            "undo_go_d4_how_looks",
-            (Say("undo my move, go d4, then tell me how the position looks for me"),),
-            AFTER_E4_E5,
+        undo_go_d4_how_looks=(
+            "undo my move, go d4, then tell me how the position looks for me"
         ),
+        retract_d2_d4_assess=(
+            "please retract my previous move, play d2 to d4 instead, and "
+            "assess whether that improves my position"
+        ),
+        redo_with_d4_verdict=(
+            "let me redo that: take back e4, play d4, and give me your "
+            "verdict on the new position"
+        ),
+        swap_e4_for_d4="swap my e4 for d4 and then tell me if I'm doing better",
     ),
-    heldout=(
-        Variant(
-            "scratch_queen_pawn_read",
-            (
-                Say(
-                    "scratch that move — push the queen pawn two instead and "
-                    "tell me whether I'm better off"
-                ),
-            ),
-            AFTER_E4_E5,
+    heldout=wordings(
+        AFTER_E4_E5,
+        scratch_queen_pawn_read=(
+            "scratch that move — push the queen pawn two instead and tell "
+            "me whether I'm better off"
         ),
+        rewind_d4_evaluate=(
+            "rewind my last move, play d4 in its place, and then evaluate "
+            "the position for me"
+        ),
+        not_e4_undo_d4_who_better=(
+            "actually no, not e4 — undo it, play d4, and tell me who's "
+            "better after that"
+        ),
+        queens_pawn_instead_stronger=(
+            "take back my opening move and open with the queen's pawn two "
+            "squares instead — is that stronger for me?"
+        ),
+        undo_then_d4_am_i_ahead="undo, then d4, then tell me if I'm ahead",
     ),
     checkpoints=(
         Checkpoint("took_back", lambda e: bool(e.turn(1).ran("undo"))),
@@ -253,29 +301,51 @@ SETTINGS_MOVE_AND_VERDICT = Scenario(
         "Two settings, a move and a judgment in one utterance: each lever is "
         "a different tool, and the verdict must come after the move."
     ),
-    dev=(
-        Variant(
-            "voice_easier_king_pawn",
-            (
-                Say(
-                    "turn spoken replies on, make the engine a little easier, "
-                    "then push my king pawn two squares and tell me how it looks"
-                ),
-            ),
-            FRESH,
+    dev=wordings(
+        FRESH,
+        voice_easier_king_pawn=(
+            "turn spoken replies on, make the engine a little easier, then "
+            "push my king pawn two squares and tell me how it looks"
+        ),
+        read_aloud_kings_pawn_judge=(
+            "read your replies aloud, make the bot a touch easier, push the "
+            "king's pawn up two, and judge the position after"
+        ),
+        level_down_speech_e4=(
+            "lower the level by one, turn speech on, then play e4 and tell "
+            "me if it's good for me"
+        ),
+        polite_voice_easier_e_pawn=(
+            "could you please turn on voice, make the game slightly easier "
+            "for me, play the e-pawn forward two squares, and let me know "
+            "whether I'm doing well"
+        ),
+        audio_weaker_e2_e4_evaluate=(
+            "enable audio replies, drop the engine strength slightly, move "
+            "e2 to e4, then evaluate it"
         ),
     ),
-    heldout=(
-        Variant(
-            "talk_out_loud_softer_e_pawn",
-            (
-                Say(
-                    "start talking to me out loud, tone the difficulty down a "
-                    "notch, open with the e-pawn up two, and say whether that's "
-                    "good for me"
-                ),
-            ),
-            FRESH,
+    heldout=wordings(
+        FRESH,
+        talk_out_loud_softer_e_pawn=(
+            "start talking to me out loud, tone the difficulty down a "
+            "notch, open with the e-pawn up two, and say whether that's "
+            "good for me"
+        ),
+        terse_speak_easier_e4_verdict=(
+            "speak your answers, easier engine, e4, then your verdict"
+        ),
+        talk_out_loud_go_easier=(
+            "I want you to talk out loud from now on and go a little easier "
+            "on me. Open with e4 and tell me if that's a strong move"
+        ),
+        e4_first_then_settings=(
+            "play e4, then turn on spoken replies and make the engine a bit "
+            "weaker, and tell me if I'm better or worse"
+        ),
+        voice_lower_e4_good_start=(
+            "switch voice output on, lower the difficulty a bit, play e4, "
+            "and tell me if it's a good start"
         ),
     ),
     checkpoints=(
@@ -298,28 +368,47 @@ TOP_MOVE_PLAY_AND_SAVE = Scenario(
         "Read, act on the read, then persist: the move must be the engine's "
         "first candidate, and the save must hold the game with it in."
     ),
-    dev=(
-        Variant(
-            "stockfish_top_then_checkpoint",
-            (
-                Say(
-                    "ask Stockfish for its top move, play it for me, and then "
-                    "save the game as checkpoint"
-                ),
-            ),
-            AFTER_E4_E5,
+    dev=wordings(
+        AFTER_E4_E5,
+        stockfish_top_then_checkpoint=(
+            "ask Stockfish for its top move, play it for me, and then save "
+            "the game as checkpoint"
+        ),
+        optimal_move_save_position=(
+            "show me the optimal move, play it, then save this position as checkpoint"
+        ),
+        what_would_stockfish_play=(
+            "what would Stockfish play here? play that for me, then save "
+            "this game as checkpoint"
+        ),
+        engine_top_choice_save_under=(
+            "have the engine pick its top choice and play it, then save "
+            "under checkpoint"
+        ),
+        strongest_move_call_it=(
+            "play the strongest move for me, then save the game and call it checkpoint"
         ),
     ),
-    heldout=(
-        Variant(
-            "engine_pick_then_store",
-            (
-                Say(
-                    "get the engine's best suggestion, make that move, and "
-                    "store this game under the name checkpoint"
-                ),
-            ),
-            AFTER_E4_E5,
+    heldout=wordings(
+        AFTER_E4_E5,
+        engine_pick_then_store=(
+            "get the engine's best suggestion, make that move, and store "
+            "this game under the name checkpoint"
+        ),
+        look_up_best_make_it=(
+            "look up the engine's best move, make it, and save the game "
+            "with the name checkpoint"
+        ),
+        let_stockfish_choose=(
+            "let Stockfish choose my move — the top one — play it, and "
+            "store the game as checkpoint"
+        ),
+        computer_number_one=(
+            "get the computer's number one move for me, play it, and save "
+            "everything as checkpoint"
+        ),
+        best_move_play_save=(
+            "find the best move here, play it, and save the game as checkpoint"
         ),
     ),
     checkpoints=(
@@ -347,24 +436,32 @@ NOISY_TAKEBACK_AND_REPLACE = Scenario(
         "'night'/'eff' for 'knight'/'f'. The repair is the model's "
         "understanding, never a parser rule."
     ),
-    dev=(
-        Variant(
-            "uh_night_eff_three",
-            (
-                Say(
-                    "uh take back that uh move and and put my night on eff "
-                    "three instead"
-                ),
-            ),
-            AFTER_E4_E5,
+    dev=wordings(
+        AFTER_E4_E5,
+        uh_night_eff_three=(
+            "uh take back that uh move and and put my night on eff three instead"
+        ),
+        mm_undo_first_knight_eff="mm undo my move first and then knight to eff three",
+        take_it_back_knight_eff_tree=(
+            "take it back take it back and um knight eff tree instead"
+        ),
+        okay_so_takeback_and_and=(
+            "okay so um take back what I just played and and play knight f "
+            "three instead"
+        ),
+        like_go_back_knight_f_three=(
+            "can you like go back one move and uh move my knight to like f three"
         ),
     ),
-    heldout=(
-        Variant(
-            "um_knight_f_three",
-            (Say("um undo my last move please then uh knight to f three"),),
-            AFTER_E4_E5,
+    heldout=wordings(
+        AFTER_E4_E5,
+        um_knight_f_three="um undo my last move please then uh knight to f three",
+        scratch_put_nite_f3="uh scratch that move and put the nite on f3",
+        the_the_night_eff_three=(
+            "uh take back the the last move and put the night on eff three"
         ),
+        er_undo_night_f_three="er undo that one and uh night to f three",
+        hmm_reverse_night_f_three="hmm reverse that move and uh go night f three",
     ),
     checkpoints=(
         Checkpoint("took_back", lambda e: bool(e.turn(1).ran("undo"))),
@@ -380,28 +477,48 @@ CONSTRAINT_KEEPS_DIFFICULTY = Scenario(
         "A request whose one obvious lever is ruled out in the same breath, "
         "beside a move: the move must land and the setting must not move."
     ),
-    dev=(
-        Variant(
-            "go_easy_leave_it_queen_pawn",
-            (
-                Say(
-                    "go easy on me this game but leave the difficulty setting "
-                    "exactly where it is, and open with the queen pawn two squares"
-                ),
-            ),
-            FRESH,
+    dev=wordings(
+        FRESH,
+        go_easy_leave_it_queen_pawn=(
+            "go easy on me this game but leave the difficulty setting "
+            "exactly where it is, and open with the queen pawn two squares"
+        ),
+        take_it_easy_keep_level=(
+            "take it easy on me, but keep the difficulty level as it is, and play d4"
+        ),
+        relaxed_game_untouched=(
+            "let's have a relaxed game — difficulty stays untouched — and "
+            "I'll open with d4"
+        ),
+        gently_same_difficulty=(
+            "play gently against me, keep the same difficulty though, and "
+            "push my queen's pawn up two"
+        ),
+        be_nice_no_settings=(
+            "be nice to me today, without changing any settings, and start "
+            "with the queen's pawn two squares"
         ),
     ),
-    heldout=(
-        Variant(
-            "be_gentle_dont_touch_d_pawn",
-            (
-                Say(
-                    "be gentle with me, just don't change the difficulty, and "
-                    "start with the d-pawn up two"
-                ),
-            ),
-            FRESH,
+    heldout=wordings(
+        FRESH,
+        be_gentle_dont_touch_d_pawn=(
+            "be gentle with me, just don't change the difficulty, and start "
+            "with the d-pawn up two"
+        ),
+        dont_crush_me=(
+            "don't crush me too hard this game — but don't touch the "
+            "difficulty setting — and open with d4"
+        ),
+        easy_game_dont_lower=(
+            "I'd like an easy game, but don't lower the difficulty — just "
+            "play d2 to d4 for me"
+        ),
+        go_soft_level_stays=(
+            "go soft on me but the level stays where it is. d4 to start"
+        ),
+        mercy_strength_alone=(
+            "show me some mercy, but leave the engine strength alone, and "
+            "open with the d-pawn two squares"
         ),
     ),
     checkpoints=(
@@ -424,35 +541,60 @@ KNIGHT_ASK_THEN_CHANGE_OF_MIND = Scenario(
         "different move, and finally asks a judgment question that must move "
         "nothing. Three turns, each depending on the one before."
     ),
-    dev=(
-        Variant(
-            "move_knight_then_d4",
-            (
-                Say("move my knight"),
-                Say("actually forget the knight, push the queen's pawn two squares"),
-                Say("so am I doing better than before?"),
-            ),
-            FRESH,
+    dev=wordings(
+        FRESH,
+        move_knight_then_d4=(
+            "move my knight",
+            "actually forget the knight, push the queen's pawn two squares",
+            "so am I doing better than before?",
         ),
-        Variant(
-            "develop_knight_then_d4",
-            (
-                Say("develop one of my knights"),
-                Say("no wait, never mind that — queen pawn forward two"),
-                Say("is my position good now?"),
-            ),
-            FRESH,
+        develop_knight_then_d4=(
+            "develop one of my knights",
+            "no wait, never mind that — queen pawn forward two",
+            "is my position good now?",
+        ),
+        horse_out_scratch_that=(
+            "let's get a horse out",
+            "nah, scratch that, d-pawn two squares forward",
+            "what's the evaluation now?",
+        ),
+        knight_move_then_d2_d4=(
+            "play a knight move",
+            "never mind the knight, do d2 to d4",
+            "am I winning?",
+        ),
+        knight_out_then_skip=(
+            "get one of my knights out",
+            "on second thought, skip the knight and play d4",
+            "how's my position looking now, am I better?",
         ),
     ),
-    heldout=(
-        Variant(
-            "knight_out_then_d_pawn",
-            (
-                Say("bring a knight out"),
-                Say("hmm, no — the d-pawn forward two instead"),
-                Say("who's better right now?"),
-            ),
-            FRESH,
+    heldout=wordings(
+        FRESH,
+        knight_out_then_d_pawn=(
+            "bring a knight out",
+            "hmm, no — the d-pawn forward two instead",
+            "who's better right now?",
+        ),
+        develop_a_knight_forget_it=(
+            "I want to develop a knight",
+            "actually no, forget knights for now — push d4",
+            "is that good for me?",
+        ),
+        one_of_my_knights_changed_mind=(
+            "move one of my knights",
+            "hold on, I changed my mind: d4 instead",
+            "who's doing better at this point?",
+        ),
+        jump_knight_change_plans=(
+            "jump a knight out",
+            "wait, change of plans — queen's pawn two squares instead",
+            "so who's ahead now?",
+        ),
+        could_you_knight_oh_wait=(
+            "could you move a knight for me",
+            "oh wait, never mind — play the queen's pawn up two",
+            "and how do I stand now, better or worse?",
         ),
     ),
     checkpoints=(
@@ -474,26 +616,60 @@ SUGGESTED_MOVE_LATER = Scenario(
         "A suggestion made two turns earlier must be the move played: 'the "
         "move you suggested' is only resolvable from the conversation."
     ),
-    dev=(
-        Variant(
-            "what_would_you_play",
-            (
-                Say("what would you play here if you were me?"),
-                Say("and am I better or worse right now?"),
-                Say("ok, play the move you suggested"),
-            ),
-            AFTER_E4_E5,
+    dev=wordings(
+        AFTER_E4_E5,
+        what_would_you_play=(
+            "what would you play here if you were me?",
+            "and am I better or worse right now?",
+            "ok, play the move you suggested",
+        ),
+        stockfish_top_move=(
+            "what's Stockfish's top move here?",
+            "and what's the evaluation at the moment?",
+            "play the top move you gave me",
+        ),
+        best_move_then_play_it=(
+            "what's the best move for me here?",
+            "and how am I doing, better or worse?",
+            "ok, play the move you suggested before",
+        ),
+        suggest_a_move=(
+            "suggest a move for me",
+            "is my position any good?",
+            "play your suggestion",
+        ),
+        top_suggestion=(
+            "what's your top suggestion for me here?",
+            "am I winning or losing at the moment?",
+            "play your top suggestion",
         ),
     ),
-    heldout=(
-        Variant(
-            "recommendation",
-            (
-                Say("got a recommendation for my next move?"),
-                Say("who's ahead at the moment?"),
-                Say("go with your recommendation"),
-            ),
-            AFTER_E4_E5,
+    heldout=wordings(
+        AFTER_E4_E5,
+        recommendation=(
+            "got a recommendation for my next move?",
+            "who's ahead at the moment?",
+            "go with your recommendation",
+        ),
+        one_move_youd_play=(
+            "what's the one move you'd play next?",
+            "who's winning right now?",
+            "let's go with what you suggested",
+        ),
+        which_move_recommend=(
+            "which move would you recommend here?",
+            "am I ahead right now?",
+            "fine, play the move you recommended",
+        ),
+        recommend_me_a_move=(
+            "recommend me a move",
+            "is the game balanced right now?",
+            "I'll follow your recommendation, play it",
+        ),
+        if_you_were_white=(
+            "if you were playing white here, what would you pick?",
+            "is the position in my favour right now?",
+            "go ahead and play your pick",
         ),
     ),
     checkpoints=(
@@ -519,32 +695,90 @@ SAVE_RESET_RESUME = Scenario(
         "the save back by paraphrase — no name given — over a game in "
         "progress, so the gate asks again."
     ),
-    dev=(
-        Variant(
-            "opening",
-            (
-                Say("save this game as opening"),
-                Say("start a fresh game"),
-                Say("yes", model=False),
-                Say("d4", model=False),
-                Say("bring back the game I saved a minute ago"),
-                Say("yes", model=False),
-            ),
-            AFTER_E4_E5,
+    dev=wordings(
+        AFTER_E4_E5,
+        opening=(
+            "save this game as opening",
+            "start a fresh game",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "bring back the game I saved a minute ago",
+            Say("yes", model=False),
+        ),
+        under_the_name=(
+            "please save under the name opening",
+            "begin a new game",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "reload the save I made before",
+            Say("yes", model=False),
+        ),
+        could_you_save=(
+            "could you save this game as opening",
+            "start over with a new game",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "resume the game I saved",
+            Say("yes", model=False),
+        ),
+        call_it_opening=(
+            "save the game and call it opening",
+            "new game please",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "restore the game I saved earlier",
+            Say("yes", model=False),
+        ),
+        store_as_opening=(
+            "store this as opening",
+            "reset the board, I want to start over",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "go back to my saved game",
+            Say("yes", model=False),
         ),
     ),
-    heldout=(
-        Variant(
-            "opening_reworded",
-            (
-                Say("keep this game under the name opening"),
-                Say("let's begin a brand new game"),
-                Say("yes", model=False),
-                Say("d4", model=False),
-                Say("load my earlier saved game back up"),
-                Say("yes", model=False),
-            ),
-            AFTER_E4_E5,
+    heldout=wordings(
+        AFTER_E4_E5,
+        opening_reworded=(
+            "keep this game under the name opening",
+            "let's begin a brand new game",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "load my earlier saved game back up",
+            Say("yes", model=False),
+        ),
+        save_this_position=(
+            "save this position under opening",
+            "fresh board please",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "load up the game I stored",
+            Say("yes", model=False),
+        ),
+        save_my_progress=(
+            "save my progress as opening",
+            "let's start from scratch",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "bring my saved game back",
+            Say("yes", model=False),
+        ),
+        name_it_opening=(
+            "save it — name it opening",
+            "wipe the board, new game",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "get my earlier save back",
+            Say("yes", model=False),
+        ),
+        make_a_save=(
+            "make a save called opening",
+            "clear the board and start again",
+            Say("yes", model=False),
+            Say("d4", model=False),
+            "open the saved game from before",
+            Say("yes", model=False),
         ),
     ),
     checkpoints=(
@@ -566,24 +800,44 @@ DRAW_DECLINED_THEN_ADVICE = Scenario(
         "what should I play'): advice from the engine, nothing moved, and no "
         "second offer."
     ),
-    dev=(
-        Variant(
-            "call_it_a_draw",
-            (
-                Say("want to just call it a draw?"),
-                Say("fine — then what's my best move here?"),
-            ),
-            after("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"),
+    dev=wordings(
+        after("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"),
+        call_it_a_draw=(
+            "want to just call it a draw?",
+            "fine — then what's my best move here?",
+        ),
+        accept_a_draw=(
+            "would you accept a draw?",
+            "no? then tell me a strong move to play",
+        ),
+        i_offer_a_draw=("I offer a draw", "alright, then what's the best move for me?"),
+        take_a_draw_here=(
+            "would you take a draw here?",
+            "ok then, what's my strongest option?",
+        ),
+        end_it_as_a_draw=(
+            "let's end this one as a draw",
+            "fine, then what's the best continuation for me?",
         ),
     ),
-    heldout=(
-        Variant(
-            "agree_to_a_draw",
-            (
-                Say("how about we agree to a draw?"),
-                Say("ok, so what should I play instead?"),
-            ),
-            after("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"),
+    heldout=wordings(
+        after("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"),
+        agree_to_a_draw=(
+            "how about we agree to a draw?",
+            "ok, so what should I play instead?",
+        ),
+        agree_a_draw=(
+            "do you want to agree a draw?",
+            "fair enough. what move do you recommend?",
+        ),
+        draw_offer_what_say=(
+            "draw offer — what do you say?",
+            "alright, suggest my next move then",
+        ),
+        i_propose_a_draw=("I propose a draw", "then what should my next move be?"),
+        split_the_point=(
+            "shall we split the point?",
+            "okay, what do you suggest I play then?",
         ),
     ),
     checkpoints=(
@@ -603,26 +857,56 @@ UNDO_CHAIN_ACROSS_TURNS = Scenario(
         "a move on the board they leave: each turn has to know what the last "
         "one already did."
     ),
-    dev=(
-        Variant(
-            "one_before_that",
-            (
-                Say("take back my last move"),
-                Say("and the one before that too"),
-                Say("now play d4"),
-            ),
-            after("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"),
+    dev=wordings(
+        after("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"),
+        one_before_that=(
+            "take back my last move",
+            "and the one before that too",
+            "now play d4",
+        ),
+        can_you_undo=(
+            "can you undo that last move?",
+            "the one before that as well, please",
+            "and now d2-d4",
+        ),
+        lets_take_back=(
+            "let's take back my last move",
+            "actually, take back one more",
+            "and now play d4 please",
+        ),
+        bishop_then_knight=(
+            "take back my bishop move",
+            "take back my knight move too",
+            "then play d4",
+        ),
+        undo_another_one=(
+            "undo my last move please",
+            "and undo another one",
+            "now play d4",
         ),
     ),
-    heldout=(
-        Variant(
-            "previous_as_well",
-            (
-                Say("undo my previous move"),
-                Say("undo the move before it as well"),
-                Say("go d4 now"),
-            ),
-            after("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"),
+    heldout=wordings(
+        after("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"),
+        previous_as_well=(
+            "undo my previous move",
+            "undo the move before it as well",
+            "go d4 now",
+        ),
+        undo_by_name=("undo Bc4", "and undo Nf3 too", "now play d4 instead"),
+        rewind_one_more=(
+            "rewind one move",
+            "rewind one more",
+            "play the queen's pawn two squares",
+        ),
+        go_back_one_more=(
+            "go back a move",
+            "go back one more",
+            "and push the d-pawn two squares",
+        ),
+        want_it_back=(
+            "I want to take my last move back",
+            "and the previous one too",
+            "then go with d4",
         ),
     ),
     checkpoints=(
@@ -647,26 +931,60 @@ DIFFICULTY_UP_AND_BACK = Scenario(
         "bottom tier, so there is room for two steps up (a pilot sample could "
         "not tell a model that stopped from one that had already hit the top)."
     ),
-    dev=(
-        Variant(
-            "harder_harder_back",
-            (
-                Say("make the engine harder"),
-                Say("a bit harder still"),
-                Say("actually put the difficulty back to what it was when we started"),
-            ),
-            at_tier("beginner"),
+    dev=wordings(
+        at_tier("beginner"),
+        harder_harder_back=(
+            "make the engine harder",
+            "a bit harder still",
+            "actually put the difficulty back to what it was when we started",
+        ),
+        step_up=(
+            "step the difficulty up",
+            "and another step up",
+            "return to the original difficulty",
+        ),
+        tougher_still_reset=(
+            "make it a little tougher",
+            "tougher still",
+            "reset the difficulty to where we began",
+        ),
+        stronger_bot=(
+            "make the bot stronger",
+            "a little stronger again",
+            "put the bot back to how strong it was at first",
+        ),
+        bump_strength=(
+            "bump the engine strength up",
+            "bump it up once more",
+            "put the strength back to the starting level",
         ),
     ),
-    heldout=(
-        Variant(
-            "crank_notch_reset",
-            (
-                Say("crank the difficulty up"),
-                Say("one more notch up"),
-                Say("return the difficulty to its level at the start of this chat"),
-            ),
-            at_tier("beginner"),
+    heldout=wordings(
+        at_tier("beginner"),
+        crank_notch_reset=(
+            "crank the difficulty up",
+            "one more notch up",
+            "return the difficulty to its level at the start of this chat",
+        ),
+        increase_again_originally=(
+            "increase the difficulty",
+            "increase it again",
+            "now set it back to what it was originally",
+        ),
+        play_harder=(
+            "can you play harder?",
+            "harder than that",
+            "never mind, restore the starting difficulty",
+        ),
+        raise_the_level=(
+            "raise the level",
+            "raise it one more step",
+            "back to the level we started on, please",
+        ),
+        harder_opponent=(
+            "I want a harder opponent",
+            "even harder please",
+            "ok, go back to the difficulty we had at the start",
         ),
     ),
     checkpoints=(
@@ -700,24 +1018,44 @@ UNDO_THEN_AMBIGUOUS_BISHOP = Scenario(
         "composition): the question must be about the board the undo left, "
         "and the answer next turn must land that move."
     ),
-    dev=(
-        Variant(
-            "develop_bishop",
-            (
-                Say("undo that and develop my bishop instead"),
-                Say("the one to c4"),
-            ),
-            AFTER_E4_E5_NF3_NC6,
+    dev=wordings(
+        AFTER_E4_E5_NF3_NC6,
+        develop_bishop=("undo that and develop my bishop instead", "the one to c4"),
+        knight_back_bishop_out=(
+            "take back my knight move and bring a bishop out instead",
+            "put it on c4",
+        ),
+        undo_move_bishop_out=(
+            "undo my last move and move my bishop out",
+            "the one that goes to c4",
+        ),
+        cancel_knight_bring_bishop=(
+            "cancel that knight move and bring out my bishop",
+            "c4 square please",
+        ),
+        scrap_knight_rather_bishop=(
+            "scrap that knight move, I'd rather move my bishop",
+            "c4 for the bishop",
         ),
     ),
-    heldout=(
-        Variant(
-            "light_squared_bishop",
-            (
-                Say("take it back and get my light-squared bishop out"),
-                Say("c4 one"),
-            ),
-            AFTER_E4_E5_NF3_NC6,
+    heldout=wordings(
+        AFTER_E4_E5_NF3_NC6,
+        light_squared_bishop=(
+            "take it back and get my light-squared bishop out",
+            "c4 one",
+        ),
+        undo_nf3_develop=("undo Nf3 and develop the bishop", "the c4 square"),
+        rewind_bishop_move=(
+            "rewind and play a bishop move instead of the knight",
+            "the c4 option",
+        ),
+        take_back_light_bishop=(
+            "take back Nf3 and develop my light bishop",
+            "c4 would be my pick",
+        ),
+        go_back_get_bishop=(
+            "go back one move and get the bishop out instead",
+            "let's do the c4 one",
         ),
     ),
     checkpoints=(
@@ -737,26 +1075,60 @@ NOISY_THREAD = Scenario(
         "Speech-to-text noise across a thread: a takeback named by a misheard "
         "piece, its replacement on a misheard square, then a judgment."
     ),
-    dev=(
-        Variant(
-            "night_see_three",
-            (
-                Say("uh can you like take back my night move"),
-                Say("put the night on see three instead"),
-                Say("um how am i doing now"),
-            ),
-            AFTER_E4_E5_NF3_NC6,
+    dev=wordings(
+        AFTER_E4_E5_NF3_NC6,
+        night_see_three=(
+            "uh can you like take back my night move",
+            "put the night on see three instead",
+            "um how am i doing now",
+        ),
+        scratch_night_better=(
+            "uh scratch my night move",
+            "um play night c three",
+            "so uh am i better",
+        ),
+        knight_thing_c_tree=(
+            "take back the uh the knight thing",
+            "uh night on c tree",
+            "so who's ahead now huh",
+        ),
+        undo_the_um_knight=(
+            "undo the um the knight",
+            "nite to sea three then",
+            "who's winning uh now",
+        ),
+        like_knight_see_three=(
+            "like take back my last knight move",
+            "night to see three",
+            "am i doing ok um now",
         ),
     ),
-    heldout=(
-        Variant(
-            "night_sea_three",
-            (
-                Say("er undo the last night thing"),
-                Say("knight to sea three then"),
-                Say("so uh who's ahead"),
-            ),
-            AFTER_E4_E5_NF3_NC6,
+    heldout=wordings(
+        AFTER_E4_E5_NF3_NC6,
+        night_sea_three=(
+            "er undo the last night thing",
+            "knight to sea three then",
+            "so uh who's ahead",
+        ),
+        go_back_night_eval=(
+            "er go back on that night move",
+            "knight to uh c three",
+            "uh what's the eval now",
+        ),
+        the_the_knight_c_three=(
+            "can you uh undo the the knight move",
+            "uh put the knight on c three this time",
+            "er who's better now",
+        ),
+        nite_c_three_winning=(
+            "um take back my nite move",
+            "uh nite to c three",
+            "so am i winning or what",
+        ),
+        horse_sea_three=(
+            "can you uh like undo my horse move",
+            "horse to sea three",
+            "am i um ahead",
         ),
     ),
     checkpoints=(
@@ -770,12 +1142,8 @@ NOISY_THREAD = Scenario(
 # --- tier 3: long sessions and long games ---------------------------------------------
 
 
-def _long_session(says: tuple[str, ...]) -> tuple[Say, ...]:
-    """The ten turns, the two moves on the parser's road."""
-    model = [True] * 10
-    model[0] = model[3] = False
-    return tuple(Say(text, model=m) for text, m in zip(says, model, strict=True))
-
+# The ten turns of `long_session` put two moves on the parser's road: turns 1
+# and 4 are `Say(..., model=False)` in every wording.
 
 LONG_SESSION = Scenario(
     name="long_session",
@@ -785,44 +1153,130 @@ LONG_SESSION = Scenario(
         "suggestion played by reference, a named save, a takeback, a verbosity "
         "change and a description. Every turn is a checkpoint."
     ),
-    dev=(
-        Variant(
-            "ten_turns",
-            _long_session(
-                (
-                    "e4",
-                    "how am I doing so far?",
-                    "make the engine a bit easier for me",
-                    "Nf3",
-                    "what would you play here?",
-                    "play your top pick",
-                    "save this game as long_game",
-                    "take back my last move",
-                    "keep your replies short from now on",
-                    "just describe where the pieces are",
-                )
-            ),
-            FRESH,
+    dev=wordings(
+        FRESH,
+        ten_turns=(
+            Say("e4", model=False),
+            "how am I doing so far?",
+            "make the engine a bit easier for me",
+            Say("Nf3", model=False),
+            "what would you play here?",
+            "play your top pick",
+            "save this game as long_game",
+            "take back my last move",
+            "keep your replies short from now on",
+            "just describe where the pieces are",
+        ),
+        going_lower_pick=(
+            Say("e4", model=False),
+            "how's my game going, am I better?",
+            "go easier on me, lower the level",
+            Say("Nf3", model=False),
+            "which move would you pick here?",
+            "make that move",
+            "save under the name long_game",
+            "take back my most recent move",
+            "be more concise from now on",
+            "where are the pieces right now? no evaluation, just the layout",
+        ),
+        ahead_tone_recommend=(
+            Say("e4", model=False),
+            "who's ahead?",
+            "tone the engine down a little",
+            Say("Nf3", model=False),
+            "recommend a move",
+            "play your recommendation",
+            "save this as long_game",
+            "undo the last move",
+            "keep it brief from now on",
+            "list where all the pieces are",
+        ),
+        evaluate_strength_stockfish=(
+            Say("e4", model=False),
+            "evaluate my position",
+            "lower the engine strength a bit",
+            Say("Nf3", model=False),
+            "what's Stockfish's top move?",
+            "go ahead and play that",
+            "save a copy as long_game",
+            "rewind my last move",
+            "less talking from here on",
+            "tell me where every piece is",
+        ),
+        good_easier_best_it=(
+            Say("e4", model=False),
+            "is my position good?",
+            "make it easier",
+            Say("Nf3", model=False),
+            "what's the best move now?",
+            "play it",
+            "save the game as long_game",
+            "undo the move I just played",
+            "shorter replies from now on",
+            "describe the position for me",
         ),
     ),
-    heldout=(
-        Variant(
-            "ten_turns_reworded",
-            _long_session(
-                (
-                    "e4",
-                    "am I winning?",
-                    "lower the difficulty a little",
-                    "Nf3",
-                    "any suggestion for me here?",
-                    "go with your first choice",
-                    "store the game as long_game",
-                    "undo my most recent move",
-                    "be less wordy from here on",
-                    "tell me where everything stands on the board, no evaluation",
-                )
-            ),
-            FRESH,
+    heldout=wordings(
+        FRESH,
+        ten_turns_reworded=(
+            Say("e4", model=False),
+            "am I winning?",
+            "lower the difficulty a little",
+            Say("Nf3", model=False),
+            "any suggestion for me here?",
+            "go with your first choice",
+            "store the game as long_game",
+            "undo my most recent move",
+            "be less wordy from here on",
+            "tell me where everything stands on the board, no evaluation",
+        ),
+        better_weaken_in_my_place=(
+            Say("e4", model=False),
+            "am I better or worse here?",
+            "weaken the engine slightly",
+            Say("Nf3", model=False),
+            "what would you play in my place?",
+            "play that for me",
+            "save the current game as long_game",
+            "take my last move back",
+            "make your answers shorter going forward",
+            "describe where the pieces stand",
+        ),
+        well_notch_got_move=(
+            Say("e4", model=False),
+            "am I doing well so far?",
+            "drop the difficulty a notch",
+            Say("Nf3", model=False),
+            "got a move for me?",
+            "play the move you suggested",
+            "save it as long_game",
+            "go back one move",
+            "short answers from now on, please",
+            "describe the board, just the piece positions",
+        ),
+        winning_weaker_suggest=(
+            Say("e4", model=False),
+            "who's winning so far?",
+            "make the computer a bit weaker",
+            Say("Nf3", model=False),
+            "suggest my next move",
+            "go with your suggestion",
+            "save the game, call it long_game",
+            "can you undo my last move",
+            "please be terse from now on",
+            "just tell me the piece placement",
+        ),
+        eval_easier_suggestion=(
+            Say("e4", model=False),
+            "what's the evaluation?",
+            "easier opponent please",
+            Say("Nf3", model=False),
+            "your best move suggestion?",
+            "alright, play your suggestion",
+            "keep a save called long_game",
+            "undo that last move",
+            "talk less from now on",
+            "give me a description of the position, no assessment",
         ),
     ),
     checkpoints=(
@@ -861,30 +1315,70 @@ LATE_GAME_REVIEW_UNDO_REPLAY = Scenario(
         "worst move (more than a single undo can take), ask for the best move "
         "there, and play it."
     ),
-    dev=(
-        Variant(
-            "worst_move_redo",
-            (
-                Say(
-                    "review the whole game and tell me which of my moves was the worst"
-                ),
-                Say("take me back to just before that move"),
-                Say("what's the best move in that position?"),
-                Say("play it"),
-            ),
-            LATE_150,
+    dev=wordings(
+        LATE_150,
+        worst_move_redo=(
+            "review the whole game and tell me which of my moves was the worst",
+            "take me back to just before that move",
+            "what's the best move in that position?",
+            "play it",
+        ),
+        most_wrong=(
+            "do a game review — where did I go most wrong?",
+            "take me back to that point, before the mistake",
+            "what does the engine want there?",
+            "play the engine's move",
+        ),
+        single_worst=(
+            "review my game and point out my single worst move",
+            "undo back to right before it",
+            "best move in that spot?",
+            "go ahead and play it",
+        ),
+        lost_the_most=(
+            "full game review please — which move of mine lost the most?",
+            "set the board back to the position before that move",
+            "what was best in that position?",
+            "play the best one",
+        ),
+        analyse_find_worst=(
+            "analyse the full game and find my worst move",
+            "go back to the position right before it",
+            "what's the best move there?",
+            "play the best move",
         ),
     ),
-    heldout=(
-        Variant(
-            "biggest_mistake_redo",
-            (
-                Say("go over this game — what was my biggest mistake?"),
-                Say("rewind the game to right before I made it"),
-                Say("what should I have played there?"),
-                Say("make that move"),
-            ),
-            LATE_150,
+    heldout=wordings(
+        LATE_150,
+        biggest_mistake_redo=(
+            "go over this game — what was my biggest mistake?",
+            "rewind the game to right before I made it",
+            "what should I have played there?",
+            "make that move",
+        ),
+        biggest_blunder_review=(
+            "which move of mine was the biggest blunder this game? review it",
+            "rewind to just before that blunder",
+            "what was the right move?",
+            "play that",
+        ),
+        hurt_me_most=(
+            "go through my moves and find the one that hurt me most",
+            "go back to right before that one",
+            "what's the strongest move there?",
+            "make it",
+        ),
+        run_a_review=(
+            "run a review and tell me my worst move",
+            "take the game back to just before I played it",
+            "what would Stockfish have played?",
+            "play Stockfish's choice",
+        ),
+        worst_decision=(
+            "look through the whole game: what was my worst decision?",
+            "return the board to the moment before that move",
+            "what should I have played instead?",
+            "play the better move",
         ),
     ),
     checkpoints=(
@@ -904,28 +1398,70 @@ LATE_GAME_SAVE_UNDO_RESUME = Scenario(
         "whole exchanges), then restore the save over the shortened game — "
         "which the gate asks about."
     ),
-    dev=(
-        Variant(
-            "before_undo",
-            (
-                Say("save this position as before_undo"),
-                Say("take back my last three moves"),
-                Say("actually restore the game I just saved"),
-                Say("yes", model=False),
-            ),
-            LATE_84,
+    dev=wordings(
+        LATE_84,
+        before_undo=(
+            "save this position as before_undo",
+            "take back my last three moves",
+            "actually restore the game I just saved",
+            Say("yes", model=False),
+        ),
+        save_named_go_back=(
+            "make a save named before_undo",
+            "go back three moves",
+            "restore my save from a moment ago",
+            Say("yes", model=False),
+        ),
+        please_save_rewind=(
+            "please save as before_undo",
+            "rewind my last three moves",
+            "ok, put the saved game back",
+            Say("yes", model=False),
+        ),
+        save_under_previous_three=(
+            "save this under before_undo",
+            "take back my previous three moves",
+            "load the game I just saved",
+            Say("yes", model=False),
+        ),
+        store_a_save=(
+            "store a save called before_undo",
+            "take three of my moves back",
+            "actually, go back to that save",
+            Say("yes", model=False),
         ),
     ),
-    heldout=(
-        Variant(
-            "before_undo_reworded",
-            (
-                Say("store this game as before_undo"),
-                Say("undo my three most recent moves"),
-                Say("on second thought, load that save back"),
-                Say("yes", model=False),
-            ),
-            LATE_84,
+    heldout=wordings(
+        LATE_84,
+        before_undo_reworded=(
+            "store this game as before_undo",
+            "undo my three most recent moves",
+            "on second thought, load that save back",
+            Say("yes", model=False),
+        ),
+        bring_back_the_save=(
+            "save the game as before_undo",
+            "undo three of my moves",
+            "never mind, bring back the save",
+            Say("yes", model=False),
+        ),
+        name_it_undo_3=(
+            "save my game, name it before_undo",
+            "undo my last 3 moves",
+            "restore the save I just made",
+            Say("yes", model=False),
+        ),
+        create_step_back=(
+            "create a save named before_undo",
+            "step back three of my moves",
+            "bring back what I saved",
+            Say("yes", model=False),
+        ),
+        call_it_changed_mind=(
+            "save this game — call it before_undo",
+            "undo the last three moves I made",
+            "changed my mind, load my save",
+            Say("yes", model=False),
         ),
     ),
     checkpoints=(
@@ -946,30 +1482,80 @@ SECOND_CHOICE_CHAIN = Scenario(
         "Five turns of reference: a verbosity setting, a two-candidate read, "
         "'not the top one, the other', a save of the result, and a verdict."
     ),
-    dev=(
-        Variant(
-            "second_choice",
-            (
-                Say("keep it brief from now on"),
-                Say("what are the two best moves here?"),
-                Say("don't play the top one, play the other"),
-                Say("save this as second_choice"),
-                Say("how's my position now?"),
-            ),
-            AFTER_E4_E5,
+    dev=wordings(
+        AFTER_E4_E5,
+        second_choice=(
+            "keep it brief from now on",
+            "what are the two best moves here?",
+            "don't play the top one, play the other",
+            "save this as second_choice",
+            "how's my position now?",
+        ),
+        terse_two_options=(
+            "terse mode from now on",
+            "give me two move options",
+            "play the other one, not the best",
+            "make a save called second_choice",
+            "what's the evaluation now?",
+        ),
+        answers_short_not_first=(
+            "keep your answers short",
+            "list the two strongest moves",
+            "not the first — play the second",
+            "store this game as second_choice",
+            "am I winning now?",
+        ),
+        briefly_second_best=(
+            "please answer briefly from now on",
+            "what are the best two moves for me?",
+            "the second-best one — play that",
+            "save this as second_choice",
+            "is my position good now?",
+        ),
+        short_and_sweet_number_two=(
+            "short and sweet from now on",
+            "name the two top moves here",
+            "play number two",
+            "save the game with the name second_choice",
+            "am I better off now?",
         ),
     ),
-    heldout=(
-        Variant(
-            "runner_up",
-            (
-                Say("shorter answers please, from here on"),
-                Say("give me the engine's top two options"),
-                Say("skip the first, go with the runner-up"),
-                Say("store the game as second_choice"),
-                Say("am I better or worse now?"),
-            ),
-            AFTER_E4_E5,
+    heldout=wordings(
+        AFTER_E4_E5,
+        runner_up=(
+            "shorter answers please, from here on",
+            "give me the engine's top two options",
+            "skip the first, go with the runner-up",
+            "store the game as second_choice",
+            "am I better or worse now?",
+        ),
+        going_forward_next_one=(
+            "brief answers going forward",
+            "two best moves?",
+            "skip the top choice and play the next one",
+            "save the game as second_choice",
+            "who's ahead now?",
+        ),
+        less_wordy_runner_up=(
+            "less wordy from now on",
+            "top two moves please",
+            "I'll take the runner-up, play it",
+            "save it as second_choice",
+            "how do I stand now — better or worse?",
+        ),
+        short_candidates=(
+            "short replies from here, please",
+            "what are your two best candidate moves?",
+            "go with the second candidate",
+            "save the game under second_choice",
+            "evaluate my position now",
+        ),
+        brief_top_two_second=(
+            "be brief from now on",
+            "show me the top two moves",
+            "play the second one",
+            "save as second_choice",
+            "who's better now?",
         ),
     ),
     checkpoints=(
@@ -1049,35 +1635,60 @@ KNIGHT_ASK_ASIDE_THEN_PICK = Scenario(
         "answer arrives two turns after the ask, with an aside in the middle "
         "that must move nothing."
     ),
-    dev=(
-        Variant(
-            "difficulty_aside",
-            (
-                Say("move my kings knight"),
-                Say("what difficulty am I on?"),
-                Say("the one to f3"),
-            ),
-            FRESH,
+    dev=wordings(
+        FRESH,
+        difficulty_aside=(
+            "move my kings knight",
+            "what difficulty am I on?",
+            "the one to f3",
         ),
-        Variant(
-            "voice_aside",
-            (
-                Say("develop my king side knight"),
-                Say("is voice output on right now?"),
-                Say("put it on f3"),
-            ),
-            FRESH,
+        voice_aside=(
+            "develop my king side knight",
+            "is voice output on right now?",
+            "put it on f3",
+        ),
+        kingside_verbose_aside=(
+            "develop the kingside knight",
+            "how verbose are you set to?",
+            "to f3, please",
+        ),
+        play_kingside_voice_on=(
+            "play my kingside knight",
+            "is the voice turned on?",
+            "the one going to f3",
+        ),
+        g_knight_voice_aside=(
+            "get my g-knight out",
+            "are spoken replies on?",
+            "the f3 one",
         ),
     ),
-    heldout=(
-        Variant(
-            "verbosity_aside",
-            (
-                Say("bring the king's knight out"),
-                Say("how chatty are you set to be?"),
-                Say("the f3 square one"),
-            ),
-            FRESH,
+    heldout=wordings(
+        FRESH,
+        verbosity_aside=(
+            "bring the king's knight out",
+            "how chatty are you set to be?",
+            "the f3 square one",
+        ),
+        g1_out_difficulty_aside=(
+            "bring out my g1 knight",
+            "what's the current difficulty?",
+            "the square f3",
+        ),
+        knight_from_g1_setting=(
+            "move my knight from g1",
+            "what difficulty setting are we on?",
+            "the f3 square, please",
+        ),
+        want_kings_knight_voice=(
+            "I want to move my king's knight",
+            "quick check: is voice on?",
+            "let's go f3 with it",
+        ),
+        g1_knight_level_aside=(
+            "move the knight on g1",
+            "what level is the engine at?",
+            "send it to f3",
         ),
     ),
     checkpoints=(asked(1), still(2), picked(3, "Nf3")),
@@ -1092,34 +1703,100 @@ KNIGHT_ASK_LONG_CHAT_THEN_PICK = Scenario(
         "are gone from the planner's view, and the answer names no square, so "
         "only the kept record says what 'the first one' was."
     ),
-    dev=(
-        Variant(
-            "chat",
-            (
-                Say("move my kings knight"),
-                Say("hang on, what's your favourite opening?"),
-                Say("why do people like it?"),
-                Say("tell me a chess joke"),
-                Say("who was the best player ever?"),
-                Say("fair enough. okay, where were we"),
-                Say("the first one you offered"),
-            ),
-            FRESH,
+    dev=wordings(
+        FRESH,
+        chat=(
+            "move my kings knight",
+            "hang on, what's your favourite opening?",
+            "why do people like it?",
+            "tell me a chess joke",
+            "who was the best player ever?",
+            "fair enough. okay, where were we",
+            "the first one you offered",
+        ),
+        trap_chat=(
+            "move the knight on my king's side",
+            "sorry, side question: what's an opening trap?",
+            "name a famous one",
+            "how do I avoid it?",
+            "cool",
+            "anyway, my move",
+            "the first of those",
+        ),
+        pin_skewer_chat=(
+            "move my king's knight",
+            "before I decide, what's a pin?",
+            "and a skewer?",
+            "which is more common?",
+            "do grandmasters still fall for them?",
+            "ok, back to my move",
+            "the first option",
+        ),
+        tempo_chat=(
+            "develop my king-side knight",
+            "one sec, what does tempo mean?",
+            "why does it matter?",
+            "and what's a gambit?",
+            "makes sense",
+            "ok where was I",
+            "let's do the first one",
+        ),
+        en_passant_chat=(
+            "get the g-knight going",
+            "pause — what's the en passant rule?",
+            "why does that rule exist?",
+            "who came up with it?",
+            "huh, neat",
+            "ok, back to it",
+            "pick the first option from before",
         ),
     ),
-    heldout=(
-        Variant(
-            "lesson_chat",
-            (
-                Say("bring the king's knight out"),
-                Say("wait, before that: what does castling actually do?"),
-                Say("and when should I do it?"),
-                Say("what's a fork?"),
-                Say("any tips for a beginner?"),
-                Say("thanks. right, back to the game"),
-                Say("go with the first option you gave me"),
-            ),
-            FRESH,
+    heldout=wordings(
+        FRESH,
+        lesson_chat=(
+            "bring the king's knight out",
+            "wait, before that: what does castling actually do?",
+            "and when should I do it?",
+            "what's a fork?",
+            "any tips for a beginner?",
+            "thanks. right, back to the game",
+            "go with the first option you gave me",
+        ),
+        rating_chat=(
+            "play my kingside knight",
+            "hold on — what's the Elo rating system?",
+            "what's a good rating for a beginner?",
+            "and for a club player?",
+            "thanks",
+            "ok let's continue",
+            "first one please",
+        ),
+        endgame_study_chat=(
+            "my king's knight, move it",
+            "quick tangent: what's the best way to study endgames?",
+            "how long should I study each day?",
+            "any books you'd recommend?",
+            "thanks for that",
+            "right, the move",
+            "the first move you suggested",
+        ),
+        stalemate_chat=(
+            "bring out my king's knight",
+            "wait, what's stalemate exactly?",
+            "is it a draw?",
+            "how is it different from checkmate?",
+            "got it",
+            "back to the game",
+            "I'll take the first option",
+        ),
+        history_chat=(
+            "develop my g1 knight",
+            "random question: who invented chess?",
+            "how old is the game?",
+            "when did the queen become powerful?",
+            "interesting stuff",
+            "alright, my move",
+            "go with the first one you listed",
         ),
     ),
     checkpoints=(
@@ -1140,35 +1817,60 @@ KNIGHT_ASK_THEN_BOARD_CHANGES = Scenario(
         "answer. The answer refers only to the old question ('the first one'), "
         "so no candidate may be played from it: ask again or say so."
     ),
-    dev=(
-        Variant(
-            "other_client_moves",
-            (
-                Say("move my kings knight"),
-                Say("d4", origin="d0", model=False),
-                Say("the first one"),
-            ),
-            AFTER_E4_E5,
+    dev=wordings(
+        AFTER_E4_E5,
+        other_client_moves=(
+            "move my kings knight",
+            Say("d4", origin="d0", model=False),
+            "the first one",
         ),
-        Variant(
-            "other_client_undoes",
-            (
-                Say("develop my king side knight"),
-                Say("take back the last move", origin="d0"),
-                Say("the second one"),
-            ),
-            AFTER_E4_E5,
+        other_client_undoes=(
+            "develop my king side knight",
+            Say("take back the last move", origin="d0"),
+            "the second one",
+        ),
+        other_client_h3=(
+            "move my kingside knight",
+            Say("h3", origin="d0", model=False),
+            "let's go with the first one",
+        ),
+        other_client_c3=(
+            "I'd like to move my king's knight",
+            Say("c3", origin="d0", model=False),
+            "the first of those",
+        ),
+        other_client_bc4=(
+            "move my king's knight",
+            Say("Bc4", origin="d0", model=False),
+            "first one",
         ),
     ),
-    heldout=(
-        Variant(
-            "other_client_develops",
-            (
-                Say("bring the king's knight out"),
-                Say("Nc3", origin="d0", model=False),
-                Say("go with the first option"),
-            ),
-            AFTER_E4_E5,
+    heldout=wordings(
+        AFTER_E4_E5,
+        other_client_develops=(
+            "bring the king's knight out",
+            Say("Nc3", origin="d0", model=False),
+            "go with the first option",
+        ),
+        other_client_undoes_again=(
+            "bring my g1 knight out",
+            Say("undo the last move", origin="d0"),
+            "the first option",
+        ),
+        other_client_d3=(
+            "move the g1 knight",
+            Say("d3", origin="d0", model=False),
+            "go with the second one",
+        ),
+        other_client_takes_back=(
+            "knight from g1, please",
+            Say("take my last move back", origin="d0"),
+            "the second of those",
+        ),
+        other_client_nc3=(
+            "develop the kingside knight",
+            Say("Nc3", origin="d0", model=False),
+            "the second option",
         ),
     ),
     checkpoints=(
@@ -1189,26 +1891,60 @@ TWO_THREADS_SIMILAR_ASKS = Scenario(
     # The dev pawn ask was "push my e pawn", which the planner plays (e3)
     # rather than asks, so the scenario missed at asked_2 on every arm and never
     # reached the ordinal it is here to measure (#352; the ask miss is #357).
-    dev=(
-        Variant(
-            "knight_then_pawn",
-            (
-                Say("move my kings knight", origin="d0"),
-                Say("move my e-file pawn", origin="d1"),
-                Say("the first one", origin="d1"),
-            ),
-            FRESH,
+    dev=wordings(
+        FRESH,
+        knight_then_pawn=(
+            Say("move my kings knight", origin="d0"),
+            Say("move my e-file pawn", origin="d1"),
+            Say("the first one", origin="d1"),
+        ),
+        g1_knight_advance_e_pawn=(
+            Say("develop the g1 knight", origin="d0"),
+            Say("advance my e-pawn", origin="d1"),
+            Say("the first option", origin="d1"),
+        ),
+        g_knight_pawn_on_e2=(
+            Say("I want to move my g-knight", origin="d0"),
+            Say("move my pawn on e2", origin="d1"),
+            Say("the first of those", origin="d1"),
+        ),
+        into_play_e_file=(
+            Say("bring my kingside knight into play", origin="d0"),
+            Say("move the pawn on the e-file", origin="d1"),
+            Say("first option please", origin="d1"),
+        ),
+        knight_on_g1_front_of_king=(
+            Say("move the knight on g1", origin="d0"),
+            Say("advance the pawn in front of my king", origin="d1"),
+            Say("let's do the first", origin="d1"),
         ),
     ),
-    heldout=(
-        Variant(
-            "knight_then_pawn",
-            (
-                Say("bring the king's knight out", origin="d0"),
-                Say("move the pawn in front of my king", origin="d1"),
-                Say("go with the first option", origin="d1"),
-            ),
-            FRESH,
+    heldout=wordings(
+        FRESH,
+        knight_then_pawn=(
+            Say("bring the king's knight out", origin="d0"),
+            Say("move the pawn in front of my king", origin="d1"),
+            Say("go with the first option", origin="d1"),
+        ),
+        play_knight_push_e_pawn=(
+            Say("play my king's knight", origin="d0"),
+            Say("push the e-pawn", origin="d1"),
+            Say("go with the first one", origin="d1"),
+        ),
+        kingside_knight_e2_pawn=(
+            Say("get my kingside knight out", origin="d0"),
+            Say("move the e2 pawn", origin="d1"),
+            Say("I'll take the first", origin="d1"),
+        ),
+        kings_knight_kings_pawn=(
+            Say("move my king's knight", origin="d0"),
+            Say("move my king's pawn", origin="d1"),
+            Say("first one", origin="d1"),
+        ),
+        kings_side_knight_e_pawn=(
+            Say("knight on the king's side — move it", origin="d0"),
+            Say("I want to move my e-pawn", origin="d1"),
+            Say("the first you offered", origin="d1"),
         ),
     ),
     checkpoints=(
@@ -1255,44 +1991,56 @@ QUEEN_ASK_ASIDE_THEN_FIRST = Scenario(
         "moves sort after the knights' in `legal_moves`, so the pick lands "
         "only if the ordinal is read against the question, not the menu."
     ),
-    dev=(
-        Variant(
-            "difficulty_aside",
-            (
-                Say("move my queen"),
-                Say("what difficulty am I on?"),
-                Say("the first one"),
-            ),
-            QUEEN_TO_MOVE,
+    dev=wordings(
+        QUEEN_TO_MOVE,
+        difficulty_aside=("move my queen", "what difficulty am I on?", "the first one"),
+        voice_aside=(
+            "bring my queen out",
+            "is voice output on right now?",
+            "first one please",
         ),
-        Variant(
-            "voice_aside",
-            (
-                Say("bring my queen out"),
-                Say("is voice output on right now?"),
-                Say("first one please"),
-            ),
-            QUEEN_TO_MOVE,
+        queen_please_talk_aside=(
+            "queen move, please",
+            "how much do you talk by default?",
+            "let's go with the first one",
+        ),
+        move_with_queen=(
+            "make a move with my queen",
+            "is spoken output enabled?",
+            "first of those",
+        ),
+        queen_move_talk_aside=(
+            "play a queen move",
+            "are you set to talk out loud?",
+            "the first option, please",
         ),
     ),
-    heldout=(
-        Variant(
-            "verbosity_aside",
-            (
-                Say("let's get the queen moving"),
-                Say("how chatty are you set to be?"),
-                Say("go with the first option"),
-            ),
-            QUEEN_TO_MOVE,
+    heldout=wordings(
+        QUEEN_TO_MOVE,
+        verbosity_aside=(
+            "let's get the queen moving",
+            "how chatty are you set to be?",
+            "go with the first option",
         ),
-        Variant(
-            "level_aside",
-            (
-                Say("develop my queen"),
-                Say("how strong is the engine set right now?"),
-                Say("I'll take the first"),
-            ),
-            QUEEN_TO_MOVE,
+        level_aside=(
+            "develop my queen",
+            "how strong is the engine set right now?",
+            "I'll take the first",
+        ),
+        where_queen_voice_aside=(
+            "where can my queen go? move her",
+            "is the voice setting on?",
+            "the first one you said",
+        ),
+        move_the_queen_level_aside=(
+            "I want to move the queen",
+            "what level is the bot on?",
+            "first",
+        ),
+        queen_into_game=(
+            "get my queen into the game",
+            "what's the difficulty right now?",
+            "number one",
         ),
     ),
     checkpoints=(asked(1), still(2), first_offered(1, 3)),
@@ -1325,6 +2073,33 @@ ASK_ASIDE_THEN_SECOND = Scenario(
             ),
             BISHOP_TO_MOVE,
         ),
+        Variant(
+            "bishop_verbosity_second",
+            (
+                Say("make a bishop move"),
+                Say("what verbosity are you on?"),
+                Say("let's take the second one"),
+            ),
+            BISHOP_TO_MOVE,
+        ),
+        Variant(
+            "queen_verbose_number_two",
+            (
+                Say("I'd like a queen move"),
+                Say("how verbose are you right now?"),
+                Say("number two"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+        Variant(
+            "bishop_voice_second",
+            (
+                Say("I want to move a bishop"),
+                Say("is voice on?"),
+                Say("second of those"),
+            ),
+            BISHOP_TO_MOVE,
+        ),
     ),
     heldout=(
         Variant(
@@ -1345,6 +2120,33 @@ ASK_ASIDE_THEN_SECOND = Scenario(
             ),
             BISHOP_TO_MOVE,
         ),
+        Variant(
+            "queen_level_second",
+            (
+                Say("let's move the queen"),
+                Say("what's the engine level?"),
+                Say("second option please"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
+        Variant(
+            "bishop_difficulty_second",
+            (
+                Say("bring out my bishop"),
+                Say("what difficulty is set?"),
+                Say("the second option"),
+            ),
+            BISHOP_TO_MOVE,
+        ),
+        Variant(
+            "queen_spoken_second",
+            (
+                Say("bring the queen out"),
+                Say("are replies spoken aloud right now?"),
+                Say("the second one you listed"),
+            ),
+            QUEEN_TO_MOVE,
+        ),
     ),
     checkpoints=(asked(1), still(2), second_offered(1, 3)),
 )
@@ -1358,60 +2160,100 @@ QUEEN_ASK_LONG_CHAT_THEN_FIRST = Scenario(
         "window, and 'the first one' is neither a square nor `legal_moves[0]`, "
         "so only the kept record (#319) says which move it was."
     ),
-    dev=(
-        Variant(
-            "chat",
-            (
-                Say("bring my queen out"),
-                Say("hang on, what's your favourite opening?"),
-                Say("why do people like it?"),
-                Say("tell me a chess joke"),
-                Say("who was the best player ever?"),
-                Say("fair enough. okay, where were we"),
-                Say("the first one you offered"),
-            ),
-            QUEEN_TO_MOVE,
+    dev=wordings(
+        QUEEN_TO_MOVE,
+        chat=(
+            "bring my queen out",
+            "hang on, what's your favourite opening?",
+            "why do people like it?",
+            "tell me a chess joke",
+            "who was the best player ever?",
+            "fair enough. okay, where were we",
+            "the first one you offered",
         ),
-        Variant(
-            "study_chat",
-            (
-                Say("move my queen"),
-                Say("before that, how do I get better at openings?"),
-                Say("should I learn the Sicilian?"),
-                Say("what's the Italian game?"),
-                Say("is it good for beginners?"),
-                Say("cool. back to it"),
-                Say("the first of the ones you gave me"),
-            ),
-            QUEEN_TO_MOVE,
+        study_chat=(
+            "move my queen",
+            "before that, how do I get better at openings?",
+            "should I learn the Sicilian?",
+            "what's the Italian game?",
+            "is it good for beginners?",
+            "cool. back to it",
+            "the first of the ones you gave me",
+        ),
+        pawn_rules_chat=(
+            "get my queen out",
+            "quick question about rules: can a pawn move backwards?",
+            "what happens when it reaches the end?",
+            "can it become a knight?",
+            "neat",
+            "back to the game",
+            "let's do the first option",
+        ),
+        champions_chat=(
+            "queen move, please",
+            "random: who's the current world champion?",
+            "how long have they held the title?",
+            "who was champion before?",
+            "thanks",
+            "anyway, back to it",
+            "first one you gave me",
+        ),
+        openings_chat=(
+            "let's move the queen",
+            "side note: what's the best opening for black?",
+            "and for white?",
+            "why is that one popular?",
+            "do you play it?",
+            "alright, back to the board",
+            "first option",
         ),
     ),
-    heldout=(
-        Variant(
-            "lesson_chat",
-            (
-                Say("where can my queen go? move it"),
-                Say("wait, before that: what does castling actually do?"),
-                Say("and when should I do it?"),
-                Say("what's a fork?"),
-                Say("any tips for a beginner?"),
-                Say("thanks. right, back to the game"),
-                Say("go with the first option you gave me"),
-            ),
-            QUEEN_TO_MOVE,
+    heldout=wordings(
+        QUEEN_TO_MOVE,
+        lesson_chat=(
+            "where can my queen go? move it",
+            "wait, before that: what does castling actually do?",
+            "and when should I do it?",
+            "what's a fork?",
+            "any tips for a beginner?",
+            "thanks. right, back to the game",
+            "go with the first option you gave me",
         ),
-        Variant(
-            "history_chat",
-            (
-                Say("let's get the queen moving"),
-                Say("quick question, who invented chess?"),
-                Say("how old is it?"),
-                Say("when did the queen get so strong?"),
-                Say("interesting. and castling, when did that start?"),
-                Say("okay, let's get on with it"),
-                Say("the first option from before"),
-            ),
-            QUEEN_TO_MOVE,
+        history_chat=(
+            "let's get the queen moving",
+            "quick question, who invented chess?",
+            "how old is it?",
+            "when did the queen get so strong?",
+            "interesting. and castling, when did that start?",
+            "okay, let's get on with it",
+            "the first option from before",
+        ),
+        discovered_attack_chat=(
+            "time to move my queen",
+            "wait, what's a discovered attack?",
+            "can you give an example?",
+            "how often does it happen?",
+            "is it hard to spot?",
+            "ok, let's get back to it",
+            "the first one",
+        ),
+        castling_chat=(
+            "bring the queen out",
+            "before that — how does castling queenside work?",
+            "is it riskier than kingside?",
+            "when do players choose it?",
+            "noted",
+            "back to my queen move",
+            "the first of them",
+        ),
+        back_rank_chat=(
+            "I'd like to move my queen",
+            "hold on, what's a back-rank mate?",
+            "how do I prevent it?",
+            "what's luft?",
+            "good to know",
+            "ok, continuing",
+            "I'll go with the first one",
         ),
     ),
     checkpoints=(
@@ -1434,19 +2276,21 @@ VERDICT_AS_BLACK_FACING_MATE = Scenario(
         "model to flip. The checkpoints are the read; which way the verdict "
         "was said is speech accuracy's advantage class."
     ),
-    dev=(
-        Variant(
-            "am_i_getting_mated", (Say("am I getting mated here?"),), black_facing_mate
-        ),
-        Variant(
-            "how_bad", (Say("how bad is it for me right now?"),), black_facing_mate
-        ),
+    dev=wordings(
+        black_facing_mate,
+        am_i_getting_mated="am I getting mated here?",
+        how_bad="how bad is it for me right now?",
+        hold_or_over="can I still hold this, or is it over?",
+        am_i_in_trouble="am I in trouble here?",
+        as_bad_as_it_looks="is my position as bad as it looks?",
     ),
-    heldout=(
-        Variant("am_i_lost", (Say("be honest, am I lost?"),), black_facing_mate),
-        Variant(
-            "whos_winning", (Say("who's winning at this point?"),), black_facing_mate
-        ),
+    heldout=wordings(
+        black_facing_mate,
+        am_i_lost="be honest, am I lost?",
+        whos_winning="who's winning at this point?",
+        whats_the_evaluation="what's the evaluation for me?",
+        any_way_i_survive="is there any way I survive this?",
+        honest_assessment="give me an honest assessment of my position",
     ),
     checkpoints=(
         Checkpoint("judged_1", lambda e: judged(e.turn(1))),
@@ -1482,6 +2326,20 @@ _FRENCH = ("e4", "e6", "d4", "d5")
 _NAJDORF = ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6")
 # 1. d4 d5 2. c4 e6: the Queen's Gambit Declined (D30).
 _QGD = ("d4", "d5", "c4", "e6")
+# #339's six more, each a family the speech reading knows by name, each
+# ending with the player (White) to move.
+# 1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5: the Italian Game, Giuoco Piano (C50).
+_ITALIAN = ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5")
+# 1. e4 c6 2. d4 d5: the Caro-Kann Defense (B12).
+_CARO_KANN = ("e4", "c6", "d4", "d5")
+# 1. e4 d5: the Scandinavian Defense (B01).
+_SCANDINAVIAN = ("e4", "d5")
+# 1. e4 e5 2. Nf3 Nc6 3. d4 exd4: the Scotch Game (C44).
+_SCOTCH = ("e4", "e5", "Nf3", "Nc6", "d4", "exd4")
+# 1. d4 f5: the Dutch Defense (A80).
+_DUTCH = ("d4", "f5")
+# 1. d4 d5 2. c4 c6: the Slav Defense (D10).
+_SLAV = ("d4", "d5", "c4", "c6")
 
 NAME_THE_OPENING = Scenario(
     name="name_the_opening",
@@ -1499,13 +2357,37 @@ NAME_THE_OPENING = Scenario(
             (Say("which opening are we in right now?"),),
             after(*_FRENCH),
         ),
+        Variant(
+            "name_of_this_line",
+            (Say("what's the name of this line?"),),
+            after(*_SCANDINAVIAN),
+        ),
+        Variant(
+            "which_opening_on_board",
+            (Say("which opening have we got on the board?"),),
+            after(*_ITALIAN),
+        ),
+        Variant(
+            "known_opening_called",
+            (Say("is this a known opening? what's it called?"),),
+            after(*_SCOTCH),
+        ),
     ),
     heldout=(
         Variant("name_it", (Say("does this opening have a name?"),), after(*_NAJDORF)),
         Variant(
-            "what_is_this_called",
-            (Say("what's this setup called?"),),
-            after(*_QGD),
+            "what_is_this_called", (Say("what's this setup called?"),), after(*_QGD)
+        ),
+        Variant("identify_it", (Say("identify the opening for me"),), after(*_SLAV)),
+        Variant(
+            "tell_me_the_name",
+            (Say("can you tell me the name of this opening?"),),
+            after(*_CARO_KANN),
+        ),
+        Variant(
+            "what_did_we_get_into",
+            (Say("what opening did we just get into?"),),
+            after(*_DUTCH),
         ),
     ),
     checkpoints=(said_backed("opening"), still(1), completed(1)),
@@ -1553,25 +2435,21 @@ RESULTS_SO_FAR = Scenario(
         "block and the narrator's facts. The answer needs no tool, so the "
         "speech class grades it."
     ),
-    dev=(
-        Variant(
-            "how_many_won",
-            (Say("how many games have you won against me?"),),
-            with_results,
-        ),
-        Variant("my_record", (Say("what's my record against you?"),), with_results),
+    dev=wordings(
+        with_results,
+        how_many_won="how many games have you won against me?",
+        my_record="what's my record against you?",
+        overall_tally="what's the overall tally between us?",
+        games_lost_to_you="how many games have I lost to you?",
+        whos_ahead_overall="who's ahead in our games so far?",
     ),
-    heldout=(
-        Variant(
-            "games_played",
-            (Say("how many games have we played so far?"),),
-            with_results,
-        ),
-        Variant(
-            "times_beaten",
-            (Say("how many times have I beaten you?"),),
-            with_results,
-        ),
+    heldout=wordings(
+        with_results,
+        games_played="how many games have we played so far?",
+        times_beaten="how many times have I beaten you?",
+        games_in_total="how many games have we played in total?",
+        my_wins_against_you="how many wins do I have against you?",
+        times_you_beat_me="how many times have you beaten me?",
     ),
     checkpoints=(said_backed("results"), still(1), completed(1)),
 )
@@ -1602,6 +2480,12 @@ _KNOWLEDGE_ANSWERS = {
     "en_passant": "En passant",
     "bishop_pair": "The bishop pair",
     "first_champion": "Wilhelm Steinitz",
+    "zugzwang": "Zugzwang",
+    "immortal_game": "The Immortal Game",
+    "fianchetto": "Fianchetto",
+    "rule_of_the_square": "Rule of the square",
+    "fifty_move_rule": "Fifty-move rule",
+    "capablanca": "José Raúl Capablanca",
 }
 
 KNOWLEDGE_QUESTION = Scenario(
@@ -1619,6 +2503,19 @@ KNOWLEDGE_QUESTION = Scenario(
             AFTER_E4_E5,
         ),
         Variant("en_passant", (Say("how does en passant actually work?"),), FRESH),
+        Variant(
+            "capablanca", (Say("who was Capablanca, and why is he famous?"),), FRESH
+        ),
+        Variant(
+            "rule_of_the_square",
+            (Say("how does the rule of the square work in pawn endings?"),),
+            FRESH,
+        ),
+        Variant(
+            "fianchetto",
+            (Say("what does it mean to fianchetto a bishop?"),),
+            AFTER_E4_E5,
+        ),
     ),
     heldout=(
         Variant(
@@ -1631,6 +2528,9 @@ KNOWLEDGE_QUESTION = Scenario(
             (Say("who was the very first world chess champion?"),),
             FRESH,
         ),
+        Variant("zugzwang", (Say("what does zugzwang mean?"),), FRESH),
+        Variant("immortal_game", (Say("what was the Immortal Game?"),), FRESH),
+        Variant("fifty_move_rule", (Say("what's the fifty-move rule?"),), AFTER_E4_E5),
     ),
     checkpoints=(
         Checkpoint(
@@ -1653,19 +2553,21 @@ THIS_OPENINGS_IDEAS = Scenario(
         "nothing in the words; the state block names it (#373), and the "
         "planner must carry that name into the lookup."
     ),
-    dev=(
-        Variant(
-            "plan_here",
-            (Say("what's the usual plan for me in this opening?"),),
-            after(*_MORPHY),
-        ),
+    dev=wordings(
+        after(*_MORPHY),
+        plan_here="what's the usual plan for me in this opening?",
+        typical_strategies="what are the typical strategies in this opening?",
+        theory_behind="what's the theory behind the opening we're in?",
+        aiming_for="what should I be aiming for in this opening?",
+        why_people_play_it="why do people play the opening we're playing?",
     ),
-    heldout=(
-        Variant(
-            "ideas_of_line",
-            (Say("explain the ideas of the opening we're playing"),),
-            after(*_MORPHY),
-        ),
+    heldout=wordings(
+        after(*_MORPHY),
+        ideas_of_line="explain the ideas of the opening we're playing",
+        main_ideas_behind="what are the main ideas behind this opening?",
+        teach_key_plans="teach me the key plans of the opening on the board",
+        white_trying_to_do="what's white trying to do in this line?",
+        point_for_white="what's the point of this opening for white?",
     ),
     checkpoints=(looked_up(1, *_RUY_LOPEZ_NOTES), still(1), completed(1)),
 )
@@ -1678,19 +2580,21 @@ NOT_A_LOOKUP = Scenario(
         "game's facts, answered by the engine, not by the notes. A new tool on "
         "the menu must not draw them away."
     ),
-    dev=(
-        Variant(
-            "best_move_here",
-            (Say("what's the best move for me in this position?"),),
-            AFTER_E4_E5,
-        ),
+    dev=wordings(
+        AFTER_E4_E5,
+        best_move_here="what's the best move for me in this position?",
+        theoretically_best="what's the theoretically best move here?",
+        if_you_were_me="if you were me, what would you play now?",
+        strongest_continuation="what's the strongest continuation in this position?",
+        find_me_a_good_move="can you find me a good move in this position?",
     ),
-    heldout=(
-        Variant(
-            "what_to_play_now",
-            (Say("what would a strong player play here?"),),
-            AFTER_E4_E5,
-        ),
+    heldout=wordings(
+        AFTER_E4_E5,
+        what_to_play_now="what would a strong player play here?",
+        grandmaster_choose="which move would a grandmaster choose here?",
+        most_accurate="what's the most accurate move for me here?",
+        what_would_magnus_play="what would Magnus play here?",
+        best_option_this_move="what's my best option on this move?",
     ),
     checkpoints=(
         Checkpoint("hinted_1", lambda e: bool(e.turn(1).ran("get_best_moves"))),
@@ -1707,24 +2611,50 @@ KNOWLEDGE_ASIDE_THEN_MOVE = Scenario(
         "#374 in a thread: a knowledge question mid-game, then a move. The "
         "lookup moves nothing, and the move after it lands as asked."
     ),
-    dev=(
-        Variant(
-            "italian_then_bc4",
-            (
-                Say("quick one: what's the point of the Italian Game?"),
-                Say("cool, put my bishop on c4 then"),
-            ),
-            AFTER_E4_E5_NF3_NC6,
+    dev=wordings(
+        AFTER_E4_E5_NF3_NC6,
+        italian_then_bc4=(
+            "quick one: what's the point of the Italian Game?",
+            "cool, put my bishop on c4 then",
+        ),
+        tell_me_then_bishop=(
+            "tell me about the Italian Game first",
+            "great, let's develop the bishop to c4 then",
+        ),
+        plan_for_white_then=(
+            "what's the plan in the Italian Game for white?",
+            "got it. bishop to c4, please",
+        ),
+        aim_then_play=(
+            "what does the Italian Game aim for?",
+            "cool, play the bishop to c4",
+        ),
+        why_good_then_go=(
+            "why is the Italian considered a good opening?",
+            "nice — I'll go bishop to c4",
         ),
     ),
-    heldout=(
-        Variant(
-            "italian_why_then_bc4",
-            (
-                Say("before I move, why do people like the Italian opening?"),
-                Say("alright, bishop to c4"),
-            ),
-            AFTER_E4_E5_NF3_NC6,
+    heldout=wordings(
+        AFTER_E4_E5_NF3_NC6,
+        italian_why_then_bc4=(
+            "before I move, why do people like the Italian opening?",
+            "alright, bishop to c4",
+        ),
+        idea_then_bishop_c4=(
+            "what's the idea of the Italian Game?",
+            "ok, then play my bishop to c4",
+        ),
+        special_then_light_bishop=(
+            "what's so special about the Italian Game?",
+            "alright then, light bishop to c4",
+        ),
+        beginners_then_go_for_it=(
+            "is the Italian Game good for beginners?",
+            "then let's go for it: bishop to c4",
+        ),
+        explain_quickly_then=(
+            "explain the Italian Game to me quickly",
+            "thanks — move my bishop to c4",
         ),
     ),
     checkpoints=(

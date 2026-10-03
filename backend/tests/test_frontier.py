@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import frontier
+from chessapp import knowledge
 from chessapp.api import create_app, narrator_facts, planner_board_refresh
 from chessapp.coordinator import TurnCoordinator
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
@@ -40,9 +41,12 @@ from frontier import (
     measure,
 )
 from frontier_corpus import (
+    _KNOWLEDGE_ANSWERS,
     BISHOP_TO_MOVE,
+    KNOWLEDGE_QUESTION,
     QUEEN_TO_MOVE,
     SCENARIOS,
+    WORDINGS_PER_SPLIT,
     after,
     after_e4_e5,
     first_offered,
@@ -394,6 +398,28 @@ def test_every_scenario_is_well_formed():
         assert s.checkpoints, s.name
         checkpoint_names = [c.name for c in s.checkpoints]
         assert len(checkpoint_names) == len(set(checkpoint_names)), s.name
+
+
+def test_every_split_holds_five_wordings_of_its_task():
+    """#339: one phrasing measures that phrasing, so each split carries
+    `WORDINGS_PER_SPLIT`, and a default run samples each once. Per-wording
+    counts key on the name, so a split never repeats one."""
+    for s in SCENARIOS:
+        for split in ("dev", "heldout"):
+            names = [v.name for v in s.variants(split)]
+            assert len(names) == WORDINGS_PER_SPLIT, (s.name, split, names)
+            assert len(set(names)) == len(names), (s.name, split, names)
+
+
+def test_every_knowledge_wording_names_the_note_that_answers_it():
+    """`knowledge_question` grades each wording on its own note: every
+    wording has one, and the player's own words already retrieve it, so a miss
+    is the planner's query and not a question the notes cannot answer."""
+    wordings = KNOWLEDGE_QUESTION.dev + KNOWLEDGE_QUESTION.heldout
+    assert {v.name for v in wordings} == set(_KNOWLEDGE_ANSWERS)
+    for v in wordings:
+        (say,) = v.says
+        assert knowledge.lookup(say.text)[0].title == _KNOWLEDGE_ANSWERS[v.name]
 
 
 def test_heldout_wordings_are_not_dev_wordings():
