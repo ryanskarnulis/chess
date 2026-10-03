@@ -177,7 +177,8 @@ after each turn, the tool results, the route and stop reason). The rules:
 
 Every scenario carries five wordings per split. v1's 80 wordings stayed in
 their splits, and 230 new ones were dealt beside them as above. All 31
-scenarios are kept, solved or not (see "Solved scenarios stay").
+scenarios are kept, solved or not (see "Solved scenarios stay"), and nine
+harder ones stand beside them (below): 40 in all.
 
 - **Item scenarios.** `name_the_opening` grows to ten openings and
   `knowledge_question` to ten questions, one per wording.
@@ -191,6 +192,84 @@ scenarios are kept, solved or not (see "Solved scenarios stay").
   games"); all of its misses in #373's run were right by hand. Read the
   samples' `answered` text before blaming the model for a low row. That
   matters most when two models phrase things differently.
+
+### The harder nine
+
+Corpus v1's solved scenarios stay. These nine stand beside them for headroom,
+each one step past a task the 12B already does, written and dealt like the
+rest:
+
+| Tier | Scenario | One step past | Graded on |
+| --- | --- | --- | --- |
+| 1 | `self_correction_mid_utterance` | a plain move and verdict: "knight to f3, no wait, c3" | Nc3 played, Nf3 never played, a verdict after the move |
+| 1 | `conditional_takeback` | undo and judge: "if that was a blunder, take it back" | a verdict before any takeback; undone after 3.Qxe5+?? Nxe5, left alone after 2.Nf3 Nc6 (half the wordings each, both in each split) |
+| 1 | `save_before_move_then_judge` | four intents whose order the words set | the save holds no Nf3, Nf3 played, a verdict after it, verbosity low |
+| 2 | `pick_by_description` | an ordinal pick: "the one that attacks your e-pawn" | the queen was asked about, then the described move (a target per wording) |
+| 2 | `undo_chain_as_black` | `undo_chain_across_turns`, with the player as Black | each takeback on the right ply, then d5 and one reply |
+| 2 | `settings_restore_all` | one setting back: three changed over three turns, then "put everything back" | each change, then difficulty, voice and verbosity all as at the start |
+| 2 | `en_passant_explained_then_taken` | a lookup then a move: "what's en passant, can I do it here?" then "do it" | the En passant note, nothing moved, then exd6 |
+| 2 | `first_suggestion_after_all` | playing a suggestion: two hints with a3 between, then "undo a3 and play what you suggested before it" | both hints, a3 taken back, the first hint played, one exchange |
+| 3 | `rewind_to_an_event` | a rewind to a move number: "before my queen first moved", "before my first capture" (84-ply game) | history cut at ply 22 or 20, the best move there played |
+
+A checkpoint that reads which item a wording names (`_DESCRIBED`, `_EVENTS`)
+is tested to cover every wording.
+
+## Baseline v2 (2026-10-03)
+
+**The run.**
+- Corpus v2: 40 scenarios (14 tier-1, 21 tier-2, 5 tier-3).
+- Held-out only, one sample per wording: 5 per scenario, 200 episodes in 55 minutes.
+- Seed 363, gemma-4-12b at planner temperature 0.3, with its profile's crutches.
+- On `a4d1ed5` plus this corpus, on an idle card.
+- **0 invariant breaches, 0 infra deaths.**
+
+**The totals.**
+- Whole-task passes: **165/200**.
+- Speech accuracy: 273/274.
+- Reply said: 153/156.
+
+The raw line is the last one in `docs/frontier-history.jsonl` (`baseline v2 (#339)`). Before it, a dev-only pilot of the nine new scenarios (one sample per dev wording, 45 episodes, 13 minutes) read 31/45. Every miss in both runs was read for fairness.
+
+**At 5/5 (25 scenarios):** `undo_replace_and_judge`, `settings_move_and_verdict`, `top_move_play_and_save`, `noisy_takeback_and_replace`, `verdict_as_black_facing_mate`, `name_the_opening`, `knowledge_question`, `this_openings_ideas`, `not_a_lookup`, `self_correction_mid_utterance`, `conditional_takeback`, `suggested_move_later`, `save_reset_resume`, `draw_declined_then_advice`, `undo_chain_across_turns`, `difficulty_up_and_back`, `noisy_thread`, `knight_ask_aside_then_pick`, `queen_ask_aside_then_first`, `ask_aside_then_second`, `knowledge_aside_then_move`, `undo_chain_as_black`, `settings_restore_all`, `long_session`, `second_choice_chain`.
+
+The rest:
+
+| Tier | Scenario | Held-out | Where it misses |
+| --- | --- | --- | --- |
+| 1 | `constraint_keeps_difficulty` | 3/5 (0.87) | difficulty_untouched: `set_difficulty` despite "don't lower the difficulty" and "leave the engine strength alone" |
+| 1 | `results_so_far` | 4/5 (0.93) | said_results_backed: "I've taken 3 of your 6 games" is right, but the scorer misses it |
+| 1 | `save_before_move_then_judge` | 2/5 (0.80) | completed_1 (×3, the loop's iteration budget on four intents), terse, judged_after_the_move |
+| 2 | `knight_ask_then_change_of_mind` | 4/5 (0.96) | played_d4: "queen's pawn two squares" played as e4 |
+| 2 | `undo_then_ambiguous_bishop` | 4/5 (0.90) | asked: v1's `light_squared_bishop` wording, which still guesses Bc4 |
+| 2 | `knight_ask_long_chat_then_pick` | 3/5 (0.73) | asked_1 (the ask refused and not retried); chat_moved_nothing (#422) |
+| 2 | `knight_ask_then_board_changes` | 4/5 (0.93) | moved_nothing_3: a refused re-ask, then the first candidate played |
+| 2 | `two_threads_similar_asks` | 3/5 (0.73) | asked_2: the e-pawn ask played, not asked ("push the e-pawn", "move the e2 pawn"; #357) |
+| 2 | `queen_ask_long_chat_then_first` | 1/5 (0.47) | chat_moved_nothing: the first candidate played on the turn back to the game (#422) |
+| 2 | `pick_by_description` | 2/5 (0.70) | played_the_described: "none of those hit your g-pawn" (Qg4 does), and the same for the edge and the e-pawn |
+| 2 | `en_passant_explained_then_taken` | 0/5 (0.75) | took_en_passant: says exd6 is not legal (it is, and it is in `legal_moves`), then plays exf6 |
+| 2 | `first_suggestion_after_all` | 4/5 (0.94) | played_the_first_suggestion: a3 played again after it was taken back |
+| 3 | `late_game_review_undo_replay` | 1/5 (0.60) | back_before_the_worst_move: one undo (#412's "that move") |
+| 3 | `late_game_save_undo_resume` | 4/5 (0.95) | undid_three: three undos took back ten plies |
+| 3 | `rewind_to_an_event` | 1/5 (0.55) | back_before_the_event: one undo, instead of finding the event in the move list |
+
+### What it says
+
+- **Five wordings change what v1's extremes meant.**
+  - `undo_then_ambiguous_bishop` read 0/10 on its one held-out wording in every v1 run, and reads 4/5 across five. Its one miss is that same wording.
+  - `constraint_keeps_difficulty` read 10/10 on its one held-out wording, and reads 3/5 across five.
+  - One wording per split had measured the wording.
+- **Keeping solved scenarios found a likely regression (#422).** `queen_ask_long_chat_then_first` read 9–10/10 on held-out up to `7b4e3c5`, and reads 1/5 here.
+  - In four samples, including v1's own `lesson_chat` wording, the planner re-asks on the turn back to the game. Refused twice, it then plays the first candidate itself.
+  - The same sequence shows up in three more ask scenarios.
+- **The harder nine have headroom where they were built for it.**
+  - en passant 0/5, `rewind_to_an_event` 1/5, `pick_by_description` 2/5, `save_before_move_then_judge` 2/5, `first_suggestion_after_all` 4/5.
+  - Each miss is a capability gap in #412's sense: the facts are in front of the planner, and the reading fails.
+  - Four came out 5/5 (`self_correction_mid_utterance`, `conditional_takeback`, `undo_chain_as_black`, `settings_restore_all`). They stay, like every solved scenario.
+- **`solved` is empty until a second v2 held-out run.** #298's gemma-4-12b control arm is that run.
+
+### Scenario fix made before the baseline
+
+`first_suggestion_after_all`'s held-out wording `stockfish_liked` asked "and what does it like now?" on turn 3. An evaluation fairly answers that, the model gave one, and `consulted_3` missed. It now asks "and which move does it like now?", stays in held-out, and the scenario was re-measured from scratch: 4/5 replaces 3/5.
 
 ## Baseline v1 (2026-09-24)
 
