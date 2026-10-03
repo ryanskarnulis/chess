@@ -151,7 +151,19 @@ after each turn, the tool results, the route and stop reason). The rules:
 - **Held-out wordings are never tuned against.** Iterate on `dev`; believe an
   improvement only when `heldout` moves too. `test_frontier.py` refuses a
   wording shared between the splits, and any `model` step a parser would
-  settle on the opening board or after 1.e4 e5.
+  settle on its variant's starting board or on the opening one.
+- **Five wordings per split** (#339). One phrasing measures that phrasing,
+  so `test_frontier.py` holds every split to `WORDINGS_PER_SPLIT`, and
+  `wordings(setup, name="...", ...)` writes one compactly.
+  - Vary what a player would vary: the verb, the register, how the move is
+    named, and the order of the requests where order is free.
+  - Keep every wording a fair reading of the same task.
+  - Speech-to-text noise belongs only in the scenarios about noise.
+- **Splits are dealt, not chosen.** A scenario's new wordings are written as
+  one pool and dealt to the splits by a seeded shuffle, so easy phrasings
+  cannot gather on one side. v2 used `random.Random(f"339:{name}")`,
+  round-robin across a scenario's setups where it has several. A wording
+  rewritten later stays in its split.
 - **Bump `revision` when a number's meaning changes unseen.** A scenario's
   fingerprint moves by itself when a wording or a checkpoint's name changes.
   A new setup, or a checkpoint's logic fixed under its old name (#352's
@@ -160,6 +172,25 @@ after each turn, the tool results, the route and stop reason). The rules:
 - **Tiers:** 1 stretch (several intents in one utterance), 2 multi-turn (later
   turns lean on earlier ones), 3 frontier (long sessions and long games,
   expected near zero).
+
+## Corpus v2 (#339)
+
+Every scenario carries five wordings per split. v1's 80 wordings stayed in
+their splits, and 230 new ones were dealt beside them as above. All 31
+scenarios are kept, solved or not (see "Solved scenarios stay").
+
+- **Item scenarios.** `name_the_opening` grows to ten openings and
+  `knowledge_question` to ten questions, one per wording.
+  - Each opening is a family the speech reading knows by name, ending with
+    the player to move.
+  - Each question has its own answering note. `test_frontier.py` checks that
+    the player's own words retrieve that note, so a miss is the planner's
+    query, not a question the notes cannot answer.
+- **`results_so_far` reads speech, and the reading misses slang.** The
+  `results` class misses some of Glitch's slang ("I've taken three of your
+  games"); all of its misses in #373's run were right by hand. Read the
+  samples' `answered` text before blaming the model for a low row. That
+  matters most when two models phrase things differently.
 
 ## Baseline v1 (2026-09-24)
 
