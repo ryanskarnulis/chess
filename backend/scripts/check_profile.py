@@ -6,7 +6,7 @@ key it ignores means the toggle the app sends does nothing), and the server's
 own sampling beside the profile's. Run it before a bake-off arm (#298):
 
     python scripts/check_profile.py gemma-4-12b
-    python scripts/check_profile.py qwen36-35b-a3b --load
+    python scripts/check_profile.py qwen38-27b --load
 
 A model llama-swap has not loaded is reported as such and left alone: asking
 for its props would load it, a ~100 s cold start on the shared card. `--load`

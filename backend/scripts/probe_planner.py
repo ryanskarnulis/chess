@@ -30,7 +30,7 @@ Run from `backend/` with llama-swap up:
     python scripts/probe_planner.py --preflight-only                 # is the card free?
     python scripts/probe_planner.py --arm control --arm twin --seed none   # unpaired
     python scripts/probe_planner.py --arm a:model=gemma-4-12b \\
-        --arm b:model=qwen36-35b-a3b --n 10 --block 5      # models, per block
+        --arm b:model=gemma-4-26b-a4b --n 10 --block 5     # models, per block
 
 Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `temperature=0.3`, `cache_prompt=false`, `model=<id>`, `tool_text=<tool>@file`,

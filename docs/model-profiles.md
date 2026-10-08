@@ -97,17 +97,14 @@ the experiment knob.
 
 ## #298 candidates
 
-Six bake-off candidates have profiles, each named for its llama-swap entry
-(the entry's comment in `../llama-swap/config.yaml` has the serving sweep):
+Two bake-off candidates kept their profiles, each named for its llama-swap
+entry (the entry's comment in `../llama-swap/config.yaml` has the serving
+sweep):
 
 | Profile | Model | Speed on the 3060 | Thinking narrator turn (1 sample) |
 |---|---|---|---|
 | `gemma-4-26b-a4b` | Gemma 4 26B-A4B MoE, QAT Q4 + MTP | ~60 tok/s | 504 tokens, ~10 s |
-| `qwen36-35b-a3b` | Qwen3.6 35B-A3B MoE, Q4 + MTP | ~68 tok/s | 1,679 tokens, ~38 s |
 | `qwen38-27b` | Qwen3.8 27B dense, IQ3_S | ~8 tok/s, prefill ~400 tok/s | 727 tokens, ~93 s |
-| `granite-4.2-8b` | IBM Granite 4.2 8B dense, Q8_0 | ~21 tok/s | 357 tokens, ~17 s |
-| `gemma-4-12b-agentic-v2` | yuxinlu1's tool-use fine-tune of gemma-4-12B, Q6_K + the base MTP drafter | ~37 tok/s | 200 tokens, ~9 s |
-| `ornith-1.5-35b-a3b` | Ornith 1.5 35B-A3B MoE (Qwen3.5 base), Q4_K_M | ~50 tok/s | 331 tokens, ~8 s |
 
 They are starting values, not results. Each profile has:
 
@@ -116,14 +113,42 @@ They are starting values, not results. Each profile has:
 - the 12B's planner temperature of 0.3 and its token caps, carried over
 - all five crutches, so the default arm is like-for-like with gemma-4-12b
 
-`check_profile.py --load` reported `thinking toggle: ok` for all six
-(2026-10-03 and 2026-10-07), and a request with the toggle off returned no
-reasoning on each. Replace each carried value with what the bake-off measures, and say
-so in the file.
+`check_profile.py --load` reported `thinking toggle: ok` for both on
+2026-10-03, and a request with the toggle off returned no reasoning. Replace
+each carried value with what the bake-off measures, and say so in the file.
 
-`qwen38-27b`, `granite-4.2-8b` and `gemma-4-12b-agentic-v2` serve `-c 32768`, which is enough for the
-32k input budget, but they are chess-only entries. `qwen38-27b` runs one
-slot, so it serves one request at a time.
+`qwen38-27b` serves `-c 32768`, which is enough for the 32k input budget,
+but it is a chess-only entry. It runs one slot, so it serves one request at
+a time.
+
+### The planner screens (2026-10-03 and 2026-10-07)
+
+`probe_planner.py` on its 26 dev items, every arm with all five crutches and
+the planner at 0.3, gemma-4-12b as the control in the same batch:
+
+| Planner | Thinking off | Thinking on |
+|---|---|---|
+| gemma-4-12b | 219/260 (84%), 0.6 s | not run |
+| gemma-4-26b-a4b | 207/260 (80%), 0.9 s | 50/52, 8.5 s median |
+| qwen38-27b | 152/260 (58%), 6.6 s | 51/52, 30 s median (74 s p90) |
+| ornith-1.5-35b-a3b | 152/260 (58%), 2.0 s | 41/52, 11 s |
+| gemma-4-12b-agentic-v2 | 168/260 (65%), 1.0 s | not run |
+| granite-4.2-8b | 143/260 (55%), 2.6 s | 14/26 (one sample), 75 s |
+| qwen36-35b-a3b | 133/260 (51%), 1.9 s | 39/52, 14 s |
+
+In the same thinking-on batch, the 12B with thinking off scored 44/52.
+Thinking fixed the pawn asks every thinking-off model failed. With it on, a
+planner call can reach the 2048-token cap before calling a tool (1 to 4
+times in 52 per model), so a thinking planner needs its own cap.
+
+The four below the 12B were dropped on 2026-10-07. Their weights, llama-swap
+entries and profiles are gone:
+
+- **Qwen3.6, Ornith:** answer an ambiguous ask in prose instead of calling
+  `ask_player`.
+- **Agentic fine-tune:** sends `before_move` as the string `"7"`, which the
+  schema refuses.
+- **Granite:** fills optional `ask_player` fields with the string `"None"`.
 
 ## Crutches
 
