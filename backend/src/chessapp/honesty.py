@@ -111,10 +111,21 @@ _FUTURE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# The one tense the ending class does read: a spelled-out future. "Starting a
-# new game will end this one" is the reset gate's question, not a report that
-# the game ended (#384). `'ll` stays out, for the reason above.
-_ENDING_FUTURE = re.compile(r"\b(?: will | gonna | going \s+ to )\b", re.I | re.X)
+# The tenses the ending class does read. A spelled-out future: "Starting a new
+# game will end this one" is the reset gate's question, not a report that the
+# game ended (#384). `'ll` stays out, for the reason above. And the same
+# question in the plain present, said of an action rather than the game: a
+# gerund leading the sentence (after at most an interjection) and `ends` —
+# "Starting a new game ends this one.", "Resigning ends the game." — which
+# gemma-4-26b-a4b says where the 12B said "will" (#431). "Something"/"nothing"
+# end in -ing too and are subjects, not actions, so they stay claims.
+_ENDING_FUTURE = re.compile(
+    r"""
+    \b(?: will | gonna | going \s+ to )\b
+    | ^ (?: \W* \w+ \s* , )? \W* (?! \w* thing \b ) \w{2,} ing \b [^.!?]* \b ends \b
+    """,
+    re.I | re.X,
+)
 
 _SENTENCES = re.compile(r"(?<=[.!?])\s+")
 
@@ -592,7 +603,9 @@ def _setting_is(key: str) -> Callable[[re.Match[str], VerifiedFacts], bool]:
     return lambda match, facts: facts.settings.get(key) == _matched_value(match)
 
 
-def _victims_of_named_moves(sentence: str, facts: VerifiedFacts) -> set[str] | None:
+def _victims_of_named_moves(
+    sentence: str, facts: VerifiedFacts, played_by: frozenset[str] | None = None
+) -> set[str] | None:
     """What the moves this sentence names take, when the board knows.
 
     The most precise evidence a capture claim can be held to, and the only one
@@ -605,12 +618,17 @@ def _victims_of_named_moves(sentence: str, facts: VerifiedFacts) -> set[str] | N
     moves named, any one of them backing the piece is enough. `None` when the
     sentence names no move the board could resolve, which hands the claim back
     to the coarser evidence.
+
+    `played_by`, when the sentence says who captured, keeps only that side's
+    moves: "You took my pawn on e6, and I played Ra6" hangs the capture on the
+    player, and Glitch's reply in the same breath takes nothing (#431).
     """
     victims = {
         facts.captures_by_move[san]
         for match in _SAN_CLAIM.finditer(sentence)
         for san in (match.group(0).rstrip("+#"),)
         if san in facts.captures_by_move
+        and (played_by is None or _names(san, played_by))
     }
     return victims or None
 
@@ -652,21 +670,31 @@ def _capture_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
     piece = match.group("piece") or match.group("gone_piece")
     # "horse" is a knight; the board only knows the one word for it.
     name = "knight" if piece.lower() == "horse" else piece.lower()
-    victims = _victims_of_named_moves(match.string, facts)
+    subject = (match.group("subject") or "").lower()
+    owner = (match.group("owner") or match.group("gone_owner") or "").lower()
+    # Who the sentence says captured, as far as its words pin it: the speaker
+    # is the opponent, so "I" and "your piece" are Glitch's captures.
+    if not facts.moves_by_player and not facts.moves_by_opponent:
+        played_by = None  # no attribution supplied: `_owned_move_happened`'s fallback
+    elif subject == "you" or (not subject and owner == "my"):
+        played_by = facts.moves_by_player
+    elif subject == "i" or (not subject and owner == "your"):
+        played_by = facts.moves_by_opponent
+    else:
+        played_by = None
+    victims = _victims_of_named_moves(match.string, facts, played_by)
     if victims is not None:
         # The sentence hangs its capture on a move, and the board knows what
         # that move takes. Outranks the subject and the record alike: it is
         # the only evidence about *this* capture rather than about some
         # capture, and it is the evidence the invented victim needs.
         return name in victims
-    subject = (match.group("subject") or "").lower()
     if subject == "i":  # Glitch is the player's opponent
         return name in facts.captured_by_opponent
     if subject == "you":
         return name in facts.captured_by_player
     if _is_advice(match.string, facts):
         return True
-    owner = (match.group("owner") or match.group("gone_owner") or "").lower()
     if owner == "your":  # the speaker is the opponent, so the piece was his to take
         return name in facts.captured_by_opponent
     if owner == "my":
@@ -695,6 +723,15 @@ def _move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
     return _names(claimed, facts.moves)
 
 
+# A pawn move, which `_SAN` leaves out (a bare square is how a position is
+# written down too). Between the play verb and the SAN `_OWNED_MOVE` found, it
+# is the move the sentence credits: "You played c3 instead of Re1" and "you
+# played c3, but Re1 was the move" credit c3, and Re1 is what was not played.
+# Without this the class skipped c3 and credited Re1 to the player — the
+# scenario's own correct answer, scored unbacked on both brains (#431).
+_PAWN_MOVE = re.compile(r"(?<![\w-])[a-h](?:x[a-h])?[1-8](?:=[QRBN])?[+#]?(?![\w-])")
+
+
 def _owned_move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
     """Whether the side the sentence credits is the side that played the move.
 
@@ -704,7 +741,8 @@ def _owned_move_happened(match: re.Match[str], facts: VerifiedFacts) -> bool:
     Guarding every credited move on the strength of absent evidence would cost
     far more than the miss does.
     """
-    claimed = match.group("san")
+    pawn = _PAWN_MOVE.search(match.string, match.start(), match.start("san"))
+    claimed = pawn.group(0) if pawn else match.group("san")
     if not facts.moves_by_player and not facts.moves_by_opponent:
         return _names(claimed, facts.moves)
     if match.group("subject").lower() == "i":  # Glitch is the opponent
