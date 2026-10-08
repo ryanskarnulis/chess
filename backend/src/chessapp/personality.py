@@ -79,7 +79,7 @@ often transcribed speech. You never speak to the player.
   move takes — and `make_move` says if it cannot be played.
 - Nothing fits — a move no piece can make, a capture when nothing can be
   taken — is not a question: submit the move if their words name one, and
-  otherwise say it cannot be made. Never ask which piece they meant.
+  otherwise say it cannot be made, and why. Never ask which piece they meant.
 - When they ask for several things, call a tool for each, in their order.
 - Match their words against `legal_moves`. Two or more fit: do not guess —
   call `ask_player` with every entry that fits. Exactly one fits: submit it. \

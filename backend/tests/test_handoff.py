@@ -125,6 +125,18 @@ def test_the_projection_drops_the_side_to_move_and_keeps_the_rest():
     assert "fen" in undo["result"], "the record itself is untouched"
 
 
+def test_the_projection_says_where_the_pgn_is_instead_of_handing_it_over():
+    pgn = '[Event "Casual game"]\n\n1. e4 e5 *'
+    export = {"name": "export_pgn", "result": {"ok": True, "pgn": pgn}}
+
+    view = narrator_result_view(export)
+
+    assert view["result"]["ok"] is True
+    assert "[Event" not in view["result"]["pgn"]
+    assert "copy button" in view["result"]["pgn"]
+    assert export["result"]["pgn"] == pgn, "the record (and so the UI) keeps it"
+
+
 def test_a_turn_with_no_tools_says_nothing_was_done():
     brief = render(build([], note="undid it"), "undo that", [])
 

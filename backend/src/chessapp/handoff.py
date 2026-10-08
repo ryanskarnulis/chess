@@ -44,6 +44,15 @@ from typing import Any, Literal
 # a test pins that.
 NARRATOR_HIDDEN_KEYS = ("fen", "turn", "legal_moves", "captures")
 
+# Text the app shows the player itself, which the narrator is told about rather
+# than handed (#431). `export_pgn`'s notation renders under the reply with a
+# copy button; handed the dump, gemma-4-26b-a4b pasted it into the reply 5/5,
+# headers and all — the description that says not to is the planner's to read,
+# not the narrator's. The record keeps the text: the UI reads it from there.
+_SHOWN_BY_THE_APP = {
+    "pgn": "the app shows the player this PGN under your reply, with a copy button",
+}
+
 # The tools that only read. Anything else that answers `ok: true` changed
 # something — the board, a setting, a save, an offer made — and is `performed`.
 # Named as the reads rather than the writes so a tool added later without a
@@ -225,11 +234,13 @@ def build(
 
 def narrator_result_view(entry: Mapping[str, Any]) -> dict[str, Any]:
     """One `{"name", "result"}` tool result as a narrator may read it: the
-    same result minus `NARRATOR_HIDDEN_KEYS`. Everything else a result says —
-    the move, what it took, what was undone, the engine's reply to a restore —
-    is what the narrator speaks from, and stays."""
+    same result minus `NARRATOR_HIDDEN_KEYS`, with the text the app shows
+    the player itself (`_SHOWN_BY_THE_APP`) replaced by where it is shown.
+    Everything else a result says — the move, what it took, what was undone,
+    the engine's reply to a restore — is what the narrator speaks from, and
+    stays."""
     result = {
-        key: value
+        key: _SHOWN_BY_THE_APP.get(key, value)
         for key, value in entry["result"].items()
         if key not in NARRATOR_HIDDEN_KEYS
     }

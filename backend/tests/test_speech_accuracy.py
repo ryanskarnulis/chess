@@ -532,3 +532,58 @@ def test_a_move_the_notes_never_named_is_still_unbacked():
 
     assert ("move", False) in _counts(score)
     assert ("opening", True) in _counts(score)
+
+
+def test_the_26b_gates_misread_lines_are_scored_as_true():
+    """#431: three true lines the 2026-10-08 gemma-4-26b-a4b gate scored
+    unbacked. The reply named beside a capture is not the move that captured,
+    and the move "instead of" names is the one not played."""
+    session = _session("e4", "d5", "exd5", "Nf6")
+
+    score = score_record(
+        _record(
+            "Bet. You took my pawn on d5, and I played Nf6. "
+            "Bet, you took the d5 pawn, I play Nf6.",
+            session,
+            reply="Nf6",
+        )
+    )
+
+    assert _counts(score).count(("capture", True)) == 2
+    assert all(backed for _, backed in _counts(score))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "You played c3 instead of Re1.",  # gemma-4-26b-a4b, 2026-10-08
+        "you played c3, but Re1 was the move.",  # gemma-4-12b, 2026-10-01
+    ],
+)
+def test_a_move_set_against_the_one_played_is_not_credited(line):
+    session = _session(
+        "e4", "b6", "Nf3", "h6", "d4", "a5", "Bc4", "e6", "O-O", "Bb7", "c3", "Bxe4"
+    )  # fmt: skip
+    analysis = (
+        "analyze_last_move",
+        {"ok": True, "played": "c3", "best": "Re1", "color": "white"},
+    )
+
+    score = score_record(_record(line, session, tools=[analysis]))
+
+    assert all(backed for _, backed in _counts(score))
+    wrong = score_record(
+        _record("You played a3 instead of Re1.", session, tools=[analysis])
+    )
+    assert ("owned_move", False) in _counts(wrong), "the pawn move is still checked"
+
+
+def test_a_reply_beside_a_capture_does_not_excuse_a_wrong_victim():
+    """The side the sentence names still holds its own move to what it took."""
+    session = _session("e4", "d5", "exd5", "Nf6")
+
+    score = score_record(
+        _record("You took my queen with exd5, and I played Nf6.", session)
+    )
+
+    assert ("capture", False) in _counts(score)

@@ -1092,6 +1092,14 @@ def _unbidden(call: ModelCall) -> bool:
     return call.thinking and not (_PLANNER_THINKS and call.phase == PHASE_PLANNER)
 
 
+# A brain-routed turn's tripwire. A planner whose profile thinks (#298) reasons
+# on every turn, so the thinking-off ceiling would measure the profile rather
+# than a regression: gemma-4-26b-a4b's thinking planner took 10.6 s on "play
+# e4" and 14.5 s on "castle kingside" (2026-10-08 gate; probe median 8.5 s,
+# p90 24 s). The fast path never calls the planner and keeps the tight one.
+_PLANNED_CEILING_S = _ANALYSIS_CEILING_S if _PLANNER_THINKS else _THINKING_OFF_CEILING_S
+
+
 def _assert_thinking_starts_off(run: EvalRun) -> None:
     """The policy's floor: the turn that decides which tool to call is a fast
     parse, never a reasoning turn (`llama_brain._thinking`). Thinking may only
@@ -1299,7 +1307,7 @@ def test_eval_plain_move_via_the_agent_path(eval_app: EvalApp) -> None:
     assert not any(_unbidden(call) for call in run.model_calls), (
         "a move is not analysis — thinking stays OFF for the whole run"
     )
-    assert run.duration < _THINKING_OFF_CEILING_S
+    assert run.duration < _PLANNED_CEILING_S
 
 
 def test_eval_judgment_question_routes_through_analysis(eval_app: EvalApp) -> None:
@@ -1465,7 +1473,7 @@ def test_eval_settings_by_speech_makes_it_easier(eval_app: EvalApp) -> None:
     assert not any(_unbidden(call) for call in run.model_calls), (
         "a settings change is not analysis — thinking stays OFF"
     )
-    assert run.duration < _THINKING_OFF_CEILING_S
+    assert run.duration < _PLANNED_CEILING_S
 
 
 def test_eval_honest_about_an_illegal_move(eval_app: EvalApp) -> None:
@@ -1495,7 +1503,7 @@ def test_eval_honest_about_an_illegal_move(eval_app: EvalApp) -> None:
     assert assistant["stop_reason"] == "completed", "must not stop on a budget"
     _assert_loop_budget(run)
     _assert_thinking_starts_off(run)
-    assert run.duration < _THINKING_OFF_CEILING_S
+    assert run.duration < _PLANNED_CEILING_S
 
 
 def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:

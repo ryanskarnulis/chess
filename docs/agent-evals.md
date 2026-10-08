@@ -349,6 +349,35 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Gate run 2026-10-08 on gemma-4-26b-a4b (#431, #298 step 1).** The brain
+Ryan chose, with its thinking planner, after #429 and #430. Full gate on
+`f11ac1c`: **51 of 56 passed** in 49 m 44 s; `long_capture` and
+`long_resign` 5/5 in all three conditions; speech 175/179 over 308 turns.
+`fast_path_move_costs_one_call_when_chatty` passed (the first gate's 0-call
+miss was the cold load: warm the model before a gate). The five reds, each
+diagnosed from captured context:
+- `pgn_is_handed_over_not_recited` 0/5: the narrator was handed the PGN text
+  and nothing said the app shows it; `export_pgn`'s description is the
+  planner's. The narrator's view now says where it is shown (`handoff.py`).
+- `impossible_capture_is_refused_not_asked` 4/10: the planner was right every
+  time, but its note was "It cannot be made." and the narrator, who cannot
+  see `legal_moves`, asked "which pawn?". The planner prompt now says to give
+  the reason ("…cannot be made, and why").
+- `plain_move_via_the_agent_path`, `honest_about_an_illegal_move`: the 8 s
+  thinking-off ceiling (10.6 s, 14.5 s). Brain-routed turns now take the
+  analysis ceiling when the planner's profile thinks.
+- `destructive_op_asks_before_acting`: the judge read "Starting a new game
+  ends this one." as an ending. All four unbacked lines were judge misreads,
+  and the other three fixed too (a reply named beside a capture; "You played
+  c3 instead of Re1", the same misread as the 12B's 2026-10-01 line). The
+  deployed trace scores 205/208 under both judges.
+
+Targeted checks on the fix (`e7c8c9b`), 5 each with escalation. 26B: the five
+reds plus `impossible_move` and `my_mistake_is_mine` all passed — PGN 5/5,
+impossible capture 8/10 (the planner gave the reason 10/10; two narrators
+still asked), speech 5/5. 12B: PGN, both impossible asks 5/5, `long_capture`
+5/5 ×3, speech 21/21.
+
 **Gate run 2026-10-01 on `lookup` (#374, roadmap #366 step 14).** The planner
 gains `lookup(query)` over the local chess notes (`docs/second-brain.md`),
 offered last before `ask_player`. A new tool changes the offer, so the full

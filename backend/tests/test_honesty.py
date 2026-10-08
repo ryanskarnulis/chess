@@ -48,6 +48,11 @@ from chessapp.honesty import (
         # A result with its object still reads as one (#384 narrowed the verb).
         "You lost.",
         "you lost the game, bro",
+        # The gerund-present question (#431) is an action's, not the board's:
+        # a report still reads as one with `ends` in it or an -ing word ahead.
+        "Nothing ends a game like checkmate.",
+        "Checkmate. That ends it.",
+        "Wow, checkmate. Game over.",
     ],
 )
 def test_an_asserted_ending_is_a_claim(text):
@@ -89,6 +94,10 @@ def test_a_near_miss_spoken_as_a_distance_is_not_a_claim(text):
         # The #340 frontier run, verbatim (#384): the reset gate's question, a
         # review's lost evaluation, and a trade.
         "Yo, starting a new game will end this one.",
+        # The same question in the plain present, from gemma-4-26b-a4b (#431).
+        "Starting a new game ends this one.",
+        "Yo, starting a new game ends this one.",
+        "Resigning ends the game.",
         "you lost like 817 centipawns there",
         "I won a pawn, you lost the exchange.",
         "",
