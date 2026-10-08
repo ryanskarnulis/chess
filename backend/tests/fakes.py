@@ -27,6 +27,7 @@ import chess.engine
 
 from chessapp.api import create_app
 from chessapp.brain import UNRELATED, AgentResponse, Answer, Narration
+from chessapp.context_capture import current_phase
 from chessapp.coordinator import TurnCoordinator
 from chessapp.engine import Evaluation
 from chessapp.provider import ChatResult, Usage
@@ -397,6 +398,9 @@ class ModelCall:
     seconds: float
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    # The phase the brain named around the call (`context_capture.model_phase`):
+    # whether a thinking call was the planner's is the profile's to say (#298).
+    phase: str | None = None
 
 
 class CountingProvider:
@@ -475,6 +479,7 @@ class CountingProvider:
                     seconds=time.monotonic() - started,
                     prompt_tokens=usage.prompt_tokens if usage else None,
                     completion_tokens=usage.completion_tokens if usage else None,
+                    phase=current_phase(),
                 )
             )
 
