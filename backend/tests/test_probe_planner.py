@@ -865,3 +865,26 @@ def test_an_arm_without_a_thinking_knob_thinks_as_its_profile_does() -> None:
     assert parse_arm("control").thinking_for(thinks) is True
     assert parse_arm("control").thinking_for(plain) is False
     assert parse_arm("x:thinking=off").thinking_for(thinks) is False
+
+
+def test_a_crutches_arm_offers_exactly_the_crutches_it_names() -> None:
+    """#432: with and without crutches interleave in one probe run."""
+    assert parse_arm("x:crutches=none").crutches == frozenset()
+    assert parse_arm("x:crutches=undo_call_again+move_source_required").crutches == {
+        "undo_call_again",
+        "move_source_required",
+    }
+    assert parse_arm("control").crutches is None
+    for spec in ("x:crutches=nope", "x:crutches=+"):
+        with pytest.raises(SystemExit):
+            parse_arm(spec)
+
+    def required(prepared) -> list[str]:
+        (move,) = (t for t in prepared.tools if t["function"]["name"] == "make_move")
+        return move["function"]["parameters"].get("required", [])
+
+    bare = _prepare("ordinal_no_question", parse_arm("x:crutches=none"))
+    everything = _prepare("ordinal_no_question", parse_arm("x:crutches=all"))
+    assert "source" in required(everything)
+    assert "source" not in required(bare)
+    assert everything.offer_sha != bare.offer_sha

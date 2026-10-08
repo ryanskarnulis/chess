@@ -39,7 +39,9 @@ Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `tool_schema=provenance|form|square` (`make_move` says where its move came
 from, or how the words chose it, scored as the app would check it),
 `tool_schema=parts_tool|parts_make_move|parts_ask` (a move described by its
-parts, resolved to the moves that fit as the app would, #371) and `thinking=on`.
+parts, resolved to the moves that fit as the app would, #371), `thinking=on`
+and `crutches=none|all|<name>+<name>` (the brain's offer with exactly those
+crutches, #432; unset, the model's profile's or `CHESSAPP_CRUTCHES`).
 `control` (no keys) is the shipped planner. `--fresh` calls llama-swap's
 `/unload` before the first sample so the session is new; it refuses while a
 slot is processing or another job holds the card (the shared-GPU rule).
@@ -91,7 +93,7 @@ from chessapp.fastparse import parse_move
 from chessapp.game import GameSession
 from chessapp.llama_brain import FROM_PROFILE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT
-from chessapp.profiles import PLANNER
+from chessapp.profiles import KNOWN_CRUTCHES, PLANNER
 from chessapp.provider import ChatResult, LlamaCppProvider, ProviderError
 from chessapp.tools import (
     Settings,
@@ -526,6 +528,9 @@ class Arm:
     tool_schema: str | None = None
     # None: the planner profile's own `thinking`, as the app sends (#298).
     thinking: bool | None = None
+    # None: the crutches the app would give the model (`crutches_from_env`);
+    # a set is the offer with exactly those (#432).
+    crutches: frozenset[str] | None = None
 
     def temperature_for(self, provider: LlamaCppProvider) -> float | None:
         """The temperature this arm's planner call is sent at."""
@@ -941,6 +946,19 @@ def _read_at(value: str, *, what: str) -> str:
     return Path(value[1:]).read_text()
 
 
+def parse_crutches(value: str, *, arm: str) -> frozenset[str]:
+    """`none`, `all`, or names joined by `+` (a comma separates knobs)."""
+    if value == "none":
+        return frozenset()
+    if value == "all":
+        return KNOWN_CRUTCHES
+    names = frozenset(filter(None, value.split("+")))
+    unknown = names - KNOWN_CRUTCHES
+    if unknown or not names:
+        raise SystemExit(f"arm {arm!r}: unknown crutches {sorted(unknown)}")
+    return names
+
+
 def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
     """`NAME[:key=value[,key=value...]]` → an Arm. Text knobs are files
     (`prompt=@path`, `tool_text=make_move@path`) so a spec never carries prose."""
@@ -994,6 +1012,8 @@ def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
             if value.lower() not in ("on", "off"):
                 raise SystemExit(f"arm {name!r}: thinking must be on|off")
             kwargs["thinking"] = value.lower() == "on"
+        elif key == "crutches":
+            kwargs["crutches"] = parse_crutches(value, arm=name)
         else:
             raise SystemExit(f"arm {name!r}: unknown knob {key!r}")
     return Arm(
@@ -1441,12 +1461,11 @@ def prepare(
     item: Item, arm: Arm, provider: LlamaCppProvider, base_url: str, model: str
 ) -> Prepared:
     session = position(item)
-    # The crutches the app would give this arm's model (#375).
+    # The crutches the app would give this arm's model (#375), unless the arm
+    # names its own (#432).
+    crutches = arm.crutches if arm.crutches is not None else crutches_from_env(model)
     ctx = ToolContext(
-        session=session,
-        engine=None,
-        settings=Settings(),
-        crutches=crutches_from_env(model),
+        session=session, engine=None, settings=Settings(), crutches=crutches
     )
     coordinator = TurnCoordinator(ctx)
     registry = build_registry(ctx, coordinator, atomic_exchange=False)
