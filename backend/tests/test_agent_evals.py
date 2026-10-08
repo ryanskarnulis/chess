@@ -152,10 +152,12 @@ from chessapp.api import (
     planner_board_refresh,
 )
 from chessapp.app import (
+    _context_capture_from_env,
     _planner_temperature_from_env,
     crutches_from_env,
     phase_models_from_env,
 )
+from chessapp.brain import PHASE_PLANNER
 from chessapp.coordinator import TurnCoordinator
 from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
@@ -163,7 +165,7 @@ from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
-from chessapp.profiles import PLANNER
+from chessapp.profiles import PLANNER, load_profile
 from chessapp.provider import providers_for
 from chessapp.serving import ServingManifest, app_revision, probes_for
 from chessapp.speech_accuracy import Tally, score_record, unbacked
@@ -584,7 +586,15 @@ def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
     # this provider when none is passed (one client per phase model, #375), so
     # the wire itself is unchanged.
     provider = CountingProvider(
-        providers_for(LLAMACPP_BASE_URL, PHASE_MODELS, LLAMACPP_MODEL, seed=seed)
+        providers_for(
+            LLAMACPP_BASE_URL,
+            PHASE_MODELS,
+            LLAMACPP_MODEL,
+            seed=seed,
+            # CHESSAPP_CONTEXT_PATH captures every call's exact bytes, as in
+            # the app (docs/context-capture.md); unset, nothing is captured.
+            capture=_context_capture_from_env(),
+        )
     )
 
     def offered_tools() -> list[dict[str, Any]]:
@@ -1071,12 +1081,24 @@ def _assert_loop_budget(run: EvalRun) -> None:
     )
 
 
+# Whether the planner reasons on every call (#298): the planner profile's
+# `thinking`. Off on gemma-4-12b, where every assert below reads as it did.
+_PLANNER_THINKS = load_profile(phase_models_from_env()[PLANNER]).phase(PLANNER).thinking
+
+
+def _unbidden(call: ModelCall) -> bool:
+    """A call that thought when the brain's rule did not ask it to: thinking
+    on, and not a planner call whose profile thinks."""
+    return call.thinking and not (_PLANNER_THINKS and call.phase == PHASE_PLANNER)
+
+
 def _assert_thinking_starts_off(run: EvalRun) -> None:
     """The policy's floor: the turn that decides which tool to call is a fast
     parse, never a reasoning turn (`llama_brain._thinking`). Thinking may only
-    come on *later*, once an analysis tool's result has landed in context."""
+    come on *later*, once an analysis tool's result has landed in context —
+    unless the planner's profile thinks (#298), which `_unbidden` allows."""
     assert run.model_calls, "expected at least one model call"
-    assert run.model_calls[0].thinking is False, (
+    assert not _unbidden(run.model_calls[0]), (
         "the first turn must run with thinking OFF"
     )
 
@@ -1274,7 +1296,7 @@ def test_eval_plain_move_via_the_agent_path(eval_app: EvalApp) -> None:
         "the minimum: planner tool turn + planner note + narrator"
     )
     _assert_thinking_starts_off(run)
-    assert all(call.thinking is False for call in run.model_calls), (
+    assert not any(_unbidden(call) for call in run.model_calls), (
         "a move is not analysis — thinking stays OFF for the whole run"
     )
     assert run.duration < _THINKING_OFF_CEILING_S
@@ -1395,7 +1417,7 @@ def test_eval_ambiguous_move_asks_instead_of_guessing(engine: EnginePlayer) -> N
             "expected the planner's decline plus the narrator's question, "
             f"got {len(app.provider.calls)} calls"
         )
-        assert app.provider.calls[0].thinking is False, (
+        assert not _unbidden(app.provider.calls[0]), (
             "the first turn must run with thinking OFF"
         )
 
@@ -1440,7 +1462,7 @@ def test_eval_settings_by_speech_makes_it_easier(eval_app: EvalApp) -> None:
     assert len(run.model_calls) == 3, (
         "the minimum: planner tool turn + planner note + narrator"
     )
-    assert all(call.thinking is False for call in run.model_calls), (
+    assert not any(_unbidden(call) for call in run.model_calls), (
         "a settings change is not analysis — thinking stays OFF"
     )
     assert run.duration < _THINKING_OFF_CEILING_S
@@ -2577,7 +2599,7 @@ def test_eval_resign_acts_or_asks_but_never_pretends(engine: EnginePlayer) -> No
             "expected the planner's resign turn, its note and the narrator "
             f"(one recovery allowed), got {len(app.provider.calls)} model calls"
         )
-        assert all(call.thinking is False for call in app.provider.calls), (
+        assert not any(_unbidden(call) for call in app.provider.calls), (
             "a resignation is not analysis — thinking stays OFF"
         )
 
@@ -3938,7 +3960,7 @@ def test_eval_voice_setting_and_move(engine: EnginePlayer) -> None:
             f"expected the setter+move turn, the note and the narrator, got "
             f"{len(app.provider.calls)} model calls"
         )
-        assert all(call.thinking is False for call in app.provider.calls), (
+        assert not any(_unbidden(call) for call in app.provider.calls), (
             "a move and a setting are not analysis — thinking stays OFF"
         )
 
@@ -4078,7 +4100,7 @@ def test_eval_move_and_judgment(engine: EnginePlayer) -> None:
             f"expected the move turn, the read, the note and the narrator, got "
             f"{len(calls)} model calls"
         )
-        assert all(call.thinking is False for call in calls[:-1]), (
+        assert not any(_unbidden(call) for call in calls[:-1]), (
             "every planner turn is a parse, analysis result in context or not"
         )
         assert calls[-1].thinking is True, (
@@ -4208,7 +4230,7 @@ def test_eval_resume_and_describe(engine: EnginePlayer, tmp_path: Any) -> None:
             f"expected the resume+describe turn, the note and the narrator, got "
             f"{len(app.provider.calls)} model calls"
         )
-        assert all(call.thinking is False for call in app.provider.calls), (
+        assert not any(_unbidden(call) for call in app.provider.calls), (
             "a description is not a verdict — thinking stays OFF"
         )
 
@@ -4447,7 +4469,7 @@ def test_eval_best_move_then_play(engine: EnginePlayer) -> None:
             f"expected the read, the move, the note and the narrator, got "
             f"{len(calls)} model calls"
         )
-        assert all(call.thinking is False for call in calls[:-1]), (
+        assert not any(_unbidden(call) for call in calls[:-1]), (
             "every planner turn is a parse, analysis result in context or not"
         )
         assert calls[-1].thinking is True, (
@@ -4721,7 +4743,7 @@ def test_eval_late_game_tool_composition(
             f"expected the save+describe turn, the note and the narrator, got "
             f"{len(app.provider.calls)} model calls"
         )
-        assert all(call.thinking is False for call in app.provider.calls), (
+        assert not any(_unbidden(call) for call in app.provider.calls), (
             "a save and a description are not analysis — thinking stays OFF"
         )
         largest = max(call.prompt_tokens or 0 for call in app.provider.calls)
@@ -4795,7 +4817,7 @@ def test_eval_stt_knight_repair(
             f"expected the move turn, the note and the narrator, got "
             f"{len(app.provider.calls)} model calls"
         )
-        assert all(call.thinking is False for call in app.provider.calls), (
+        assert not any(_unbidden(call) for call in app.provider.calls), (
             "a move is not analysis — thinking stays OFF"
         )
 

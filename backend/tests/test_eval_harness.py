@@ -34,9 +34,13 @@ from typing import Any
 
 import pytest
 
+import test_agent_evals
 from chessapp.api import STUCK_REPLY
+from chessapp.brain import PHASE_NARRATOR, PHASE_PLANNER
+from chessapp.context_capture import model_phase
 from chessapp.fastparse import parse_confirmation, parse_resign
 from chessapp.game import GameSession
+from chessapp.provider import ChatResult
 from chessapp.tools import DESTRUCTIVE_TOOLS, ToolContext, build_registry
 from chessapp.trace import ROUTE_BRAIN, ROUTE_FAST_PATH, ROUTE_RESIGN
 from evalstats import (
@@ -76,6 +80,7 @@ from test_agent_evals import (
     _stays_a_model_eval,
     _step,
     _trajectory,
+    _unbidden,
 )
 
 
@@ -1210,3 +1215,33 @@ def test_the_harness_puts_each_phase_on_the_model_assembly_does(
     assert shipped == measured
     assert shipped["planner"] == "parser-model"
     assert shipped["narrator"] == "gemma-4-12b"
+
+
+# --- whose thinking a call was (#298) -----------------------------------------
+
+
+class _Echo:
+    def chat(self, messages, **kwargs):
+        return ChatResult(content="ok", tool_calls=[], finish_reason="stop", usage=None)
+
+
+def test_the_meter_records_the_phase_each_call_served():
+    provider = CountingProvider(inner=_Echo())
+    with model_phase(PHASE_PLANNER):
+        provider.chat([{"role": "user", "content": "x"}], enable_thinking=True)
+    with model_phase(PHASE_NARRATOR):
+        provider.chat([{"role": "user", "content": "x"}])
+    assert [c.phase for c in provider.calls] == [PHASE_PLANNER, PHASE_NARRATOR]
+
+
+def test_a_planner_that_thinks_by_profile_is_not_thinking_unbidden(monkeypatch):
+    planner = ModelCall(thinking=True, seconds=1.0, phase=PHASE_PLANNER)
+    narrator = ModelCall(thinking=True, seconds=1.0, phase=PHASE_NARRATOR)
+    # gemma-4-12b's planner never thinks: any thinking call is unbidden.
+    monkeypatch.setattr(test_agent_evals, "_PLANNER_THINKS", False)
+    assert _unbidden(planner) and _unbidden(narrator)
+    # A thinking planner profile licenses its own calls, never the narrator's.
+    monkeypatch.setattr(test_agent_evals, "_PLANNER_THINKS", True)
+    assert not _unbidden(planner)
+    assert _unbidden(narrator)
+    assert not _unbidden(ModelCall(thinking=False, seconds=1.0, phase=PHASE_NARRATOR))
