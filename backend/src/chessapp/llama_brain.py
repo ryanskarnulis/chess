@@ -345,6 +345,9 @@ class LlamaBrain:
     # caller that only cares about the persona still gets the split.
     planner_prompt: str | Callable[[], str] = PLANNER_PROMPT
     enable_thinking: bool = False
+    # The planner reasons before every call, not only after analysis: the
+    # planner profile's `thinking` (#298). Off for gemma-4-12b.
+    planner_thinking: bool = False
     max_iterations: int = _DEFAULT_MAX_ITERATIONS
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS
     # The per-turn tool-work and wall-clock budgets (#288; see the module
@@ -587,11 +590,13 @@ class LlamaBrain:
                 )
             self._report(BRAIN_PLANNING)
             try:
-                # Planner turns never think: picking (or declining) a tool is a
-                # parse, even when an analysis result is in context — the phase
-                # that *reasons* about that result is the narrator, and it
-                # inherits the thinking flip in `_close`. One thinking turn per
-                # analysis question, not two.
+                # Planner turns don't think by default: picking (or declining)
+                # a tool is a parse, even when an analysis result is in
+                # context — the phase that *reasons* about that result is the
+                # narrator, and it inherits the thinking flip in `_close`. One
+                # thinking turn per analysis question, not two. A planner
+                # whose profile says `thinking` (#298) reasons on every call:
+                # on gemma-4-26b-a4b that was the difference on the asks.
                 result = self._complete(messages, tools)
             except ToolCallArgumentsError as exc:
                 # The model was still called and the loop pays for it, so the
@@ -1278,7 +1283,9 @@ class LlamaBrain:
                 messages,
                 tools=tools,
                 enable_thinking=(
-                    self.enable_thinking if thinking is None else thinking
+                    self.enable_thinking or self.planner_thinking
+                    if thinking is None
+                    else thinking
                 ),
                 max_tokens=self.planner_max_tokens,
                 temperature=self.planner_temperature,
@@ -1586,6 +1593,7 @@ def create_llama_brain(
         system_prompt=system_prompt,
         planner_prompt=planner_prompt,
         enable_thinking=enable_thinking,
+        planner_thinking=profiles[PLANNER].phase(PLANNER).thinking,
         max_iterations=max_iterations,
         max_corrections=max_corrections,
         planner_temperature=planner_temperature,

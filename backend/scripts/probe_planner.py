@@ -11,7 +11,7 @@ What it sends is the shipped planner call, not a copy of it: the app's own
 state view (`api._agent_state_dict`), the tool offer `build_app` makes
 (`tools.brain_tool_definitions(registry, ctx)`), the messages
 `LlamaBrain._messages` opens a run with, and `LlamaCppProvider.chat` with the
-planner's own generation ceiling, thinking off. An arm varies exactly one of
+planner's own generation ceiling and thinking. An arm varies exactly one of
 its knobs: the planner prompt text, the planner temperature, llama-server's
 per-request `cache_prompt`, one tool's description text, the model id, the
 shape `legal_moves` is shown in, `make_move`'s schema, or thinking (#351).
@@ -524,13 +524,21 @@ class Arm:
     tool_defs: dict[str, dict[str, Any]] = field(default_factory=dict)
     state_view: str | None = None
     tool_schema: str | None = None
-    thinking: bool = False
+    # None: the planner profile's own `thinking`, as the app sends (#298).
+    thinking: bool | None = None
 
     def temperature_for(self, provider: LlamaCppProvider) -> float | None:
         """The temperature this arm's planner call is sent at."""
         if self.temperature is FROM_PROFILE:
             return provider.profile.phase(PLANNER).temperature
         return self.temperature
+
+    def thinking_for(self, provider: LlamaCppProvider) -> bool:
+        """Whether this arm's planner call thinks: the arm's knob, else the
+        planner profile's, which is what the shipped call sends."""
+        if self.thinking is None:
+            return provider.profile.phase(PLANNER).thinking
+        return self.thinking
 
     def view(self, state: dict[str, Any]) -> dict[str, Any]:
         """The planner's opening state as this arm shows it."""
@@ -1556,7 +1564,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = providers[model]._payload(
                 prepared.messages,
                 tools=prepared.tools,
-                enable_thinking=arm.thinking,
+                enable_thinking=arm.thinking_for(providers[model]),
                 max_tokens=providers[model].profile.phase(PLANNER).max_tokens,
                 temperature=arm.temperature_for(providers[model]),
                 cache_prompt=arm.cache_prompt,
@@ -1617,7 +1625,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = provider.chat(
                     prepared.messages,
                     tools=prepared.tools,
-                    enable_thinking=arm.thinking,
+                    enable_thinking=arm.thinking_for(provider),
                     max_tokens=provider.profile.phase(PLANNER).max_tokens,
                     temperature=arm.temperature_for(provider),
                     cache_prompt=arm.cache_prompt,
@@ -1667,7 +1675,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "seed": seed,
                 "state_view": arm.state_view,
                 "tool_schema": arm.tool_schema,
-                "thinking": arm.thinking,
+                "thinking": arm.thinking_for(provider),
                 "running_sha": running_sha,
                 "running_models": running_models,
                 "session_fresh": session_fresh,

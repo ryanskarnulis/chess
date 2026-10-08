@@ -125,6 +125,9 @@ def test_a_phase_left_out_keeps_the_default_caps():
         "[sampling]\ntemprature = 1.0\n",
         "[phases.summarizer]\nmax_tokens = 10\n",
         "[phases.planner]\nmax_token = 10\n",
+        # Only the planner's thinking is a profile's to set (#298).
+        "[phases.narrator]\nthinking = true\n",
+        '[phases.planner]\nthinking = "yes"\n',
         "extra = 1\n",
         "not toml = = 1\n",
     ],
@@ -132,6 +135,23 @@ def test_a_phase_left_out_keeps_the_default_caps():
 def test_a_profile_that_says_something_unknown_does_not_load(text):
     with pytest.raises(ProfileError):
         parse_profile("bad", text, "test")
+
+
+def test_a_planner_profile_can_think_and_the_factory_says_so():
+    profile = parse_profile("t", "[phases.planner]\nthinking = true\n", "test")
+    assert profile.phase(PLANNER).thinking is True
+    assert profile.describe()["phases"]["planner"]["thinking"] is True
+    assert DEFAULT_PROFILE.phase(PLANNER).thinking is False
+    brain = create_llama_brain(
+        base_url="http://llm.test/v1",
+        model="t",
+        dispatcher=build_registry(ToolContext(session=GameSession())),
+        tool_definitions=[],
+        provider=LlamaCppProvider("http://llm.test/v1", "t", profile=profile),
+    )
+    assert brain.planner_thinking is True
+    # gemma-4-12b, the shipped brain, still never thinks to plan.
+    assert load_profile("gemma-4-12b").phase(PLANNER).thinking is False
 
 
 def test_the_factory_applies_the_profile_per_phase():

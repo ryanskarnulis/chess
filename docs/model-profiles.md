@@ -12,6 +12,7 @@ writing its profile, not editing code.
 | `[sampling]` `temperature`, `top_p`, `top_k` | Sent on every request. A key left out is not sent, so the server's default applies. |
 | `thinking_kwarg` | The `chat_template_kwargs` key that toggles the thinking channel (`enable_thinking` for Gemma). `""` means the model has none, and no `chat_template_kwargs` is sent. |
 | `[phases.planner\|narrator\|answer]` `temperature`, `max_tokens` | Per-phase knobs. A phase without a `temperature` samples at `sampling.temperature`. A phase left out keeps the default caps. |
+| `[phases.planner]` `thinking` | `true` makes the planner reason before every call, not only after an analysis tool has answered (#298). Planner only: the narrator's thinking stays the brain's rule. Default `false`. |
 | `crutches` | Guidance that exists only because this model needed it (below). |
 | `quirks` | Measured standing facts about the model, as text, for the manifest and the reader. |
 
@@ -106,7 +107,9 @@ sweep):
 | `gemma-4-26b-a4b` | Gemma 4 26B-A4B MoE, QAT Q4 + MTP | ~60 tok/s | 504 tokens, ~10 s |
 | `qwen38-27b` | Qwen3.8 27B dense, IQ3_S | ~8 tok/s, prefill ~400 tok/s | 727 tokens, ~93 s |
 
-They are starting values, not results. Each profile has:
+`gemma-4-26b-a4b`'s planner thinks, with a 4,096-token cap (its file has
+the measurement). Otherwise they are starting values, not results. Each
+profile has:
 
 - the vendor's published sampling (Qwen's non-thinking set, since one set
   serves both modes)

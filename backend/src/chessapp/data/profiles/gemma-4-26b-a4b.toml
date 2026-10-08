@@ -3,8 +3,8 @@
 # thinking toggle — served by ../llama-swap/config.yaml's entry of the same
 # name (QAT UD-Q4_K_XL, -ncmoe 17 + MTP drafter, ~60 tok/s).
 #
-# Starting values, not measurements: nothing here has been run through the
-# gate yet. Replace each with what the bake-off measures, and say so.
+# The planner's settings are measured (below); the rest are starting values
+# until the gate has run. Replace each with what the bake-off measures.
 thinking_kwarg = "enable_thinking"
 
 quirks = [
@@ -31,11 +31,18 @@ temperature = 1.0
 top_p = 0.95
 top_k = 64
 
-# Carried from gemma-4-12b (#286: a parse wants the mode); not yet measured
-# on this model. Caps are the 12B's until a trace says otherwise.
+# The planner thinks (#298). Measured 2026-10-07 with probe_planner on its
+# 26 dev items, interleaved with gemma-4-12b: thinking on, 50/52 at a median
+# 8.5 s per call (p90 24 s); thinking off, 207/260 (80%) against the 12B's
+# 219/260. Thinking is what fixed the pawn asks every thinking-off model
+# missed. Its thoughts ran a median 418 tokens, 1,772 at the longest real
+# one, and one call hit the old 2,048 cap without calling a tool, so the cap
+# is 4,096: about 70 s at ~60 tok/s, near the 60 s planning deadline.
+# Temperature 0.3 is carried from gemma-4-12b (#286), not re-measured here.
 [phases.planner]
 temperature = 0.3
-max_tokens = 2048
+max_tokens = 4096
+thinking = true
 
 [phases.narrator]
 max_tokens = 4096
