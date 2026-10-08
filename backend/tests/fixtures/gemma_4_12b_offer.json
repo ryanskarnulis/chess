@@ -126,7 +126,7 @@
    "type": "function",
    "function": {
     "name": "undo",
-    "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit the arguments \u2014 the app\npops the whole exchange itself, leaving the player to move again. When\nthe player names several moves to take back, call this again for each\nfurther named move. When they point back to a move by its number, pass\nbefore_move.",
+    "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit the arguments: one call\ntakes back both the player's last move and the engine's reply to it,\nleaving the player to move again. When\nthe player names several moves to take back, call this again for each\nfurther named move. When they point back to a move by its number, pass\nbefore_move.",
     "parameters": {
      "properties": {
       "before_move": {
@@ -657,7 +657,7 @@
    "type": "function",
    "function": {
     "name": "undo",
-    "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit the arguments \u2014 the app\npops the whole exchange itself, leaving the player to move again. When\nthe player names several moves to take back, call this again for each\nfurther named move. When they point back to a move by its number, pass\nbefore_move.",
+    "description": "Take back the player's last move. For any normal takeback (\"undo\",\n\"take that back\", \"undo the bishop move\") omit the arguments: one call\ntakes back both the player's last move and the engine's reply to it,\nleaving the player to move again. When\nthe player names several moves to take back, call this again for each\nfurther named move. When they point back to a move by its number, pass\nbefore_move.",
     "parameters": {
      "properties": {
       "before_move": {
