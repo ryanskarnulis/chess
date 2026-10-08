@@ -1430,6 +1430,19 @@ def test_a_plain_move_never_thinks():
     assert [c["enable_thinking"] for c in provider.calls] == [False, False, False]
 
 
+def test_a_thinking_planner_reasons_on_every_call_but_the_narrator_does_not():
+    # #298: a planner profile with `thinking` reasons before each tool pick,
+    # and a plain move's narration still does not think.
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("nice move"),
+        planner_thinking=True,
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    assert [c["enable_thinking"] for c in provider.calls] == [True, True, False]
+
+
 def test_thinking_can_be_forced_on_for_the_whole_run():
     brain, provider = make_brain(text_turn("analysis"), enable_thinking=True)
     brain.get_agent_response(board_state={}, command="was that a blunder?")

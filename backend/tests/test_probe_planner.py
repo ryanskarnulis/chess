@@ -19,6 +19,7 @@ import campaign_report
 from chessapp.fastparse import parse_move
 from chessapp.llama_brain import FROM_PROFILE
 from chessapp.personality import PLANNER_PROMPT
+from chessapp.profiles import parse_profile
 from chessapp.provider import ChatResult, LlamaCppProvider, ToolCall
 from chessapp.tools import BOARD_STATE_TOOLS
 from probe_planner import (
@@ -580,7 +581,8 @@ def test_the_new_knobs_parse_and_refuse_unknown_values() -> None:
         "provenance",
         True,
     )
-    assert parse_arm("control").thinking is False
+    # Unset means the planner profile's own, which is what the app sends.
+    assert parse_arm("control").thinking is None
     for spec in ("x:state_view=shuffled", "x:tool_schema=why", "x:thinking=maybe"):
         with pytest.raises(SystemExit):
             parse_arm(spec)
@@ -849,3 +851,17 @@ def test_arms_take_turns_per_block_when_asked() -> None:
         assert sorted(cells) == sorted(
             (s, i) for s in range(3) for i in ("knight", "rook")
         )
+
+
+def test_an_arm_without_a_thinking_knob_thinks_as_its_profile_does() -> None:
+    thinks = LlamaCppProvider(
+        "http://llm.test/v1",
+        "t",
+        profile=parse_profile("t", "[phases.planner]\nthinking = true\n", "test"),
+    )
+    plain = LlamaCppProvider(
+        "http://llm.test/v1", "p", profile=parse_profile("p", "", "test")
+    )
+    assert parse_arm("control").thinking_for(thinks) is True
+    assert parse_arm("control").thinking_for(plain) is False
+    assert parse_arm("x:thinking=off").thinking_for(thinks) is False

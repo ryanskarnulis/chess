@@ -9,7 +9,9 @@ id it describes. It holds what changes with the model and nothing else:
   thinking channel on and off, or absent for a model with no toggle (the
   request then carries no `chat_template_kwargs` at all).
 - `[phases.<phase>]` — per-phase `temperature` (a phase without one samples at
-  `sampling.temperature`) and `max_tokens`, for the phases in `PHASES`.
+  `sampling.temperature`) and `max_tokens`, for the phases in `PHASES`; and
+  for the planner alone, `thinking`: whether it reasons before every call,
+  not only once an analysis tool has answered (#298).
 - `crutches` — the guidance that exists only because this model needed it
   (`KNOWN_CRUTCHES`; docs/model-profiles.md says what each one is and what it
   was measured to fix). A better model runs without them.
@@ -75,10 +77,12 @@ class ProfileError(ValueError):
 
 @dataclass(frozen=True)
 class PhaseSettings:
-    """One phase's knobs. `temperature=None` samples at the profile's own."""
+    """One phase's knobs. `temperature=None` samples at the profile's own.
+    `thinking` is the planner's alone (the narrator's is the brain's rule)."""
 
     max_tokens: int
     temperature: float | None = None
+    thinking: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,6 +121,7 @@ class ModelProfile:
                 name: {
                     "max_tokens": settings.max_tokens,
                     "temperature": settings.temperature,
+                    "thinking": settings.thinking,
                 }
                 for name, settings in self.phases.items()
             },
@@ -158,10 +163,19 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
     _only(name, "phases", phases_data, set(PHASES))
     phases = dict(_DEFAULT_PHASES)
     for phase, settings in phases_data.items():
-        _only(name, f"phases.{phase}", settings, {"max_tokens", "temperature"})
+        allowed = {"max_tokens", "temperature"}
+        if phase == PLANNER:
+            allowed.add("thinking")
+        _only(name, f"phases.{phase}", settings, allowed)
+        thinking = settings.get("thinking", False)
+        if not isinstance(thinking, bool):
+            raise ProfileError(
+                f"profile {name!r}: phases.{phase}.thinking must be a bool"
+            )
         phases[phase] = PhaseSettings(
             max_tokens=int(settings.get("max_tokens", phases[phase].max_tokens)),
             temperature=settings.get("temperature"),
+            thinking=thinking,
         )
     crutches = frozenset(data.get("crutches", ()))
     unknown = crutches - KNOWN_CRUTCHES
