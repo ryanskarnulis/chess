@@ -2243,6 +2243,11 @@ def build_registry(
     # target, `before_move`: the move number `review_game` reports, which a
     # count cannot reach once it is past the cap. `plies` stays for the MCP
     # and delegate callers, who count plies on purpose.
+    # "Pops the whole exchange" was read by gemma-4-26b-a4b as one half-move
+    # per call: "take that bishop move back and play d4" became undo, undo,
+    # d4 in one batch, a whole extra exchange gone (#298, 2026-10-07, from
+    # its captured reasoning). "Exchange" is also a trade of pieces; the
+    # description now says both moves in plain words.
     @registry.tool()
     def undo(
         before_move: Annotated[
@@ -2269,8 +2274,9 @@ def build_registry(
         ] = None,
     ) -> dict[str, Any]:
         """Take back the player's last move. For any normal takeback ("undo",
-        "take that back", "undo the bishop move") omit the arguments — the app
-        pops the whole exchange itself, leaving the player to move again. When
+        "take that back", "undo the bishop move") omit the arguments: one call
+        takes back both the player's last move and the engine's reply to it,
+        leaving the player to move again. When
         the player names several moves to take back, call this again for each
         further named move. When they point back to a move by its number, pass
         before_move."""
