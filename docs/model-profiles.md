@@ -97,7 +97,7 @@ the experiment knob.
 
 ## #298 candidates
 
-Four bake-off candidates have profiles, each named for its llama-swap entry
+Six bake-off candidates have profiles, each named for its llama-swap entry
 (the entry's comment in `../llama-swap/config.yaml` has the serving sweep):
 
 | Profile | Model | Speed on the 3060 | Thinking narrator turn (1 sample) |
@@ -106,6 +106,8 @@ Four bake-off candidates have profiles, each named for its llama-swap entry
 | `qwen36-35b-a3b` | Qwen3.6 35B-A3B MoE, Q4 + MTP | ~68 tok/s | 1,679 tokens, ~38 s |
 | `qwen38-27b` | Qwen3.8 27B dense, IQ3_S | ~8 tok/s, prefill ~400 tok/s | 727 tokens, ~93 s |
 | `granite-4.2-8b` | IBM Granite 4.2 8B dense, Q8_0 | ~21 tok/s | 357 tokens, ~17 s |
+| `gemma-4-12b-agentic-v2` | yuxinlu1's tool-use fine-tune of gemma-4-12B, Q6_K + the base MTP drafter | ~37 tok/s | 200 tokens, ~9 s |
+| `ornith-1.5-35b-a3b` | Ornith 1.5 35B-A3B MoE (Qwen3.5 base), Q4_K_M | ~50 tok/s | 331 tokens, ~8 s |
 
 They are starting values, not results. Each profile has:
 
@@ -114,12 +116,12 @@ They are starting values, not results. Each profile has:
 - the 12B's planner temperature of 0.3 and its token caps, carried over
 - all five crutches, so the default arm is like-for-like with gemma-4-12b
 
-`check_profile.py --load` reported `thinking toggle: ok` for all four on
-2026-10-03, and a request with the toggle off returned no reasoning on
-each. Replace each carried value with what the bake-off measures, and say
+`check_profile.py --load` reported `thinking toggle: ok` for all six
+(2026-10-03 and 2026-10-07), and a request with the toggle off returned no
+reasoning on each. Replace each carried value with what the bake-off measures, and say
 so in the file.
 
-`qwen38-27b` and `granite-4.2-8b` serve `-c 32768`, which is enough for the
+`qwen38-27b`, `granite-4.2-8b` and `gemma-4-12b-agentic-v2` serve `-c 32768`, which is enough for the
 32k input budget, but they are chess-only entries. `qwen38-27b` runs one
 slot, so it serves one request at a time.
 
