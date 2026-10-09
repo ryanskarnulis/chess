@@ -108,6 +108,7 @@ from chessapp.brain import (
     ModelCall,
     Narration,
 )
+from chessapp.brain_switch import BrainSwitch
 from chessapp.conversation import Recall
 from chessapp.coordinator import (
     ReplySettlement,
@@ -127,6 +128,7 @@ from chessapp.facts import (
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
 from chessapp.ledger import render_record
+from chessapp.profiles import BRAIN_CHOICES
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
 from chessapp.tools import (
@@ -302,6 +304,12 @@ class VoiceTelemetry(BaseModel):
 
 class VoiceOutputRequest(BaseModel):
     enabled: bool
+
+
+class BrainRequest(BaseModel):
+    """A model id from `profiles.BRAIN_CHOICES` (#434)."""
+
+    model: str
 
 
 class NewGameRequest(VersionedRequest):
@@ -1472,6 +1480,7 @@ def create_app(
     progress: ProgressReporter | None = None,
     reaction_budget: float = NARRATION_BUDGET_S,
     serving_identity: Callable[[], dict[str, str]] | None = None,
+    brain_switch: BrainSwitch | None = None,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
     does), so what the agent is offered is exactly what the app runs; omit it
@@ -1500,7 +1509,12 @@ def create_app(
     `serving_identity` answers what serves a turn — prompt and tool-schema
     hashes, model and server (`LlamaBrain.serving_identity`) — and every trace
     record carries it (#290). App assembly wires it to the brain it built;
-    omit it and records say `None`."""
+    omit it and records say `None`.
+
+    `brain_switch` is the brain setting (#434), when assembly built one (it is
+    then `brain` too): every interaction installs the chosen brain as it takes
+    the mutation lock, before any brain call, so a switch lands at the next
+    turn boundary and never inside a turn. Omit it and the brain is fixed."""
     app = FastAPI(title="chessapp", lifespan=lambda _app: _lifespan())
     broadcaster = StateBroadcaster()
     if coordinator is None:
@@ -1806,6 +1820,11 @@ def create_app(
             if expected is not None and expected != ctx.board_version:
                 current = ctx.board_version
                 raise StaleVersionError(expected, current, _state_dict_unlocked(ctx))
+            if brain_switch is not None:
+                # The turn boundary (#434): the lock is held and no brain call
+                # of this interaction has run, so a switch asked for while the
+                # last turn ran lands here, whole.
+                brain_switch.at_boundary()
             yield
         finally:
             current_spans = None
@@ -3348,7 +3367,42 @@ def create_app(
             "skill_level": s.skill_level,
             "elo": s.elo,
             "agent_available": brain is not None,
+            **_brain_settings(),
         }
+
+    def _brain_settings() -> dict[str, Any]:
+        """The brain setting (#434): the choice, the brain serving now (the
+        two differ until the next turn boundary), whether that brain has yet to
+        finish a turn — the first one pays a model load and a cold cache, so
+        the UI can say so — and what may be chosen. A fixed brain reports no
+        choices."""
+        if brain_switch is None:
+            return {
+                "brain": ctx.settings.brain,
+                "brain_serving": None,
+                "brain_cold": False,
+                "brain_choices": [],
+            }
+        return {**brain_switch.status(), "brain_choices": list(BRAIN_CHOICES)}
+
+    @app.post("/api/settings/brain")
+    def set_brain(request: BrainRequest) -> dict[str, Any]:
+        """Choose Glitch's brain (#434). Stored now and persisted like every
+        setting; it takes over at the next turn boundary, never inside the turn
+        that may be running. Not a board mutation, so no lock and nothing is
+        broadcast. In direct mode it is stored for when the agent is back."""
+        if request.model not in BRAIN_CHOICES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown brain {request.model!r}; "
+                f"choose one of {', '.join(BRAIN_CHOICES)}",
+            )
+        if brain_switch is None and brain is not None:
+            raise HTTPException(
+                status_code=409, detail="this app's brain is fixed; it cannot switch"
+            )
+        ctx.settings.brain = request.model
+        return _brain_settings()
 
     @app.post("/api/settings/voice")
     def set_voice_output(request: VoiceOutputRequest) -> dict[str, Any]:

@@ -280,3 +280,17 @@ def test_the_cli_prints_a_table_and_json(tmp_path, capsys):
 
 def test_render_survives_an_empty_trace():
     assert "(none)" in render(summarize([]))
+
+
+def test_turns_are_filtered_by_the_brain_that_served_them():
+    """One process can serve several brains since #434; `--model` keeps a
+    report to one of them."""
+    served = {"manifest_id": "m2", "session": "s1", "experiment": ""}
+    report = summarize(
+        [
+            turn([call()], serving={**served, "model": "gemma-4-12b"}),
+            turn([call()], serving={**served, "model": "gemma-4-26b-a4b"}),
+        ],
+        model="gemma-4-12b",
+    )
+    assert sum(stats.n for stats in report.calls.values()) == 1

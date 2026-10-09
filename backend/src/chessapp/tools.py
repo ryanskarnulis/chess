@@ -83,6 +83,7 @@ from chessapp.ledger import (
 from chessapp.move_parts import PartsError
 from chessapp.profiles import (
     ASK_PLAYER_EXAMPLES,
+    BRAIN_CHOICES,
     DIFFICULTY_CONSTRAINT_RULE,
     KNOWN_CRUTCHES,
     MOVE_SOURCE_REQUIRED,
@@ -191,6 +192,11 @@ class Settings:
     tier: str | None = DEFAULT_TIER
     skill_level: int | None = None
     elo: int | None = None
+    # Which model Glitch thinks with (#434), one of `profiles.BRAIN_CHOICES`;
+    # `None` is the deployment's own (`LLAMACPP_MODEL`). Switched at the next
+    # turn boundary (`brain_switch.BrainSwitch`), never inside a turn. Tone and
+    # understanding only: Stockfish still plays, so it never moves strength.
+    brain: str | None = None
 
     def snapshot(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in dataclass_fields(self)}
@@ -226,6 +232,9 @@ def _valid_setting(name: str, value: Any) -> bool:
         )
     if name == "elo":
         return value is None or (isinstance(value, int) and ELO_MIN <= value <= ELO_MAX)
+    if name == "brain":
+        # A model since dropped from the list falls back to the default.
+        return value is None or value in BRAIN_CHOICES
     return False
 
 

@@ -556,6 +556,11 @@ def test_get_settings_returns_the_full_settings_document(client):
         # These tests build the app without a brain: direct mode, and the UI
         # renders that as a visible state rather than discovering it on a 503.
         "agent_available": False,
+        # No brain, so nothing to switch: the choice is stored, never served.
+        "brain": None,
+        "brain_serving": None,
+        "brain_cold": False,
+        "brain_choices": [],
     }
 
 

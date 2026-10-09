@@ -2,6 +2,7 @@
 
     python scripts/latency_report.py turns.jsonl [more.jsonl ...]
         [--since 2026-09-23T00:00] [--experiment NAME] [--manifest ID]
+        [--model gemma-4-12b]
         [--cold-gap-ms 5000] [--json]
 
 Reads the records `CHESSAPP_TRACE_PATH` collects — `turn`, `serving`,
@@ -195,6 +196,7 @@ def summarize(
     since: datetime | None = None,
     experiment: str | None = None,
     manifest: str | None = None,
+    model: str | None = None,
     cold_gap_ms: int = DEFAULT_COLD_GAP_MS,
 ) -> Report:
     report = Report()
@@ -223,10 +225,13 @@ def summarize(
         label = turn.get("serving") or {}
         if experiment is not None and label.get("experiment") != experiment:
             return False
+        # The brain that served the turn (#434): a process can serve several.
+        if model is not None and label.get("model") != model:
+            return False
         return manifest is None or label.get("manifest_id") == manifest
 
     turns = [r for r in current if r.get("kind") == "turn" and wanted(r)]
-    filtered = experiment is not None or manifest is not None
+    filtered = experiment is not None or manifest is not None or model is not None
     interactions = {t["interaction_id"] for t in turns if t.get("interaction_id")}
     contended = _overlapping(turns)
 
@@ -414,6 +419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--since", type=datetime.fromisoformat)
     parser.add_argument("--experiment")
     parser.add_argument("--manifest")
+    parser.add_argument("--model")
     parser.add_argument("--cold-gap-ms", type=int, default=DEFAULT_COLD_GAP_MS)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -425,6 +431,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         since=since,
         experiment=args.experiment,
         manifest=args.manifest,
+        model=args.model,
         cold_gap_ms=args.cold_gap_ms,
     )
     if args.json:

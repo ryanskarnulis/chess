@@ -12,7 +12,7 @@ Under `CHESSAPP_SAVE_DIR` (the `/data/saves` volume in the container):
 
 | File | Holds | Written |
 |---|---|---|
-| `settings.json` | difficulty, verbosity, voice | on every settings change, best-effort |
+| `settings.json` | difficulty, verbosity, voice, brain (#434) | on every settings change, best-effort |
 | `games/<name>.json` | a named save: the game plus the panel transcript | by `save_game`, atomically |
 | `live.json` | the live game: board, panel transcript, `game_id`, board version, the game's ledger (#372) | on every change, atomically, best-effort |
 | `conversations.json` | every delegate thread: turns, soft deletes, id counters, idempotency keys | on every change, atomically, best-effort |
