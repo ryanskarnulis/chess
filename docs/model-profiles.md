@@ -115,6 +115,7 @@ profile has:
   serves both modes)
 - the 12B's planner temperature of 0.3 and its token caps, carried over
 - all five crutches, so the default arm is like-for-like with gemma-4-12b
+  (`gemma-4-26b-a4b` has since dropped two, below)
 
 `check_profile.py --load` reported `thinking toggle: ok` for both on
 2026-10-03, and a request with the toggle off returned no reasoning. Replace
@@ -152,6 +153,27 @@ entries and profiles are gone:
 - **Agentic fine-tune:** sends `before_move` as the string `"7"`, which the
   schema refuses.
 - **Granite:** fills optional `ask_player` fields with the string `"None"`.
+
+### gemma-4-26b-a4b's crutches (2026-10-08, #432)
+
+The 26B keeps three of the five: `move_source_required`,
+`ask_player_examples` and `difficulty_constraint_rule`. Every arm ran the
+thinking planner on one server, interleaved, with paired seeds:
+
+| Measure | All five | Fewer | What the missing crutch cost |
+|---|---|---|---|
+| Probe, 26 dev items × 5 | 118/130 | none: 107/130 | pawn asks, `ordinal_stale` |
+| Probe, the six items that moved, × 5 | 26/30 | the two: 28/30 | without examples 23/30 (the pawn ask split into two `ask_player` calls); without `source` 24/30 (`ordinal_stale` played Nf3 with no source) |
+| Gate, 2 alternating blocks × 5 | 48 scenarios | the two: one regression | `constraint_rules_out_the_only_lever` 10/10 → 6/10 (it changed a setting the player had ruled out) |
+| Frontier `undo_then_ambiguous_bishop`, dev, 2 × 10 | 10/20 | without `pick_resubmit_script`: 13/20 | nothing (p = 0.51) |
+
+`undo_call_again` went with no loss: `undo_and_replace` and
+`undo_twice_and_replace` were 10/10 without it, as #430's rewording had
+predicted. Otherwise the gate's two arms differed only in single misses on
+both sides. The shipped three, checked with no override, came in 5/5 on
+both undo scenarios, both constraint scenarios, `ordinal_with_nothing_asked`,
+both ambiguous asks, both STT knight repairs and `long_capture` in all three
+conditions, with speech at 53/53.
 
 ## Crutches
 
@@ -191,5 +213,8 @@ CHESSAPP_CRUTCHES=none CHESSAPP_AGENT_EVALS=1 pytest tests/test_agent_evals.py
 CHESSAPP_CRUTCHES=undo_call_again,move_source_required chessapp
 ```
 
-`all` gives every crutch, and an unknown name refuses to start. The eval and
+`all` gives every crutch, and an unknown name refuses to start. The planner
+probe takes a crutch set per arm (`--arm bare:crutches=none`,
+`crutches=ask_player_examples+move_source_required`), so the sets
+interleave in one batch. The eval and
 frontier headers record the `crutches` a run used.
