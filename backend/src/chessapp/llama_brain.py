@@ -1580,7 +1580,9 @@ def create_llama_brain(
     profiles = {phase: profile_for(phase) for phase in models}
     if planner_temperature is FROM_PROFILE:
         planner_temperature = profiles[PLANNER].phase(PLANNER).temperature
-    labels = {"model": model, "server": base_url}
+    # The planner's profile beside the model (#434): with the brain setting a
+    # process serves more than one model, and every turn record names its own.
+    labels = {"model": model, "profile": profiles[PLANNER].name, "server": base_url}
     labels.update({f"{phase}_model": m for phase, m in models.items() if m != model})
     system_prompt: str | Callable[[], str] = (
         system_prompt_provider

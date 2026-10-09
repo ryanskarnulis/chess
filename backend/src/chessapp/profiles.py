@@ -66,6 +66,12 @@ KNOWN_CRUTCHES = frozenset(
     }
 )
 
+# The brains a player may pick for Glitch (#434), as llama-swap ids, each
+# with a profile and a pinned request fixture. Code-owned: nothing outside
+# the list can be chosen, and a model joins only once it has held the gate
+# (qwen38-27b waits on #436).
+BRAIN_CHOICES = ("gemma-4-12b", "gemma-4-26b-a4b")
+
 # What a profile is named when no file described the model.
 DEFAULT_NAME = "default"
 

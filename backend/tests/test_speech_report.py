@@ -62,6 +62,14 @@ def test_selection_by_time_and_route():
     assert speech_report.select(records, route="brain") == records[:1]
 
 
+def test_selection_by_the_brain_that_served_the_turn():
+    records = [
+        {**_turn("You took my pawn.", "2026-09-26T09:00:00"), "serving": {"model": m}}
+        for m in ("gemma-4-12b", "gemma-4-26b-a4b")
+    ]
+    assert speech_report.select(records, model="gemma-4-12b") == records[:1]
+
+
 def test_the_report_prints_the_denominator_the_families_and_the_lies():
     tally = speech_report.tally(
         [

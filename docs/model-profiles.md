@@ -63,6 +63,42 @@ python scripts/check_profile.py <model>          # leaves an unloaded model alon
 python scripts/check_profile.py <model> --load   # loads it to look
 ```
 
+## The brain setting
+
+The player picks Glitch's brain in the game settings (#434; the picker is
+#435). The choices are `profiles.BRAIN_CHOICES`, llama-swap ids that each
+have a profile and a pinned request fixture: `gemma-4-12b` and
+`gemma-4-26b-a4b`. A model joins only after it holds the gate (`qwen38-27b`
+waits on #436), and nothing outside the list can be chosen.
+
+- **API:** `GET /api/settings` reports `brain` (chosen), `brain_serving`,
+  `brain_cold` and `brain_choices`. `POST /api/settings/brain {"model": id}`
+  sets it: 422 for an id not on the list, 409 for an app whose brain was
+  injected (tests, evals). It is persisted in `settings.json` with the other
+  settings; an id later dropped from the list falls back to the default at
+  startup.
+- **Next turn boundary:** `brain_switch.BrainSwitch` is the app's brain. It
+  installs the choice as an interaction takes `ctx.mutation_lock`, before any
+  brain call. A turn holds that lock while it runs, so a switch asked for
+  mid-turn lands at the next interaction and no turn plans on one model and
+  narrates on another.
+- **What moves with it:** every phase runs on the chosen model with its own
+  profile (sampling, caps, thinking), and `ctx.crutches` follows that
+  profile. The board, a pending question and the record live in code, so the
+  new brain picks up where the old one stopped. Stockfish still plays, so
+  strength never changes.
+- **The default** is `LLAMACPP_MODEL`. The env knobs (`CHESSAPP_<PHASE>_MODEL`,
+  `CHESSAPP_CRUTCHES`, `CHESSAPP_PLANNER_TEMPERATURE`) shape only that
+  default brain; a picked brain uses its profile as is. Per-phase splits are
+  not a choice: two models never fit the 12 GB card together.
+- **The first turn after a switch is slow:** a model load plus the whole
+  history read with no cache. `brain_cold` stays true until that turn ends,
+  so the UI can say so.
+- **Attribution:** each brain gets its own serving manifest, written to the
+  trace when it starts serving, under one session id. Every turn record's
+  `serving` names its `model`, `profile` and `manifest_id`, and
+  `scripts/speech_report.py` and `scripts/latency_report.py` take `--model`.
+
 ## A model with no profile
 
 It runs on the built-in default profile (`profiles.DEFAULT_PROFILE`), and a

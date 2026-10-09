@@ -23,6 +23,7 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI
 
@@ -32,6 +33,7 @@ from chessapp.api import (
     planner_board_refresh,
 )
 from chessapp.brain import Brain
+from chessapp.brain_switch import BrainSwitch, BuiltBrain
 from chessapp.context_capture import ContextCapture, JsonlContextCapture
 from chessapp.coordinator import TurnCoordinator
 from chessapp.deadline import NARRATION_BUDGET_S
@@ -92,6 +94,7 @@ def build_app(
     context_capture: ContextCapture | None = None,
     phase_models: dict[str, str] | None = None,
     crutches: frozenset[str] | None = None,
+    provider_for: Callable[[str], ChatProvider] | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -107,6 +110,12 @@ def build_app(
     `phase_models` puts a phase on its own model (#375); a phase it leaves out
     runs on `model`. `crutches` is the 12B-only guidance the brain's offer and
     refusals carry (#375); `None` is the planner model's profile's.
+    Those three, and `planner_temperature`, are the deployment's default
+    brain's: a brain the player picks (`Settings.brain`, #434) runs every
+    phase on its own model and profile, swapped in at the next turn boundary
+    (`brain_switch.BrainSwitch`). `provider_for` makes the provider for a
+    model, for tests that switch brains without a server; an injected
+    `provider` alone is one model's, so that app has no switch.
 
     `agent_enabled=False` is **direct mode**: no brain is constructed at all, so
     `/api/command` 503s and the board plays the deterministic exchange. It needs
@@ -126,6 +135,19 @@ def build_app(
         if crutches is None
         else crutches,
     )
+    # The brain the player picked (#434), restored with the settings: it
+    # serves from the start, with its own profile's crutches. Only a brain
+    # assembly builds can be switched; an injected one (or an injected
+    # provider, which is one model's) serves as given.
+    switchable = (
+        brain is None
+        and agent_enabled
+        and (provider is None or provider_for is not None)
+    )
+    starting = (ctx.settings.brain if switchable else None) or model
+    default_crutches = ctx.crutches
+    if starting != model:
+        ctx.crutches = load_profile(starting).crutches
     # The game that was on the board when the app last stopped (#291). Before
     # anything reads the session, so the first state document a client gets is
     # the restored one.
@@ -185,15 +207,32 @@ def build_app(
     # What serves a turn, for the trace (#290). Only the brain built here can
     # say: an injected one brings no guarantee it knows its prompts or server.
     serving_identity = None
-    # The probes that learn what the server is running (#317), one per model a
-    # phase runs on (#375), bound below once the manifest they write to
-    # exists; the brain's listener reaches them through this name, so the two
-    # can be built in either order.
-    probes: list[ServingProbe] = []
-    if brain is None and agent_enabled:
-        brain = create_llama_brain(
+    brain_switch = None
+    # One serving session across every brain this process builds (#434), so
+    # each switch's manifest reads as the same run on another model.
+    serving_session = uuid4().hex[:12]
+
+    def build_brain(
+        brain_model: str,
+        brain_phase_models: dict[str, str] | None,
+        brain_crutches: frozenset[str],
+        brain_temperature: float | None,
+        brain_provider: ChatProvider | None,
+    ) -> BuiltBrain:
+        """A brain on `brain_model`, with its own serving manifest and probes.
+        Built once at startup and again by the brain switch (#434)."""
+        brain_models = {
+            phase: (brain_phase_models or {}).get(phase, brain_model)
+            for phase in PHASES
+        }
+        # The probes that learn what the server is running (#317), one per
+        # model a phase runs on (#375), bound below once the manifest they
+        # write to exists; the brain's listener reaches them through this
+        # name, so the two can be built in either order.
+        probes: list[ServingProbe] = []
+        built = create_llama_brain(
             base_url=llama_base_url,
-            model=model,
+            model=brain_model,
             dispatcher=registry,
             # The brain dispatches through the registry but is *offered* less
             # (`offered_tools` above), re-resolved per command so the offer
@@ -204,9 +243,9 @@ def build_app(
             # contract is static but rides the same provider seam.
             system_prompt_provider=lambda: system_prompt_for(ctx.settings.verbosity),
             planner_prompt_provider=lambda: PLANNER_PROMPT,
-            planner_temperature=planner_temperature,
-            provider=provider,
-            phase_models=phase_models,
+            planner_temperature=brain_temperature,
+            provider=brain_provider,
+            phase_models=brain_phase_models,
             capture=context_capture,
             # The brain's own two phases, live (`progress.py`). Nothing else
             # can see inside `get_agent_response`, and the narrator half of it
@@ -232,39 +271,87 @@ def build_app(
         )
         # Read off rather than assumed: a factory stubbed out in tests hands
         # back a brain with nothing to say about what serves it.
-        identity = getattr(brain, "serving_identity", None)
-        settings = getattr(brain, "client_settings", None)
-        if identity is not None:
-            # The configuration this process serves under (#317): the app's
-            # own settings as fact, the server's as learned. Written to the
-            # trace now and whenever it changes, and named on every turn.
-            manifest = ServingManifest(
-                model=model,
-                base_url=llama_base_url,
-                client={
-                    **(settings() if settings is not None else {}),
-                    "reaction_budget_s": NARRATION_BUDGET_S,
-                },
-                revision=app_revision(),
-                experiment=os.environ.get("CHESSAPP_EXPERIMENT", ""),
-                on_change=tracer.record if tracer is not None else None,
-                other_models=sorted(set(models.values()) - {model}),
-            )
-            if provider is None:
-                # Only a real server is asked what it runs: an injected
-                # provider has no server behind it to describe.
-                probes.extend(
-                    probes_for(
-                        manifest,
-                        base_url=llama_base_url,
-                        model=model,
-                        phase_models=models,
-                    )
+        identity = getattr(built, "serving_identity", None)
+        settings = getattr(built, "client_settings", None)
+        if identity is None:
+            return BuiltBrain(brain_model, built, brain_crutches)
+        # The configuration this brain serves under (#317): the app's own
+        # settings as fact, the server's as learned. Written to the trace when
+        # the brain starts serving and whenever it changes, and named on every
+        # turn.
+        manifest = ServingManifest(
+            model=brain_model,
+            base_url=llama_base_url,
+            client={
+                **(settings() if settings is not None else {}),
+                "reaction_budget_s": NARRATION_BUDGET_S,
+            },
+            revision=app_revision(),
+            experiment=os.environ.get("CHESSAPP_EXPERIMENT", ""),
+            session_id=serving_session,
+            on_change=tracer.record if tracer is not None else None,
+            other_models=sorted(set(brain_models.values()) - {brain_model}),
+        )
+        if brain_provider is None:
+            # Only a real server is asked what it runs: an injected
+            # provider has no server behind it to describe.
+            probes.extend(
+                probes_for(
+                    manifest,
+                    base_url=llama_base_url,
+                    model=brain_model,
+                    phase_models=brain_models,
                 )
-            manifest.announce()
+            )
 
-            def serving_identity() -> dict[str, str]:
-                return {**identity(), **manifest.label()}
+        def brain_identity() -> dict[str, str]:
+            return {**identity(), **manifest.label()}
+
+        return BuiltBrain(
+            brain_model,
+            built,
+            brain_crutches,
+            serving_identity=brain_identity,
+            on_installed=manifest.announce,
+        )
+
+    def build_for(chosen: str) -> BuiltBrain:
+        """The brain for a choice: the deployment's own wiring (env phase
+        splits, crutches, planner temperature) for its default model, and every
+        phase on the chosen model with that profile's settings otherwise
+        (#434)."""
+        if chosen == model:
+            return build_brain(
+                model,
+                phase_models,
+                default_crutches,
+                planner_temperature,
+                provider or (provider_for(model) if provider_for else None),
+            )
+        return build_brain(
+            chosen,
+            None,
+            load_profile(chosen).crutches,
+            FROM_PROFILE,
+            provider_for(chosen) if provider_for else None,
+        )
+
+    if switchable:
+        first = build_for(starting)
+        if first.on_installed is not None:
+            first.on_installed()
+        brain_switch = BrainSwitch(ctx, first, build=build_for, default=model)
+        brain = brain_switch
+        serving_identity = brain_switch.serving_identity
+    elif brain is None and agent_enabled:
+        # A fixed injected provider is one model's: no switch to offer.
+        fixed = build_brain(
+            model, phase_models, ctx.crutches, planner_temperature, provider
+        )
+        if fixed.on_installed is not None:
+            fixed.on_installed()
+        brain = fixed.brain
+        serving_identity = fixed.serving_identity
 
     return create_app(
         ctx,
@@ -276,6 +363,7 @@ def build_app(
         coordinator=coordinator,
         progress=progress,
         serving_identity=serving_identity,
+        brain_switch=brain_switch,
     )
 
 

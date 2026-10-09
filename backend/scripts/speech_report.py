@@ -1,7 +1,7 @@
 """Speech accuracy over a trace file: how often what Glitch says is true (#367).
 
     python scripts/speech_report.py turns.jsonl [more.jsonl ...]
-        [--since 2026-09-26T00:00] [--route brain] [--json]
+        [--since 2026-09-26T00:00] [--route brain] [--model gemma-4-12b] [--json]
 
     # the deployed app's trace
     docker exec chess-app-1 cat /data/saves/turns.jsonl > /tmp/turns.jsonl
@@ -40,14 +40,19 @@ def select(
     *,
     since: str | None = None,
     route: str | None = None,
+    model: str | None = None,
 ) -> list[dict[str, Any]]:
     """The records a report covers: turns at or after `since` (an ISO prefix
-    compared as text, like the trace's own `ts`), on `route` if given."""
+    compared as text, like the trace's own `ts`), on `route` if given, served
+    by `model` if given (`serving.model`; one process can serve several since
+    the brain setting, #434)."""
     chosen = []
     for record in records:
         if since and str(record.get("ts", "")) < since:
             continue
         if route and record.get("route") != route:
+            continue
+        if model and (record.get("serving") or {}).get("model") != model:
             continue
         chosen.append(record)
     return chosen
@@ -119,10 +124,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("traces", type=Path, nargs="+")
     parser.add_argument("--since", help="only turns at or after this ISO time")
     parser.add_argument("--route", help="only turns on this route")
+    parser.add_argument("--model", help="only turns this brain served")
     parser.add_argument("--json", action="store_true", help="print the summary dict")
     args = parser.parse_args(argv)
 
-    records = select(_read(args.traces), since=args.since, route=args.route)
+    records = select(
+        _read(args.traces), since=args.since, route=args.route, model=args.model
+    )
     result = tally(records)
     if args.json:
         print(json.dumps(result.as_dict(), indent=2))
