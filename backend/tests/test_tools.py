@@ -2143,16 +2143,18 @@ def test_a_mate_says_who_delivers_it(color, mate_in, side):
     "color, score_cp, mate_in, summary",
     [
         ("black", -654, None, "Stockfish has the player ahead by about 6.5 pawns."),
-        ("white", -654, None, "Stockfish has you ahead by about 6.5 pawns."),
+        ("white", -654, None, "Stockfish has the player behind by about 6.5 pawns."),
         ("white", 30, None, "Stockfish calls it about level."),
-        ("black", None, 2, "Stockfish sees a forced mate in 2 for you."),
+        ("black", None, 2, "Stockfish sees a forced mate in 2 against the player."),
+        ("white", None, 2, "Stockfish sees a forced mate in 2 for the player."),
     ],
 )
 def test_the_verdict_is_summarized_for_the_side_it_favours(
     color, score_cp, mate_in, summary
 ):
     """The direction in words, composed by code (#320): a 12B read a positive
-    `player_advantage_cp` for a player on Black as White's lead, 5 of 5."""
+    `player_advantage_cp` for a player on Black as White's lead, 5 of 5. Always
+    about the player, never "you" (#441)."""
     engine = FakeEngine(evaluation=Evaluation(score_cp=score_cp, mate_in=mate_in))
     session = GameSession(fen=BLACK_QUEEN_UP, player_color=color)
     registry = build_registry(ToolContext(session=session, engine=engine))

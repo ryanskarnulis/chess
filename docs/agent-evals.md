@@ -349,6 +349,16 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Targeted check 2026-10-09 on #441 (verdict wording).** The analysis summary
+always names the player now ("…has the player behind…"), never "you" for
+Glitch's lead. 26B: `my_mistake_is_mine`, both `advice_*`,
+`judgment_as_black`, `move_and_judgment`, `best_move_then_play` and
+`long_capture` in all three conditions, all 5/5; 12B: the six analysis
+scenarios, all 5/5. `judgment_question_routes_through_analysis` passed on
+both. Replays of the live "what's your plan here?" (the player a bishop
+down): the side was right 3/3, where it had been wrong 6/6 before. Speech was
+18/18 over the 9 replayed turns.
+
 **Targeted check 2026-10-08 on #440 (26B latency).** Two changes: the planner
 state's `castling` reasons, and the 26B narrator's `analysis_thinking = false`.
 Nine scenarios, 5 each, 45 samples in 5 m 18 s, all 5/5 with no escalation:
