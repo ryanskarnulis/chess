@@ -3,8 +3,8 @@
 # thinking toggle — served by ../llama-swap/config.yaml's entry of the same
 # name (QAT UD-Q4_K_XL, -ncmoe 17 + MTP drafter, ~60 tok/s).
 #
-# The planner's settings are measured (below); the rest are starting values
-# until the gate has run. Replace each with what the bake-off measures.
+# The planner's settings and the crutches are measured (below); the rest
+# are starting values. Replace each with what the bake-off measures.
 thinking_kwarg = "enable_thinking"
 
 quirks = [
@@ -12,15 +12,23 @@ quirks = [
     "A thinking narrator turn ran 504 tokens (~10 s); thinking off, ~30 tokens.",
 ]
 
-# The 12B's crutches, carried over so the default arm is like-for-like with
-# gemma-4-12b. #298 runs each candidate with and without them
-# (CHESSAPP_CRUTCHES=none); a model that holds the gate without them ships
-# without them.
+# Three of the 12B's five crutches, measured 2026-10-08 (#432) with the
+# thinking planner, each set against all five on one server, paired seeds:
+# - probe_planner, 26 dev items x 5: all five 118/130, none 107/130. On the
+#   six items that moved: only ask_player_examples + move_source_required
+#   28/30, all five 26/30, without ask_player_examples 23/30 (the pawn ask
+#   split into two ask_player calls), without move_source_required 24/30
+#   (ordinal_stale played Nf3 with no source).
+# - Full gate, two alternating blocks of 5: those two alone held everything
+#   but constraint_rules_out_the_only_lever, 10/10 -> 6/10 (it changed the
+#   difficulty or verbosity the player had ruled out), so
+#   difficulty_constraint_rule stays. undo_and_replace and
+#   undo_twice_and_replace were 10/10 without undo_call_again.
+# - Frontier undo_then_ambiguous_bishop (dev, 2 x 10): without
+#   pick_resubmit_script 13/20, with it 10/20 (p=0.51).
 crutches = [
     "move_source_required",
-    "undo_call_again",
     "ask_player_examples",
-    "pick_resubmit_script",
     "difficulty_constraint_rule",
 ]
 
