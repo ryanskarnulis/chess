@@ -9,6 +9,11 @@ answer reader) through a real `LlamaCppProvider` over a faked llama-server and
 compares the exact bodies it sent with the ones recorded from `main` before
 the change (`fixtures/gemma_4_12b_requests.json`).
 
+The default brain moved to gemma-4-26b-a4b (#433), so each pinned model has
+its own recording (`fixtures/<model>_requests.json`, dashes as underscores):
+the default's are the default config's bytes, and the 12B's stay pinned
+because it is still a brain the app can run.
+
 Re-record only for a change that is *meant* to move the bytes, and say so in
 its PR: `CHESSAPP_RECORD_GOLDEN=1 pytest tests/test_profile_bytes.py`.
 """
@@ -19,14 +24,23 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
+from chessapp.app import DEFAULT_MODEL
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
+from chessapp.profiles import PLANNER, load_profile
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
 from fakes import FakeEngine
 
-_GOLDEN = Path(__file__).parent / "fixtures" / "gemma_4_12b_requests.json"
+_PINNED = ("gemma-4-12b", "gemma-4-26b-a4b")
+
+
+def _golden(model: str) -> Path:
+    name = model.replace("-", "_") + "_requests.json"
+    return Path(__file__).parent / "fixtures" / name
+
 
 _BOARD = {
     "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -84,17 +98,17 @@ class _Server:
         return _tool_call("make_move", {"move": "e4", "source": "said_the_move"})
 
 
-def _requests() -> list[str]:
+def _requests(model: str) -> list[str]:
     server = _Server()
     client = httpx.Client(transport=httpx.MockTransport(server))
     ctx = ToolContext(session=GameSession(), engine=FakeEngine())
     registry = build_registry(ctx)
     brain = create_llama_brain(
         base_url="http://llm.test/v1",
-        model="gemma-4-12b",
+        model=model,
         dispatcher=registry,
         tool_definitions=lambda: brain_tool_definitions(registry, ctx),
-        provider=LlamaCppProvider("http://llm.test/v1", "gemma-4-12b", client=client),
+        provider=LlamaCppProvider("http://llm.test/v1", model, client=client),
     )
     brain.get_agent_response(_BOARD, "play e4")
     brain.get_agent_response(_BOARD, "how am I doing")
@@ -104,21 +118,31 @@ def _requests() -> list[str]:
     return server.bodies
 
 
-def test_the_default_config_sends_the_recorded_bytes():
-    sent = _requests()
+def test_the_default_model_is_pinned():
+    # A new default must come with its own recording, not ride on another's.
+    assert DEFAULT_MODEL in _PINNED
+
+
+@pytest.mark.parametrize("model", _PINNED)
+def test_each_pinned_model_sends_the_recorded_bytes(model):
+    sent = _requests(model)
+    golden = _golden(model)
     if os.environ.get("CHESSAPP_RECORD_GOLDEN"):
-        _GOLDEN.parent.mkdir(exist_ok=True)
-        _GOLDEN.write_text(json.dumps(sent, indent=1) + "\n")
-    recorded = json.loads(_GOLDEN.read_text())
+        golden.parent.mkdir(exist_ok=True)
+        golden.write_text(json.dumps(sent, indent=1) + "\n")
+    recorded = json.loads(golden.read_text())
     assert len(sent) == len(recorded)
     for index, (now, then) in enumerate(zip(sent, recorded, strict=True)):
         assert now == then, f"request {index} changed"
 
 
-def test_the_golden_covers_every_phase_and_both_thinking_settings():
+@pytest.mark.parametrize("model", _PINNED)
+def test_the_golden_covers_every_phase_and_both_thinking_settings(model):
     # What the pin is worth depends on what it drove: a fixture that never
     # reached a phase would pass any change to it.
-    recorded = [json.loads(body) for body in json.loads(_GOLDEN.read_text())]
+    profile = load_profile(model)
+    planning = profile.phase(PLANNER)
+    recorded = [json.loads(body) for body in json.loads(_golden(model).read_text())]
     planner = [r for r in recorded if "tools" in r]
     words = [r for r in recorded if "tools" not in r]
     # An analysis tool's answer turns thinking on for the words about it.
@@ -126,6 +150,9 @@ def test_the_golden_covers_every_phase_and_both_thinking_settings():
         False,
         True,
     }
-    assert {r["max_tokens"] for r in planner} == {2048}
+    assert {r["chat_template_kwargs"]["enable_thinking"] for r in planner} == {
+        planning.thinking
+    }
+    assert {r["max_tokens"] for r in planner} == {planning.max_tokens}
     assert {r["max_tokens"] for r in words} == {4096, 16}
-    assert {r["temperature"] for r in planner} == {0.3}
+    assert {r["temperature"] for r in planner} == {planning.temperature}

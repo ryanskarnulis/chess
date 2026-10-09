@@ -90,7 +90,12 @@ existed:
 The file's comments hold the measurement behind every number.
 `tests/test_profile_bytes.py` pins that the default config sends exactly the
 bytes recorded from `main` before #375: every phase, with thinking both off
-and on. Re-record that fixture only for a change that is meant to move the
+and on. Since #433 the default brain is gemma-4-26b-a4b (`DEFAULT_MODEL` in
+`app.py`, `LLAMACPP_MODEL` in `docker-compose.yml`), and the test pins each
+model it lists with its own fixture (`fixtures/<model>_requests.json`): the
+26B's are the default config's bytes, and the 12B's stay pinned because it
+is still a brain the app can run. The default must be one of the pinned
+models. Re-record a fixture only for a change that is meant to move the
 bytes, and say so in its PR.
 
 `CHESSAPP_PLANNER_TEMPERATURE` still overrides the planner's temperature, as

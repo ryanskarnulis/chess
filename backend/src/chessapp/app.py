@@ -73,7 +73,7 @@ from chessapp.voice import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_LLAMA_BASE_URL = "http://127.0.0.1:8200/v1"
-DEFAULT_MODEL = "gemma-4-12b"
+DEFAULT_MODEL = "gemma-4-26b-a4b"
 
 
 def build_app(
