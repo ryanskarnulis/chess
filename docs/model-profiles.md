@@ -68,9 +68,10 @@ python scripts/check_profile.py <model> --load   # loads it to look
 The player picks Glitch's brain in the game settings (#434; the picker is
 #435, in Options, naming brains by feel: Fast, Balanced, Deep). Voice cannot
 change it: there is no tool for it, so the picker is the only way. The choices are `profiles.BRAIN_CHOICES`, llama-swap ids that each
-have a profile and a pinned request fixture: `gemma-4-12b` and
-`gemma-4-26b-a4b`. A model joins only after it holds the gate (`qwen38-27b`
-waits on #436), and nothing outside the list can be chosen.
+have a profile and a pinned request fixture: `gemma-4-12b`,
+`gemma-4-26b-a4b` and `qwen38-27b`. Nothing outside the list can be chosen.
+The default brain holds the gate; `qwen38-27b`, the slow "Deep" option,
+joined without a gate run by Ryan's call (#436).
 
 - **API:** `GET /api/settings` reports `brain` (chosen), `brain_serving`,
   `brain_cold` and `brain_choices`. `POST /api/settings/brain {"model": id}`
@@ -167,6 +168,15 @@ each carried value with what the bake-off measures, and say so in the file.
 `qwen38-27b` serves `-c 32768`, which is enough for the 32k input budget,
 but it is a chess-only entry. It runs one slot, so it serves one request at
 a time.
+
+`qwen38-27b` is the picker's "Deep" brain (#436). Its planner thinks with
+the 2,048-token cap: at ~8 tok/s that is ~256 s, just inside the provider's
+300 s read timeout, so a bigger cap would end a runaway on the timeout
+instead. Its narrator never thinks (`analysis_thinking = false`), since one
+thinking narrator turn took ~93 s. It keeps all five crutches, unmeasured,
+and has had no gate run. One known limit: the 60 s planning deadline
+(`llama_brain._DEFAULT_PLANNING_DEADLINE_S`) is checked between planner
+round trips, so a multi-step ask can stop after one or two ~30 s calls.
 
 ### The planner screens (2026-10-03 and 2026-10-07)
 

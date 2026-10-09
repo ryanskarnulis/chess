@@ -34,7 +34,7 @@ from chessapp.provider import LlamaCppProvider
 from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
 from fakes import FakeEngine
 
-_PINNED = ("gemma-4-12b", "gemma-4-26b-a4b")
+_PINNED = ("gemma-4-12b", "gemma-4-26b-a4b", "qwen38-27b")
 
 
 def _golden(model: str) -> Path:
