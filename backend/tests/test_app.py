@@ -317,7 +317,7 @@ def test_build_app_from_env_honors_the_llamacpp_env_vars(monkeypatch):
 
 def test_build_app_from_env_defaults_match_the_agent_standard(monkeypatch):
     # No env set: falls back to the workspace-standard llama-swap endpoint
-    # and model name (127.0.0.1:8200/v1, gemma-4-12b), not the old
+    # and model name (127.0.0.1:8200/v1, gemma-4-26b-a4b, #433), not the old
     # single-server localhost:8080 defaults.
     captured: dict[str, str] = {}
 
@@ -333,7 +333,7 @@ def test_build_app_from_env_defaults_match_the_agent_standard(monkeypatch):
     build_app_from_env()
 
     assert captured["base_url"] == DEFAULT_LLAMA_BASE_URL == "http://127.0.0.1:8200/v1"
-    assert captured["model"] == DEFAULT_MODEL == "gemma-4-12b"
+    assert captured["model"] == DEFAULT_MODEL == "gemma-4-26b-a4b"
 
 
 # --- Direct mode is selectable ----------------------------------------------

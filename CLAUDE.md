@@ -32,7 +32,7 @@ CHESSAPP_AGENT_FRONTIER=1 pytest tests/test_agent_frontier.py -v -s   # frontier
 python scripts/frontier_report.py trend                  # frontier history, per split
 python scripts/speech_report.py /tmp/turns.jsonl          # speech accuracy of a trace (docs/speech-accuracy.md)
 CHESSAPP_TRAJ_SEED=7 pytest tests/test_trajectories.py -k replay -s   # replay one composed walk
-python scripts/check_profile.py gemma-4-12b              # a model's profile vs its server (docs/model-profiles.md)
+python scripts/check_profile.py gemma-4-26b-a4b          # a model's profile vs its server (docs/model-profiles.md)
 ```
 
 Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.

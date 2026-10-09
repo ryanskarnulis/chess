@@ -152,6 +152,7 @@ from chessapp.api import (
     planner_board_refresh,
 )
 from chessapp.app import (
+    DEFAULT_MODEL,
     _context_capture_from_env,
     _planner_temperature_from_env,
     crutches_from_env,
@@ -210,7 +211,7 @@ pytestmark = pytest.mark.skipif(
 # Same env names the app uses (agent-standard model profile); the defaults are
 # build_app's, so the eval hits the same runtime a delegate call would.
 LLAMACPP_BASE_URL = os.environ.get("LLAMACPP_BASE_URL", "http://127.0.0.1:8200/v1")
-LLAMACPP_MODEL = os.environ.get("LLAMACPP_MODEL", "gemma-4-12b")
+LLAMACPP_MODEL = os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL)
 STOCKFISH_PATH = os.environ.get("CHESSAPP_STOCKFISH", "/usr/bin/stockfish")
 
 # The planner phase's sampling temperature, resolved by the *same function*

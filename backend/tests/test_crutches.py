@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from chessapp.app import crutches_from_env
+from chessapp.app import DEFAULT_MODEL, crutches_from_env
 from chessapp.coordinator import TurnCoordinator
 from chessapp.game import GameSession
 from chessapp.profiles import (
@@ -158,7 +158,7 @@ def test_the_app_gives_the_context_the_planners_crutches(monkeypatch):
 
     monkeypatch.setattr(chessapp.app, "build_registry", spy)
     chessapp.app.build_app(agent_enabled=False)
-    assert seen["crutches"] == KNOWN_CRUTCHES
+    assert seen["crutches"] == load_profile(DEFAULT_MODEL).crutches
     chessapp.app.build_app(
         agent_enabled=False, phase_models={"planner": "unprofiled-model"}
     )

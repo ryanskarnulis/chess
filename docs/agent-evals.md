@@ -349,6 +349,15 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**gemma-4-26b-a4b is the default brain (#433, #298 step 3).** The deployed
+container and `DEFAULT_MODEL` both name it now, for all three phases, so a
+bare gate run (`LLAMACPP_MODEL` unset) measures the 26B. The full gate it
+holds is the #431 run below (51/56, `long_capture` 5/5 ×3). That run used
+all five crutches. #432 then dropped `undo_call_again` and
+`pick_resubmit_script`, and a targeted 12-scenario check on the shipped
+profile came back 5/5 on every scenario (`docs/model-profiles.md`). To gate
+the 12B now, set `LLAMACPP_MODEL=gemma-4-12b`.
+
 **Gate run 2026-10-08 on gemma-4-26b-a4b (#431, #298 step 1).** The brain
 Ryan chose, with its thinking planner, after #429 and #430. Full gate on
 `f11ac1c`: **51 of 56 passed** in 49 m 44 s; `long_capture` and

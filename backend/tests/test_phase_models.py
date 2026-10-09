@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from chessapp.app import phase_models_from_env
+from chessapp.app import DEFAULT_MODEL, phase_models_from_env
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
 from chessapp.profiles import ANSWER, NARRATOR, PLANNER
@@ -94,7 +94,9 @@ def test_every_phase_runs_on_llamacpp_model_unless_told_otherwise(monkeypatch):
         "CHESSAPP_ANSWER_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
-    assert phase_models_from_env() == dict.fromkeys((PLANNER, NARRATOR, ANSWER), GEMMA)
+    assert phase_models_from_env() == dict.fromkeys(
+        (PLANNER, NARRATOR, ANSWER), DEFAULT_MODEL
+    )
 
     monkeypatch.setenv("LLAMACPP_MODEL", "base")
     monkeypatch.setenv("CHESSAPP_PLANNER_MODEL", "parser")
