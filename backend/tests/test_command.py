@@ -104,6 +104,21 @@ def test_brain_view_says_what_each_capture_takes():
     assert board_state["captures"] == {"exd5": "pawn"}
 
 
+def test_brain_view_says_why_a_castle_is_not_on_the_menu():
+    """`castling` beside `legal_moves` (#440): a FEN that still says KQkq and a
+    menu with no castle left the planner to work out why, at up to 4,096
+    thinking tokens."""
+    ctx = ToolContext(session=GameSession())
+    for san in ("e4", "e5"):
+        assert ctx.session.submit_move(san).legal
+    app, brain = scripted_app(ctx, AgentResponse(text="hello"))
+    TestClient(app).post("/api/command", json={"text": "castle instead"})
+    board_state, _ = brain.calls[0]
+    assert board_state["castling"]["kingside"] == (
+        "the bishop on f1 and the knight on g1 are in the way"
+    )
+
+
 def test_brain_view_is_agent_facing_not_the_ui_state():
     """The brain reasons from a purpose-made view — board truth plus the
     player's color and check status — never the UI state document, whose

@@ -12,7 +12,8 @@ writing its profile, not editing code.
 | `[sampling]` `temperature`, `top_p`, `top_k` | Sent on every request. A key left out is not sent, so the server's default applies. |
 | `thinking_kwarg` | The `chat_template_kwargs` key that toggles the thinking channel (`enable_thinking` for Gemma). `""` means the model has none, and no `chat_template_kwargs` is sent. |
 | `[phases.planner\|narrator\|answer]` `temperature`, `max_tokens` | Per-phase knobs. A phase without a `temperature` samples at `sampling.temperature`. A phase left out keeps the default caps. |
-| `[phases.planner]` `thinking` | `true` makes the planner reason before every call, not only after an analysis tool has answered (#298). Planner only: the narrator's thinking stays the brain's rule. Default `false`. |
+| `[phases.planner]` `thinking` | `true` makes the planner reason before every call, not only after an analysis tool has answered (#298). Planner only. Default `false`. |
+| `[phases.narrator]` `analysis_thinking` | The brain's rule turns the narrator's thinking on once an analysis tool has answered. `false` keeps those words a plain call (#440). Narrator only. Default `true`. |
 | `crutches` | Guidance that exists only because this model needed it (below). |
 | `quirks` | Measured standing facts about the model, as text, for the manifest and the reader. |
 

@@ -10,6 +10,8 @@ thinking_kwarg = "enable_thinking"
 quirks = [
     # One narrator-shaped sample each way, 2026-10-03 (#298 setup).
     "A thinking narrator turn ran 504 tokens (~10 s); thinking off, ~30 tokens.",
+    # The live #440 game and its replays, 2026-10-08.
+    "Over analysis results a thinking narrator ran 500-2,300 tokens (11-53 s).",
 ]
 
 # Three of the 12B's five crutches, measured 2026-10-08 (#432) with the
@@ -52,8 +54,16 @@ temperature = 0.3
 max_tokens = 4096
 thinking = true
 
+# The narrator says its words about an analysis result without thinking
+# first (#440). Live on the 26B default, a thinking narrator spent 500-2,300
+# tokens on them (11-53 s, and one 60 s timeout that left the player a canned
+# "say it again?"). Replayed 3x each on the live positions ("how am I doing?",
+# "give me a hint", "what's your plan here?"): 16-61 s thinking, 5-11 s not,
+# speech 12/13 vs 12/14 claims backed, the misses the same verdict misread in
+# both arms.
 [phases.narrator]
 max_tokens = 4096
+analysis_thinking = false
 
 [phases.answer]
 max_tokens = 16

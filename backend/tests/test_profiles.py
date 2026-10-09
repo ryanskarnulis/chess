@@ -128,6 +128,9 @@ def test_a_phase_left_out_keeps_the_default_caps():
         # Only the planner's thinking is a profile's to set (#298).
         "[phases.narrator]\nthinking = true\n",
         '[phases.planner]\nthinking = "yes"\n',
+        # And only the narrator's analysis thinking (#440).
+        "[phases.planner]\nanalysis_thinking = false\n",
+        '[phases.narrator]\nanalysis_thinking = "no"\n',
         "extra = 1\n",
         "not toml = = 1\n",
     ],
@@ -152,6 +155,25 @@ def test_a_planner_profile_can_think_and_the_factory_says_so():
     assert brain.planner_thinking is True
     # gemma-4-12b, the shipped brain, still never thinks to plan.
     assert load_profile("gemma-4-12b").phase(PLANNER).thinking is False
+
+
+def test_a_narrator_profile_can_turn_off_thinking_about_analysis():
+    profile = parse_profile(
+        "t", "[phases.narrator]\nanalysis_thinking = false\n", "test"
+    )
+    assert profile.phase(NARRATOR).analysis_thinking is False
+    assert profile.describe()["phases"]["narrator"]["analysis_thinking"] is False
+    assert DEFAULT_PROFILE.phase(NARRATOR).analysis_thinking is True
+    brain = create_llama_brain(
+        base_url="http://llm.test/v1",
+        model="t",
+        dispatcher=build_registry(ToolContext(session=GameSession())),
+        tool_definitions=[],
+        provider=LlamaCppProvider("http://llm.test/v1", "t", profile=profile),
+    )
+    assert brain.narrator_analysis_thinking is False
+    # gemma-4-12b's narrator still thinks about an analysis result.
+    assert load_profile("gemma-4-12b").phase(NARRATOR).analysis_thinking is True
 
 
 def test_the_factory_applies_the_profile_per_phase():

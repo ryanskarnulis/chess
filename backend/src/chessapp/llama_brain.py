@@ -348,6 +348,9 @@ class LlamaBrain:
     # The planner reasons before every call, not only after analysis: the
     # planner profile's `thinking` (#298). Off for gemma-4-12b.
     planner_thinking: bool = False
+    # The narrator thinks once an analysis tool has answered: the narrator
+    # profile's `analysis_thinking` (#440). On for gemma-4-12b.
+    narrator_analysis_thinking: bool = True
     max_iterations: int = _DEFAULT_MAX_ITERATIONS
     max_corrections: int = _DEFAULT_MAX_CORRECTIONS
     # The per-turn tool-work and wall-clock budgets (#288; see the module
@@ -1259,8 +1262,11 @@ class LlamaBrain:
 
     def _thinking(self, run: _RunState) -> bool:
         """Thinking is off until an analysis tool has answered; from then on
-        the run is reasoning about a position, not parsing a move."""
-        if any(r["name"] in _ANALYSIS_TOOLS for r in run.tool_results):
+        the run is reasoning about a position, not parsing a move — unless
+        the narrator's profile says its words need no thinking (#440)."""
+        if self.narrator_analysis_thinking and any(
+            r["name"] in _ANALYSIS_TOOLS for r in run.tool_results
+        ):
             return True
         return self.enable_thinking
 
@@ -1594,6 +1600,7 @@ def create_llama_brain(
         planner_prompt=planner_prompt,
         enable_thinking=enable_thinking,
         planner_thinking=profiles[PLANNER].phase(PLANNER).thinking,
+        narrator_analysis_thinking=profiles[NARRATOR].phase(NARRATOR).analysis_thinking,
         max_iterations=max_iterations,
         max_corrections=max_corrections,
         planner_temperature=planner_temperature,
