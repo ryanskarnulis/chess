@@ -166,7 +166,7 @@ from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
-from chessapp.profiles import PLANNER, load_profile
+from chessapp.profiles import NARRATOR, PLANNER, load_profile
 from chessapp.provider import providers_for
 from chessapp.serving import ServingManifest, app_revision, probes_for
 from chessapp.speech_accuracy import Tally, score_record, unbacked
@@ -1086,6 +1086,12 @@ def _assert_loop_budget(run: EvalRun) -> None:
 # `thinking`. Off on gemma-4-12b, where every assert below reads as it did.
 _PLANNER_THINKS = load_profile(phase_models_from_env()[PLANNER]).phase(PLANNER).thinking
 
+# Whether the narrator thinks once an analysis tool has answered (#440): the
+# narrator profile's `analysis_thinking`. On for gemma-4-12b.
+_NARRATOR_ANALYSIS_THINKS = (
+    load_profile(phase_models_from_env()[NARRATOR]).phase(NARRATOR).analysis_thinking
+)
+
 
 def _unbidden(call: ModelCall) -> bool:
     """A call that thought when the brain's rule did not ask it to: thinking
@@ -1347,8 +1353,8 @@ def test_eval_judgment_question_routes_through_analysis(eval_app: EvalApp) -> No
     # puts the judgment into words — thinks.
     assert len(run.model_calls) >= 3, "expected a tool turn, a note, and the narrator"
     _assert_thinking_starts_off(run)
-    assert run.model_calls[-1].thinking is True, (
-        "the turn commenting on an analysis result must run with thinking ON"
+    assert run.model_calls[-1].thinking is _NARRATOR_ANALYSIS_THINKS, (
+        "the turn commenting on an analysis result thinks as its profile says"
     )
     assert run.duration < _ANALYSIS_CEILING_S
 
@@ -4112,8 +4118,8 @@ def test_eval_move_and_judgment(engine: EnginePlayer) -> None:
         assert not any(_unbidden(call) for call in calls[:-1]), (
             "every planner turn is a parse, analysis result in context or not"
         )
-        assert calls[-1].thinking is True, (
-            "the turn that puts an evaluation into words must think"
+        assert calls[-1].thinking is _NARRATOR_ANALYSIS_THINKS, (
+            "the turn that puts an evaluation into words thinks as its profile says"
         )
 
     floor = _FLOORS["move_and_judgment"]
@@ -4481,9 +4487,9 @@ def test_eval_best_move_then_play(engine: EnginePlayer) -> None:
         assert not any(_unbidden(call) for call in calls[:-1]), (
             "every planner turn is a parse, analysis result in context or not"
         )
-        assert calls[-1].thinking is True, (
+        assert calls[-1].thinking is _NARRATOR_ANALYSIS_THINKS, (
             "an analysis result landed this turn, so the narrator reasons about "
-            "it — the OFF→ON flip is `llama_brain._thinking`"
+            "it unless its profile says not to — `llama_brain._thinking`"
         )
 
     floor = _FLOORS["best_move_then_play"]

@@ -731,6 +731,50 @@ def test_a_takeback_unmakes_the_castling_too():
     assert status["white"]["rights"] == ["kingside", "queenside"]
 
 
+# --- castling options: why a castle the FEN allows is not on the menu (#440) --
+
+
+def test_castling_options_name_what_stands_in_the_way():
+    # The live #440 board: KQkq in the FEN, no castle in `legal_moves`.
+    session = GameSession(
+        fen="rnbqkb1r/p1pppppp/7n/1p6/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
+    )
+    assert session.castling_options() == {
+        "kingside": "the bishop on f1 is in the way",
+        "queenside": (
+            "the knight on b1, the bishop on c1 and the queen on d1 are in the way"
+        ),
+    }
+
+
+def test_castling_options_give_the_san_of_a_legal_castle():
+    session = GameSession(fen="r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
+    assert session.castling_options() == {"kingside": "O-O", "queenside": "O-O-O"}
+
+
+def test_castling_options_say_why_an_unblocked_castle_is_refused():
+    lost = GameSession(fen="r3k2r/8/8/8/8/8/8/1R2K2R w Kkq - 0 1")
+    assert lost.castling_options() == {
+        "kingside": "O-O",
+        "queenside": "no longer allowed: the king or that rook has moved",
+    }
+    checked = GameSession(fen="r3k2r/8/8/8/4r3/8/8/R3K2R w KQkq - 0 1")
+    assert set(checked.castling_options().values()) == {"not while in check"}
+    crossed = GameSession(fen="r3k2r/8/8/8/8/8/5r2/R3K2R w KQkq - 0 1")
+    assert crossed.castling_options() == {
+        "kingside": "the king would cross or land on f1, which is attacked",
+        "queenside": "O-O-O",
+    }
+
+
+def test_castling_options_are_empty_once_the_game_is_over():
+    session = GameSession(
+        fen="r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"
+    )
+    assert session.submit_move("Qxf7#").legal
+    assert session.castling_options() == {}
+
+
 # --- legal captures: the victim SAN cannot name -----------------------------
 
 

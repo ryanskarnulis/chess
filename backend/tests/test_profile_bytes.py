@@ -29,7 +29,7 @@ import pytest
 from chessapp.app import DEFAULT_MODEL
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
-from chessapp.profiles import PLANNER, load_profile
+from chessapp.profiles import NARRATOR, PLANNER, load_profile
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
 from fakes import FakeEngine
@@ -137,7 +137,7 @@ def test_each_pinned_model_sends_the_recorded_bytes(model):
 
 
 @pytest.mark.parametrize("model", _PINNED)
-def test_the_golden_covers_every_phase_and_both_thinking_settings(model):
+def test_the_golden_covers_every_phase_and_its_thinking_settings(model):
     # What the pin is worth depends on what it drove: a fixture that never
     # reached a phase would pass any change to it.
     profile = load_profile(model)
@@ -145,10 +145,12 @@ def test_the_golden_covers_every_phase_and_both_thinking_settings(model):
     recorded = [json.loads(body) for body in json.loads(_golden(model).read_text())]
     planner = [r for r in recorded if "tools" in r]
     words = [r for r in recorded if "tools" not in r]
-    # An analysis tool's answer turns thinking on for the words about it.
+    # An analysis tool's answer turns thinking on for the words about it,
+    # unless the narrator's profile says not to (#440).
+    analysis = profile.phase(NARRATOR).analysis_thinking
     assert {r["chat_template_kwargs"]["enable_thinking"] for r in words} == {
         False,
-        True,
+        analysis,
     }
     assert {r["chat_template_kwargs"]["enable_thinking"] for r in planner} == {
         planning.thinking

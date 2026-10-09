@@ -1443,6 +1443,21 @@ def test_a_thinking_planner_reasons_on_every_call_but_the_narrator_does_not():
     assert [c["enable_thinking"] for c in provider.calls] == [True, True, False]
 
 
+def test_a_narrator_profile_can_keep_analysis_words_unthought():
+    # #440: gemma-4-26b-a4b's narrator thought 500-2,300 tokens over an
+    # analysis result (11-53 s) for words it said as well without; its
+    # profile's `analysis_thinking = false` keeps that narration a plain call.
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn("evaluated the position"),
+        text_turn("up two pawns"),
+        planner_thinking=True,
+        narrator_analysis_thinking=False,
+    )
+    brain.get_agent_response(board_state={}, command="how am I doing?")
+    assert [c["enable_thinking"] for c in provider.calls] == [True, True, False]
+
+
 def test_thinking_can_be_forced_on_for_the_whole_run():
     brain, provider = make_brain(text_turn("analysis"), enable_thinking=True)
     brain.get_agent_response(board_state={}, command="was that a blunder?")

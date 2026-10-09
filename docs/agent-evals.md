@@ -349,6 +349,17 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Targeted check 2026-10-08 on #440 (26B latency).** Two changes: the planner
+state's `castling` reasons, and the 26B narrator's `analysis_thinking = false`.
+Nine scenarios, 5 each, 45 samples in 5 m 18 s, all 5/5 with no escalation:
+`my_mistake_is_mine`, `advice_is_engine_backed`,
+`advice_capture_survives_guard`, `judgment_as_black`, `move_and_judgment`,
+`best_move_then_play` and `long_capture` in all three conditions. The
+unreported `judgment_question_routes_through_analysis` and
+`honest_about_an_illegal_move` passed too, their thinking asserts now following
+the narrator profile. Replays of the live game's slow turns: "castle instead"
+went from 64–92 s to 10–36 s, and analysis turns from 16–61 s to 5–11 s.
+
 **gemma-4-26b-a4b is the default brain (#433, #298 step 3).** The deployed
 container and `DEFAULT_MODEL` both name it now, for all three phases, so a
 bare gate run (`LLAMACPP_MODEL` unset) measures the 26B. The full gate it

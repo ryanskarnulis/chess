@@ -517,6 +517,7 @@ def _agent_state_dict(ctx: ToolContext) -> dict[str, Any]:
         "captured": session.captured_pieces(),
         "legal_moves": session.legal_moves(),
         "captures": session.legal_captures(),
+        "castling": session.castling_options(),
         "opening": openings.opening_of(session),
         "results": ctx.results.tally(),
         "saved_games": saved_game_names(ctx),
@@ -614,6 +615,7 @@ _REFRESH_KEYS = (
     "game_over",
     "legal_moves",
     "captures",
+    "castling",
 )
 
 

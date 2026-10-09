@@ -567,6 +567,85 @@ class GameSession:
                 )
         return captures
 
+    def castling_options(self) -> dict[str, str]:
+        """Each castle the side to move could ask for, by side: its SAN when
+        it is legal, otherwise why not, from the board.
+
+        `{"kingside": "the bishop on f1 is in the way", "queenside": "O-O-O"}`.
+        A FEN's castling field says what may still happen *some day*, and
+        `legal_moves` only what may happen now; with `KQkq` in one and no
+        castle in the other, gemma-4-26b-a4b spent its whole 4,096-token
+        planner budget asking itself why (#440). The reason is the board's,
+        stated the way the rule is: no rights left, in check, a piece between
+        king and rook, or a square the king crosses or lands on attacked.
+        Empty once the game is over, like `legal_moves`.
+        """
+        if self.is_game_over():
+            return {}
+        board = self._board
+        color = board.turn
+        king = board.king(color)
+        rank = 0 if color == chess.WHITE else 7
+        options: dict[str, str] = {}
+        for side, rook_file, path_files in (
+            ("kingside", 7, (5, 6)),
+            ("queenside", 0, (3, 2)),
+        ):
+            rook = chess.square(rook_file, rank)
+            has_rights = (
+                board.has_kingside_castling_rights(color)
+                if side == "kingside"
+                else board.has_queenside_castling_rights(color)
+            )
+            castle = next(
+                (
+                    move
+                    for move in board.legal_moves
+                    if (
+                        board.is_kingside_castling(move)
+                        if side == "kingside"
+                        else board.is_queenside_castling(move)
+                    )
+                ),
+                None,
+            )
+            if castle is not None:
+                options[side] = board.san(castle)
+            elif not has_rights or king is None:
+                options[side] = "no longer allowed: the king or that rook has moved"
+            elif board.is_check():
+                options[side] = "not while in check"
+            elif blockers := [
+                square
+                for square in chess.SquareSet(chess.between(king, rook))
+                if board.piece_at(square) is not None
+            ]:
+                pieces = [
+                    f"the {chess.piece_name(board.piece_type_at(square))} on "
+                    f"{chess.square_name(square)}"
+                    for square in blockers
+                ]
+                named = (
+                    pieces[0]
+                    if len(pieces) == 1
+                    else f"{', '.join(pieces[:-1])} and {pieces[-1]}"
+                )
+                verb = "is" if len(pieces) == 1 else "are"
+                options[side] = f"{named} {verb} in the way"
+            else:
+                attacked = [
+                    chess.square_name(chess.square(file, rank))
+                    for file in path_files
+                    if board.is_attacked_by(not color, chess.square(file, rank))
+                ]
+                options[side] = (
+                    f"the king would cross or land on {', '.join(attacked)}, "
+                    "which is attacked"
+                    if attacked
+                    else "not legal now"
+                )
+        return options
+
     def legal_destinations(self) -> dict[str, list[str]]:
         """Legal moves grouped by origin square, in coordinate form
         (`"e2": ["e3", "e4"]`), for a board UI's move hints. Empty once the
