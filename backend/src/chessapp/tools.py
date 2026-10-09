@@ -1555,22 +1555,27 @@ VERDICT_LEVEL_CP = 50
 
 
 def _verdict_summary(advantage: int | None, mate: dict[str, Any] | None) -> str:
-    """The engine's verdict as one sentence, in `describe_position`'s voice:
-    "the player" is the human and "you" is the narrator (#320).
+    """The engine's verdict as one sentence, always about "the player" (#320),
+    ahead or behind, the side `player_advantage_cp` is scored from.
 
     Composed by code for `_move_summary`'s reason. A 12B handed
     `player_advantage_cp: 654` for a player on Black wrote "you are down by
     about 654 centipawns, meaning White has a significant advantage" in its
     note, 5 samples of 5, and the narrator said "White's up big" to a player
     a queen up: the prior that a positive score is White's beat the key's
-    name. The numbers stay on the payload for every other reader."""
+    name. The numbers stay on the payload for every other reader.
+
+    Never "you" for the narrator's own side, though `describe_position` uses
+    it: the narrator says "you" to the player in every reply, and
+    gemma-4-26b-a4b read "Stockfish has you ahead" as the player's lead 6 of 6
+    times, telling a player a bishop down they were winning (#441)."""
     if mate is not None:
-        side = "the player" if mate["for"] == "player" else "you"
-        return f"Stockfish sees a forced mate in {mate['in']} for {side}."
+        side = "for" if mate["for"] == "player" else "against"
+        return f"Stockfish sees a forced mate in {mate['in']} {side} the player."
     if advantage is None or abs(advantage) < VERDICT_LEVEL_CP:
         return "Stockfish calls it about level."
-    side = "the player" if advantage > 0 else "you"
-    return f"Stockfish has {side} ahead by about {abs(advantage) / 100:.1f} pawns."
+    side = "ahead" if advantage > 0 else "behind"
+    return f"Stockfish has the player {side} by about {abs(advantage) / 100:.1f} pawns."
 
 
 def _search(depth: int | None) -> dict[str, Any]:
