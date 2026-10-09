@@ -1388,6 +1388,113 @@ describe('useGame', () => {
     expect(result.current.voiceOutput).toBe(true)
   })
 
+  describe('brain setting', () => {
+    const CHOICES = ['gemma-4-12b', 'gemma-4-26b-a4b']
+    let brainCold: boolean
+    let chosen: string
+
+    beforeEach(() => {
+      brainCold = false
+      chosen = 'gemma-4-26b-a4b'
+      const fallback = fetchMock.getMockImplementation()!
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const path = String(url)
+        const brainBody = () => ({
+          brain: chosen,
+          brain_serving: 'gemma-4-26b-a4b',
+          brain_cold: brainCold,
+          brain_choices: CHOICES,
+        })
+        if (path.includes('/api/settings/brain')) {
+          chosen = (JSON.parse(String(init?.body)) as { model: string }).model
+          brainCold = true
+          return jsonResponse(brainBody())
+        }
+        if (path.endsWith('/api/settings'))
+          return jsonResponse({ voice_output: false, tier: 'casual', ...brainBody() })
+        return fallback(url, init)
+      })
+    })
+
+    it('loads the brain setting on mount', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() =>
+        expect(result.current.brain).toEqual({
+          brain: 'gemma-4-26b-a4b',
+          cold: false,
+          choices: CHOICES,
+        }),
+      )
+    })
+
+    it('stays null for a backend that reports no brain', async () => {
+      fetchMock.mockImplementation((url: string) =>
+        String(url).includes('/api/settings')
+          ? jsonResponse({ voice_output: false, tier: 'casual' })
+          : jsonResponse(state()),
+      )
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.voiceOutput).toBe(false))
+      expect(result.current.brain).toBeNull()
+    })
+
+    it('adopts the brain the server confirmed, and keeps the old one on a refusal', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.brain).not.toBeNull())
+      await act(async () => {
+        await result.current.setBrain('gemma-4-12b')
+      })
+      expect(result.current.brain).toEqual({ brain: 'gemma-4-12b', cold: true, choices: CHOICES })
+
+      const fallback = fetchMock.getMockImplementation()!
+      fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+        String(url).includes('/api/settings/brain')
+          ? Promise.resolve({ ok: false, status: 422, json: () => Promise.resolve({}) })
+          : fallback(url, init),
+      )
+      await act(async () => {
+        await result.current.setBrain('nope')
+      })
+      expect(result.current.brain?.brain).toBe('gemma-4-12b')
+    })
+
+    it('says the brain is switching through its first turn, then goes back to normal', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.brain).not.toBeNull())
+      await act(async () => {
+        await result.current.setBrain('gemma-4-12b')
+      })
+      const socket = FakeWebSocket.instances[0]
+      act(() => socket.emit(progressFrame('brain', 'planning', 't1')))
+      expect(result.current.agentProgress).toBe('Glitch is switching brains…')
+      // A tool line is still the truth of what is happening.
+      act(() => socket.emit(progressFrame('tool', 'make_move', 't1')))
+      expect(result.current.agentProgress).toBe('Validating your move')
+
+      // The turn warmed the new brain: its end re-reads the setting.
+      brainCold = false
+      act(() => socket.emit(progressFrame('end', '', 't1')))
+      await waitFor(() => expect(result.current.brain?.cold).toBe(false))
+      expect(result.current.agentProgress).toBeNull()
+
+      act(() => socket.emit(progressFrame('brain', 'planning', 't2')))
+      expect(result.current.agentProgress).toBe('Glitch is thinking')
+    })
+
+    it('does not re-read settings after a turn on a warm brain', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.brain).not.toBeNull())
+      const settingsReads = () =>
+        fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/settings')).length
+      const before = settingsReads()
+      act(() => FakeWebSocket.instances[0].emit(progressFrame('end', '', 't1')))
+      await act(async () => {
+        await result.current.sendCommand('hello')
+      })
+      expect(settingsReads()).toBe(before)
+    })
+  })
+
   it('syncs voice output from the command speak flag (agent-side toggle)', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.voiceOutput).toBe(false))

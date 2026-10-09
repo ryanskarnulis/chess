@@ -66,7 +66,8 @@ python scripts/check_profile.py <model> --load   # loads it to look
 ## The brain setting
 
 The player picks Glitch's brain in the game settings (#434; the picker is
-#435). The choices are `profiles.BRAIN_CHOICES`, llama-swap ids that each
+#435, in Options, naming brains by feel: Fast, Balanced, Deep). Voice cannot
+change it: there is no tool for it, so the picker is the only way. The choices are `profiles.BRAIN_CHOICES`, llama-swap ids that each
 have a profile and a pinned request fixture: `gemma-4-12b` and
 `gemma-4-26b-a4b`. A model joins only after it holds the gate (`qwen38-27b`
 waits on #436), and nothing outside the list can be chosen.
@@ -93,7 +94,7 @@ waits on #436), and nothing outside the list can be chosen.
   not a choice: two models never fit the 12 GB card together.
 - **The first turn after a switch is slow:** a model load plus the whole
   history read with no cache. `brain_cold` stays true until that turn ends,
-  so the UI can say so.
+  and while it is, the UI's Glitch lines read "Glitch is switching brains…".
 - **Attribution:** each brain gets its own serving manifest, written to the
   trace when it starts serving, under one session id. Every turn record's
   `serving` names its `model`, `profile` and `manifest_id`, and

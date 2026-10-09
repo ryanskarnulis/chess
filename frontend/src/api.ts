@@ -443,6 +443,33 @@ export interface Settings {
    * only — which the UI shows as a state rather than letting the player find
    * out from a 503 on the command box. */
   agent_available?: boolean
+  /** Glitch's brain (#434); absent from an older backend. */
+  brain?: string
+  brain_serving?: string | null
+  brain_cold?: boolean
+  brain_choices?: string[]
+}
+
+/** The brain setting (#434): the choice, the brain serving now (they differ
+ * until the next turn boundary), whether that brain has yet to finish a turn —
+ * the first one pays a model load and a cold cache — and what may be chosen.
+ * No choices means the brain is fixed (or there is none): no picker. */
+export interface BrainSettings {
+  brain: string
+  cold: boolean
+  choices: string[]
+}
+
+/** The brain fields of a settings body, or null when it carries none usable. */
+export function brainSettings(data: unknown): BrainSettings | null {
+  if (typeof data !== 'object' || data === null) return null
+  const { brain, brain_cold, brain_choices } = data as Settings
+  if (typeof brain !== 'string' || !Array.isArray(brain_choices)) return null
+  return {
+    brain,
+    cold: brain_cold === true,
+    choices: brain_choices.filter((c): c is string => typeof c === 'string'),
+  }
 }
 
 /** Fetch the agent-adjustable settings (the same truth the tools mutate), or
@@ -477,6 +504,23 @@ export async function setVoiceOutput(enabled: boolean): Promise<boolean | null> 
   // An unreadable 200 confirmed nothing: the toggle reflects only a setting
   // the server actually reported.
   return typeof data.voice_output === 'boolean' ? data.voice_output : null
+}
+
+/** Choose Glitch's brain (#434). It takes over at the next turn boundary;
+ * returns the brain settings the server confirmed, or null if it refused
+ * (an id off the list, a fixed brain) or never answered. */
+export async function setBrain(model: string): Promise<BrainSettings | null> {
+  let res: Response
+  try {
+    res = await fetch('/api/settings/brain', {
+      ...JSON_POST,
+      body: JSON.stringify({ model }),
+    })
+  } catch {
+    return null
+  }
+  if (!res.ok) return null
+  return brainSettings(await res.json().catch(() => null))
 }
 
 /**
