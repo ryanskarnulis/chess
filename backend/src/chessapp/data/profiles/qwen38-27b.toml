@@ -1,9 +1,12 @@
-# qwen38-27b: #298 bake-off candidate (docs/model-profiles.md). Qwen3.8-27B,
-# dense, served by ../llama-swap/config.yaml's entry of the same name
-# (GSQ-RCO IQ3_S, -ngl 48, ~8 tok/s, prefill ~400 tok/s, -c 32768, one slot).
+# qwen38-27b: the picker's "Deep" brain (#436, docs/model-profiles.md).
+# Qwen3.8-27B, dense, served by ../llama-swap/config.yaml's entry of the same
+# name (GSQ-RCO IQ3_S, -ngl 48, ~8 tok/s, prefill ~400 tok/s, -c 32768, one
+# slot).
 #
-# Starting values, not measurements: nothing here has been run through the
-# gate yet. Replace each with what the bake-off measures, and say so.
+# An option the player picks, not the default, so by Ryan's call it joined
+# BRAIN_CHOICES without a gate run: the planner's thinking and the narrator's
+# analysis_thinking are measured (below); the crutches and the rest are
+# starting values. Replace each with what a gate measures, and say so.
 thinking_kwarg = "enable_thinking"
 
 quirks = [
@@ -19,10 +22,9 @@ quirks = [
     "A thinking narrator turn ran 727 tokens (~93 s); thinking off, ~45 tokens (~7 s warm).",
 ]
 
-# The 12B's crutches, carried over so the default arm is like-for-like with
-# gemma-4-12b. #298 runs each candidate with and without them
-# (CHESSAPP_CRUTCHES=none); a model that holds the gate without them ships
-# without them.
+# The 12B's crutches, carried over unmeasured: no with/without arm has run on
+# this model (on the 26B's thinking planner some helped and some hurt,
+# #432). Measure with CHESSAPP_CRUTCHES=none before dropping any.
 crutches = [
     "move_source_required",
     "undo_call_again",
@@ -37,14 +39,24 @@ temperature = 0.7
 top_p = 0.8
 top_k = 20
 
-# Carried from gemma-4-12b (#286: a parse wants the mode); not yet measured
-# on this model. Caps are the 12B's until a trace says otherwise.
+# The planner thinks (#436). Measured 2026-10-07 with probe_planner on its 26
+# dev items, interleaved with gemma-4-12b and gemma-4-26b-a4b: thinking on,
+# 51/52 (the best of the bake-off) at a median 30 s per call, p90 74 s, the
+# longest 271 s (its one 2,048-token cap hit); thinking off, 152/260 (58%).
+# The cap stays 2,048: at ~8 tok/s that is ~256 s, just inside the provider's
+# 300 s read timeout, so a bigger one would end a runaway on the timeout
+# instead of the cap. Temperature 0.3 is carried from gemma-4-12b (#286).
 [phases.planner]
 temperature = 0.3
 max_tokens = 2048
+thinking = true
 
+# The narrator never thinks, even about an analysis result (#440's key): one
+# thinking narrator sample ran 727 tokens, ~93 s, past the 60 s narration
+# ceiling; thinking off, ~7 s.
 [phases.narrator]
 max_tokens = 4096
+analysis_thinking = false
 
 [phases.answer]
 max_tokens = 16
