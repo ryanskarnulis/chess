@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { ProgressEvent } from './api'
-import { NO_PROGRESS, applyProgress, progressLabel, type TurnProgress } from './progress'
+import {
+  NO_PROGRESS,
+  SWITCHING_BRAINS,
+  applyProgress,
+  coldLabel,
+  progressLabel,
+  type TurnProgress,
+} from './progress'
 
 function event(
   kind: ProgressEvent['kind'],
@@ -107,5 +114,24 @@ describe('applyProgress', () => {
   it('ignores a late end from a turn that is no longer on screen', () => {
     const showing = fold(event('begin', '', 'next'), event('tool', 'make_move', 'next'))
     expect(applyProgress(showing, event('end', '', 'stale'))).toEqual(showing)
+  })
+})
+
+describe('coldLabel', () => {
+  it('says the brain is switching over Glitch’s own lines', () => {
+    expect(coldLabel('Glitch is thinking', true, true)).toBe(SWITCHING_BRAINS)
+    expect(coldLabel('Glitch is reacting', true, true)).toBe(SWITCHING_BRAINS)
+    // Busy with nothing said yet: the wait is the brain loading.
+    expect(coldLabel(null, true, true)).toBe(SWITCHING_BRAINS)
+  })
+
+  it('keeps a tool or Stockfish line, which is still the truth', () => {
+    expect(coldLabel('Stockfish is calculating', true, true)).toBe('Stockfish is calculating')
+    expect(coldLabel('Validating your move', true, true)).toBe('Validating your move')
+  })
+
+  it('changes nothing for a warm brain or an idle turn', () => {
+    expect(coldLabel('Glitch is thinking', true, false)).toBe('Glitch is thinking')
+    expect(coldLabel(null, false, true)).toBeNull()
   })
 })

@@ -49,6 +49,8 @@ function App() {
     pgn,
     voiceOutput,
     setVoiceOutput,
+    brain,
+    setBrain,
     viewPly,
     reviewing,
     displayFen,
@@ -258,6 +260,8 @@ function App() {
             onSetDifficulty={setDifficulty}
             voiceOutput={voiceOutput}
             onToggleVoice={setVoiceOutput}
+            brain={brain}
+            onSetBrain={setBrain}
           />
         </>
       )}

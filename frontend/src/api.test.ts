@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchPgn, fetchReview, fetchSettings, fetchState } from './api'
+import { fetchPgn, fetchReview, fetchSettings, fetchState, setBrain } from './api'
 
 // Direct coverage for the client's never-rejects contract on the helpers whose
 // callers can't exercise the fetch layer: ReviewPanel and PostGameModal mock
@@ -39,6 +39,7 @@ describe('api helpers resolve to their failure shape instead of rejecting', () =
     ['fetchSettings', fetchSettings],
     ['fetchReview', fetchReview],
     ['fetchPgn', fetchPgn],
+    ['setBrain', () => setBrain('gemma-4-12b')],
   ]
 
   for (const [name, call] of helpers) {
@@ -65,4 +66,41 @@ describe('api helpers resolve to their failure shape instead of rejecting', () =
     )
     await expect(fetchPgn()).resolves.toBeNull()
   })
+})
+
+describe('setBrain', () => {
+  it('posts the model and returns the brain the server confirmed', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            brain: 'gemma-4-12b',
+            brain_serving: 'gemma-4-26b-a4b',
+            brain_cold: true,
+            brain_choices: ['gemma-4-12b', 'gemma-4-26b-a4b'],
+          }),
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(setBrain('gemma-4-12b')).resolves.toEqual({
+      brain: 'gemma-4-12b',
+      cold: true,
+      choices: ['gemma-4-12b', 'gemma-4-26b-a4b'],
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/brain',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ model: 'gemma-4-12b' }) }),
+    )
+  })
+
+  for (const status of [409, 422]) {
+    it(`resolves null when the server refuses (${status})`, async () => {
+      fetchAnswers(() =>
+        Promise.resolve({ ok: false, status, json: () => Promise.resolve({ detail: 'no' }) }),
+      )
+      await expect(setBrain('gemma-4-12b')).resolves.toBeNull()
+    })
+  }
 })

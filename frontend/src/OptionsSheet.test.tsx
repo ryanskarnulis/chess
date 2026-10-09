@@ -12,6 +12,8 @@ function sheet(overrides: Partial<Parameters<typeof OptionsSheet>[0]> = {}) {
       onSetDifficulty={vi.fn()}
       voiceOutput={false}
       onToggleVoice={vi.fn()}
+      brain={null}
+      onSetBrain={vi.fn()}
       {...overrides}
     />
   )
@@ -73,5 +75,44 @@ describe('OptionsSheet', () => {
     expect(backdrop).not.toBeNull()
     fireEvent.click(backdrop as Element)
     expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  describe('brain picker', () => {
+    const brain = {
+      brain: 'gemma-4-26b-a4b',
+      cold: false,
+      choices: ['gemma-4-12b', 'gemma-4-26b-a4b'],
+    }
+
+    it('names the brains by feel, with the chosen one selected and its hint', () => {
+      render(sheet({ brain }))
+      const picker = screen.getByRole('combobox', { name: /brain/i })
+      expect(picker).toHaveValue('gemma-4-26b-a4b')
+      expect(screen.getByRole('option', { name: 'Fast' })).toHaveValue('gemma-4-12b')
+      expect(screen.getByRole('option', { name: 'Balanced' })).toHaveValue('gemma-4-26b-a4b')
+      // Model names stay out of the player's way.
+      expect(screen.queryByText(/gemma/i)).not.toBeInTheDocument()
+      expect(screen.getByText(/5–10 seconds a turn/)).toBeInTheDocument()
+    })
+
+    it('asks for the picked brain', () => {
+      const onSetBrain = vi.fn()
+      render(sheet({ brain, onSetBrain }))
+      fireEvent.change(screen.getByRole('combobox', { name: /brain/i }), {
+        target: { value: 'gemma-4-12b' },
+      })
+      expect(onSetBrain).toHaveBeenCalledWith('gemma-4-12b')
+    })
+
+    it('is hidden when the brain cannot be chosen', () => {
+      render(sheet({ brain: { ...brain, choices: [] } }))
+      expect(screen.queryByRole('combobox', { name: /brain/i })).not.toBeInTheDocument()
+    })
+
+    it('shows a brain it has no name for under its id, with no made-up hint', () => {
+      render(sheet({ brain: { brain: 'mystery-9b', cold: false, choices: ['mystery-9b'] } }))
+      expect(screen.getByRole('option', { name: 'mystery-9b' })).toBeInTheDocument()
+      expect(document.querySelector('.brain-hint')).toBeNull()
+    })
   })
 })

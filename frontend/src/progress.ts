@@ -60,6 +60,27 @@ const TOOL_LABELS: Record<string, string> = {
   set_voice_output: 'Changing voice output',
 }
 
+// The lines that say Glitch's brain is working — the ones a cold brain (#435)
+// makes slow, so they are the ones it speaks over.
+const GLITCH_LABELS = new Set([
+  ...Object.values(BRAIN_LABELS),
+  ...Object.values(PHASE_LABELS).filter((l) => l.startsWith('Glitch')),
+])
+
+export const SWITCHING_BRAINS = 'Glitch is switching brains…'
+
+/**
+ * The line for a turn on a brain that has yet to finish one (`brain_cold`):
+ * it pays a model load and a cold cache, so the wait says why. Only Glitch's
+ * own lines (and a busy turn with nothing to say yet) are replaced: a tool or
+ * Stockfish line is still the truth of what is happening, and an idle turn
+ * stays idle.
+ */
+export function coldLabel(label: string | null, busy: boolean, cold: boolean): string | null {
+  if (!cold || !busy) return label
+  return label === null || GLITCH_LABELS.has(label) ? SWITCHING_BRAINS : label
+}
+
 function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? `Running ${name.replace(/_/g, ' ')}`
 }

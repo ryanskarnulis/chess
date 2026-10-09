@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   claimDraw as apiClaimDraw,
   confirmDestructive as apiConfirmDestructive,
+  brainSettings as readBrainSettings,
   fetchHint,
   fetchSettings,
   fetchState,
@@ -10,12 +11,14 @@ import {
   newGame as apiNewGame,
   offerDraw as apiOfferDraw,
   resign as apiResign,
+  setBrain as apiSetBrain,
   sendCommand as apiSendCommand,
   setDifficulty as apiSetDifficulty,
   setVoiceOutput as apiSetVoiceOutput,
   stateSocketUrl,
   submitMove,
   undo as apiUndo,
+  type BrainSettings,
   type CommandResponse,
   type ConfirmQuestion,
   type GameState,
@@ -23,7 +26,7 @@ import {
   type SocketMessage,
 } from './api'
 import { drawAnswer } from './draw'
-import { NO_PROGRESS, applyProgress, type TurnProgress } from './progress'
+import { NO_PROGRESS, applyProgress, coldLabel, type TurnProgress } from './progress'
 import { isPromotion, type PromotionPiece } from './promotion'
 import { playText } from './tts'
 import {
@@ -160,6 +163,12 @@ export interface UseGame {
   voiceOutput: boolean | null
   /** Turn voice output on/off (the UI mute toggle). */
   setVoiceOutput: (enabled: boolean) => Promise<void>
+  /** Glitch's brain setting (#434): the choice, whether the brain serving has
+   * yet to finish a turn, and what may be chosen. Null until settings load,
+   * and for a backend that reports none. */
+  brain: BrainSettings | null
+  /** Choose Glitch's brain; it takes over at the next turn boundary. */
+  setBrain: (model: string) => Promise<void>
   /**
    * Index into `state.fens` of the position being reviewed, or null when
    * showing the live game. Review is client-side only — it never mutates
@@ -202,6 +211,9 @@ export function useGame(): UseGame {
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
   const [voiceOutput, setVoiceOutputState] = useState<boolean | null>(null)
   const [tier, setTierState] = useState<string | null>(null)
+  const [brain, setBrainState] = useState<BrainSettings | null>(null)
+  // Read by the socket handler, which lives outside the render cycle.
+  const brainColdRef = useRef(false)
   const [viewPly, setViewPly] = useState<number | null>(null)
   const [hintShapes, setHintShapes] = useState<
     { orig: string; dest: string; brush: string }[]
@@ -269,6 +281,22 @@ export function useGame(): UseGame {
     return true
   }, [armPromotion])
 
+  const adoptBrain = useCallback((next: BrainSettings | null) => {
+    if (next === null) return
+    brainColdRef.current = next.cold
+    setBrainState(next)
+  }, [])
+
+  // While a switched brain is cold, the end of a turn is when it may have
+  // warmed: re-read the setting then (and only then — a warm brain costs no
+  // request per turn), so the "switching brains" line goes once it is true.
+  const refreshColdBrain = useCallback(() => {
+    if (!brainColdRef.current) return
+    void fetchSettings().then((s) => {
+      if (s) adoptBrain(readBrainSettings(s))
+    })
+  }, [adoptBrain])
+
   useEffect(() => {
     let live = true
     let socket: WebSocket | null = null
@@ -320,6 +348,9 @@ export function useGame(): UseGame {
         if (message.type === 'state') apply(message.state)
         else if (message.type === 'progress') {
           setProgress((current) => applyProgress(current, message.progress))
+          // Any turn's end — a command, a dragged move, another tab's — may
+          // be the one that warmed a switched brain.
+          if (message.progress.kind === 'end') refreshColdBrain()
         }
       }
       next.onclose = () => {
@@ -347,6 +378,7 @@ export function useGame(): UseGame {
         // Undefined (an older backend) stays null: unknown is not direct mode,
         // and the indicator only claims what the server actually said.
         setAgentAvailable(s.agent_available ?? null)
+        adoptBrain(readBrainSettings(s))
       }
     })
     connect(false)
@@ -365,7 +397,7 @@ export function useGame(): UseGame {
         current.close()
       }
     }
-  }, [apply])
+  }, [apply, adoptBrain, refreshColdBrain])
 
   const submit = useCallback(
     async (uci: string) => {
@@ -606,13 +638,14 @@ export function useGame(): UseGame {
         }
       } finally {
         setAgentThinking(false)
+        refreshColdBrain()
         unwatchBoard(interaction)
         // The turn came back and nothing was voiced, or no turn came back at
         // all (unavailable, stale, superseded by a newer board).
         if (unvoiced !== null) finishInteraction(interaction, unvoiced)
       }
     },
-    [apply],
+    [apply, refreshColdBrain],
   )
 
   const stepBack = useCallback(() => {
@@ -663,6 +696,15 @@ export function useGame(): UseGame {
     if (confirmed !== null) setVoiceOutputState(confirmed)
   }, [])
 
+  const setBrain = useCallback(
+    async (model: string) => {
+      // A setting, not a board mutation: the picker shows only what the
+      // server confirmed, and a refusal leaves it where it was.
+      adoptBrain(await apiSetBrain(model))
+    },
+    [adoptBrain],
+  )
+
   return {
     state,
     moveError,
@@ -681,11 +723,17 @@ export function useGame(): UseGame {
     commentary,
     agentAvailable,
     agentThinking,
-    agentProgress: progress.label,
+    agentProgress: coldLabel(
+      progress.label,
+      agentThinking || progress.correlationId !== null,
+      brain?.cold ?? false,
+    ),
     sendCommand,
     pgn,
     voiceOutput,
     setVoiceOutput,
+    brain,
+    setBrain,
     viewPly,
     reviewing: viewPly !== null,
     displayFen:
