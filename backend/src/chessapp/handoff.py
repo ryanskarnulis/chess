@@ -308,8 +308,16 @@ def _refs(entries: Sequence[Entry]) -> str:
 
 # How each phase is told what the gather step found (#451). The planner reads
 # them as help with the ask; the narrator as material to answer from, with no
-# claim that anything was looked up or done.
-PLANNER_NOTES_LABEL = "Notes that may help"
+# claim that anything was looked up or done. The planner's label says the
+# notes need no tool: with a bare "Notes that may help", the 26B's thinking
+# planner digested them for ~15 s (median, 775 tokens) before ending with a
+# note; told that a short note is enough, ~5.5 s (replays of the captured
+# request, 2026-10-10). Without the notes it thought longer still (~19 s),
+# answering from memory with no `lookup` to call.
+PLANNER_NOTES_LABEL = (
+    "Notes that may help (background the narrator also has; answering from "
+    "them needs no tool, and a short note is enough)"
+)
 NARRATOR_NOTES_LABEL = (
     "Notes gathered for this turn, from the chess notes (background to "
     "answer from if they fit what the player said; nothing was done or "

@@ -184,10 +184,19 @@ read notes, and nothing runs. Gather never calls a tool or changes state.
   `this_openings_ideas` wordings, up from 0, and adds nothing to chatter. Two
   table asks ("opening principles", "what opening should a beginner play")
   also get the current opening's note in a game, which is harmless.
-- **What each phase is told.** The planner reads `Notes that may help:`, one
-  `- {topic}: {text}` per note, after the board and before the command. The
-  section lives in the user message, after the cached system-and-tools
-  prefix (#362), and is absent when nothing was found. The narrator reads
+- **What each phase is told.** The planner reads `Notes that may help
+  (background the narrator also has; answering from them needs no tool, and
+  a short note is enough):`, one `- {topic}: {text}` per note, after the
+  board and before the command. The section lives in the user message, after
+  the cached system-and-tools prefix (#362), and is absent when nothing was
+  found. The label is measured, not decoration: the 26B's planner thinks, and
+  with a bare "Notes that may help" it digested the notes for a median 15 s
+  before ending with a note. That cost more than the `lookup` round trip it
+  replaced (a knowledge turn went from ~9 s on main to ~20 s). Told that a
+  short note is enough, it took ~5.5 s. Giving the planner no notes was
+  worst (~19 s): with no `lookup` to call, it thought harder about answering
+  from memory. (Replays of one captured planner request, 8–10 asks × 2,
+  arms interleaved per sample, 2026-10-10.) The narrator reads
   "Notes gathered for this turn … nothing was done or looked up", after the
   game's facts. Notes never count as results: a turn that only gathered
   notes is `kind="reply"`.
