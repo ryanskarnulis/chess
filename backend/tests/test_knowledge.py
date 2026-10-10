@@ -11,164 +11,26 @@ book the app names openings from — its title is a book name, and the moves it
 opens with reach a position the book files under the same family.
 """
 
+import json
 import re
+from pathlib import Path
 
 import chess
 import pytest
 
-from chessapp import handoff, knowledge, openings
+from chessapp import embeddings, handoff, knowledge, openings
 from chessapp.game import GameSession
 from chessapp.tools import RETRY_DIFFERENT_ARGS, ToolContext, build_registry
+from knowledge_tables import (
+    ANSWERS,
+    CHATTER,
+    NOTHING,
+    SAID,
+    SAID_IN_OPENING,
+    TOPICAL,
+)
 
 INDEX = knowledge.chess_knowledge()
-
-# What a player asks, as the planner would pass it on, and the note that
-# answers it: the first hit, always.
-ANSWERS = [
-    # openings
-    ("what's the idea behind the Sicilian", "openings/sicilian-defense"),
-    ("Sicilian Najdorf", "openings/sicilian-defense-najdorf-variation"),
-    ("Najdorf plans", "openings/sicilian-defense-najdorf-variation"),
-    ("Sicilian Dragon Yugoslav attack", "openings/sicilian-defense-dragon-variation"),
-    ("Sveshnikov", "openings/sicilian-defense-lasker-pelikan-variation"),
-    ("Ruy Lopez: Morphy Defense", "openings/ruy-lopez-morphy-defense"),
-    ("plans in the Ruy Lopez Morphy Defense", "openings/ruy-lopez-morphy-defense"),
-    ("Spanish opening", "openings/ruy-lopez"),
-    ("Berlin wall", "openings/ruy-lopez-berlin-defense"),
-    ("Marshall Attack", "openings/ruy-lopez-marshall-attack"),
-    ("Italian Game ideas", "openings/italian-game"),
-    ("Giuoco Piano", "openings/italian-game"),
-    (
-        "Fried Liver Attack",
-        "openings/italian-game-two-knights-defense-fried-liver-attack",
-    ),
-    ("Evans Gambit", "openings/italian-game-evans-gambit"),
-    ("French Defence main ideas", "openings/french-defense"),
-    ("French Winawer", "openings/french-defense-winawer-variation"),
-    ("Advance French", "openings/french-defense-advance-variation"),
-    ("Caro-Kann", "openings/caro-kann-defense"),
-    ("Caro Kann advance variation", "openings/caro-kann-defense-advance-variation"),
-    ("Scandinavian defense", "openings/scandinavian-defense"),
-    ("how to play against the London System", "openings/london-system"),
-    ("Queen's Gambit", "openings/queen-gambit"),
-    ("queens gambit declined", "openings/queen-gambit-declined"),
-    ("Queen's Gambit Accepted", "openings/queen-gambit-accepted"),
-    ("Slav defense", "openings/slav-defense"),
-    ("King's Indian Defense plans", "openings/king-indian-defense"),
-    ("Nimzo-Indian", "openings/nimzo-indian-defense"),
-    ("Grunfeld", "openings/grunfeld-defense"),
-    ("Dutch Stonewall", "openings/dutch-defense"),
-    ("Catalan", "openings/catalan-opening"),
-    ("is the King's Gambit any good", "openings/king-gambit"),
-    ("English opening", "openings/english-opening"),
-    ("Bongcloud", "openings/bongcloud-attack"),
-    ("Benko Gambit", "openings/benko-gambit"),
-    ("Alekhine's defence", "openings/alekhine-defense"),
-    ("Pirc", "openings/pirc-defense"),
-    ("Smith-Morra gambit", "openings/sicilian-defense-smith-morra-gambit"),
-    ("what opening should a beginner play", "strategy/choosing-an-opening"),
-    ("what is a gambit", "strategy/gambits"),
-    # strategy
-    ("why is the bishop pair good", "strategy/the-bishop-pair"),
-    ("opening principles", "strategy/opening-principles"),
-    ("why castle early", "strategy/king-safety"),
-    ("isolated queen's pawn", "strategy/isolated-queen-pawn"),
-    ("what is an isolated pawn", "strategy/isolated-queen-pawn"),
-    ("doubled pawns", "strategy/doubled-pawns"),
-    ("passed pawn", "strategy/passed-pawn"),
-    ("good bishop bad bishop", "strategy/good-and-bad-bishops"),
-    ("knight on the rim is dim", "strategy/knights"),
-    ("how much is a rook worth", "strategy/material-values"),
-    ("rook on the seventh rank", "strategy/rook-on-the-seventh"),
-    ("what does fianchetto mean", "strategy/fianchetto"),
-    ("hypermodern", "strategy/hypermodernism"),
-    ("prophylaxis", "strategy/prophylaxis"),
-    ("when should I trade pieces", "strategy/when-to-trade-pieces"),
-    ("how do I stop blundering", "strategy/blunder-check"),
-    ("minority attack", "strategy/minority-attack"),
-    ("outpost for a knight", "strategy/outposts"),
-    ("how to improve at chess", "strategy/how-to-improve-at-chess"),
-    # tactics
-    ("what's a fork", "tactics/fork"),
-    ("absolute pin", "tactics/pin"),
-    ("skewer", "tactics/skewer"),
-    ("discovered check", "tactics/discovered-check"),
-    ("zwischenzug", "tactics/zwischenzug"),
-    ("smothered mate", "tactics/smothered-mate"),
-    ("back rank mate", "tactics/back-rank-mate"),
-    ("Greek gift sacrifice", "tactics/greek-gift-sacrifice"),
-    ("scholar's mate", "tactics/scholar-mate"),
-    ("fastest checkmate", "tactics/fool-mate"),
-    ("Legal's mate", "tactics/legal-mate"),
-    ("Elephant trap", "tactics/elephant-trap"),
-    ("underpromotion to a knight", "tactics/underpromotion"),
-    # endgames
-    ("opposition in king and pawn endings", "endgames/opposition"),
-    ("how to checkmate with king and rook", "endgames/checkmate-with-king-and-rook"),
-    ("checkmate with a queen", "endgames/checkmate-with-king-and-queen"),
-    ("bishop and knight checkmate", "endgames/checkmate-with-bishop-and-knight"),
-    ("can two knights checkmate", "endgames/two-knights-cannot-force-mate"),
-    ("Lucena position", "endgames/lucena-position"),
-    ("Philidor position", "endgames/philidor-position"),
-    ("explain zugzwang", "endgames/zugzwang"),
-    ("rule of the square", "endgames/rule-of-the-square"),
-    ("triangulation", "endgames/triangulation"),
-    ("opposite coloured bishops endgame", "endgames/opposite-coloured-bishop-endgames"),
-    ("tablebases", "endgames/endgame-tablebases"),
-    ("wrong rook pawn", "endgames/wrong-rook-pawn"),
-    # rules
-    ("how does en passant work", "rules/en-passant"),
-    ("can I castle out of check", "rules/castling-edge-cases"),
-    ("castling rules", "rules/castling"),
-    ("what is the fifty move rule", "rules/fifty-move-rule"),
-    ("50 move rule", "rules/fifty-move-rule"),
-    ("threefold repetition", "rules/threefold-repetition"),
-    ("what is stalemate", "rules/stalemate"),
-    ("insufficient material", "rules/insufficient-material"),
-    ("how do knights move", "rules/how-the-knight-moves"),
-    ("can a pawn move backwards", "rules/how-the-pawn-moves"),
-    ("can I have two queens", "rules/pawn-promotion"),
-    ("touch move rule", "rules/touch-move"),
-    ("what is an Elo rating", "rules/chess-ratings"),
-    ("how do you become a grandmaster", "rules/chess-titles"),
-    ("Chess960", "rules/chess960"),
-    ("what is blitz", "rules/time-controls"),
-    ("how to read chess notation", "rules/algebraic-notation"),
-    # history
-    ("who invented chess", "history/origins-of-chess"),
-    ("how old is chess", "history/origins-of-chess"),
-    ("when did the queen get so strong", "history/modern-chess-and-the-mad-queen"),
-    ("when did castling start", "history/history-of-castling"),
-    ("who was Capablanca", "history/jose-raul-capablanca"),
-    ("tell me about Bobby Fischer", "history/bobby-fischer"),
-    ("who is the current world champion", "history/current-world-champion"),
-    ("Magnus Carlsen", "history/magnus-carlsen"),
-    ("Deep Blue", "history/deep-blue"),
-    ("the Immortal Game", "history/the-immortal-game"),
-    ("Opera game", "history/the-opera-game"),
-    ("first world chess champion", "history/wilhelm-steinitz"),
-    ("strongest female chess player", "history/women-in-chess"),
-    ("AlphaZero", "history/modern-chess-engines"),
-    ("Stockfish", "history/modern-chess-engines"),
-    # terms
-    ("what does en prise mean", "terms/en-prise"),
-    ("ECO codes", "terms/eco-codes"),
-    ("what is a simul", "terms/simultaneous-exhibition"),
-    ("bughouse", "terms/chess-boxing-and-other-variants"),
-]
-
-# Asks that are not about chess knowledge at all: nothing should come back.
-NOTHING = [
-    "pizza recipe",
-    "what time is it",
-    "how are you today",
-    "nice move",
-    "let's play",
-    "hello",
-    "thanks",
-    "do it",
-    "weather in Paris",
-]
 
 
 @pytest.mark.parametrize(("query", "expected"), ANSWERS)
@@ -213,6 +75,207 @@ def test_tokens_drop_fillers_and_meet_on_stems():
     assert knowledge.tokens("castling") == knowledge.tokens("castle")
     assert knowledge.tokens("pinned") == knowledge.tokens("pins")
     assert knowledge.tokens("1. e4 e5") == ["e4", "e5"]
+
+
+# --- hybrid search (#450) -------------------------------------------------------
+#
+# Vectors come from the pinned fixture, never a live model: regenerate it with
+# `python scripts/embed_fixture.py` after editing a note or a table.
+
+FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "knowledge_vectors.json").read_text()
+)
+VECTORS = knowledge.NoteVectors(FIXTURE["model"], FIXTURE["notes"])
+QUERY_VECTORS = FIXTURE["queries"]
+
+# Hybrid recall@3 over ANSWERS + SAID when the bar was calibrated
+# (2026-10-10): 160 of 183. A change that loses a match fails here; one that
+# gains raises the floor.
+HYBRID_RECALL_FLOOR = 160
+
+
+def _hybrid(query: str, opening: str | None = None) -> list[str]:
+    hits = INDEX.hybrid(query, QUERY_VECTORS[query], VECTORS, opening=opening)
+    return [hit.note.id for hit in hits]
+
+
+def _keywords(query: str) -> list[str]:
+    return [hit.note.id for hit in INDEX.search(query)]
+
+
+def _meaning(query: str) -> list[str]:
+    """Embeddings alone, with only the lift-alone bar: the third column."""
+    cosines = VECTORS.cosines(INDEX.notes, QUERY_VECTORS[query])
+    ranked = sorted(range(len(cosines)), key=lambda i: -cosines[i])
+    baseline = cosines[ranked[knowledge.LIFT_BASELINE]]
+    return [
+        INDEX.notes[i].id
+        for i in ranked[: knowledge.MAX_PASSAGES]
+        if cosines[i] - baseline >= knowledge.LIFT_ALONE
+    ]
+
+
+def test_the_fixture_covers_every_note_and_query():
+    missing_notes = [note.id for note in VECTORS.missing(INDEX.notes)]
+    asked = (
+        {q for q, _ in ANSWERS}
+        | {q for q, _ in SAID}
+        | {q for q, _, _ in SAID_IN_OPENING}
+        | set(CHATTER)
+        | set(TOPICAL)
+    )
+    missing_queries = sorted(asked - set(QUERY_VECTORS))
+    assert not missing_notes and not missing_queries, (
+        "the vector fixture is stale: run `python scripts/embed_fixture.py` "
+        f"(notes {missing_notes[:5]}, queries {missing_queries[:5]})"
+    )
+    assert FIXTURE["dims"] == knowledge.DIMS
+
+
+@pytest.mark.parametrize("query", CHATTER)
+def test_chatter_finds_nothing(query):
+    assert _hybrid(query) == []
+
+
+def test_hybrid_finds_at_least_what_keywords_find():
+    rows = ANSWERS + SAID
+    hybrid = sum(expected in _hybrid(query) for query, expected in rows)
+    keywords = sum(expected in _keywords(query) for query, expected in rows)
+    assert hybrid >= keywords
+    assert hybrid >= HYBRID_RECALL_FLOOR, f"recall@3 fell to {hybrid}/{len(rows)}"
+
+
+@pytest.mark.parametrize(("query", "opening", "expected"), SAID_IN_OPENING)
+def test_the_opening_on_the_board_ranks_its_own_note_first(query, opening, expected):
+    assert _hybrid(query, opening)[:1] == [expected]
+
+
+def test_the_opening_boost_never_lets_a_note_past_the_bar():
+    # Chatter in a named opening still finds nothing.
+    for query in ("play e4", "nice move", "undo that"):
+        assert _hybrid(query, "Sicilian Defense: Najdorf Variation") == []
+
+
+def test_hybrid_returns_at_most_three_notes_best_first():
+    hits = INDEX.hybrid(
+        "what's the idea behind the Sicilian",
+        QUERY_VECTORS["what's the idea behind the Sicilian"],
+        VECTORS,
+    )
+    assert 1 <= len(hits) <= knowledge.MAX_PASSAGES
+    scores = [hit.score for hit in hits]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_retrieval_report():
+    """Not a gate: the table `docs/second-brain.md` records. Run with -s."""
+    methods = {"bm25": _keywords, "embeddings": _meaning, "hybrid": _hybrid}
+    print(
+        f"\n{'':12}{'ANSWERS r@1/r@3':>18}{'SAID r@1/r@3':>16}"
+        f"{'CHATTER found':>15}{'TOPICAL found':>15}"
+    )
+    for name, find in methods.items():
+        cells = []
+        for rows in (ANSWERS, SAID):
+            found = [find(query) for query, _ in rows]
+            first = sum(f[:1] == [e] for f, (_, e) in zip(found, rows, strict=True))
+            top = sum(e in f for f, (_, e) in zip(found, rows, strict=True))
+            cells.append(f"{first}/{top} of {len(rows)}")
+        chatter = sum(bool(find(q)) for q in CHATTER)
+        topical = sum(bool(find(q)) for q in TOPICAL)
+        print(
+            f"{name:12}{cells[0]:>18}{cells[1]:>16}"
+            f"{f'{chatter}/{len(CHATTER)}':>15}{f'{topical}/{len(TOPICAL)}':>15}"
+        )
+
+
+# --- the vector cache ------------------------------------------------------------
+
+
+class _CountingEmbedder:
+    """Stands in for the service: a vector per document from its text, and a
+    record of what it was asked to embed."""
+
+    def __init__(self, model: str = "m1") -> None:
+        self.model = model
+        self.asked: list[str] = []
+
+    def embed_documents(self, documents):
+        self.asked += documents
+        vectors = [
+            [float(len(d)), float(sum(map(ord, d)) % 97), 1.0] for d in documents
+        ]
+        return embeddings.Embedded(self.model, vectors)
+
+
+def _small_index(fork_text: str = "One piece attacks two at once.") -> knowledge.Index:
+    return knowledge.Index(
+        [
+            knowledge.Note("tactics/fork", "Fork", ("double attack",), fork_text),
+            knowledge.Note("tactics/pin", "Pin", (), "A piece cannot move away."),
+            knowledge.Note("rules/check", "Check", (), "The king is attacked."),
+        ]
+    )
+
+
+def test_the_cache_embeds_every_note_once():
+    index, embedder = _small_index(), _CountingEmbedder()
+    vectors = knowledge.ensure_vectors(index, embedder)
+    assert len(embedder.asked) == 3 and not vectors.missing(index.notes)
+    again = knowledge.ensure_vectors(index, embedder, vectors)
+    assert len(embedder.asked) == 3
+    assert again.vectors == vectors.vectors
+
+
+def test_an_edited_note_is_reembedded_alone_and_its_old_vector_dropped():
+    embedder = _CountingEmbedder()
+    vectors = knowledge.ensure_vectors(_small_index(), embedder)
+    edited = _small_index("One piece attacks two pieces at the same time.")
+    updated = knowledge.ensure_vectors(edited, embedder, vectors)
+    assert len(embedder.asked) == 4
+    assert "One piece attacks two pieces" in embedder.asked[-1]
+    assert set(updated.vectors) == {knowledge.note_key(n) for n in edited.notes}
+
+
+def test_a_new_model_reembeds_everything():
+    index = _small_index()
+    old = knowledge.ensure_vectors(index, _CountingEmbedder("m1"))
+    newer = _CountingEmbedder("m2")
+    edited = _small_index("Two targets, one attacker.")
+    vectors = knowledge.ensure_vectors(edited, newer, old)
+    assert vectors.model == "m2"
+    assert len(newer.asked) == 1 + 3  # the edited note, then everything again
+    assert not vectors.missing(edited.notes)
+
+
+def test_a_note_document_carries_its_names():
+    note = _small_index().notes[0]
+    assert knowledge.note_document(note) == (
+        "title: Fork | text: Also: double attack. One piece attacks two at once."
+    )
+
+
+def test_the_cache_file_round_trips(tmp_path):
+    index = _small_index()
+    vectors = knowledge.ensure_vectors(index, _CountingEmbedder())
+    path = tmp_path / "cache" / "vectors.json"
+    vectors.save(path)
+    assert knowledge.NoteVectors.load(path) == vectors
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_a_missing_or_broken_cache_loads_as_none(tmp_path):
+    assert knowledge.NoteVectors.load(tmp_path / "absent.json") is None
+    (tmp_path / "junk.json").write_text("{not json")
+    assert knowledge.NoteVectors.load(tmp_path / "junk.json") is None
+    (tmp_path / "shape.json").write_text("[1, 2]")
+    assert knowledge.NoteVectors.load(tmp_path / "shape.json") is None
+
+
+def test_vectors_are_cut_and_normalized_to_dims():
+    vector = knowledge.fit([3.0, 4.0] + [0.0] * (knowledge.DIMS + 10))
+    assert len(vector) == knowledge.DIMS
+    assert vector[:2] == pytest.approx([0.6, 0.8])
 
 
 # --- the corpus ------------------------------------------------------------------

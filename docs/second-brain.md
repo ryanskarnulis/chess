@@ -73,9 +73,71 @@ a common-word alias earns almost nothing. "Defense" and "Variation" may be
 left out when a name is said ("Caro-Kann Advance").
 
 A result is at most `MAX_PASSAGES` (3) notes, none below `MIN_SCORE` and none
-under half the best score. Embeddings were left out on purpose: no second
-model competes for the 12 GB card. Add them only if keyword search measurably
-falls short.
+under half the best score. This is what `lookup` runs, and it's the fallback
+whenever the embeddings service is down.
+
+## Hybrid search (#450)
+
+Keyword search misses reworded asks ("one piece attacks two of mine at once"
+shares no word with *Fork*). It also injects on game chatter: "play e4" names
+the King's Pawn Game note. `Index.hybrid` adds meaning. It's built for the
+gather step (#448, #451), which searches the player's own words on every
+turn. `lookup` stays on keywords until #451.
+
+- **Vectors:** EmbeddingGemma 2 from the shared CPU service at
+  `../embeddings` (port 8600, #449), through `chessapp/embeddings.py`. Plain
+  httpx, the OpenAI `/v1/embeddings` wire, and EmbeddingGemma's task
+  prefixes. A note is embedded with its title, its `Also:` names and its
+  text (`knowledge.note_document`); adding the names lifted embedding recall
+  by 10 rows. Note vectors are cached in one JSON file
+  (`knowledge.NoteVectors`), keyed by the model and a hash of each note's
+  document, because embedding all of them takes ~20 s. A query costs ~10 ms
+  on the service, plus ~9 ms for the ranking.
+- **Ranking:** reciprocal rank fusion (`RRF_K` 60) of the keyword ranking and
+  the cosine ranking.
+- **The bar** uses absolute signals, never the fused rank, because every
+  query has a nearest note. Cosine alone can't be the bar: "pawn to d4" is
+  0.82 from the Queen's Pawn Game note, while a real paraphrase can sit at
+  0.67. What separates them is **lift**: a note's cosine above the query's
+  11th-best note (`LIFT_BASELINE`). A note clears the bar in one of two ways:
+  - it lifts `LIFT_ALONE` (0.065) on meaning alone, or
+  - it lifts `LIFT_SUPPORT` (0.015) and scores `BM25_SUPPORT` (8) on keywords.
+
+  Keywords alone no longer clear it.
+- **This opening:** given the book name of the opening on the board, notes in
+  its family gain about one extra first place (`OPENING_BOOST`), so "the
+  advance variation" is the French one in a French game. The boost only
+  reorders notes that already cleared the bar.
+- **Vector size:** 768 dimensions. Matryoshka cuts measured worse (recall@3
+  of 160 at 768, 156 at 512, 155 at 256), so nothing is truncated.
+
+**Topical commands are allowed through.** "I resign", "offer a draw",
+"castle kingside", "castle", "that was a blunder" and "is that checkmate"
+are, to retrieval, the questions about those topics. No bar keeps them out
+without dropping almost every real match (recall@3 would fall to ~15), so
+they're reported, not pinned (decided 2026-10-10). The planner still does
+what was asked. #451's eval gate watches that the note doesn't derail the
+speech.
+
+**Known misses** (the cost of zero false injections): "why does everyone say
+knights belong in the middle" finds nothing. "Should I have accepted the
+gambit" in a Queen's Gambit Accepted game finds the gambits and King's Gambit
+Accepted notes, because the QGA note doesn't clear the bar.
+
+Measured 2026-10-10 on the tables in `tests/knowledge_tables.py` (ANSWERS:
+planner-style queries; SAID: player wording away from titles and aliases;
+CHATTER: 42 in-game asks; TOPICAL: the six above).
+
+| | ANSWERS r@1 / r@3 | SAID r@1 / r@3 | CHATTER found | TOPICAL found |
+|---|---|---|---|---|
+| keywords (BM25) | 120 / 120 of 120 | 27 / 36 of 63 | 9 / 42 | 6 / 6 |
+| embeddings, lift bar | 110 / 112 | 23 / 25 | 0 / 42 | 5 / 6 |
+| **hybrid** | 115 / 120 | 32 / 40 | **0 / 42** | 6 / 6 |
+
+Hybrid finds as much as keywords, plus four reworded asks, and is the only
+method that finds nothing on chatter. It sometimes puts a sibling note first
+for an exact name (115 vs 120 first places), with the right one still in
+the three.
 
 ## Tests
 
@@ -91,6 +153,23 @@ falls short.
   the note's own family.
 - **The tool:** passages, the empty result, the refusals, and that a lookup
   moves nothing and reads as consulted in the handoff.
+- **Hybrid** (`tests/test_knowledge.py`, `tests/test_embeddings.py`), on a
+  pinned vector fixture, so the model never runs in CI. Every CHATTER ask
+  finds nothing; hybrid recall@3 is at least the keywords' and at least the
+  calibrated floor (160); the opening on the board ranks its own note first.
+  `test_retrieval_report` prints the table above (`pytest -s`). The client
+  tests cover the prefixes, batching, and every failure turning into
+  `EmbeddingsUnavailable`. The cache tests cover embedding once, re-embedding
+  an edited note, and a model change.
+
+The tables live in `tests/knowledge_tables.py`. **After editing a note or
+adding a query, regenerate the fixture** against the live service (the
+fixture test fails and says so until you do):
+
+```bash
+cd backend
+python scripts/embed_fixture.py      # writes tests/fixtures/knowledge_vectors.json
+```
 
 To check a wording by hand:
 
