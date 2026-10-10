@@ -190,6 +190,9 @@ class Turn:
     # The settings after this turn (`Settings.snapshot`): what a settings ask
     # is graded on, since the panel's results carry no arguments.
     settings: dict[str, Any] = field(default_factory=dict)
+    # The notes the gather step found for this turn (#451), best first, as
+    # its trace record names them (`{"id", "topic", "score"}`).
+    gathered: list[dict[str, Any]] = field(default_factory=list)
 
     def ran(self, name: str) -> list[dict[str, Any]]:
         """Calls to `name` that succeeded (a move `legal`, the rest `ok`)."""
@@ -531,6 +534,7 @@ def play(
             model_calls=len(run.model_calls),
             seconds=round(measured["duration"], 1),
             settings=app.ctx.settings.snapshot(),
+            gathered=list((app.tracer.last.get("gather") or {}).get("passages", ())),
         )
         episode.turns.append(turn)
         observed = Observed(

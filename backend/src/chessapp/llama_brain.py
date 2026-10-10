@@ -175,6 +175,7 @@ from chessapp.deadline import (
     LateReaction,
     within_budget,
 )
+from chessapp.handoff import PLANNER_NOTES_LABEL, gathered_section
 from chessapp.handoff import build as build_handoff
 from chessapp.handoff import render as render_handoff
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
@@ -529,6 +530,7 @@ class LlamaBrain:
         command: str,
         *,
         earlier: Recall | None = None,
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> AgentResponse:
         # The offer and the schemas it is validated against are one list,
         # resolved here and again only where the planner is re-shown a board
@@ -537,14 +539,16 @@ class LlamaBrain:
         # the refreshed block. Never between two boards, so the two stay one.
         tools = _resolve(self.tool_definitions)
         schemas = _schemas_of(tools)
-        run = _RunState()
+        run = _RunState(gathered=tuple(gathered))
         # One opening message (#372): what came before this turn as data, the
-        # board, and the command. No chat turns, so nothing to trim; the past
-        # is capped where it is rendered (`conversation.Recall`).
+        # board, the notes gathered for it (#451), and the command. No chat
+        # turns, so nothing to trim; the past is capped where it is rendered
+        # (`conversation.Recall`).
         messages = self._messages(
             board_state,
             command,
             earlier.render(PLANNER_REPLY_LABEL) if earlier is not None else "",
+            run.gathered,
         )
         # The narrator reads the same past, with the last reply as his own.
         told = earlier.render(NARRATOR_REPLY_LABEL) if earlier is not None else ""
@@ -831,6 +835,7 @@ class LlamaBrain:
         *,
         command: str = "",
         earlier: Recall | None = None,
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> Narration:
         # The narrator for a turn the loop never ran: the fast path, a board
         # drag, a confirmed op or a resignation. One narrator (#369): the same
@@ -849,6 +854,7 @@ class LlamaBrain:
             engine_reply=facts.pop("engine_reply", None),
             board_version=facts.pop("board_version", None),
             facts=facts,
+            gathered=gathered,
         )
         self._report(BRAIN_NARRATING)
         started = self.clock()
@@ -969,6 +975,7 @@ class LlamaBrain:
             engine_reply=facts.pop("engine_reply", None),
             board_version=facts.pop("board_version", None),
             facts=facts,
+            gathered=run.gathered,
         )
         self._report(BRAIN_NARRATING)
         brief = render_handoff(handoff, command, run.tool_results, earlier=earlier)
@@ -1302,15 +1309,24 @@ class LlamaBrain:
         board_state: dict[str, Any],
         command: str,
         earlier: str = "",
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> list[dict[str, Any]]:
         # Small prompt: the planner's contract, then one user message — what
         # came before this turn (#372: the game's record, the player's requests
         # and the last exchange, as data and never as assistant turns the
-        # planner would read as its own), then board truth and the command.
+        # planner would read as its own), then board truth, the notes the
+        # gather step found (#451; only when it found some, and after the
+        # cached system-and-tools prefix, #362), and the command.
         # It is only the *opening* of the run — the loop grows this list turn
         # by turn rather than rebuilding it, so the KV cache holds.
         before = f"Before this turn:\n\n{earlier}\n\n" if earlier else ""
-        user = f"{before}Board state:\n{json.dumps(board_state)}\n\nCommand: {command}"
+        notes = (
+            f"{gathered_section(gathered, PLANNER_NOTES_LABEL)}\n\n" if gathered else ""
+        )
+        user = (
+            f"{before}Board state:\n{json.dumps(board_state)}\n\n"
+            f"{notes}Command: {command}"
+        )
         return [
             {"role": "system", "content": self._resolve_planner_prompt()},
             {"role": "user", "content": user},

@@ -97,9 +97,13 @@ file also holds `serving` manifests (the weights, build and settings actually se
 `speech`/`voice` records that follow one voice interaction end to end.
 `docs/latency-measurement.md` has the record kinds, the clock rules and
 `scripts/latency_report.py`. Knowledge questions ("what's the idea behind the
-Sicilian?") go to `lookup`, which searches the local notes in
-`backend/src/chessapp/data/knowledge/`. `docs/second-brain.md` covers the notes,
-the search and its retrieval tests. `docs/turn-coordinator.md` and
+Sicilian?") are answered from the local notes in
+`backend/src/chessapp/data/knowledge/`: the gather step searches them with the
+player's own words before the planner runs (hybrid search against the shared
+`../embeddings` service, keywords when it's down), and each turn record's
+`gather` field says what it found and how. `lookup` is MCP-only.
+`docs/second-brain.md` covers the notes, the search, the gather step and its
+retrieval tests. `docs/turn-coordinator.md` and
 `docs/planner-narrator.md` explain the turn architecture;
 `docs/persistence-and-identity.md` says what survives a restart
 (`live.json`, `conversations.json`, the cross-game `results.jsonl`), which

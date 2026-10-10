@@ -76,7 +76,7 @@ class SlowNarrator(ScriptedBrain):
         self.release = threading.Event()
         self.finished = threading.Event()
 
-    def narrate(self, board_state, changes, *, command="", earlier=None):
+    def narrate(self, board_state, changes, *, command="", earlier=None, gathered=()):
         self.narrate_calls.append((board_state, changes))
         self.entered.set()
         self.release.wait(timeout=PATIENCE)

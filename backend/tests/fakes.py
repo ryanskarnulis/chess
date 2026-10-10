@@ -174,12 +174,16 @@ class ScriptedBrain:
         self.narrate_earlier: list = []
         self.earlier: list = []
         self.narrate_commands: list[str] = []
+        # The notes the gather step handed each phase (#451).
+        self.gathered: list = []
+        self.narrate_gathered: list = []
 
     def get_agent_response(
-        self, board_state: dict, command: str, *, earlier=None
+        self, board_state: dict, command: str, *, earlier=None, gathered=()
     ) -> AgentResponse:
         self.calls.append((board_state, command))
         self.earlier.append(earlier)
+        self.gathered.append(list(gathered))
         scripted = self._responses.pop(0)
         if not scripted.tool_calls or self.dispatcher is None:
             return scripted
@@ -200,11 +204,18 @@ class ScriptedBrain:
         return scripted if isinstance(scripted, Answer) else Answer(verdict=scripted)
 
     def narrate(
-        self, board_state: dict, changes: list, *, command: str = "", earlier=None
+        self,
+        board_state: dict,
+        changes: list,
+        *,
+        command: str = "",
+        earlier=None,
+        gathered=(),
     ) -> Narration:
         self.narrate_calls.append((board_state, changes))
         self.narrate_commands.append(command)
         self.narrate_earlier.append(earlier)
+        self.narrate_gathered.append(list(gathered))
         scripted = self._narrations.pop(0) if self._narrations else "(commentary)"
         if isinstance(scripted, Exception):
             raise scripted

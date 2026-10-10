@@ -29,6 +29,7 @@ How the words get written is the implementation's business, and
 player may be shown and that it was produced from verified results.
 """
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -352,6 +353,8 @@ class _RunState:
     offers_refreshed: list[int] = field(default_factory=list)
     # Which turn budget ended the planning phase (#288), or "" when none did.
     budget: str = ""
+    # The notes the gather step found for this turn (#451), for the closer.
+    gathered: tuple[Mapping[str, str], ...] = ()
 
     def record(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
         self.tool_calls.append(ToolCall(name=name, args=args))
@@ -417,6 +420,7 @@ class Brain(Protocol):
         command: str,
         *,
         earlier: Recall | None = None,
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> AgentResponse:
         """Run the agent loop for one utterance: turn it into tool calls, run
         them through the dispatcher, feed the results back, and stop on the
@@ -434,7 +438,10 @@ class Brain(Protocol):
         the game's record, the player's requests in their own words, and the
         last exchange — what "the other one" and a standing ask point back to.
         Both phases read it as data, never as chat turns; how far back it
-        reaches is the app's memory policy (`docs/turn-memory.md`)."""
+        reaches is the app's memory policy (`docs/turn-memory.md`).
+        `gathered` is what the gather step found in the notes from the
+        player's words (#451, `gather.Gathered.view`): both phases see it, as
+        help and as background, never as something a tool did."""
         ...
 
     def narrate(
@@ -444,6 +451,7 @@ class Brain(Protocol):
         *,
         command: str = "",
         earlier: Recall | None = None,
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> Narration:
         """The narrator for a turn the loop did not run: the deterministic
         fast path (`parse_move` → `make_move`), a board drag, a confirmed
@@ -455,7 +463,8 @@ class Brain(Protocol):
         while the engine's reply is still being computed and a narrator that
         can see whose move it is announces one, and a `reply_owed` flag the
         brain turns into the line saying so. `earlier` is what came before
-        the turn, as in `get_agent_response`. No tools offered. At
+        the turn and `gathered` its notes, as in `get_agent_response`. No
+        tools offered. At
         verbosity=low this is skipped for a canned line, making a plain move
         zero-LLM."""
         ...

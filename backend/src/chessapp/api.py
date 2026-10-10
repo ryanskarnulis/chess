@@ -62,6 +62,7 @@ from collections.abc import (
     AsyncIterator,
     Callable,
     Iterator,
+    Mapping,
     Sequence,
 )
 from contextlib import asynccontextmanager, contextmanager, suppress
@@ -127,6 +128,7 @@ from chessapp.facts import (
 )
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
+from chessapp.gather import Gathered, Searcher
 from chessapp.ledger import render_record
 from chessapp.profiles import BRAIN_CHOICES
 from chessapp.progress import ProgressEvent, ProgressReporter
@@ -1078,6 +1080,7 @@ def _turn_evidence(
     fen_before: str,
     fens_observed: Sequence[str] = (),
     pending_reply_fen: str | None = None,
+    gathered: Sequence[Mapping[str, str]] = (),
 ) -> TurnEvidence:
     """The record `facts.assemble` builds a turn's facts from, read off the
     live context: the session as the turn left it and the claimable settings,
@@ -1094,6 +1097,7 @@ def _turn_evidence(
         fens_observed=tuple(fens_observed),
         pending_reply_fen=pending_reply_fen,
         results=ctx.results.tally(),
+        gathered=tuple(gathered),
     )
 
 
@@ -1481,6 +1485,7 @@ def create_app(
     reaction_budget: float = NARRATION_BUDGET_S,
     serving_identity: Callable[[], dict[str, str]] | None = None,
     brain_switch: BrainSwitch | None = None,
+    searcher: Searcher | None = None,
 ) -> FastAPI:
     """Pass the same `registry` the brain dispatches through (app assembly
     does), so what the agent is offered is exactly what the app runs; omit it
@@ -1701,12 +1706,23 @@ def create_app(
         """
         return await anyio.to_thread.run_sync(fn, *args)
 
+    async def _gather(text: str) -> Gathered | None:
+        """This turn's notes, or None when the app gathers none (no searcher,
+        or direct mode, which has no phase to read them)."""
+        if searcher is None or brain is None:
+            return None
+        opening = openings.opening_of(ctx.session)
+        return await _offloop(
+            searcher.gather, text, opening["name"] if opening else None
+        )
+
     def _narrate(
         board_state: dict[str, Any],
         changes: list[dict[str, Any]],
         earlier: Recall,
         correlation_id: str,
         command: str = "",
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> Narration:
         """Glitch's words for one beat, or `LateReaction` if they are late.
 
@@ -1730,7 +1746,11 @@ def create_app(
         try:
             return _within_budget(
                 lambda: brain.narrate(
-                    board_state, changes, command=command, earlier=earlier
+                    board_state,
+                    changes,
+                    command=command,
+                    earlier=earlier,
+                    gathered=gathered,
                 ),
                 reaction_budget,
             )
@@ -1865,6 +1885,7 @@ def create_app(
         earlier: Recall,
         correlation_id: str,
         command: str = "",
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> _MoveBeats:
         """One move through the coordinator's beats: apply, close, narrate.
 
@@ -1933,6 +1954,7 @@ def create_app(
                     earlier,
                     correlation_id,
                     command,
+                    gathered,
                 )
                 cost = _ModelCost.of(narration, PHASE_NARRATOR)
                 # Kept only once something was actually said from it: this is
@@ -2818,6 +2840,12 @@ def create_app(
             # The candidates of a question this turn asked (`clarify` handoff).
             asked: tuple[str, ...] = ()
             try:
+                # The gather step (#451): notes found from the player's own
+                # words, for whichever phase this turn runs. Before the routing,
+                # because every road with words gets them; it never acts.
+                gathered = await _gather(text)
+                notes = gathered.view() if gathered is not None else []
+                traced["gather"] = gathered.as_trace() if gathered is not None else None
                 # An armed destructive op (the tool gate refused new_game/resign
                 # last turn and asked). This turn is its answer — and the answer is
                 # ours, not the model's: a bare yes runs it with the gate open, a
@@ -2891,6 +2919,7 @@ def create_app(
                                     earlier,
                                     correlation_id,
                                     text,
+                                    notes,
                                 )
                             except ProviderError as exc:
                                 # Late words and lost words cost the same thing
@@ -2927,7 +2956,7 @@ def create_app(
                     # what differs between the two routes, never the sequencing.
                     route = ROUTE_FAST_PATH
                     move_beats = await _offloop(
-                        _play_move, fast_san, earlier, correlation_id, text
+                        _play_move, fast_san, earlier, correlation_id, text, notes
                     )
                     tool_results.extend(move_beats.changes)
                     tool_args.append({"move": fast_san})
@@ -2976,6 +3005,7 @@ def create_app(
                                 earlier,
                                 correlation_id,
                                 text,
+                                notes,
                             )
                         except ProviderError as exc:
                             # Same deal as the confirmed op above: the
@@ -3002,7 +3032,9 @@ def create_app(
                 else:
                     route = ROUTE_BRAIN
                     response = await _offloop(
-                        functools.partial(brain.get_agent_response, earlier=earlier),
+                        functools.partial(
+                            brain.get_agent_response, earlier=earlier, gathered=notes
+                        ),
                         planner_state(
                             before,
                             question,
@@ -3145,6 +3177,7 @@ def create_app(
                     before["fen"],
                     observed,
                     narrated_before_reply,
+                    notes,
                 )
                 traced["evidence"] = turn_evidence.as_trace()
                 if memory is None:

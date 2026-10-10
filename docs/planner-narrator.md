@@ -37,6 +37,17 @@ not asking one call to do both jobs. The split cured the release-blocking
   fast path, a board drag, a confirmed op and a resignation) is the same
   narrator with the same brief and budget policy (#369, below).
 
+**Gathered notes** (#451, 2026-10-10). Before either phase runs, the turn
+searches the chess notes with the player's own words (`gather.py`,
+`docs/second-brain.md`) on every route that has words; a drag has none. What
+clears the relevance bar reaches both phases as context, never as a result:
+the planner's message gets a `Notes that may help:` section between `Board
+state:` and `Command:` (after the cached system-and-tools prefix, #362, and
+only when there are notes), and the narrator's brief a "Notes gathered for
+this turn" section after the game's facts, saying nothing was done or looked
+up. A turn that only had notes is still `kind="reply"`. `lookup` is no longer
+offered to the planner (`brain_tool_exclusions`); the MCP surface keeps it.
+
 **One narrator** (#369, 2026-09-27). There used to be two: the loop's closer
 spoke from the typed handoff, and the reaction (`Brain.narrate`) from a brief
 of its own that opened "The player just made their own move" whatever had

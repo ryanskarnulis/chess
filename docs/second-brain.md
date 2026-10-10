@@ -1,19 +1,33 @@
-# The second brain (`lookup`, #374)
+# The second brain (#374; the gather step, #451)
 
 "What's the idea behind the Sicilian?" used to have nothing behind it but the
 12B's memory, which knows some of it and makes up the rest. Since #374 the
-planner has one more tool, `lookup(query)`, and the answer comes from a local
-corpus of short notes. The narrator puts it in Glitch's words. Code finds the
-notes; the model decides when to look something up and how to say it.
+answer comes from a local corpus of short notes, and the narrator puts it in
+Glitch's words. Until #451 the planner had to call `lookup(query)` to reach
+them, which cost a planner round trip on every chat turn (#422). Now the
+**gather step** searches the notes with the player's own words before the
+planner runs. Code supplies the material; the model still decides what the
+player meant, what to do, and what to say.
 
 ## The shape
 
 ```
 player: "what's the idea behind the Sicilian?"
-  → planner calls lookup(query="Sicilian Defense main idea")
+  → gather.Searcher.gather(words, opening on the board)   (~20 ms; no tool, no state)
+      hybrid search: BM25 + EmbeddingGemma (../embeddings), the relevance bar
+      keywords alone when the service is down or still warming up
+  → planner: "Notes that may help:" between "Board state:" and "Command:"
+  → narrator: "Notes gathered for this turn", apart from the tool results
+  → trace: gather {source, model, ms, passages}; evidence.gathered (the text)
+```
+
+On the MCP surface, `lookup(query)` is still a tool, because a delegate has
+no gather step:
+
+```
+delegate → lookup(query="Sicilian Defense main idea")
   → knowledge.lookup searches the notes (BM25, CPU, a few milliseconds)
   → result: {"ok": true, "passages": [{"topic", "text"}, ...]}  (at most 3)
-  → handoff sorts it as consulted; the narrator speaks from the passages
 ```
 
 - **One tool, sources behind it.** `lookup` takes only `query`. There is no
@@ -26,10 +40,10 @@ player: "what's the idea behind the Sicilian?"
   `backend/src/chessapp/data/knowledge/`, one Markdown file per topic:
   `openings`, `strategy`, `tactics`, `endgames`, `rules`, `history` and
   `terms`, about 330 notes, each 20 to 130 words.
-- **Placement.** `lookup` is offered last before `ask_player`, so every schema
-  the planner was offered before it keeps its byte position and its cached
-  prefix (#362). It is a read (`handoff.READ_TOOLS`) and is offered on the MCP
-  surface too.
+- **Placement.** `lookup` was offered last before `ask_player` (#362), so
+  withdrawing it from the planner (#451, `tools.brain_tool_exclusions`) moved
+  no earlier schema. It is a read (`handoff.READ_TOOLS`) and stays on the MCP
+  surface.
 - **Nothing found is an answer.** A query that matches no note well enough
   returns `passages: []` and a `summary` saying so, and Glitch can say he
   doesn't know. A query with no meaningful words at all ("what is it?") is
@@ -82,7 +96,7 @@ Keyword search misses reworded asks ("one piece attacks two of mine at once"
 shares no word with *Fork*). It also injects on game chatter: "play e4" names
 the King's Pawn Game note. `Index.hybrid` adds meaning. It's built for the
 gather step (#448, #451), which searches the player's own words on every
-turn. `lookup` stays on keywords until #451.
+turn (below). `lookup`, MCP-only since #451, stays on keywords.
 
 - **Vectors:** EmbeddingGemma 2 from the shared CPU service at
   `../embeddings` (port 8600, #449), through `chessapp/embeddings.py`. Plain
@@ -139,6 +153,50 @@ method that finds nothing on chatter. It sometimes puts a sibling note first
 for an exact name (115 vs 120 first places), with the right one still in
 the three.
 
+## The gather step (#451)
+
+`gather.py`. On every turn that has words — the brain route, the fast path, a
+resignation, a confirmed op's narration — `api._command_turn` calls
+`Searcher.gather(text, opening)` once, before any model call. A board drag has
+no words and gathers nothing; with `CHESSAPP_AGENT=off` there is no phase to
+read notes, and nothing runs. Gather never calls a tool or changes state.
+
+- **Serving.** `build_app_from_env` builds the searcher from
+  `CHESSAPP_EMBEDDINGS_URL` (the compose file points it at
+  `host.docker.internal:8600`). The note vectors are cached in the save
+  directory (`knowledge_vectors.json`, keyed by model and note hash). On a cold
+  start a background thread embeds the notes (~20 s), and turns search by
+  keyword until it finishes. A query waits at most 300 ms
+  (`embeddings.GATHER_TIMEOUT`); any failure falls back to keywords for that
+  turn and retries the warm-up a minute later. A different model on the
+  service drops the cache and re-embeds. The game never waits on any of it.
+- **The fallback costs precision.** Keywords alone inject on some chatter (9
+  of 42 in the hybrid table), which #448 accepted for a degraded mode. The
+  trace says `bm25_fallback` on every such turn.
+- **"This opening".** "What's the plan in this opening?" names no opening, so
+  no opening note clears the bar. Adding the opening's name to the query was
+  measured and dropped: it injected that opening's note on 204–210 of 210
+  chatter-and-opening pairs. Instead, when the search's own hits include a
+  note about openings in general (`gather.OPENING_GENERAL`: opening
+  principles, choosing an opening, opening theory), the note for the opening
+  on the board comes along: its book name's note, else its family's
+  (`gather.stand_in`; decided 2026-10-10). That covered 5 of the 10
+  `this_openings_ideas` wordings, up from 0, and adds nothing to chatter. Two
+  table asks ("opening principles", "what opening should a beginner play")
+  also get the current opening's note in a game, which is harmless.
+- **What each phase is told.** The planner reads `Notes that may help:`, one
+  `- {topic}: {text}` per note, after the board and before the command. The
+  section lives in the user message, after the cached system-and-tools
+  prefix (#362), and is absent when nothing was found. The narrator reads
+  "Notes gathered for this turn … nothing was done or looked up", after the
+  game's facts. Notes never count as results: a turn that only gathered
+  notes is `kind="reply"`.
+- **The record.** `gather` on every turn record (trace schema 6): `source`
+  (`hybrid` or `bm25_fallback`), the embedding `model`, `ms`, and each
+  passage's `id`, `topic` and `score`; None when the app gathers none. The
+  passages' text rides in `evidence.gathered`, so the speech scorer can back
+  a line that quotes them.
+
 ## Tests
 
 `tests/test_knowledge.py`, deterministic and in CI:
@@ -181,7 +239,8 @@ python -c "from chessapp import knowledge as k; \
 
 ## Speech accuracy
 
-A lookup turn quotes the notes, not the board: "the Ruy Lopez is all about
+A lookup turn, and since #451 any turn with gathered notes
+(`evidence.gathered`), quotes the notes, not the board: "the Ruy Lopez is all about
 Bb5" in a game that is in the Queen's Gambit is true. So the scorer's widened
 facts (`speech_accuracy._widened`) back the moves a passage names and an
 opening named from it, on that turn only (`docs/speech-accuracy.md`). A move
@@ -189,20 +248,25 @@ the notes never named stays unbacked.
 
 ## Measurement
 
-Four frontier scenarios (`tests/frontier_corpus.py`):
+Frontier scenarios (`tests/frontier_corpus.py`), regraded on what was
+gathered since #451 (`gathered_note`, `nothing_gathered`):
 
-- `knowledge_question`: a question about chess, graded on the note the
-  lookup found.
+- `knowledge_question`: a question about chess, graded on the note being
+  among the gathered ones.
 - `this_openings_ideas`: "this opening" names nothing in the words; the
-  planner must carry the state block's opening name into the query.
+  stand-in has to bring the board's opening.
 - `not_a_lookup`: near misses ("the best move in this position") that belong
-  to `get_best_moves`, and must not draw a lookup.
-- `knowledge_aside_then_move`: a lookup mid-game moves nothing, and the move
-  after it lands.
+  to `get_best_moves`; nothing may be gathered for them. "What would Magnus
+  play here?" gathers the Magnus Carlsen note, so that wording fails its
+  checkpoint by design.
+- `knowledge_aside_then_move` and `en_passant_explained_then_taken`: the
+  note is gathered on the question, nothing moves, and the move after it
+  lands.
 
-A new tool changes what the planner is offered, so the change runs the eval
-gate (`long_capture` ×3 is release-blocking) before merge, and the latency of
-a lookup turn is read off the trace (`scripts/latency_report.py`).
+Changing what the planner is offered and what it reads changes the agent
+loop, so #451 ran the eval gate (`long_capture` ×3 is release-blocking)
+before merge. The latency of a chat turn is read off the trace
+(`scripts/latency_report.py`).
 
 ## Decided, and why
 

@@ -21,7 +21,7 @@ and the API passes that on for the UI to say so.
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -130,9 +130,12 @@ class BrainSwitch:
         command: str,
         *,
         earlier: Recall | None = None,
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> AgentResponse:
         built = self.current
-        response = built.brain.get_agent_response(board_state, command, earlier=earlier)
+        response = built.brain.get_agent_response(
+            board_state, command, earlier=earlier, gathered=gathered
+        )
         self._warmed(built)
         return response
 
@@ -143,10 +146,11 @@ class BrainSwitch:
         *,
         command: str = "",
         earlier: Recall | None = None,
+        gathered: Sequence[Mapping[str, str]] = (),
     ) -> Narration:
         built = self.current
         narration = built.brain.narrate(
-            board_state, changes, command=command, earlier=earlier
+            board_state, changes, command=command, earlier=earlier, gathered=gathered
         )
         self._warmed(built)
         return narration

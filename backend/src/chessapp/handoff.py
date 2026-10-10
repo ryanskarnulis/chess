@@ -137,6 +137,10 @@ class Handoff:
     # own `position.board_version` is compared with (`_outdated`); None when
     # the caller did not say, and then nothing is dated.
     board_version: int | None = None
+    # The notes the gather step found from the player's words (#451),
+    # `{"topic", "text"}` each, best first: background for the answer, never
+    # a record of what the turn did, so they don't touch `kind`.
+    gathered: tuple[Mapping[str, str], ...] = ()
 
     def trace(self) -> dict[str, Any]:
         """The handoff as the turn record keeps it: enough to re-judge a
@@ -174,6 +178,7 @@ def build(
     engine_reply: Mapping[str, Any] | None = None,
     facts: Mapping[str, Any] | None = None,
     board_version: int | None = None,
+    gathered: Sequence[Mapping[str, str]] = (),
 ) -> Handoff:
     """Sort a turn's results and derive its kind from them.
 
@@ -189,6 +194,9 @@ def build(
       loop answers every call after it unrun (#314), so they read as refused.
       The candidates are the tool's, validated against the board, never the
       note's.
+
+    `gathered` is carried as is: notes are context, and a turn that only
+    gathered some is still a `reply`.
     """
     performed: list[Entry] = []
     refused: list[Entry] = []
@@ -228,6 +236,7 @@ def build(
         note=note,
         candidates=tuple(dict.fromkeys(candidates)),
         pieces=tuple(dict.fromkeys(pieces)),
+        gathered=tuple(dict(passage) for passage in gathered),
         board_version=board_version,
     )
 
@@ -295,6 +304,23 @@ def _outdated(handoff: Handoff, tool_results: Sequence[Mapping[str, Any]]) -> li
 
 def _refs(entries: Sequence[Entry]) -> str:
     return ", ".join(f"#{entry.ref} {entry.tool}" for entry in entries)
+
+
+# How each phase is told what the gather step found (#451). The planner reads
+# them as help with the ask; the narrator as material to answer from, with no
+# claim that anything was looked up or done.
+PLANNER_NOTES_LABEL = "Notes that may help"
+NARRATOR_NOTES_LABEL = (
+    "Notes gathered for this turn, from the chess notes (background to "
+    "answer from if they fit what the player said; nothing was done or "
+    "looked up)"
+)
+
+
+def gathered_section(passages: Sequence[Mapping[str, str]], label: str) -> str:
+    """The gathered notes as one prompt section, best first."""
+    lines = "\n".join(f"- {p['topic']}: {p['text']}" for p in passages)
+    return f"{label}:\n{lines}"
 
 
 def render(
@@ -383,6 +409,8 @@ def render(
     parts.append("\n".join(record))
     if handoff.facts:
         parts.append(f"The game now:\n{json.dumps(dict(handoff.facts))}")
+    if handoff.gathered:
+        parts.append(gathered_section(handoff.gathered, NARRATOR_NOTES_LABEL))
     if handoff.note:
         parts.append(
             "The planner's reading of what the player wants (not a record of "

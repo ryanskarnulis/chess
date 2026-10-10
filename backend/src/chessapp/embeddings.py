@@ -15,13 +15,18 @@ service is ever required.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
-# One query is ~10 ms on the service, so a turn waits at most this long for
+# One query is ~10 ms on the service, so a caller waits at most this long for
 # one before it goes without. Connecting to a stopped container fails fast.
 QUERY_TIMEOUT = httpx.Timeout(1.0, connect=0.2)
+
+# The gather step's budget (#451): it runs before every turn's first model
+# call, so a slow service costs the turn its notes (keywords stand in), never
+# more than this.
+GATHER_TIMEOUT = httpx.Timeout(0.3, connect=0.2)
 
 # Embedding the corpus is a batch job (~20 s for every note), off the turn.
 BATCH_TIMEOUT = httpx.Timeout(120.0, connect=2.0)
@@ -56,14 +61,18 @@ class Embedded:
 @dataclass
 class Embedder:
     client: httpx.Client
+    query_timeout: httpx.Timeout = field(default_factory=lambda: QUERY_TIMEOUT)
 
     def embed(
-        self, inputs: Sequence[str], timeout: httpx.Timeout = QUERY_TIMEOUT
+        self, inputs: Sequence[str], timeout: httpx.Timeout | None = None
     ) -> Embedded:
-        """Vectors for `inputs`, already prefixed, in one request."""
+        """Vectors for `inputs`, already prefixed, in one request, within
+        `timeout` (the query timeout by default)."""
         try:
             response = self.client.post(
-                "embeddings", json={"input": list(inputs)}, timeout=timeout
+                "embeddings",
+                json={"input": list(inputs)},
+                timeout=timeout or self.query_timeout,
             )
             response.raise_for_status()
             body = response.json()
@@ -94,8 +103,14 @@ class Embedder:
         return Embedded(model, vectors)
 
 
-def create_embedder(base_url: str, client: httpx.Client | None = None) -> Embedder:
-    """An Embedder against the service's OpenAI root (e.g. host:8600/v1)."""
+def create_embedder(
+    base_url: str,
+    client: httpx.Client | None = None,
+    *,
+    timeout: httpx.Timeout = QUERY_TIMEOUT,
+) -> Embedder:
+    """An Embedder against the service's OpenAI root (e.g. host:8600/v1),
+    waiting at most `timeout` for a query."""
     if client is None:
-        client = httpx.Client(base_url=base_url, timeout=QUERY_TIMEOUT)
-    return Embedder(client)
+        client = httpx.Client(base_url=base_url, timeout=timeout)
+    return Embedder(client, timeout)

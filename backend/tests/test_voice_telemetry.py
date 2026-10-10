@@ -84,7 +84,7 @@ def test_a_transcription_is_recorded_by_interaction_without_the_audio(trace_path
 
     assert response.json() == {"text": "pawn to e4"}
     (record,) = records(trace_path)
-    assert record["schema"] == 5
+    assert record["schema"] == 6
     assert record["kind"] == "speech"
     assert record["op"] == "stt"
     assert record["interaction_id"] == ID
@@ -213,7 +213,7 @@ def test_the_browsers_milestones_are_written_as_reported(trace_path):
     assert response.status_code == 204
     (record,) = records(trace_path)
     assert record["kind"] == "voice"
-    assert record["schema"] == 5
+    assert record["schema"] == 6
     assert record["interaction_id"] == ID
     assert record["clock"] == "client_monotonic_ms"
     assert record["marks"]["playback_ended"] == 9800
