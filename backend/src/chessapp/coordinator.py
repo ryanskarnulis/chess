@@ -371,8 +371,16 @@ class TurnCoordinator:
         # gate — background computation changes when it is decided, never who
         # decides whether it is legal.
         reply = session.submit_move(uci)
+        self._note_difficulty(session)
         self._enter(TurnPhase.ENGINE_MOVE_APPLIED)
         return reply
+
+    def _note_difficulty(self, session: GameSession) -> None:
+        """Tell the game the strength its engine move was played at (#460).
+        Here because every engine move in the app comes through this class
+        (`settle_engine_turn`), so no road onto the board can miss it; the
+        session keeps only the first, the strength the game was played at."""
+        session.note_difficulty(self._ctx.settings.snapshot())
 
     def abandon_turn(self) -> None:
         """Throw the open turn away and start a fresh one.
@@ -584,6 +592,7 @@ class TurnCoordinator:
             # settle it on the next interaction, exactly once.
             self._enter(TurnPhase.PLAYER_MOVE_APPLIED)
             raise
+        self._note_difficulty(session)
         self._enter(TurnPhase.AWAITING_PLAYER)
         return reply
 

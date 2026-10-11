@@ -148,6 +148,28 @@ def _validate_started(value: Any) -> str | None:
 
 _GAME_ID = re.compile(r"[0-9a-f]{32}")
 
+# The settings that make up the engine's strength (`tools.Settings`: exactly one
+# is set), and the type each must have. What `note_difficulty` records and a
+# save carries; nothing else in a settings snapshot is strength.
+_DIFFICULTY_FIELDS = {"tier": str, "skill_level": int, "elo": int}
+
+
+def _validate_difficulty(value: Any) -> dict[str, Any] | None:
+    """The difficulty off a save file, or None for a game the engine has not
+    moved in or a save written before games recorded one. Checked like
+    `started`: it names the opponent in the PGN, so a value the app could never
+    have written does not reach a viewer."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != set(_DIFFICULTY_FIELDS):
+        raise ValueError(f"invalid difficulty: {value!r}")
+    for name, kind in _DIFFICULTY_FIELDS.items():
+        # `type is`, not isinstance: bool is an int subclass, and `true` is
+        # not a skill level.
+        if value[name] is not None and type(value[name]) is not kind:
+            raise ValueError(f"invalid difficulty {name}: {value[name]!r}")
+    return dict(value)
+
 
 def _new_game_id() -> str:
     return uuid4().hex
@@ -169,6 +191,7 @@ class GameSession:
         self._started: str | None = date.today().isoformat()
         self._revision = 0
         self._game_id = _new_game_id()
+        self._difficulty: dict[str, Any] | None = None
 
     @property
     def started(self) -> str | None:
@@ -198,6 +221,46 @@ class GameSession:
         restored checkpoint is the same game it was before the restart.
         """
         return self._game_id
+
+    @property
+    def difficulty(self) -> dict[str, Any] | None:
+        """The strength the engine played this game at, as the settings spell
+        it (`tier`, `skill_level`, `elo`, one of them set), or None while the
+        engine has not moved — and for a save written before games recorded it.
+
+        Session state like `started`: a setting is overwritten by the next
+        one, so the difficulty in force when the PGN is exported says nothing
+        about the game that was played (#460). Recorded at the engine's first
+        move (`note_difficulty`), which is also the rule for a game played at
+        several: the strength the opponent sat down at names it, and turning
+        it up or down later does not rename it after the fact.
+        """
+        return dict(self._difficulty) if self._difficulty is not None else None
+
+    def note_difficulty(self, settings: Mapping[str, Any]) -> None:
+        """Record the strength the engine just moved at, if the game has none
+        yet. `settings` is a settings snapshot; only its strength is kept.
+
+        Called by what plays the engine's moves (`TurnCoordinator`), after
+        each one; a no-op until the engine has a move on the board, so a call
+        made before it moves cannot claim a strength it never played at. Not a
+        revision: no board truth changes.
+        """
+        if self._difficulty is not None or not self._engine_has_moved():
+            return
+        self._difficulty = _validate_difficulty(
+            {name: settings.get(name) for name in _DIFFICULTY_FIELDS}
+        )
+
+    def _engine_has_moved(self) -> bool:
+        """Whether a move by the engine's side is on the stack. Two plies
+        always hold one; a lone ply is the engine's when the root position had
+        the engine's side to move."""
+        plies = len(self._board.move_stack)
+        if plies >= 2:
+            return True
+        root_turn = _COLOR_NAMES[self._board.root().turn]
+        return plies == 1 and root_turn != self._player_color
 
     def renew_game_id(self) -> None:
         """Make this a new game as far as identity goes, board untouched.
@@ -267,6 +330,7 @@ class GameSession:
         if player_color is not None:
             self._player_color = player_color
         self._game_id = _new_game_id()
+        self._difficulty = None
         self._revision += 1
 
     def resign(self, color: str | None = None) -> Outcome:
@@ -381,26 +445,37 @@ class GameSession:
         """The game so far as PGN. Result reflects the session-level endings
         (resignation, a claimed draw) too, since it comes off `outcome()`.
 
+        A finished game also says how it ended in `Termination` (#460), in the
+        standard's own vocabulary, which viewers and lichess read: every ending
+        a game here can have — mate, stalemate, resignation, agreement, a
+        claimed or automatic draw — is "Normal". The standard's other values
+        are time forfeit, adjudication, abandonment and the like, and nothing
+        here ends a game that way. Which normal ending it was, the final
+        position and `Result` say. A game still going gets no tag.
+
         `headers` are who played, where and when — facts the core cannot know,
         so the caller composes them (`tools.pgn_headers`) and this only writes
-        them down. Applied before `Result` so nothing a caller passes can
-        overwrite the one header that is board truth. Omitted, the export is
-        exactly what it always was: python-chess's `?` placeholders, which is
-        what an offline export and the older tests get.
+        them down. Applied before `Result` and `Termination` so nothing a
+        caller passes can overwrite the headers that are board truth. Omitted,
+        the export is exactly what it always was: python-chess's `?`
+        placeholders, which is what an offline export and the older tests get.
         """
         game = chess.pgn.Game.from_board(self._board)
         for tag, value in (headers or {}).items():
             game.headers[tag] = value
         outcome = self.outcome()
         game.headers["Result"] = outcome.result if outcome is not None else "*"
+        if outcome is not None:
+            game.headers["Termination"] = "Normal"
         return str(game)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialized form: root FEN + UCI moves + the two session-level endings
         (resignation, a claimed draw), plus the player's color and the date the
-        game began and its `game_id`. Everything past the first three is additive —
-        older readers ignore them, and older saves that lack them load at the
-        defaults those games were played under."""
+        game began, its `game_id` and the `difficulty` it was played at.
+        Everything past the first three is additive — older readers ignore
+        them, and older saves that lack them load at the defaults those games
+        were played under (no recorded difficulty)."""
         resigned = self._resigned
         return {
             "version": 1,
@@ -412,6 +487,7 @@ class GameSession:
             "draw_agreed": self._draw_agreed,
             "started": self._started,
             "game_id": self._game_id,
+            "difficulty": self._difficulty,
         }
 
     @classmethod
@@ -449,6 +525,7 @@ class GameSession:
             raise ValueError(f"invalid resigned color: {resigned!r}")
         _validate_player_color(player_color)
         started = _validate_started(data.get("started"))
+        difficulty = _validate_difficulty(data.get("difficulty"))
         game_id = data.get("game_id")
         if game_id is not None and not (
             isinstance(game_id, str) and _GAME_ID.fullmatch(game_id)
@@ -482,6 +559,10 @@ class GameSession:
             # carrying both a checkmate and an agreement is not a game that was
             # played.
             session.agree_draw()
+        # The strength the game was played at, not the one in force when it
+        # is reopened. A save from before games recorded it has none, and the
+        # engine's next move records the strength it plays at.
+        session._difficulty = difficulty
         return session
 
     def save(self, path: str | Path) -> None:
@@ -518,6 +599,10 @@ class GameSession:
         undone = tuple(reversed(self.move_history()[-plies:]))
         for _ in range(plies):
             self._board.pop()
+        # Every engine move taken back: what is left was not played at any
+        # strength, and the engine's next move records the one it plays at.
+        if not self._engine_has_moved():
+            self._difficulty = None
         self._revision += 1
         return UndoResult(ok=True, undone=undone)
 

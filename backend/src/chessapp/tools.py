@@ -647,12 +647,21 @@ class ToolContext:
                         ),
                         {},
                     )
+                    # The strength the game was played at, the PGN's rule
+                    # (#460): the setting by the time it ended may not be it.
+                    # Only off the session that game is still on; otherwise,
+                    # and for a game that never recorded one, the setting.
+                    played = (
+                        self.session.difficulty
+                        if self.session.game_id == event.game_id
+                        else None
+                    )
                     self.results.record(
                         event.game_id,
                         player_color=str(
                             start.get("player_color", self.session.player_color)
                         ),
-                        difficulty=difficulty_label(self.settings.snapshot()),
+                        difficulty=difficulty_label(played or self.settings.snapshot()),
                         result=str(event.details.get("result")),
                         winner=event.details.get("winner"),
                         termination=str(event.details.get("termination")),
@@ -1783,9 +1792,14 @@ def pgn_headers(ctx: ToolContext, session: GameSession | None = None) -> dict[st
     # What the opponent was, as precisely as this deployment can say it. No
     # engine attached is not a weak Stockfish, it is no Stockfish — that game
     # was played against something else, and the header may not imply otherwise.
+    # The strength is the one the game was played at (#460), not whatever the
+    # setting says by the time it is exported; before the engine's first move
+    # (and for a save from before games recorded it) the setting is all there is.
+    played = session.difficulty
+    strength_of = ctx.settings if played is None else Settings(**played)
     if ctx.engine is None:
         glitch = "Glitch"
-    elif (strength := _engine_strength(ctx.settings)) is None:
+    elif (strength := _engine_strength(strength_of)) is None:
         glitch = "Glitch (Stockfish)"
     else:
         glitch = f"Glitch (Stockfish, {strength})"
