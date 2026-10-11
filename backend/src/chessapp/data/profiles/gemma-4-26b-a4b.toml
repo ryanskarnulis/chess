@@ -69,11 +69,14 @@ analysis_thinking = false
 max_tokens = 16
 
 # Glitch's own move in the tier where the model picks it (#472,
-# docs/glitch-difficulty.md). Starting values, not measured: a thinking
-# choice capped at 4096 tokens (~70 s at ~60 tok/s) inside a 90 s deadline
-# for the whole run, retries included. The strength script (#476) measures
-# them.
+# docs/glitch-difficulty.md): a thinking choice capped at 4096 tokens, inside
+# a deadline for the whole run, retries included. The live close-out game
+# (#476, 2026-10-11) measured the mover decoding at 40-50 tok/s, not the ~60
+# first assumed, so a full 4096-token think takes ~85-100 s: at the first
+# 90 s deadline 5 of 27 moves timed out to the fallback. 120 s lets the cap,
+# not the clock, end a long think. The strength script (#476) measures the
+# rest.
 [phases.mover]
 max_tokens = 4096
 thinking = true
-deadline_s = 90
+deadline_s = 120
