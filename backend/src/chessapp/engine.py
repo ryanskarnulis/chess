@@ -74,6 +74,15 @@ DEFAULT_TIER = "casual"
 DEFAULT_MOVE_TIME = 0.1
 DEFAULT_ANALYSIS_DEPTH = 12
 
+# What every analysis search runs with, whatever the difficulty (#454). The
+# tiers weaken *play* through these same options on the one process, and a
+# review or a hint measured by a handicapped engine is a wrong answer, not an
+# easy one. Passed per search (`analyse(options=...)`), never `configure`d:
+# python-chess re-applies the configured strength before the next search that
+# does not name them, so play is untouched and `_options` stays the truth a
+# relaunch restores.
+FULL_STRENGTH = {"UCI_LimitStrength": False, "Skill Level": SKILL_MAX}
+
 # A mate scores far beyond any centipawn evaluation; nearer mates score
 # higher, so a mate-in-1 beats a mate-in-3.
 MATE_CP = 100_000
@@ -361,15 +370,34 @@ class EnginePlayer:
         """Choose a move and submit it through the session's legality gate."""
         return session.submit_move(self.choose_move(session))
 
+    def _analyse(
+        self, board: chess.Board, depth: int, multipv: int | None = None
+    ) -> Any:
+        """One full-strength analysis search that depends on `board` alone.
+
+        A fresh `game` per search makes python-chess send `ucinewgame`, which
+        clears Stockfish's hash and history first (#454). Without it a
+        depth-limited result leaned on whatever the process had searched before
+        (its own moves, hints, an earlier review), so one game reviewed three
+        times gave three different accuracies.
+        """
+        return self._run(
+            lambda engine: engine.analyse(
+                board,
+                chess.engine.Limit(depth=depth),
+                multipv=multipv,
+                game=object(),
+                options=FULL_STRENGTH,
+            )
+        )
+
     def evaluate_position(
         self, session: GameSession, depth: int = DEFAULT_ANALYSIS_DEPTH
     ) -> Evaluation:
         if session.is_game_over():
             raise ValueError("cannot evaluate: game is over")
         board = chess.Board(session.fen())
-        info = self._run(
-            lambda engine: engine.analyse(board, chess.engine.Limit(depth=depth))
-        )
+        info = self._analyse(board, depth)
         score_cp, mate_in = _score_fields(info["score"])
         return Evaluation(
             score_cp=score_cp,
@@ -388,11 +416,7 @@ class EnginePlayer:
         if session.is_game_over():
             raise ValueError("cannot suggest moves: game is over")
         board = chess.Board(session.fen())
-        infos = self._run(
-            lambda engine: engine.analyse(
-                board, chess.engine.Limit(depth=depth), multipv=n
-            )
-        )
+        infos = self._analyse(board, depth, multipv=n)
         candidates = []
         for info in infos:
             pv = info.get("pv")

@@ -76,6 +76,13 @@ function ReviewResults({ review }: { review: GameReview }) {
   )
 }
 
+// Spelled out: "inaccuracy" does not take a bare "s" (#454).
+const PLURALS = {
+  inaccuracy: 'inaccuracies',
+  mistake: 'mistakes',
+  blunder: 'blunders',
+} as const
+
 function ColorSummary({
   color,
   accuracy,
@@ -93,7 +100,7 @@ function ColorSummary({
         <span className="review-counts">
           {(['inaccuracy', 'mistake', 'blunder'] as const)
             .filter((c) => (counts[c] ?? 0) > 0)
-            .map((c) => `${counts[c]} ${c}${counts[c] === 1 ? '' : 's'}`)
+            .map((c) => `${counts[c]} ${counts[c] === 1 ? c : PLURALS[c]}`)
             .join(', ')}
         </span>
       )}

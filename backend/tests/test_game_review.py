@@ -8,11 +8,15 @@ skip without one.
 """
 
 import shutil
+from pathlib import Path
 
+import chess
+import chess.pgn
 import pytest
 
 from chessapp.analysis import (
     CRITICAL_PER_COLOR,
+    EVAL_CEILING_CP,
     GameReview,
     ReviewedMove,
     critical_moves,
@@ -20,7 +24,7 @@ from chessapp.analysis import (
     review_game,
     win_percent,
 )
-from chessapp.engine import EnginePlayer
+from chessapp.engine import CandidateMove, EnginePlayer, Evaluation
 from chessapp.facts import analysis_numbers
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext, build_registry
@@ -32,6 +36,8 @@ requires_stockfish = pytest.mark.skipif(
 # 1.e4 e5 2.Bc4 Bc5 3.Qh5 Nf6?? 4.Qxf7# — scholar's mate, one huge black
 # blunder, White finishing with mate.
 SCHOLARS_MATE = ("e4", "e5", "Bc4", "Bc5", "Qh5", "Nf6", "Qxf7#")
+
+LATE_GAME_PGN = Path(__file__).parent / "late_game_84_plies.pgn"
 
 
 @pytest.fixture(scope="module")
@@ -151,6 +157,83 @@ def test_review_does_not_mutate_the_session(engine):
     fen_before = session.fen()
     review_game(engine, session)
     assert session.fen() == fen_before
+
+
+@requires_stockfish
+def test_one_game_reviews_identically_whatever_ran_before():
+    """#454: three reviews of one unchanged game gave three accuracy pairs,
+    because each depth-limited search leaned on the hash earlier work left,
+    and the weak tiers analysed with their handicap on."""
+    session = GameSession()
+    for move in chess.pgn.read_game(LATE_GAME_PGN.open()).mainline_moves():
+        assert session.submit_move(move.uci()).legal
+    with EnginePlayer(move_time=0.05) as player:
+        player.set_skill_level(0)
+        first = review_game(player, session)
+        player.choose_move(GameSession())
+        player.set_tier("maximum")
+        second = review_game(player, session)
+    assert second == first
+
+
+# --- the review's arithmetic, at the analysis boundary (#454) -----------------
+
+
+class ScriptedEngine:
+    """Engine double: each position's best move and White-POV score, by FEN."""
+
+    def __init__(self, by_fen):
+        self.by_fen = by_fen
+
+    def get_best_moves(self, session, n=1):
+        uci, score_cp, mate_in = self.by_fen[session.fen()]
+        board = chess.Board(session.fen())
+        san = board.san(chess.Move.from_uci(uci))
+        return [CandidateMove(uci, san, score_cp, mate_in)]
+
+    def evaluate_position(self, session):
+        _, score_cp, mate_in = self.by_fen[session.fen()]
+        return Evaluation(score_cp, mate_in)
+
+
+def after(*sans):
+    board = chess.Board()
+    for san in sans:
+        board.push_san(san)
+    return board.fen()
+
+
+def test_the_engines_own_move_costs_nothing():
+    # Two searches disagree about e4 by a full pawn; it is still the best move.
+    engine = ScriptedEngine(
+        {after(): ("e2e4", 120, None), after("e4"): ("e7e5", 20, None)}
+    )
+    review = review_game(engine, play(GameSession(), "e4"))
+    (e4,) = review.moves
+    assert (e4.san, e4.best_san) == ("e4", "e4")
+    assert e4.cp_loss == 0
+    assert e4.classification == "good"
+    assert e4.accuracy == 100.0
+
+
+def test_a_missed_mate_costs_a_bounded_loss():
+    # White had mate in 3 and played into mate in 2 against: on the raw mate
+    # scale that is ~200 000 centipawns, which is not a number anyone can use.
+    engine = ScriptedEngine(
+        {after(): ("d2d4", None, 3), after("e4"): ("e7e5", None, -2)}
+    )
+    (e4,) = review_game(engine, play(GameSession(), "e4")).moves
+    assert e4.cp_loss == 2 * EVAL_CEILING_CP
+    assert e4.classification == "blunder"
+
+
+def test_a_slower_mate_is_not_a_mistake():
+    engine = ScriptedEngine(
+        {after(): ("d2d4", None, 2), after("e4"): ("e7e5", None, 5)}
+    )
+    (e4,) = review_game(engine, play(GameSession(), "e4")).moves
+    assert e4.cp_loss == 0
+    assert e4.classification == "good"
 
 
 # --- the tool ---------------------------------------------------------------
