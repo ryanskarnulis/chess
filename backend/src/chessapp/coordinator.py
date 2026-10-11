@@ -56,6 +56,13 @@ State lives on the coordinator, board truth stays in `GameSession`: the phases
 say what may happen next, never what is on the board. `ctx.session` and
 `ctx.engine` are read live on every call because `resume_game` swaps the session
 object on the context.
+
+**Every reply is chosen by one move source** (`_move_source`, #471). Whether a
+reply is owed and which move it is are both asked of it, on every route: the
+background collect, its synchronous fallback, the settle and so `play_exchange`.
+Stockfish is the only source today; the Glitch tier puts its mover behind the
+same seam (`docs/glitch-difficulty.md`). A source only *chooses*: the move still
+enters the game through `session.submit_move`, here.
 """
 
 import logging
@@ -64,7 +71,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from chessapp.game import GameSession, MoveResult
 
@@ -72,6 +79,17 @@ if TYPE_CHECKING:  # tools.py imports this module; don't import it back.
     from chessapp.tools import ToolContext
 
 logger = logging.getLogger(__name__)
+
+
+class MoveSource(Protocol):
+    """What chooses the reply's move: `EnginePlayer` today.
+
+    It returns a UCI string and nothing else. It never submits the move — the
+    coordinator does, through the session's legality gate — so a source can
+    be wrong without the game being wrong.
+    """
+
+    def choose_move(self, session: GameSession) -> str: ...
 
 
 class TurnPhase(StrEnum):
@@ -132,17 +150,20 @@ class _PendingReply:
     here mutates game state.
     """
 
-    def __init__(self, fen: str) -> None:
-        self.fen = fen
+    def __init__(self, session: GameSession) -> None:
+        self.fen = session.fen()
+        # A replayed copy, so the source sees the game's moves and not just the
+        # position: Stockfish reads only the FEN, a mover reads the moves too.
+        self._probe = GameSession.from_dict(session.to_dict())
         self.uci: str | None = None
         self._thread: threading.Thread | None = None
 
-    def start(self, engine: "object") -> None:
-        probe = GameSession(self.fen)
+    def start(self, source: MoveSource) -> None:
+        probe = self._probe
 
         def _compute() -> None:
             try:
-                self.uci = engine.choose_move(probe)  # type: ignore[attr-defined]
+                self.uci = source.choose_move(probe)
             except Exception:
                 # A failed background computation is simply no answer: the
                 # collector falls back to asking the engine itself, so the
@@ -198,6 +219,14 @@ class TurnCoordinator:
     def phase(self) -> TurnPhase:
         return self._phase
 
+    def _move_source(self) -> MoveSource | None:
+        """The one thing that chooses the reply, or None when no reply is ever
+        owed. Read live, like `ctx.engine`, because the context changes under
+        the coordinator. Stockfish for now; the `glitch` tier picks its mover
+        here (#473), so every route changes source at once.
+        """
+        return self._ctx.engine
+
     @property
     def turn_id(self) -> int:
         """Counts turn boundaries, from 1. Bumped when a turn completes, so a
@@ -245,7 +274,7 @@ class TurnCoordinator:
         self._require("apply a player move", TurnPhase.AWAITING_PLAYER)
         session = self._ctx.session
         if (
-            self._ctx.engine is not None
+            self._move_source() is not None
             and not session.is_game_over()
             and session.turn != session.player_color
         ):
@@ -280,12 +309,12 @@ class TurnCoordinator:
         self._require("begin the engine's reply", TurnPhase.PLAYER_MOVE_APPLIED)
         if self._pending is not None:
             raise TurnStateError("the engine is already computing a reply")
-        engine = self._ctx.engine
+        source = self._move_source()
         session = self._ctx.session
-        if engine is None or session.is_game_over():
+        if source is None or session.is_game_over():
             return
-        pending = _PendingReply(session.fen())
-        pending.start(engine)
+        pending = _PendingReply(session)
+        pending.start(source)
         self._pending = pending
 
     def begin_observation(self) -> None:
@@ -340,16 +369,16 @@ class TurnCoordinator:
             TurnPhase.AGENT_OBSERVING,
         )
         pending, self._pending = self._pending, None
-        engine = self._ctx.engine
+        source = self._move_source()
         session = self._ctx.session
-        if engine is None or session.is_game_over():
+        if source is None or session.is_game_over():
             self._enter(TurnPhase.ENGINE_MOVE_APPLIED)
             return None
         self._enter(TurnPhase.ENGINE_CALCULATING)
         try:
             uci = pending.result_for(session.fen()) if pending is not None else None
             if uci is None:
-                uci = engine.choose_move(session)
+                uci = source.choose_move(session)
         except Exception:
             # An engine that dies mid-calculation must not take the turn with
             # it. The player's move stands and the reply is still owed, so the
@@ -572,15 +601,16 @@ class TurnCoordinator:
         unless the engine died, when it raises with the reply left owed.
         """
         self._require("settle the engine's turn", TurnPhase.AWAITING_PLAYER)
-        engine = self._ctx.engine
+        source = self._move_source()
         session = self._ctx.session
-        if engine is None or session.is_game_over():
+        if source is None or session.is_game_over():
             return None
         if session.turn == session.player_color:
             return None
         self._enter(TurnPhase.ENGINE_CALCULATING)
         try:
-            reply = engine.play_move(session)
+            # The same source and the same gate as `collect_engine_reply`.
+            reply = session.submit_move(source.choose_move(session))
         except Exception:
             # The engine died with the board waiting on it (#329). Back to
             # awaiting the player would be a lie the whole app acts on: nothing
@@ -609,7 +639,7 @@ class TurnCoordinator:
         exists to make impossible.
         """
         if self._phase in (TurnPhase.PLAYER_MOVE_APPLIED, TurnPhase.AGENT_OBSERVING):
-            if self._ctx.engine is not None and not self._ctx.session.is_game_over():
+            if self._move_source() is not None and not self._ctx.session.is_game_over():
                 raise TurnStateError(
                     f"cannot complete the turn while {self._phase}: "
                     "the engine still owes a reply"

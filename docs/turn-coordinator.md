@@ -64,6 +64,14 @@ settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
 - **The engine's reply belongs to the coordinator and is never a
   model-callable tool** (`test_engine_reply_is_not_a_callable_tool`). A model
   that could ask for the reply could also fail to.
+- **Every reply is chosen by one move source** (`_move_source`, a
+  `MoveSource`: anything with `choose_move(session) -> uci`; #471). Whether a
+  reply is owed and which move it is are both asked of it on every route: the
+  background collect (over a replayed copy that carries the game's moves), its
+  synchronous fallback, `settle_engine_turn`, and so `play_exchange`. A source
+  only chooses; the coordinator submits through the session's legality gate.
+  Stockfish (`EnginePlayer`) is the only source until the Glitch tier puts its
+  mover behind the same seam (`docs/glitch-difficulty.md`, decision 1).
 - **A restored engine-to-move board is settled by the coordinator, and Glitch
   says the move.** The restoring tools report it under `engine_move` — the
   shape `make_move`'s atomic result already uses — and the narrator reads it
