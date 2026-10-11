@@ -96,7 +96,9 @@ that move with `chooser="fallback"`. The marks:
 
 `set_difficulty` and `/api/game/difficulty` refuse `glitch` with no mover and
 say why; a saved `glitch` setting falls back to the default tier at a start
-with no brain. The tier is off the easier/harder ladder
+with no brain. The MCP server has no brain, so its mover is built from the
+environment (`LLAMACPP_MODEL`, or `CHESSAPP_MOVER_MODEL`): the one model call
+it makes, and `glitch` is refused there without one. The tier is off the easier/harder ladder
 (`engine.STEPPED_TIERS`), and the PGN names the opponent `Glitch (own moves)`.
 
 ### 5. The mover runs on the brain's model

@@ -428,3 +428,38 @@ def test_settings_accept_the_glitch_tier(tmp_path):
     (tmp_path / SETTINGS_FILENAME).write_text('{"tier": "glitch"}')
     ctx = ToolContext(session=GameSession(), save_dir=tmp_path)
     assert ctx.settings.tier == GLITCH
+
+
+# --- MCP: the mover is the one model call the server makes -----------------------
+
+
+def test_the_mcp_server_has_no_mover_without_a_model(monkeypatch):
+    from chessapp import mcp_server
+
+    monkeypatch.delenv("LLAMACPP_MODEL", raising=False)
+    monkeypatch.delenv("CHESSAPP_MOVER_MODEL", raising=False)
+    monkeypatch.setattr(mcp_server, "_engine_from_env", lambda: FakeEngine())
+    ctx = mcp_server.build_mcp_context()
+    assert ctx.mover_available() is False
+    result = build_registry(ctx).dispatch("set_difficulty", {"tier": GLITCH})
+    assert result["ok"] is False
+
+
+def test_the_mcp_server_gets_a_mover_on_the_named_model(monkeypatch):
+    from chessapp import mcp_server
+
+    monkeypatch.setenv("LLAMACPP_MODEL", "gemma-4-26b-a4b")
+    monkeypatch.delenv("CHESSAPP_MOVER_MODEL", raising=False)
+    monkeypatch.delenv("CHESSAPP_AGENT", raising=False)
+    monkeypatch.setattr(mcp_server, "_engine_from_env", lambda: FakeEngine())
+    ctx = mcp_server.build_mcp_context()
+    assert ctx.mover_available() is True
+    assert ctx.glitch_mover().model == "gemma-4-26b-a4b"
+
+
+def test_the_mcp_server_has_no_mover_with_the_agent_off(monkeypatch):
+    from chessapp import mcp_server
+
+    monkeypatch.setenv("LLAMACPP_MODEL", "gemma-4-26b-a4b")
+    monkeypatch.setenv("CHESSAPP_AGENT", "off")
+    assert mcp_server._mover_from_env() is None
