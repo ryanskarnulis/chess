@@ -3055,14 +3055,14 @@ def _glitch_reply_scenario(
     def check(app: EvalApp, assistant: dict[str, Any]) -> None:
         traced = app.tracer.last
         assert traced.get("route") == ROUTE_FAST_PATH, "left the fast path"
-        assert (traced.get("handoff") or {}).get("reply_chosen_by") == chooser, (
-            "the premise: the brief said whose move it was"
-        )
         draft = traced.get("draft") or ""
-        assert draft, "no reaction was produced, nothing to score"
         # Fallback ownership is read by hand (`speech_report.py`, #474): the
         # words are printed with -s, never judged by a reading.
         print(f"\n[{name}] {draft!r}")
+        assert (traced.get("evidence") or {}).get("reply_chosen_by") == chooser, (
+            "the premise: the narrator was told whose move it was"
+        )
+        assert draft, "no reaction was produced, nothing to score"
         _assert_speech_backed(traced)
         reply = (traced.get("engine_reply") or {}).get("san")
         assert score_record(traced).reply_announced is True, (

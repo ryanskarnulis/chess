@@ -296,8 +296,8 @@ named a reply they were never shown.
 | Scenario | Utterance; setup | Pins | Kind |
 | --- | --- | --- | --- |
 | `consecutive_move_reactions` | "e4", "knight to f3", "bishop to c4" in a row on the panel seam (`_run_steps`), a fresh game | every step on the fast path and answered by the engine; each reaction produced (a draft, not the fallback); **every claim backed** — a misnamed reply is `unplayed_reply`; and the reply said (`speech_accuracy.names_reply`: SAN, square or castle) on all three | Lock |
-| `glitch_reply_with_intent` | "e4" on the fast path in the `glitch` tier, the mover scripted to play c5 with an intent (#474) | the brief said the move was his (`handoff.reply_chosen_by`); a reaction produced; **every claim backed**, moves his intent named included; the reply said | Lock |
-| `fallback_reply_not_claimed` | "e4" on the fast path in the `glitch` tier, the mover scripted to fail (`deadline`), so Stockfish plays at `beginner` (#474) | the brief said the move was a fallback; a reaction produced; **every claim backed**; the reply said. Whether he claimed it as his idea is read by hand from the printed drafts (`-s`), never scored | Lock |
+| `glitch_reply_with_intent` | "e4" on the fast path in the `glitch` tier, the mover scripted to play c5 with an intent (#474) | the narrator was told the move was his (`evidence.reply_chosen_by`); a reaction produced; **every claim backed**, moves his intent named included; the reply said | Lock |
+| `fallback_reply_not_claimed` | "e4" on the fast path in the `glitch` tier, the mover scripted to fail (`deadline`), so Stockfish plays at `beginner` (#474) | the narrator was told the move was a fallback (`evidence.reply_chosen_by`); a reaction produced; **every claim backed**; the reply said. Whether he claimed it as his idea is read by hand from the printed drafts (`-s`), never scored | Lock |
 
 ### Compositions (added 2026-09-05, floor 0.8 each)
 
