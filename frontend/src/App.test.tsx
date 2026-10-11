@@ -40,11 +40,17 @@ function state(overrides: Partial<GameState> = {}): GameState {
 }
 
 class FakeWebSocket {
+  static instances: FakeWebSocket[] = []
   onmessage: ((ev: { data: string }) => void) | null = null
   close = vi.fn()
   url: string
   constructor(url: string) {
     this.url = url
+    FakeWebSocket.instances.push(this)
+  }
+  /** Push one server frame, as the backend's broadcast would. */
+  emit(data: unknown) {
+    act(() => this.onmessage?.({ data: JSON.stringify(data) }))
   }
 }
 
@@ -65,6 +71,7 @@ let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   boardProps.length = 0
+  FakeWebSocket.instances = []
   served = state()
   vi.stubGlobal('WebSocket', FakeWebSocket)
   fetchMock = vi.fn((url: string) => {
@@ -545,5 +552,74 @@ describe('post-game screen', () => {
     expect(document.querySelector('.review-panel')).not.toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: /results/i }))
     expect(screen.getByRole('dialog', { name: /game over/i })).toBeInTheDocument()
+  })
+})
+
+// The bubble is restored and broadcast state too (#458): a reload or a second
+// tab shows what Glitch last said, a finished game never says it is anyone's
+// move, and a setting changed elsewhere reaches this tab's controls.
+describe('agent bubble across reloads and tabs', () => {
+  const bubble = () => document.querySelector('.agent-bubble .bubble')!
+
+  it('shows the reply the socket restores on load, not "Your move."', async () => {
+    served = state({ game_id: 'g1' })
+    render(<App />)
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    const socket = FakeWebSocket.instances[0]
+    // What the backend sends a tab that connects: the board, then the reply.
+    socket.emit({ type: 'state', state: served })
+    socket.emit({
+      type: 'reply',
+      reply: { text: 'Your knight is loose.', game_id: 'g1', seq: 3 },
+    })
+    await waitFor(() => expect(bubble()).toHaveTextContent('Your knight is loose.'))
+  })
+
+  it('never shows a reply over a game it was not said in', async () => {
+    served = state({ game_id: 'g2' })
+    render(<App />)
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    const socket = FakeWebSocket.instances[0]
+    socket.emit({ type: 'state', state: served })
+    socket.emit({ type: 'reply', reply: { text: 'About the old game.', game_id: 'g1', seq: 1 } })
+    await waitFor(() => expect(bubble()).toHaveTextContent('Your move.'))
+    expect(screen.queryByText('About the old game.')).not.toBeInTheDocument()
+  })
+
+  it('says the game is finished, not "Your move.", once it is over', async () => {
+    served = state({
+      game_over: true,
+      outcome: { termination: 'checkmate', winner: 'white', result: '1-0' },
+      history: ['e4', 'f6', 'd4', 'g5', 'Qh5#'],
+    })
+    // Late, as a real state document is: the bubble mounts before it lands.
+    deferState()
+    render(<App />)
+    await waitFor(() => expect(bubble()).toHaveTextContent(/finished — the win is yours/i))
+    expect(screen.queryByText('Your move.')).not.toBeInTheDocument()
+  })
+
+  it('moves the difficulty select when the difficulty changes elsewhere', async () => {
+    stubMatchMedia(false)
+    render(<App />)
+    await waitFor(() =>
+      expect(screen.getByRole('navigation', { name: /game controls/i })).toBeInTheDocument(),
+    )
+    screen.getByRole('button', { name: /options/i }).click()
+    const select = (await screen.findByRole('combobox', {
+      name: /difficulty/i,
+    })) as HTMLSelectElement
+    await waitFor(() => expect(select.value).toBe('casual'))
+    FakeWebSocket.instances[0].emit({
+      type: 'settings',
+      settings: {
+        verbosity: 'normal',
+        voice_output: false,
+        tier: 'advanced',
+        skill_level: null,
+        elo: null,
+      },
+    })
+    await waitFor(() => expect(select.value).toBe('advanced'))
   })
 })

@@ -23,6 +23,8 @@ import {
   type ConfirmQuestion,
   type GameState,
   type LifecycleOutcome,
+  type PanelReply,
+  type Settings,
   type SocketMessage,
 } from './api'
 import { drawAnswer } from './draw'
@@ -133,9 +135,10 @@ export interface UseGame {
   /** Server-confirmed difficulty tier; null until settings load (or when the
    * strength was last set outside the tiers, e.g. by raw skill/elo). */
   tier: string | null
-  /** The agent's latest commentary, or null before the first command — a
-   * dragged move in agent mode sets it too, from the reaction the backend
-   * returned with the move. */
+  /** The agent's latest commentary for the game on the board, or null before
+   * the first one — a dragged move in agent mode sets it too, from the reaction
+   * the backend returned with the move. Restored on load and broadcast to every
+   * tab (#458), and dropped when the game changes. */
   commentary: string | null
   /** Whether a brain is configured; null until settings load. False is direct
    * mode: Stockfish only, and the command box is a designed dead state rather
@@ -204,7 +207,10 @@ export function useGame(): UseGame {
   const [pendingPromotion, setPendingPromotion] = useState<{ from: string; to: string } | null>(
     null,
   )
-  const [commentary, setCommentary] = useState<string | null>(null)
+  // The bubble's text with the game it belongs to (#458): a reply is about one
+  // game, and a new game or a resume — another tab's included — must not show
+  // it. `gameId` is undefined against an older backend, as is the board's.
+  const [reply, setReply] = useState<{ text: string; gameId: string | undefined } | null>(null)
   const [pgn, setPgn] = useState<string | null>(null)
   const [agentThinking, setAgentThinking] = useState(false)
   const [progress, setProgress] = useState<TurnProgress>(NO_PROGRESS)
@@ -232,6 +238,23 @@ export function useGame(): UseGame {
   // it: `apply` is the socket effect's one dependency and must stay
   // identity-stable, so it cannot close over the rendered value.
   const pendingPromotionRef = useRef<ArmedPromotion | null>(null)
+  // The newest server reply adopted (#458). A ref for the same reason as the
+  // version: snapshot, broadcast and re-sync race outside the render cycle, and
+  // a reconnect's snapshot re-sends a reply this tab may since have replaced
+  // with a line of its own (a draw answer).
+  const replySeqRef = useRef(0)
+
+  /** Show `text` as the reply to the game on the board now. */
+  const setCommentary = useCallback((text: string) => {
+    setReply({ text, gameId: stateRef.current?.game_id })
+  }, [])
+
+  /** Show a reply the server kept or broadcast — unless it is one already seen. */
+  const adoptReply = useCallback((next: PanelReply) => {
+    if (next.seq <= replySeqRef.current) return
+    replySeqRef.current = next.seq
+    setReply({ text: next.text, gameId: next.game_id })
+  }, [])
 
   const setView = useCallback((ply: number | null) => {
     viewPlyRef.current = ply
@@ -286,6 +309,20 @@ export function useGame(): UseGame {
     brainColdRef.current = next.cold
     setBrainState(next)
   }, [])
+
+  /** Take the settings document as the server's word — on load, and whenever
+   * a change anywhere (another tab, a chat command) is broadcast (#458). */
+  const adoptSettings = useCallback(
+    (s: Settings) => {
+      setVoiceOutputState(s.voice_output)
+      setTierState(s.tier)
+      // Undefined (an older backend) stays null: unknown is not direct mode,
+      // and the indicator only claims what the server actually said.
+      setAgentAvailable(s.agent_available ?? null)
+      adoptBrain(readBrainSettings(s))
+    },
+    [adoptBrain],
+  )
 
   // While a switched brain is cold, the end of a turn is when it may have
   // warmed: re-read the setting then (and only then — a warm brain costs no
@@ -343,9 +380,12 @@ export function useGame(): UseGame {
       next.onmessage = (ev) => {
         if (!live || socket !== next) return
         const message = JSON.parse(ev.data) as SocketMessage
-        // Two kinds of message on the one channel: the authoritative board,
-        // and what the turn changing it is doing at this moment.
+        // The authoritative board, what the turn changing it is doing at this
+        // moment, and — so every tab hears it, and a reload is told it again —
+        // Glitch's reply and the settings (#458).
         if (message.type === 'state') apply(message.state)
+        else if (message.type === 'reply') adoptReply(message.reply)
+        else if (message.type === 'settings') adoptSettings(message.settings)
         else if (message.type === 'progress') {
           setProgress((current) => applyProgress(current, message.progress))
           // Any turn's end — a command, a dragged move, another tab's — may
@@ -372,14 +412,7 @@ export function useGame(): UseGame {
     // Null: settings never arrived. All three stay null — the hook's word for
     // "not loaded" — rather than adopting values the server never confirmed.
     fetchSettings().then((s) => {
-      if (live && s) {
-        setVoiceOutputState(s.voice_output)
-        setTierState(s.tier)
-        // Undefined (an older backend) stays null: unknown is not direct mode,
-        // and the indicator only claims what the server actually said.
-        setAgentAvailable(s.agent_available ?? null)
-        adoptBrain(readBrainSettings(s))
-      }
+      if (live && s) adoptSettings(s)
     })
     connect(false)
     return () => {
@@ -397,7 +430,7 @@ export function useGame(): UseGame {
         current.close()
       }
     }
-  }, [apply, adoptBrain, refreshColdBrain])
+  }, [apply, adoptReply, adoptSettings, refreshColdBrain])
 
   const submit = useCallback(
     async (uci: string) => {
@@ -439,7 +472,7 @@ export function useGame(): UseGame {
         if (result.speak) void playText(result.commentary)
       }
     },
-    [apply],
+    [apply, setCommentary],
   )
 
   const play = useCallback(
@@ -566,7 +599,7 @@ export function useGame(): UseGame {
     // the race, the line is about a position that is gone.
     if (!apply(answer.state)) return
     setCommentary(drawAnswer(answer.accepted, answer.reason))
-  }, [apply])
+  }, [apply, setCommentary])
 
   const setDifficulty = useCallback(async (nextTier: string) => {
     // Difficulty is a settings change, not a board mutation — no state to
@@ -645,7 +678,7 @@ export function useGame(): UseGame {
         if (unvoiced !== null) finishInteraction(interaction, unvoiced)
       }
     },
-    [apply, refreshColdBrain],
+    [apply, refreshColdBrain, setCommentary],
   )
 
   const stepBack = useCallback(() => {
@@ -720,7 +753,7 @@ export function useGame(): UseGame {
     offerDraw,
     setDifficulty,
     tier,
-    commentary,
+    commentary: reply !== null && reply.gameId === state?.game_id ? reply.text : null,
     agentAvailable,
     agentThinking,
     agentProgress: coldLabel(

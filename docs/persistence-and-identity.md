@@ -74,6 +74,11 @@ What does **not** survive a restart:
   board, so a player who answers across a restart gets the ordinary road.
 - **An in-flight turn.** A command the process died inside has whatever
   outcome the checkpoint recorded; nothing re-runs it.
+- **The panel's latest reply** (#458). A reload or a second tab is sent it
+  over the socket (`docs/turn-coordinator.md`, "Live progress"), but it is
+  held in memory: the transcript keeps what the turn is *remembered* by,
+  which is not always the line that was shown, so after a restart the bubble
+  starts at "Your move." (or the result, in a finished game).
 
 ## The gate: what asks before it runs
 

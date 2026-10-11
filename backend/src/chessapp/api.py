@@ -1631,6 +1631,51 @@ def create_app(
         _checkpoint()
         broadcaster.broadcast(state)
 
+    # The panel's latest reply (#458): what the commentary bubble last said,
+    # stamped with the game it was said in and numbered so a client can tell a
+    # newer one from a re-sent one. Only the panel's own turns set it — a drag,
+    # a typed or spoken command — never a delegate thread, whose words belong
+    # to its own conversation. In memory: a reload or a second tab gets it, a
+    # restart does not (`docs/persistence-and-identity.md`).
+    panel_reply: dict[str, Any] | None = None
+
+    def _current_reply() -> dict[str, Any] | None:
+        """The panel's latest reply while its game is the one on the board; a
+        new game or a resume leaves it unsaid."""
+        reply = panel_reply
+        if reply is None or reply["game_id"] != ctx.session.game_id:
+            return None
+        return dict(reply)
+
+    def _publish_reply(text: str) -> None:
+        """Record the reply the panel just showed and send it to every client,
+        behind the board it was about (one queue, so in that order). Called
+        under the mutation lock, which is what orders `seq`."""
+        nonlocal panel_reply
+        seq = panel_reply["seq"] + 1 if panel_reply is not None else 1
+        panel_reply = {"text": text, "game_id": ctx.session.game_id, "seq": seq}
+        broadcaster.publish({"type": "reply", "reply": dict(panel_reply)})
+
+    # The settings document every client last heard, so a change is sent once
+    # and an unchanged one not at all. Seeded below, once `get_settings` is.
+    last_settings: dict[str, Any] | None = None
+
+    def _publish_settings() -> None:
+        """Send the settings to every client when they changed (#458).
+
+        Settings are not board state and never rode the state broadcast, so a
+        second tab kept its difficulty select from page load while the
+        difficulty moved under it — from the other tab's Options, or by chat.
+        Called after every road that can change one: the settings endpoints and
+        every command turn (a tool may have set one).
+        """
+        nonlocal last_settings
+        settings = get_settings()
+        if settings == last_settings:
+            return
+        last_settings = settings
+        broadcaster.publish({"type": "settings", "settings": settings})
+
     # The boards the open command's mutating tool calls have left behind, in
     # order — or `None` between commands, which is every other road onto the
     # board (a drag, a button, the confirm endpoint) recording nothing.
@@ -1868,6 +1913,13 @@ def create_app(
     async def state_channel(websocket: WebSocket) -> None:
         await broadcaster.connect(websocket)
         await websocket.send_json({"type": "state", "state": _published_state()})
+        # The panel's latest reply rides the connect snapshot (#458), so a
+        # reload or a newly opened tab shows what Glitch last said rather than
+        # "Your move.". Its own frame, not a key on the board document: the
+        # reply is not board state and every mutation response is that
+        # document, so it stays the same document everywhere.
+        if (reply := _current_reply()) is not None:
+            await websocket.send_json({"type": "reply", "reply": reply})
         try:
             # The channel is one-way; we only read to notice the disconnect.
             while True:
@@ -2083,6 +2135,8 @@ def create_app(
                     )
                 )
                 _publish_state()
+                if commentary:
+                    _publish_reply(commentary)
             _trace_turn(
                 utterance=move,
                 route=ROUTE_BOARD,
@@ -2197,6 +2251,7 @@ def create_app(
                 logger.warning("engine_reply_failed", exc_info=True)
                 history = ctx.session.move_history()
                 _publish_state()
+                _publish_reply(ENGINE_LOST_REPLY_OWED)
                 return {
                     "legal": True,
                     "san": history[-1] if history else None,
@@ -2527,7 +2582,8 @@ def create_app(
         Range is validated here regardless of whether an engine is attached,
         so the setting is always sane; it is applied to the live engine when
         present and re-applied when one attaches later. This does not touch
-        board state, so nothing is broadcast.
+        board state, so no state is broadcast — only the settings, so every
+        open tab's selector follows (#458).
         """
         try:
             if request.tier is not None:
@@ -2562,6 +2618,7 @@ def create_app(
         # Not a board mutation, so no guard observes it on the way out; the
         # change is the ledger's to record all the same (#372).
         ctx.observe_ledger()
+        _publish_settings()
         return {
             "tier": ctx.settings.tier,
             "skill_level": ctx.settings.skill_level,
@@ -2663,7 +2720,11 @@ def create_app(
         armed or answered here, and both halves belong to one conversation.
         """
         async with _mutation(version, game_id):
-            return await _command_turn(text, conversation, origin=origin)
+            outcome = await _command_turn(text, conversation, origin=origin)
+        # A delegate can change a setting too ("make it harder" over MCP); the
+        # panel's tabs hear about it. Its words stay in its own thread.
+        _publish_settings()
+        return outcome
 
     async def _command_turn(
         text: str,
@@ -3360,6 +3421,9 @@ def create_app(
             # have just swapped in the saved game's transcript, and this turn
             # belongs to that thread.
             ctx.transcript.record(request.text, outcome.memory)
+            if outcome.commentary:
+                _publish_reply(outcome.commentary)
+        _publish_settings()
         return {
             "commentary": outcome.commentary,
             "tool_results": outcome.tool_results,
@@ -3421,12 +3485,16 @@ def create_app(
             }
         return {**brain_switch.status(), "brain_choices": list(BRAIN_CHOICES)}
 
+    # What the clients loaded with is what they last heard (#458).
+    last_settings = get_settings()
+
     @app.post("/api/settings/brain")
     def set_brain(request: BrainRequest) -> dict[str, Any]:
         """Choose Glitch's brain (#434). Stored now and persisted like every
         setting; it takes over at the next turn boundary, never inside the turn
-        that may be running. Not a board mutation, so no lock and nothing is
-        broadcast. In direct mode it is stored for when the agent is back."""
+        that may be running. Not a board mutation, so no lock and no state
+        broadcast — only the settings (#458). In direct mode it is stored for
+        when the agent is back."""
         if request.model not in BRAIN_CHOICES:
             raise HTTPException(
                 status_code=422,
@@ -3438,15 +3506,17 @@ def create_app(
                 status_code=409, detail="this app's brain is fixed; it cannot switch"
             )
         ctx.settings.brain = request.model
+        _publish_settings()
         return _brain_settings()
 
     @app.post("/api/settings/voice")
     def set_voice_output(request: VoiceOutputRequest) -> dict[str, Any]:
         """Voice output on/off from the UI (trusted path, mirroring the
         `set_voice_output` tool — the mute button shouldn't need the LLM).
-        Not a board mutation, so nothing is broadcast."""
+        Not a board mutation, so only the settings are broadcast (#458)."""
         ctx.settings.voice_output = request.enabled
         ctx.observe_ledger()
+        _publish_settings()
         return {"voice_output": ctx.settings.voice_output}
 
     def _trace_event(kind: str, fields: dict[str, Any]) -> None:
