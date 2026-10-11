@@ -1,12 +1,12 @@
 # The Glitch difficulty tier
 
 Design note for #336 (roadmap #366, step 19). **Status: agreed 2026-10-10,
-being built.** Done so far: the move-source seam (#471), the mover phase
-itself, `mover.py` with `play_move` (#472), and the tier with its fallback
-(#473: `engine.DIFFICULTY_TIERS["glitch"]`, `move_source.GlitchSource`; BRIEF.md
-amended). Still to come: the narrator told the intent and the fallback
-(#474), the picker entry and "Glitch is thinking" (#475), and the strength
-script (#476). Where the code has landed this note describes it.
+built.** The move-source seam (#471), the mover phase itself, `mover.py` with
+`play_move` (#472), the tier with its fallback (#473:
+`engine.DIFFICULTY_TIERS["glitch"]`, `move_source.GlitchSource`; BRIEF.md
+amended), the narrator told the intent and the fallback (#474), the picker
+entry and "Glitch is thinking" (#475), and the strength script (#476,
+"Measuring it"). Where the code has landed this note describes it.
 
 ## What it is
 
@@ -156,11 +156,31 @@ feels good; that is what the live check judges.
 
 ## Measuring it
 
-- **Strength:** an offline script plays N games of the mover against
-  Stockfish at fixed Elo levels and reports an estimated Elo, the
-  illegal-attempt rate and the fallback rate, per model. It is a manual
-  command like the evals, never in CI, and its history is kept beside the
-  frontier's, so a future model's strength is comparable.
+- **Strength:** `scripts/mover_strength.py` (#476) plays the mover against
+  Stockfish at fixed `UCI_Elo` levels (default 1320 and 1600, four games
+  each, colours alternating) and reports an estimated Elo, the
+  illegal-attempt rate, the fallback rate and the seconds per move. It plays
+  through `GlitchSource` over an engine at the `glitch` tier, so a mover
+  failure is the app's own fallback, counted. A manual command like the
+  evals, never in CI: it refuses a server that is already generating, and a
+  run of eight games is a few hours of GPU. Each game is written to the
+  report as it ends, and re-running `play` on the report finishes a crashed
+  run. `append` keeps one line per run in `docs/mover-strength-history.jsonl`,
+  keyed by model and `profile_sha` (the digest of the profile's
+  `describe()`), so a future model's strength is comparable; `trend` prints
+  it.
+
+  The Elo is a performance rating: the rating at which the games' expected
+  score (the logistic Elo curve) equals the score made, with the one-sided
+  95% Wilson bounds on the score read through the same curve. A whitewash or
+  a sweep has no estimate, only a bound. `UCI_Elo` floors at 1320, so a mover
+  weaker than that gets a ceiling at this sample size, not a number.
+
+  ```bash
+  python scripts/mover_strength.py play gemma-4-26b-a4b --report /tmp/strength-26b.jsonl
+  python scripts/mover_strength.py append /tmp/strength-26b.jsonl --label "first numbers (#476)"
+  python scripts/mover_strength.py trend
+  ```
 - **Eval gate:** the planner and narrator barely change, but the reply beat
   and the narrator's brief do, so the gate runs before merge
   (`docs/agent-evals.md`), plus speech accuracy on traced Glitch-tier turns.

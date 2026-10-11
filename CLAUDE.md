@@ -33,6 +33,8 @@ python scripts/frontier_report.py trend                  # frontier history, per
 python scripts/speech_report.py /tmp/turns.jsonl          # speech accuracy of a trace (docs/speech-accuracy.md)
 CHESSAPP_TRAJ_SEED=7 pytest tests/test_trajectories.py -k replay -s   # replay one composed walk
 python scripts/check_profile.py gemma-4-26b-a4b          # a model's profile vs its server (docs/model-profiles.md)
+python scripts/mover_strength.py play gemma-4-26b-a4b --report /tmp/strength.jsonl   # Glitch-tier mover vs Stockfish; idle GPU, hours (docs/glitch-difficulty.md)
+python scripts/mover_strength.py trend                   # mover strength history, per model and profile
 ```
 
 Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
