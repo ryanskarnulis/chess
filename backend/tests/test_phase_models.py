@@ -11,7 +11,7 @@ import httpx
 from chessapp.app import DEFAULT_MODEL, phase_models_from_env
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
-from chessapp.profiles import ANSWER, NARRATOR, PLANNER
+from chessapp.profiles import ANSWER, MOVER, NARRATOR, PLANNER
 from chessapp.provider import LlamaCppProvider, PhasedProvider, providers_for
 from chessapp.serving import (
     SOURCE_PROPS,
@@ -92,10 +92,11 @@ def test_every_phase_runs_on_llamacpp_model_unless_told_otherwise(monkeypatch):
         "CHESSAPP_PLANNER_MODEL",
         "CHESSAPP_NARRATOR_MODEL",
         "CHESSAPP_ANSWER_MODEL",
+        "CHESSAPP_MOVER_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
     assert phase_models_from_env() == dict.fromkeys(
-        (PLANNER, NARRATOR, ANSWER), DEFAULT_MODEL
+        (PLANNER, NARRATOR, ANSWER, MOVER), DEFAULT_MODEL
     )
 
     monkeypatch.setenv("LLAMACPP_MODEL", "base")
@@ -104,7 +105,12 @@ def test_every_phase_runs_on_llamacpp_model_unless_told_otherwise(monkeypatch):
         PLANNER: "parser",
         NARRATOR: "base",
         ANSWER: "base",
+        MOVER: "base",
     }
+
+    # The mover runs on the brain's model unless told otherwise (#472).
+    monkeypatch.setenv("CHESSAPP_MOVER_MODEL", "player")
+    assert phase_models_from_env()[MOVER] == "player"
 
 
 def test_one_model_everywhere_is_the_plain_provider_it_always_was():
@@ -151,6 +157,8 @@ def test_the_brain_reports_what_each_phase_runs_on():
         PLANNER: {"model": OTHER, "profile": "default"},
         NARRATOR: {"model": GEMMA, "profile": GEMMA},
         ANSWER: {"model": GEMMA, "profile": GEMMA},
+        # A phase the map leaves out runs on the brain's model (#472).
+        MOVER: {"model": GEMMA, "profile": GEMMA},
     }
     assert set(settings["profiles"]) == {"default", GEMMA}
     # A planner on the default profile samples at the server's temperature.

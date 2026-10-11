@@ -183,6 +183,7 @@ from chessapp.profiles import (
     ANSWER,
     DEFAULT_PROFILE,
     NARRATOR,
+    PHASES,
     PLANNER,
     ModelProfile,
     load_profile,
@@ -476,7 +477,7 @@ class LlamaBrain:
         profiles = dict(self.phase_profiles)
         own = getattr(self.provider, "profile", None)
         if not profiles and isinstance(own, ModelProfile):
-            profiles = dict.fromkeys((PLANNER, NARRATOR, ANSWER), own)
+            profiles = dict.fromkeys(PHASES, own)
         return {
             "provider_sampling": dict(sampling) if isinstance(sampling, dict) else None,
             # Which model and profile each phase runs on, and each profile in
@@ -1541,7 +1542,8 @@ def create_llama_brain(
     app-assembly wires both to read `ctx.settings`). Either way the brain stays
     prompt-agnostic: it just carries a string or a callable.
 
-    `phase_models` names a model per phase (`planner`, `narrator`, `answer`);
+    `phase_models` names a model per phase (`profiles.PHASES`; the `mover`
+    is not the brain's, but its route rides the same provider, #472);
     a phase it leaves out runs on `model`. With no `provider` the factory
     builds the one `provider.providers_for` makes of that map — a plain
     `LlamaCppProvider` when every phase is on `model` — with `capture` on
@@ -1577,7 +1579,7 @@ def create_llama_brain(
     `on_server` hears what the server said about each call that came back
     (#317) — the serving manifest's way of noticing the server changed.
     """
-    models = {phase: model for phase in (PLANNER, NARRATOR, ANSWER)}
+    models = {phase: model for phase in PHASES}
     models.update(phase_models or {})
     if provider is None:
         provider = providers_for(base_url, models, model, capture=capture)

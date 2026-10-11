@@ -11,8 +11,9 @@ writing its profile, not editing code.
 |---|---|
 | `[sampling]` `temperature`, `top_p`, `top_k` | Sent on every request. A key left out is not sent, so the server's default applies. |
 | `thinking_kwarg` | The `chat_template_kwargs` key that toggles the thinking channel (`enable_thinking` for Gemma). `""` means the model has none, and no `chat_template_kwargs` is sent. |
-| `[phases.planner\|narrator\|answer]` `temperature`, `max_tokens` | Per-phase knobs. A phase without a `temperature` samples at `sampling.temperature`. A phase left out keeps the default caps. |
-| `[phases.planner]` `thinking` | `true` makes the planner reason before every call, not only after an analysis tool has answered (#298). Planner only. Default `false`. |
+| `[phases.planner\|narrator\|answer\|mover]` `temperature`, `max_tokens` | Per-phase knobs. A phase without a `temperature` samples at `sampling.temperature`. A phase left out keeps the default caps. |
+| `[phases.planner]` `thinking` | `true` makes the planner reason before every call, not only after an analysis tool has answered (#298). Default `false`. |
+| `[phases.mover]` `thinking`, `deadline_s` | The mover (Glitch choosing his own move in the `glitch` tier, #472) thinks unless told `false`. `deadline_s` is the wall clock for its whole run, retries included. Mover only. Defaults: thinking on, 4096 tokens, 90 s. |
 | `[phases.narrator]` `analysis_thinking` | The brain's rule turns the narrator's thinking on once an analysis tool has answered. `false` keeps those words a plain call (#440). Narrator only. Default `true`. |
 | `crutches` | Guidance that exists only because this model needed it (below). |
 | `quirks` | Measured standing facts about the model, as text, for the manifest and the reader. |
@@ -29,6 +30,7 @@ Each phase runs on `LLAMACPP_MODEL` unless told otherwise:
 | `CHESSAPP_PLANNER_MODEL` | the planner (tool choice) |
 | `CHESSAPP_NARRATOR_MODEL` | the narrator (Glitch's words) |
 | `CHESSAPP_ANSWER_MODEL` | the yes/no reader in front of a destructive op |
+| `CHESSAPP_MOVER_MODEL` | the mover: Glitch's own move in the `glitch` tier (#472) |
 
 `app.phase_models_from_env` resolves them, and the eval harness, the
 frontier tier and `scripts/probe_planner.py` resolve through it too, so a
@@ -46,6 +48,37 @@ The serving manifest records `client.phases` (model and profile per phase)
 and every profile in full. It probes each model on its own, so its server
 fields go to `server` for `LLAMACPP_MODEL` and to `servers.<model>` for any
 other.
+
+## The mover phase
+
+The mover (`mover.py`, #472, `docs/glitch-difficulty.md`) is the model call
+that picks Glitch's move in the `glitch` tier. It is not one of the brain's
+phases: no turn's words reach it and the planner cannot call it. But it is a
+phase of the profile like the others, and it runs on the brain's model unless
+`CHESSAPP_MOVER_MODEL` says otherwise. The Deep brain therefore plays deeper,
+and slower.
+
+- Its context is the board alone: the game's moves, the FEN, a text board,
+  the side to move and the legal moves. It is built from the `GameSession`
+  and nothing else, so the conversation, Stockfish's numbers and the notes
+  cannot reach it.
+- Its one tool is `play_move(move, intent)`. Code checks the move is legal,
+  refuses one that is not with the reason, and allows `MAX_ATTEMPTS` (3)
+  replies in all.
+- Out of attempts, past `deadline_s`, cut off at `max_tokens`, or with the
+  provider down, it raises `MoverFailed` with that kind. Running out is
+  never a move. The caller plays something else (#473).
+- `tests/test_mover_bytes.py` pins its exact requests for each pinned
+  model on three positions (`fixtures/<model>_mover_requests.json`), so
+  nothing can leak into them unnoticed. Re-record only for a change that is
+  meant to move them: `CHESSAPP_RECORD_GOLDEN=1 pytest
+  tests/test_mover_bytes.py`.
+- Its calls are tagged `mover` in the trace's `calls` and in the context
+  capture. The turn record's `mover` field holds what it played and meant,
+  or why it played nothing, with every attempt.
+
+Each shipped profile's `[phases.mover]` numbers are starting values. The
+strength script (#476) measures them.
 
 ### The thinking-toggle check
 
@@ -109,6 +142,7 @@ It runs on the built-in default profile (`profiles.DEFAULT_PROFILE`), and a
 - no sampling opinion, so the server's own defaults apply
 - the `enable_thinking` toggle
 - gemma-4-12b's token caps (planner 2048, narrator 4096, answer 16)
+- a thinking mover capped at 4096 tokens with a 90 s deadline
 - no crutches
 
 Its manifest shows `profile.name: "default"`. This is the right starting

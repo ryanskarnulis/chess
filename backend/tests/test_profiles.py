@@ -19,6 +19,7 @@ from chessapp.profiles import (
     DEFAULT_NAME,
     DEFAULT_PROFILE,
     KNOWN_CRUTCHES,
+    MOVER,
     NARRATOR,
     PLANNER,
     ProfileError,
@@ -125,12 +126,19 @@ def test_a_phase_left_out_keeps_the_default_caps():
         "[sampling]\ntemprature = 1.0\n",
         "[phases.summarizer]\nmax_tokens = 10\n",
         "[phases.planner]\nmax_token = 10\n",
-        # Only the planner's thinking is a profile's to set (#298).
+        # Only the planner's and the mover's thinking is a profile's to set
+        # (#298, #472).
         "[phases.narrator]\nthinking = true\n",
         '[phases.planner]\nthinking = "yes"\n',
         # And only the narrator's analysis thinking (#440).
         "[phases.planner]\nanalysis_thinking = false\n",
         '[phases.narrator]\nanalysis_thinking = "no"\n',
+        # And only the mover's deadline, a positive number (#472).
+        "[phases.planner]\ndeadline_s = 10\n",
+        "[phases.mover]\ndeadline_s = 0\n",
+        '[phases.mover]\ndeadline_s = "soon"\n',
+        "[phases.mover]\ndeadline_s = true\n",
+        '[phases.mover]\nthinking = "yes"\n',
         "extra = 1\n",
         "not toml = = 1\n",
     ],
@@ -138,6 +146,34 @@ def test_a_phase_left_out_keeps_the_default_caps():
 def test_a_profile_that_says_something_unknown_does_not_load(text):
     with pytest.raises(ProfileError):
         parse_profile("bad", text, "test")
+
+
+def test_a_mover_phase_has_its_own_cap_thinking_and_deadline():
+    # A profile with nothing to say about the mover thinks, with a deadline.
+    assert DEFAULT_PROFILE.phase(MOVER).thinking is True
+    assert DEFAULT_PROFILE.phase(MOVER).deadline_s == 90.0
+    left_out = parse_profile("p", "[phases.mover]\nmax_tokens = 512\n", "test")
+    assert left_out.phase(MOVER).thinking is True
+    assert left_out.phase(MOVER).deadline_s == 90.0
+    profile = parse_profile(
+        "p",
+        "[phases.mover]\nmax_tokens = 512\nthinking = false\ndeadline_s = 30\n",
+        "test",
+    )
+    assert profile.phase(MOVER).max_tokens == 512
+    assert profile.phase(MOVER).thinking is False
+    assert profile.phase(MOVER).deadline_s == 30.0
+    described = profile.describe()["phases"]
+    assert described["mover"]["deadline_s"] == 30.0
+    assert "deadline_s" not in described["planner"]
+
+
+@pytest.mark.parametrize("model", ["gemma-4-12b", "gemma-4-26b-a4b", "qwen38-27b"])
+def test_every_brain_says_how_it_moves(model):
+    settings = load_profile(model).phase(MOVER)
+    assert settings.thinking is True
+    assert settings.deadline_s is not None
+    assert settings.max_tokens > 0
 
 
 def test_a_planner_profile_can_think_and_the_factory_says_so():
