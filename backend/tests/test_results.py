@@ -137,6 +137,22 @@ def test_a_checkmate_is_recorded_with_the_game_it_ended(tmp_path):
     assert line["from_setup"] is False
 
 
+def test_an_ending_is_counted_at_the_difficulty_the_game_was_played_at(tmp_path):
+    """Turning the difficulty down mid-game, then resigning, counted the loss
+    against the new setting (#460). The game's own record says what the
+    engine played at — the PGN's rule: its first move's strength."""
+    ctx = _ctx(tmp_path)
+    ctx.settings.tier = "advanced"
+    TurnCoordinator(ctx).play_exchange("e4")
+    ctx.observe_ledger()
+    ctx.settings.tier = "beginner"
+    ctx.observe_ledger()
+    ctx.session.resign("white")
+    ctx.observe_ledger()
+    [line] = _lines(tmp_path)
+    assert (line["winner"], line["difficulty"]) == ("opponent", "advanced")
+
+
 def test_a_resignation_and_an_agreed_draw_are_recorded():
     ctx = _ctx()
     _play(ctx, "e4")
