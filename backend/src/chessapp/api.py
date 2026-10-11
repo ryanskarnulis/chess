@@ -2689,11 +2689,12 @@ def create_app(
 
     def _attach_mover(fields: dict[str, Any]) -> None:
         """The turn's own Glitch-tier pick, if it played one (#473): the
-        mover's record in `mover`, its model calls after the turn's own."""
-        before, after = fields.get("fen_before"), fields.get("fen_after")
-        if not before or not after:
-            return
-        sourced = coordinator.take_mover_record(fields["game_id"], before, after)
+        mover's record in `mover`, its model calls after the turn's own. The
+        turn spans the board versions its `mutations` count back from now:
+        every route records under the lock, after its last mutation."""
+        after = ctx.board_version
+        before = after - fields.get("mutations", 0)
+        sourced = coordinator.take_mover_record(before, after)
         if sourced is None:
             return
         fields["mover"] = sourced.mover
