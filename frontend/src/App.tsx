@@ -8,6 +8,7 @@ import { MoveStrip } from './MoveStrip'
 import { OptionsSheet } from './OptionsSheet'
 import { PostGameModal } from './PostGameModal'
 import { PromotionPicker } from './PromotionPicker'
+import { boardHighlights } from './highlights'
 import { useGame } from './useGame'
 import './App.css'
 
@@ -95,6 +96,13 @@ function App() {
   // relays it.
   const drawClaimable = (state?.claimable_draws?.length ?? 0) > 0
 
+  // The move into the shown position and any check in it — the live one, or
+  // the one being reviewed — so Glitch's reply is highlighted like the
+  // player's, and a reload or an undo still shows what was last played.
+  const highlights = state
+    ? boardHighlights(state.fens, state.history, viewPly ?? state.fens.length - 1)
+    : null
+
   const board = state && (
     <div className="board-wrap">
       {/* The state document arrives mid-turn now — the player's move is on the
@@ -111,6 +119,8 @@ function App() {
         viewOnly={state.game_over || reviewing}
         revision={revision}
         autoShapes={hintShapes}
+        lastMove={highlights?.lastMove}
+        check={highlights?.check}
       />
       {pendingPromotion && (
         <PromotionPicker

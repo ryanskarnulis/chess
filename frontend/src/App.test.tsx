@@ -209,6 +209,45 @@ describe('a board mid-turn', () => {
   })
 })
 
+describe('board highlights', () => {
+  // 1. e4 f5 2. Qh5+ — as python-chess writes them.
+  const E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1'
+  const E4_F5 = 'rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2'
+  const QH5 = 'rnbqkbnr/ppppp1pp/8/5p1Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2'
+
+  it("highlights Glitch's reply as the last move", async () => {
+    // Nothing was dragged here — a reload, or the frame after Glitch answered.
+    served = state({ fen: E4_F5, history: ['e4', 'f5'], fens: [START_FEN, E4, E4_F5] })
+    render(<App />)
+    await waitFor(() => expect(boardProps.at(-1)?.lastMove).toEqual(['f7', 'f5']))
+    expect(boardProps.at(-1)!.check).toBe(false)
+  })
+
+  it('highlights the king in check, and the reviewed position its own', async () => {
+    served = state({
+      fen: QH5,
+      turn: 'black',
+      player_color: 'black',
+      history: ['e4', 'f5', 'Qh5+'],
+      fens: [START_FEN, E4, E4_F5, QH5],
+    })
+    render(<App />)
+    await waitFor(() => expect(boardProps.at(-1)?.check).toBe('black'))
+    expect(boardProps.at(-1)!.lastMove).toEqual(['d1', 'h5'])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous move' }))
+    await waitFor(() => expect(boardProps.at(-1)!.lastMove).toEqual(['f7', 'f5']))
+    expect(boardProps.at(-1)!.check).toBe(false)
+  })
+
+  it('shows no last move at the root', async () => {
+    render(<App />)
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    expect(boardProps.at(-1)!.lastMove).toBeUndefined()
+    expect(boardProps.at(-1)!.check).toBe(false)
+  })
+})
+
 describe('player color', () => {
   it('orients the board for the player side', async () => {
     served = state({ player_color: 'black', turn: 'black', history: ['e4'] })

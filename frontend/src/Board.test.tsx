@@ -1,6 +1,28 @@
 import { render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import type { Api } from 'chessground/api'
+import type { Config } from 'chessground/config'
 import { Board } from './Board'
+
+// Every config the board hands chessground, so a test can read what it set:
+// jsdom has no stylesheet, so the classes chessground paints are no evidence.
+const setCalls: Config[] = []
+vi.mock('chessground', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('chessground')>()
+  return {
+    ...actual,
+    Chessground: (el: HTMLElement, config?: Config): Api => {
+      const api = actual.Chessground(el, config)
+      const set = api.set.bind(api)
+      api.set = (c: Config) => {
+        setCalls.push(c)
+        set(c)
+      }
+      return api
+    },
+  }
+})
+const lastSet = () => setCalls[setCalls.length - 1]
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR'
 const LONE_KING_FEN = '8/8/8/8/8/8/8/4K3'
@@ -100,6 +122,28 @@ describe('Board', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+
+  it('highlights the last move it is given, and clears it at the root', () => {
+    const { rerender } = render(<Board fen={START_FEN} lastMove={['e7', 'e5']} />)
+    expect(lastSet().lastMove).toEqual(['e7', 'e5'])
+    rerender(<Board fen={START_FEN} />)
+    expect('lastMove' in lastSet()).toBe(true)
+    expect(lastSet().lastMove).toBeUndefined()
+  })
+
+  it('highlights the named side in check, and clears it', () => {
+    const { rerender } = render(<Board fen={START_FEN} turnColor="black" check="white" />)
+    expect(lastSet().check).toBe('white')
+    rerender(<Board fen={START_FEN} turnColor="black" />)
+    expect(lastSet().check).toBe(false)
+  })
+
+  it('does not re-set the board for a new last-move pair with the same squares', () => {
+    const { rerender } = render(<Board fen={START_FEN} lastMove={['e2', 'e4']} />)
+    const calls = setCalls.length
+    rerender(<Board fen={START_FEN} lastMove={['e2', 'e4']} />)
+    expect(setCalls).toHaveLength(calls)
   })
 
   it('mounts as an interactive board when given moves and a handler', () => {
