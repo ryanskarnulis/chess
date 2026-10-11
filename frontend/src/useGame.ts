@@ -120,7 +120,8 @@ export interface UseGame {
   /** Start a fresh game. `color` is the side the player takes; omitted,
    * the backend rolls one at random. */
   newGame: (color?: 'white' | 'black' | 'random') => Promise<void>
-  /** Take back the last ply. No-op if there is nothing to undo. */
+  /** Take back the player's last move. A refusal leaves the board and shows
+   * the server's reason in `moveError`. */
   undo: () => Promise<void>
   /** Resign the game (the side to move, unless the backend decides otherwise). */
   resign: () => Promise<void>
@@ -569,12 +570,16 @@ export function useGame(): UseGame {
   )
 
   const undo = useCallback(async () => {
-    const next = await apiUndo(undefined, stateRef.current?.version)
-    // Null means the backend refused (nothing to undo) — leave state as is.
+    const { state: next, refusal } = await apiUndo(undefined, stateRef.current?.version)
     if (next) {
       setMoveError(null)
       apply(next)
+      return
     }
+    // A refusal leaves the board as it is and says why, in the slot a rejected
+    // move uses: a click that silently did nothing reads as a broken button
+    // (#459). An unreachable server says nothing, as every lifecycle op does.
+    if (refusal) setMoveError(refusal)
   }, [apply])
 
   const resign = useCallback(async () => {

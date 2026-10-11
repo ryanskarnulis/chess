@@ -182,26 +182,37 @@ export async function submitMove(uci: string, version?: number): Promise<MoveOut
 
 const JSON_POST = { method: 'POST', headers: { 'Content-Type': 'application/json' } }
 
-/**
- * POST a lifecycle mutation and return the authoritative resulting state (also
- * the catch-up state from a stale 409), or null if the backend refused it for
- * another reason — or was never reached at all. The board only advances on a
- * state the server produced.
- */
+/** What a lifecycle mutation came back with: the authoritative resulting state
+ * (also the catch-up state from a stale 409), or the server's reason for
+ * refusing it, so the player is told rather than met with a button that did
+ * nothing (#459). Both null when the backend was never reached or answered
+ * nothing usable. The board only advances on a state the server produced. */
+export interface LifecycleResult {
+  state: GameState | null
+  refusal: string | null
+}
+
+/** POST a lifecycle mutation (see `LifecycleResult`). */
 async function postLifecycle(
   path: string,
   body: Record<string, unknown> = {},
   version?: number,
-): Promise<GameState | null> {
+): Promise<LifecycleResult> {
   let res: Response
   try {
     res = await fetch(path, { ...JSON_POST, body: JSON.stringify(versioned(body, version)) })
   } catch {
-    return null
+    return { state: null, refusal: null }
   }
   const data = (await res.json().catch(() => ({}))) as unknown
-  if (!res.ok) return isStaleStateResponse(data) ? data.state : null
-  return (data as { state: GameState }).state
+  if (!res.ok) {
+    if (isStaleStateResponse(data)) return { state: data.state, refusal: null }
+    return {
+      state: null,
+      refusal: refusalDetail(data) ?? `The server refused it (${res.status}).`,
+    }
+  }
+  return { state: carriesState(data) ? data.state : null, refusal: null }
 }
 
 /** A destructive op the backend's confirmation gate armed instead of running:
@@ -306,7 +317,7 @@ export async function confirmDestructive(
 
 /** Take back moves. Without `plies` the backend applies the player's
  * takeback: the full exchange vs the engine, one ply engine-free. */
-export function undo(plies?: number, version?: number): Promise<GameState | null> {
+export function undo(plies?: number, version?: number): Promise<LifecycleResult> {
   return postLifecycle('/api/game/undo', plies === undefined ? {} : { plies }, version)
 }
 

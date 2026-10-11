@@ -517,6 +517,79 @@ describe('captures and status', () => {
     expect(row).toContainElement(verdict)
     expect(within(row).getByRole('button', { name: /results/i })).toBeInTheDocument()
   })
+
+  it('keeps both capture rows beside the game-over verdict (#459)', async () => {
+    served = state({
+      game_over: true,
+      outcome: { termination: 'checkmate', winner: 'white', result: '1-0' },
+      captured: { white: ['p', 'n'], black: ['q'] },
+      history: ['e4', 'f6', 'd4', 'g5', 'Qh5#'],
+    })
+    deferState()
+    render(<App />)
+    const verdict = await screen.findByText(/game over — 1-0/i)
+    const you = screen.getByLabelText(/captured by you/i)
+    expect(within(you).getByText('♘︎')).toBeInTheDocument()
+    expect(within(screen.getByLabelText(/captured by glitch/i)).getByText('♛︎')).toBeInTheDocument()
+    // One row under the board: the captures, then the verdict and its chip.
+    const row = document.querySelector('.board-status-row')!
+    expect(row).toContainElement(you)
+    expect(row).toContainElement(verdict)
+    expect(you.compareDocumentPosition(verdict) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
+// The server reopens a game the board ended (a mate, a stalemate) when it is
+// taken back, and refuses one the players ended by declaration
+// (`GameSession.undo`). The button follows that rule, and a refusal it did not
+// foresee is said rather than swallowed (#459).
+describe('undo on a finished game', () => {
+  const finished = (termination: string, result = '1-0') =>
+    state({
+      game_over: true,
+      outcome: { termination, winner: result === '1-0' ? 'white' : null, result },
+      captured: { white: ['p'], black: [] },
+      history: ['e4', 'f6', 'd4', 'g5', 'Qh5#'],
+    })
+
+  it('stays enabled after a checkmate, which the server takes back', async () => {
+    served = finished('checkmate')
+    render(<App />)
+    await screen.findByText(/game over — 1-0/i)
+    expect(screen.getByRole('button', { name: /undo/i })).toBeEnabled()
+  })
+
+  it.each([
+    ['resignation', '1-0'],
+    ['agreement', '1/2-1/2'],
+    ['threefold_repetition', '1/2-1/2'],
+    ['fifty_moves', '1/2-1/2'],
+  ])('is disabled after a game ended by %s', async (termination, result) => {
+    served = finished(termination, result)
+    render(<App />)
+    await screen.findByText(`Game over — ${result}`)
+    expect(screen.getByRole('button', { name: /undo/i })).toBeDisabled()
+  })
+
+  it("shows the server's refusal in place of the verdict, captures kept", async () => {
+    served = finished('checkmate')
+    render(<App />)
+    await screen.findByText(/game over — 1-0/i)
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/game/undo')
+        ? Promise.resolve({
+            ok: false,
+            status: 409,
+            json: () => Promise.resolve({ detail: 'cannot undo 2 plies: only 1 played' }),
+          })
+        : Promise.resolve({ ok: true, json: () => Promise.resolve(served) }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /undo/i }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('cannot undo 2 plies: only 1 played')
+    expect(screen.getByLabelText(/captured by you/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /results/i })).toBeInTheDocument()
+  })
 })
 
 describe('post-game screen', () => {
