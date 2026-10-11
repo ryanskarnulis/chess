@@ -14,6 +14,7 @@ writing its profile, not editing code.
 | `[phases.planner\|narrator\|answer\|mover]` `temperature`, `max_tokens` | Per-phase knobs. A phase without a `temperature` samples at `sampling.temperature`. A phase left out keeps the default caps. |
 | `[phases.planner]` `thinking` | `true` makes the planner reason before every call, not only after an analysis tool has answered (#298). Default `false`. |
 | `[phases.mover]` `thinking`, `deadline_s` | The mover (Glitch choosing his own move in the `glitch` tier, #472) thinks unless told `false`. `deadline_s` is the wall clock for its whole run, retries included. Mover only. Defaults: thinking on, 4096 tokens, 90 s. |
+| `[phases.mover]` `thinking_budget` | The most thinking tokens one mover call may spend, sent as llama-server's `thinking_budget_tokens`: past it the server closes the thought and the model must call `play_move` (#476). Below `max_tokens`, or the cap ends a think first, with no move. Unset: thinking bounded only by `max_tokens`. Mover only; the 26B and qwen38 set 1024. |
 | `[phases.narrator]` `analysis_thinking` | The brain's rule turns the narrator's thinking on once an analysis tool has answered. `false` keeps those words a plain call (#440). Narrator only. Default `true`. |
 | `crutches` | Guidance that exists only because this model needed it (below). |
 | `quirks` | Measured standing facts about the model, as text, for the manifest and the reader. |

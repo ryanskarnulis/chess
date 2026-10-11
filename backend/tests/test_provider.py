@@ -220,6 +220,20 @@ def test_chat_thinking_can_be_enabled():
     assert captured[0]["chat_template_kwargs"] == {"enable_thinking": True}
 
 
+def test_a_thinking_budget_rides_only_a_thinking_request():
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    provider = _provider_returning(body, captured=captured)
+    provider.chat(_USER, enable_thinking=True, thinking_budget=1024)
+    provider.chat(_USER, enable_thinking=False, thinking_budget=1024)
+    provider.chat(_USER, enable_thinking=True)
+    # llama-server's field; meaningless with thinking off, and absent when no
+    # budget is set, so every other caller sends the bytes it always did.
+    assert captured[0]["thinking_budget_tokens"] == 1024
+    assert "thinking_budget_tokens" not in captured[1]
+    assert "thinking_budget_tokens" not in captured[2]
+
+
 def test_chat_with_tools_sends_them_verbatim_with_auto_choice():
     captured: list[dict[str, Any]] = []
     body = _completion_body({"role": "assistant", "content": "ok"})

@@ -94,13 +94,17 @@ class PhaseSettings:
     `thinking` is the planner's and the mover's, and `analysis_thinking` the
     narrator's: the brain's rule turns the narrator's thinking on once an
     analysis tool has answered, and a profile can switch that off.
-    `deadline_s` is the mover's alone: how long its whole run may take."""
+    `deadline_s` is the mover's alone: how long its whole run may take, and so
+    is `thinking_budget`: the most thinking tokens one of its calls may spend
+    before the server closes the thought and the model must answer (`None`
+    leaves thinking bounded only by `max_tokens`)."""
 
     max_tokens: int
     temperature: float | None = None
     thinking: bool = False
     analysis_thinking: bool = True
     deadline_s: float | None = None
+    thinking_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -145,7 +149,14 @@ class ModelProfile:
                         if name == NARRATOR
                         else {}
                     ),
-                    **({"deadline_s": settings.deadline_s} if name == MOVER else {}),
+                    **(
+                        {
+                            "deadline_s": settings.deadline_s,
+                            "thinking_budget": settings.thinking_budget,
+                        }
+                        if name == MOVER
+                        else {}
+                    ),
                 }
                 for name, settings in self.phases.items()
             },
@@ -197,6 +208,7 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
             allowed.add("analysis_thinking")
         if phase == MOVER:
             allowed.add("deadline_s")
+            allowed.add("thinking_budget")
         _only(name, f"phases.{phase}", settings, allowed)
         thinking = settings.get("thinking", phases[phase].thinking)
         analysis_thinking = settings.get("analysis_thinking", True)
@@ -217,12 +229,26 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
             raise ProfileError(
                 f"profile {name!r}: phases.{phase}.deadline_s must be a positive number"
             )
+        max_tokens = int(settings.get("max_tokens", phases[phase].max_tokens))
+        thinking_budget = settings.get("thinking_budget")
+        if thinking_budget is not None and (
+            isinstance(thinking_budget, bool)
+            or not isinstance(thinking_budget, int)
+            or not 0 < thinking_budget < max_tokens
+        ):
+            # A budget at or past the cap is no budget: the cap cuts the
+            # thought off first, and the reply ends without a move.
+            raise ProfileError(
+                f"profile {name!r}: phases.{phase}.thinking_budget must be a "
+                f"positive whole number below max_tokens ({max_tokens})"
+            )
         phases[phase] = PhaseSettings(
-            max_tokens=int(settings.get("max_tokens", phases[phase].max_tokens)),
+            max_tokens=max_tokens,
             temperature=settings.get("temperature"),
             thinking=thinking,
             analysis_thinking=analysis_thinking,
             deadline_s=None if deadline_s is None else float(deadline_s),
+            thinking_budget=thinking_budget,
         )
     crutches = frozenset(data.get("crutches", ()))
     unknown = crutches - KNOWN_CRUTCHES
