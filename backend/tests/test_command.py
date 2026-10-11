@@ -661,7 +661,12 @@ def test_the_narrator_is_handed_the_engines_reply_to_say():
     assert len(brain.narrate_calls) == 1
     state, changes = brain.narrate_calls[0]
     assert state["reply_owed"] is False
-    assert state["engine_reply"] == {"san": "e5", "capture": None, "check": False}
+    assert state["engine_reply"] == {
+        "san": "e5",
+        "capture": None,
+        "check": False,
+        "promotion": None,
+    }
     result = changes[0]["result"]
     assert result["san"] == "e4"
     assert "engine_move" not in result
@@ -843,7 +848,12 @@ def test_a_reply_that_ends_the_game_is_handed_over_with_the_ending():
 
     assert ctx.session.is_game_over()
     state, _ = brain.narrate_calls[0]
-    assert state["engine_reply"] == {"san": "Qh4#", "capture": None, "check": True}
+    assert state["engine_reply"] == {
+        "san": "Qh4#",
+        "capture": None,
+        "check": True,
+        "promotion": None,
+    }
     assert state["game_over"] is True
     assert state["outcome"] == {"winner": "opponent", "termination": "checkmate"}
     assert body["commentary"] == "Your funeral. Qh4, mate."

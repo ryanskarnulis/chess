@@ -144,6 +144,7 @@ from chessapp.tools import (
     current_difficulty,
     live_checkpoint,
     pgn_headers,
+    promotion_word,
     saved_game_names,
     write_live_checkpoint,
 )
@@ -744,14 +745,16 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
 
 def _reply_facts(reply: MoveResult) -> dict[str, Any]:
     """The engine's reply as the narrator is handed it: the move, the piece it
-    took (a word, or None) and whether it checks — board truth from the
-    `MoveResult`, the same facts `make_move` reports about the player's."""
+    took (a word, or None), whether it checks and what it promoted to (a word,
+    or None — #456) — board truth from the `MoveResult`, the same facts
+    `make_move` reports about the player's."""
     return {
         "san": reply.san,
         "capture": chess.piece_name(chess.Piece.from_symbol(reply.capture).piece_type)
         if reply.capture
         else None,
         "check": reply.check,
+        "promotion": promotion_word(reply),
     }
 
 

@@ -1035,6 +1035,61 @@ def test_move_summary_handles_an_en_passant_capture():
     assert _summary(registry, "exd6") == "The player played exd6, capturing your pawn."
 
 
+def test_move_summary_names_a_queen_promotion():
+    ctx = ToolContext(session=GameSession("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"))
+    registry, _ = _split_registry(ctx)
+
+    result = registry.dispatch("make_move", {"move": "a8=Q"})
+
+    assert result["promotion"] == "queen"
+    assert result["summary"] == (
+        "The player played a8=Q+, promoting to a queen and putting you in check."
+    )
+
+
+def test_move_summary_names_an_underpromotion():
+    """#456: live, the player played cxb8=R+ and the summary named the capture
+    and the check but no promotion, so Glitch filled in the default: "promoted
+    to a queen". The piece is board truth, so the result says it."""
+    ctx = ToolContext(session=GameSession("1r2k3/2P5/8/8/8/8/8/4K3 w - - 0 1"))
+    registry, _ = _split_registry(ctx)
+
+    result = registry.dispatch("make_move", {"move": "cxb8=R"})
+
+    assert result["promotion"] == "rook"
+    assert result["summary"] == (
+        "The player played cxb8=R+, capturing your rook, promoting to a rook "
+        "and putting you in check."
+    )
+
+
+def test_a_move_that_promotes_nothing_says_so(registry):
+    assert registry.dispatch("make_move", {"move": "e4"})["promotion"] is None
+
+
+@pytest.mark.parametrize(
+    ("reply_uci", "summary"),
+    [
+        (
+            "a2a1q",
+            "The engine played a1=Q+, promoting to a queen and putting "
+            "the player in check.",
+        ),
+        ("a2a1n", "The engine played a1=N, promoting to a knight."),
+    ],
+)
+def test_the_engine_reply_summary_names_its_promotion(reply_uci, summary):
+    ctx = ToolContext(
+        session=GameSession("4k3/8/8/8/8/8/p7/4K2R w - - 0 1"),
+        engine=FakeEngine(reply_uci),
+    )
+    registry = build_registry(ctx, TurnCoordinator(ctx))
+
+    result = registry.dispatch("make_move", {"move": "Rh2"})
+
+    assert result["engine_move"]["summary"] == summary
+
+
 def test_the_engine_reply_carries_its_own_summary(session):
     """The atomic result holds two moves, so both say who made them — and the
     reply's wording is neutral, because it is the narrator's own move."""

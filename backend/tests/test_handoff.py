@@ -199,6 +199,17 @@ def test_a_quiet_reply_is_just_the_move():
     assert "Your reply, already on the board: e5. " in brief
 
 
+def test_a_promoting_reply_names_the_piece():
+    """#456: a promotion the brief leaves out is one the narrator fills in with
+    the default, so an underpromotion is said as the piece it was."""
+    knight = {"san": "bxa1=N", "capture": "rook", "check": False, "promotion": "knight"}
+    brief = render(build([MOVED], engine_reply=knight), "e4", [MOVED])
+    assert (
+        "Your reply, already on the board: bxa1=N, taking their rook, "
+        "promoting to a knight. "
+    ) in brief
+
+
 def test_a_reply_the_engine_died_on_is_said_never_to_have_come():
     brief = render(build([MOVED], reply_owed=True), "e4", [MOVED])
     assert "Your reply to the player's move never came" in brief
