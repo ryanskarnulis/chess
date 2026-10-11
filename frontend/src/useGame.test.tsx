@@ -948,6 +948,24 @@ describe('useGame', () => {
     expect(result.current.revision).toBe(revisionBefore)
   })
 
+  it("says why an undo was refused instead of doing nothing (#459)", async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    const revisionBefore = result.current.revision
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail: 'cannot undo: game ended by resignation' }),
+      }),
+    )
+    await act(async () => {
+      await result.current.undo()
+    })
+    expect(result.current.moveError).toBe('cannot undo: game ended by resignation')
+    expect(result.current.revision).toBe(revisionBefore)
+  })
+
   it('resigns and applies the returned state', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())

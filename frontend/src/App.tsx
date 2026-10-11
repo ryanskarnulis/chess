@@ -20,6 +20,12 @@ const MAX_INTENT_LENGTH = 500
 // What the status row shows before the first state document arrives.
 const NO_CAPTURES = { white: [], black: [] }
 
+// The endings `GameSession.undo` refuses to take back, by the termination the
+// state's outcome names. A claimed draw is the only way a game ends on the
+// threefold or fifty-move rule; the board's own draws are fivefold and
+// seventy-five.
+const FINAL_ENDINGS = new Set(['resignation', 'agreement', 'threefold_repetition', 'fifty_moves'])
+
 // The side switch names a colour, and the name has to be one string: what is
 // painted and what a screen reader announces. `text-transform: capitalize` in
 // the stylesheet gave two — "Switch To White" on screen against an accessible
@@ -96,6 +102,12 @@ function App() {
   // whose answer is the backend's rule too (docs/draw-offer.md): the UI only
   // relays it.
   const drawClaimable = (state?.claimable_draws?.length ?? 0) > 0
+  // A finished game can still be taken back when the board ended it (a mate,
+  // a stalemate): the server reopens it. One the players ended by declaration
+  // — a resignation, an agreed or a claimed draw — it refuses, so the button
+  // is not offered there (#459).
+  const undoable =
+    playerMoved && !(state?.game_over && FINAL_ENDINGS.has(state.outcome?.termination ?? ''))
 
   // The move into the shown position and any check in it — the live one, or
   // the one being reviewed — so Glitch's reply is highlighted like the
@@ -139,7 +151,9 @@ function App() {
   // connection. Whose turn it is is *not* on this list — board orientation
   // already tells the player which side they are, and the agent bubble
   // carries the turn context — so an ordinary game leaves the slot to the
-  // player's captures.
+  // player's captures. The game-over line is the one status that sits beside
+  // the captures instead of taking their row: it lasts for the rest of the
+  // game, and the captures are part of how it ended (#459).
   const statusText = moveError
     ? moveError
     : !state
@@ -149,6 +163,30 @@ function App() {
         : reviewing
           ? 'Reviewing — press the forward arrow to return'
           : null
+  const playerCaptures = (
+    <CapturedPieces
+      captured={state?.captured ?? NO_CAPTURES}
+      playerColor={state?.player_color ?? 'white'}
+      owner="you"
+    />
+  )
+  const statusRow =
+    statusText === null ? null : (
+      <section className="captured-row board-status" aria-label="Game status">
+        <p
+          key={moveError ? 'error' : 'status'}
+          className={moveError ? 'board-status-text board-status-error' : 'board-status-text'}
+          role={moveError ? 'alert' : undefined}
+        >
+          {statusText}
+        </p>
+        {gameOver && (
+          <button type="button" className="status-results" onClick={() => setResultsDismissed(false)}>
+            Results
+          </button>
+        )}
+      </section>
+    )
 
   return (
     <main className="app">
@@ -195,32 +233,15 @@ function App() {
           takes the row rather than pushing it aside, so nothing below the
           board shifts. The key remounts the text when an error takes the
           slot, so the alert role lands on a fresh element and is announced,
-          exactly as the old standalone error <p> was. */}
-      {statusText !== null ? (
-        <section className="captured-row board-status" aria-label="Game status">
-          <p
-            key={moveError ? 'error' : 'status'}
-            className={moveError ? 'board-status-text board-status-error' : 'board-status-text'}
-            role={moveError ? 'alert' : undefined}
-          >
-            {statusText}
-          </p>
-          {state?.game_over && (
-            <button
-              type="button"
-              className="status-results"
-              onClick={() => setResultsDismissed(false)}
-            >
-              Results
-            </button>
-          )}
-        </section>
+          exactly as the old standalone error <p> was. A finished game is the
+          exception: its line shares the row with the captures (#459). */}
+      {gameOver ? (
+        <div className="board-status-row">
+          {playerCaptures}
+          {statusRow}
+        </div>
       ) : (
-        <CapturedPieces
-          captured={state?.captured ?? NO_CAPTURES}
-          playerColor={state?.player_color ?? 'white'}
-          owner="you"
-        />
+        (statusRow ?? playerCaptures)
       )}
       {state && !state.game_over && !playerMoved && (
         <div className="side-picker">
@@ -262,7 +283,7 @@ function App() {
             drawClaimable={drawClaimable}
             drawDisabled={state.game_over}
             hintDisabled={state.game_over || reviewing}
-            undoDisabled={!playerMoved || reviewing}
+            undoDisabled={!undoable || reviewing}
           />
           <OptionsSheet
             open={sheetOpen}

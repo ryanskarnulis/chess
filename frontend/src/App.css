@@ -183,6 +183,33 @@
   text-overflow: ellipsis;
 }
 
+/* A finished game's row: the player's captures keep their place on the left
+   and the verdict with its Results chip sits at the right (#459). One line
+   whenever both fit; on a phone with a packed capture row the verdict drops
+   to a line of its own rather than ellipsizing, because a refused undo says
+   its reason there too and "cannot und…" says nothing. */
+.board-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 0.5rem;
+  min-height: 22px;
+}
+
+.board-status-row > .captured-row {
+  flex: 0 0 auto;
+}
+
+.board-status-row > .board-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.board-status-row .status-results {
+  flex: 0 0 auto;
+}
+
 .board-status-error {
   color: var(--danger);
   font-weight: 600;
