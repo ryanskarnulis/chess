@@ -60,3 +60,13 @@ analysis_thinking = false
 
 [phases.answer]
 max_tokens = 16
+
+# Glitch's own move in the tier where the model picks it (#472,
+# docs/glitch-difficulty.md). Starting values, not measured: at ~8 tok/s
+# 2048 thinking tokens is ~256 s, so the run's deadline is 300 s. The Deep
+# brain plays slower by design; the picker says so. The strength script
+# (#476) measures them.
+[phases.mover]
+max_tokens = 2048
+thinking = true
+deadline_s = 300

@@ -13,7 +13,9 @@ id it describes. It holds what changes with the model and nothing else:
   for the planner alone, `thinking`: whether it reasons before every call,
   not only once an analysis tool has answered (#298); for the narrator alone,
   `analysis_thinking`: whether its words about an analysis tool's answer are
-  thought through first (on unless a profile turns it off, #440).
+  thought through first (on unless a profile turns it off, #440); for the
+  mover alone (#472), `thinking` too and `deadline_s`, the wall clock its
+  whole run (every retry included) may take.
 - `crutches` — the guidance that exists only because this model needed it
   (`KNOWN_CRUTCHES`; docs/model-profiles.md says what each one is and what it
   was measured to fix). A better model runs without them.
@@ -46,7 +48,10 @@ logger = logging.getLogger(__name__)
 PLANNER = "planner"
 NARRATOR = "narrator"
 ANSWER = "answer"
-PHASES = (PLANNER, NARRATOR, ANSWER)
+# Glitch's own move, in the tier where the model picks it
+# (docs/glitch-difficulty.md, #472).
+MOVER = "mover"
+PHASES = (PLANNER, NARRATOR, ANSWER, MOVER)
 
 # The 12B's crutches (2026-09-29 scope comment on #375). Named here so a
 # profile that misspells one fails to load rather than silently running
@@ -86,14 +91,16 @@ class ProfileError(ValueError):
 @dataclass(frozen=True)
 class PhaseSettings:
     """One phase's knobs. `temperature=None` samples at the profile's own.
-    `thinking` is the planner's alone, and `analysis_thinking` the
+    `thinking` is the planner's and the mover's, and `analysis_thinking` the
     narrator's: the brain's rule turns the narrator's thinking on once an
-    analysis tool has answered, and a profile can switch that off."""
+    analysis tool has answered, and a profile can switch that off.
+    `deadline_s` is the mover's alone: how long its whole run may take."""
 
     max_tokens: int
     temperature: float | None = None
     thinking: bool = False
     analysis_thinking: bool = True
+    deadline_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +145,7 @@ class ModelProfile:
                         if name == NARRATOR
                         else {}
                     ),
+                    **({"deadline_s": settings.deadline_s} if name == MOVER else {}),
                 }
                 for name, settings in self.phases.items()
             },
@@ -154,6 +162,9 @@ _DEFAULT_PHASES = MappingProxyType(
         PLANNER: PhaseSettings(max_tokens=2048),
         NARRATOR: PhaseSettings(max_tokens=4096),
         ANSWER: PhaseSettings(max_tokens=16),
+        # A thinking move choice: about 70 s at the 12B's and the 26B's
+        # ~60 tok/s, inside the deadline. Starting values, not measured (#472).
+        MOVER: PhaseSettings(max_tokens=4096, thinking=True, deadline_s=90.0),
     }
 )
 
@@ -180,12 +191,14 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
     phases = dict(_DEFAULT_PHASES)
     for phase, settings in phases_data.items():
         allowed = {"max_tokens", "temperature"}
-        if phase == PLANNER:
+        if phase in (PLANNER, MOVER):
             allowed.add("thinking")
         if phase == NARRATOR:
             allowed.add("analysis_thinking")
+        if phase == MOVER:
+            allowed.add("deadline_s")
         _only(name, f"phases.{phase}", settings, allowed)
-        thinking = settings.get("thinking", False)
+        thinking = settings.get("thinking", phases[phase].thinking)
         analysis_thinking = settings.get("analysis_thinking", True)
         for key, value in (
             ("thinking", thinking),
@@ -195,11 +208,21 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
                 raise ProfileError(
                     f"profile {name!r}: phases.{phase}.{key} must be a bool"
                 )
+        deadline_s = settings.get("deadline_s", phases[phase].deadline_s)
+        if deadline_s is not None and (
+            isinstance(deadline_s, bool)
+            or not isinstance(deadline_s, int | float)
+            or deadline_s <= 0
+        ):
+            raise ProfileError(
+                f"profile {name!r}: phases.{phase}.deadline_s must be a positive number"
+            )
         phases[phase] = PhaseSettings(
             max_tokens=int(settings.get("max_tokens", phases[phase].max_tokens)),
             temperature=settings.get("temperature"),
             thinking=thinking,
             analysis_thinking=analysis_thinking,
+            deadline_s=None if deadline_s is None else float(deadline_s),
         )
     crutches = frozenset(data.get("crutches", ()))
     unknown = crutches - KNOWN_CRUTCHES

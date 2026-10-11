@@ -1,7 +1,9 @@
 # The Glitch difficulty tier
 
 Design note for #336 (roadmap #366, step 19). **Status: agreed 2026-10-10,
-not yet built.** Once the code lands this note describes the running code,
+being built.** Done so far: the move-source seam (#471) and the mover phase
+itself, `mover.py` with `play_move` (#472), not yet offered to the player.
+Once the code lands this note describes the running code,
 and it amends BRIEF.md's "Stockfish is a calculation tool … difficulty" line
 in that same PR.
 

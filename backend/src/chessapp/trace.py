@@ -39,9 +39,11 @@ from chessapp.brain import ModelCall
 # `draft` is what Glitch said. 5 adds `evidence.results`, the results tally
 # the turn was shown (#373). 6 adds `gather`, the notes the gather step found
 # from the player's words (`source`, `ms`, `passages`; None when the app
-# gathers none), and `evidence.gathered`, their text (#451). Bump it on any
-# change a reader must branch on.
-TRACE_SCHEMA = 6
+# gathers none), and `evidence.gathered`, their text (#451). 7 adds `mover`,
+# the move Glitch chose himself in the `glitch` tier (#472; None in every other
+# tier), and the `mover` phase in `calls`. Bump it on any change a reader must
+# branch on.
+TRACE_SCHEMA = 7
 # What a record in the trace file is. A turn, or a `serving` manifest
 # (`serving.KIND_SERVING`), written at startup and whenever what serves the app
 # changes; the kind is on every record so a reader never mistakes one for the
@@ -115,6 +117,7 @@ def turn_record(
     draft: str = "",
     evidence: dict[str, Any] | None = None,
     gather: dict[str, Any] | None = None,
+    mover: dict[str, Any] | None = None,
     provider_failure: str = "",
     engine_failure: str = "",
     reaction_late: bool = False,
@@ -185,9 +188,9 @@ def turn_record(
 
     `calls` is every model round trip the turn made, one entry each in call
     order (#317): `seq` (its place in the turn — with `correlation_id`, the
-    attempt's identity), `phase` (`planner`, `closer`, `reaction`, `answer`
-    — older records also have `rewrite` — or `unknown` from a brain that does
-    not tag its calls), `status`
+    attempt's identity), `phase` (`planner`, `narrator`, `answer`, `mover` —
+    older records also have `closer`, `reaction` and `rewrite` — or `unknown`
+    from a brain that does not tag its calls), `status`
     (`ok`, `truncated`, `bad_args`, `failed` with the provider's `failure` kind,
     or `late` — still running when its caller stopped waiting, so its `ms` is
     the wait, censored at `budget_ms`), its wall clock in `ms`, and its tokens,
@@ -344,6 +347,10 @@ def turn_record(
         "evidence": evidence,
         # The gather step's notes (#451): None when the app gathers none.
         "gather": gather,
+        # Glitch's own move choice (#472, `mover.MoverChoice.as_trace` or
+        # `MoverFailed.as_trace`): what he played and meant, or why he played
+        # nothing, with every attempt. None outside the `glitch` tier.
+        "mover": mover,
         "game_id": game_id,
         "interaction_id": interaction_id,
         "turn_id": turn_id,

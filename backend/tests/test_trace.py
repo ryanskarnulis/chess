@@ -29,13 +29,17 @@ from chessapp.brain import (
     ToolCall,
 )
 from chessapp.game import GameSession
+from chessapp.mover import Mover
+from chessapp.profiles import DEFAULT_PROFILE
 from chessapp.tools import Settings, ToolContext
 from chessapp.trace import JsonlTracer, turn_record
 from fakes import (
     DyingEngine,
     FakeEngine,
     ScriptedBrain,
+    ScriptedProvider,
     scripted_app,
+    tool_calls_turn,
     unbacked_claims,
 )
 
@@ -99,11 +103,37 @@ def test_turn_record_carries_model_cost_when_given():
     assert record["completion_tokens"] == 96
 
 
+def test_turn_record_carries_glitchs_own_move_choice(tmp_path):
+    """#472: in the glitch tier the record says what the mover played and
+    meant, or why it played nothing, and its calls sit with the turn's."""
+    session = GameSession()
+    session.submit_move("e4")
+    provider = ScriptedProvider(
+        tool_calls_turn(("play_move", {"move": "Ke2", "intent": "x"})),
+        tool_calls_turn(("play_move", {"move": "e5", "intent": "mirror"})),
+    )
+    choice = Mover(provider, DEFAULT_PROFILE).choose(session)
+    record = _record_fields(mover=choice.as_trace(), calls=choice.calls)
+    assert record["mover"]["outcome"] == "played"
+    assert record["mover"]["san"] == "e5"
+    assert record["mover"]["intent"] == "mirror"
+    assert [a["verdict"] for a in record["mover"]["attempts"]] == [
+        "illegal",
+        "played",
+    ]
+    assert [call["phase"] for call in record["calls"]] == ["mover", "mover"]
+    path = tmp_path / "turns.jsonl"
+    JsonlTracer(path).record(record)
+    assert json.loads(path.read_text())["mover"] == record["mover"]
+    # Every other tier's record says so.
+    assert _record_fields()["mover"] is None
+
+
 def test_turn_record_is_versioned_and_says_what_it_is():
     """#317: a reader keys off `schema` rather than guessing from which fields
     are present, and `kind` lets other records share the file."""
     record = _record_fields()
-    assert record["schema"] == 6
+    assert record["schema"] == 7
     assert record["kind"] == "turn"
 
 

@@ -46,6 +46,9 @@ from chessapp.handoff import Handoff
 PHASE_PLANNER = "planner"
 PHASE_NARRATOR = "narrator"
 PHASE_ANSWER = "answer"
+# Glitch choosing his own move (`mover.py`, #472): not a brain phase, but a
+# model call that lands in the same `calls` list.
+PHASE_MOVER = "mover"
 # A call from a brain that does not tag its own (a test double): known to have
 # happened, not known to have been which.
 PHASE_UNKNOWN = "unknown"

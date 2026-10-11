@@ -45,6 +45,7 @@ from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.profiles import (
     ANSWER,
     KNOWN_CRUTCHES,
+    MOVER,
     NARRATOR,
     PHASES,
     PLANNER,
@@ -467,6 +468,7 @@ _PHASE_MODEL_ENV = {
     PLANNER: "CHESSAPP_PLANNER_MODEL",
     NARRATOR: "CHESSAPP_NARRATOR_MODEL",
     ANSWER: "CHESSAPP_ANSWER_MODEL",
+    MOVER: "CHESSAPP_MOVER_MODEL",
 }
 
 

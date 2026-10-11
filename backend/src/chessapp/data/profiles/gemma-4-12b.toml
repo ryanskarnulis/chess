@@ -54,3 +54,13 @@ max_tokens = 4096
 # front of a destructive op and must not be a place a thought loop can live.
 [phases.answer]
 max_tokens = 16
+
+# Glitch's own move in the tier where the model picks it (#472,
+# docs/glitch-difficulty.md). Starting values, not measured: a thinking
+# choice capped at 4096 tokens (~60 s at this model's speed) inside a 90 s
+# deadline for the whole run, retries included. The strength script (#476)
+# measures them.
+[phases.mover]
+max_tokens = 4096
+thinking = true
+deadline_s = 90

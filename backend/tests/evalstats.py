@@ -513,10 +513,10 @@ _WHOLE_TURN = slice(None)
 # for the loop's narration and `reaction` for a narrate route's, and records
 # from before #368 add the honesty guard's `rewrite` — the same persona call. The
 # reader (`answer`) is neither phase, which is exactly the call the positional
-# rule could never place.
+# rule could never place, and nor is the mover (`mover`, #472).
 _PLANNER_PHASE = "planner"
 _NARRATOR_PHASES = frozenset({"narrator", "closer", "reaction", "rewrite"})
-_KNOWN_PHASES = _NARRATOR_PHASES | {_PLANNER_PHASE, "answer"}
+_KNOWN_PHASES = _NARRATOR_PHASES | {_PLANNER_PHASE, "answer", "mover"}
 
 # Which calls belong to a phase: a slice when derived from call positions, the
 # indices themselves when read off the tags (a reader call can sit in front of

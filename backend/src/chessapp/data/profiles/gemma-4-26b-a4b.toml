@@ -67,3 +67,13 @@ analysis_thinking = false
 
 [phases.answer]
 max_tokens = 16
+
+# Glitch's own move in the tier where the model picks it (#472,
+# docs/glitch-difficulty.md). Starting values, not measured: a thinking
+# choice capped at 4096 tokens (~70 s at ~60 tok/s) inside a 90 s deadline
+# for the whole run, retries included. The strength script (#476) measures
+# them.
+[phases.mover]
+max_tokens = 4096
+thinking = true
+deadline_s = 90
