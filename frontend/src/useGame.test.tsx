@@ -2227,4 +2227,88 @@ describe('useGame', () => {
     // Revision advances so the board re-syncs and the pawn snaps back.
     expect(result.current.revision).toBeGreaterThan(revisionBefore)
   })
+
+  // --- the reply and the settings, on every tab (#458) ------------------------
+  //
+  // The bubble used to hear Glitch only in the response to its own request:
+  // a reload forgot him, and a second tab never heard him at all.
+
+  function reply(text: string, seq: number, game_id = 'g1') {
+    return { type: 'reply', reply: { text, game_id, seq } }
+  }
+
+  async function renderOnGame(gameId = 'g1') {
+    fetchMock.mockImplementation(() => jsonResponse(state({ game_id: gameId })))
+    const hook = renderHook(() => useGame())
+    await waitFor(() => expect(hook.result.current.state?.game_id).toBe(gameId))
+    return hook
+  }
+
+  it('shows a reply another tab’s turn produced, without voicing it', async () => {
+    const { playText } = await import('./tts')
+    vi.mocked(playText).mockClear()
+    const { result } = await renderOnGame()
+    act(() => FakeWebSocket.instances[0].emit(reply('Bold. I like it.', 1)))
+    expect(result.current.commentary).toBe('Bold. I like it.')
+    // The tab that asked voices it; the others only show it.
+    expect(playText).not.toHaveBeenCalled()
+  })
+
+  it('never lets a re-sent reply replace a newer one', async () => {
+    const { result } = await renderOnGame()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.emit(reply('Newer.', 2)))
+    // A reconnect's snapshot re-sends what the tab has already moved past.
+    act(() => socket.emit(reply('Older.', 1)))
+    act(() => socket.emit(reply('Newer, again.', 2)))
+    expect(result.current.commentary).toBe('Newer.')
+  })
+
+  it('drops the reply when the board becomes another game', async () => {
+    const { result } = await renderOnGame()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.emit(reply('About this game.', 1)))
+    expect(result.current.commentary).toBe('About this game.')
+    // Another tab started a new game: the old game's words go with it.
+    act(() => socket.emit({ type: 'state', state: state({ version: 2, game_id: 'g2' }) }))
+    expect(result.current.commentary).toBeNull()
+  })
+
+  it('stamps its own replies with the game on the board', async () => {
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/command')
+        ? jsonResponse({
+            commentary: 'Fresh board.',
+            tool_results: [],
+            state: state({ version: 2, game_id: 'g2' }),
+          })
+        : jsonResponse(state({ game_id: 'g1' })),
+    )
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state?.game_id).toBe('g1'))
+    // "New game, please": the reply is about the game the command started.
+    await act(async () => {
+      await result.current.sendCommand('new game please')
+    })
+    expect(result.current.commentary).toBe('Fresh board.')
+  })
+
+  it('takes a settings change made elsewhere', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.tier).toBe('casual'))
+    act(() =>
+      FakeWebSocket.instances[0].emit({
+        type: 'settings',
+        settings: {
+          verbosity: 'normal',
+          voice_output: true,
+          tier: 'advanced',
+          skill_level: null,
+          elo: null,
+        },
+      }),
+    )
+    expect(result.current.tier).toBe('advanced')
+    expect(result.current.voiceOutput).toBe(true)
+  })
 })

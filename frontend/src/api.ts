@@ -46,6 +46,17 @@ export interface GameState {
   claimable_draws?: string[]
 }
 
+/** What the commentary bubble last said, as the backend keeps it (#458) and
+ * sends on the socket — once when the turn has it, and again behind the connect
+ * snapshot, so a reload or a newly opened tab shows it too. It carries the game
+ * it was said in, so it is never shown over another, and a number that only
+ * grows, so a re-sent reply never replaces a newer one. */
+export interface PanelReply {
+  text: string
+  game_id: string
+  seq: number
+}
+
 export interface MoveResponse {
   legal: boolean
   san: string | null
@@ -661,12 +672,15 @@ export interface ProgressEvent {
   name: string
 }
 
-/** What arrives on the broadcast channel: the authoritative board document, or
- * an ephemeral note about the turn currently changing it. Discriminated by
+/** What arrives on the broadcast channel: the authoritative board document, an
+ * ephemeral note about the turn currently changing it, the panel's reply once
+ * the turn has one, or the settings after one changed (#458). Discriminated by
  * `type` — a client that only wants the board ignores the rest. */
 export type SocketMessage =
   | { type: 'state'; state: GameState }
   | { type: 'progress'; progress: ProgressEvent }
+  | { type: 'reply'; reply: PanelReply }
+  | { type: 'settings'; settings: Settings }
 
 /** URL of the backend's one-way broadcast channel (state + live progress). */
 export function stateSocketUrl(): string {

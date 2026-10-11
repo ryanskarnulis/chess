@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { COPY_IDLE, copyText } from './clipboard'
+import { YOUR_MOVE } from './idle'
 
 export interface AgentBubbleProps {
   /** The agent's latest reply, or null before the first command. */
@@ -14,6 +15,9 @@ export interface AgentBubbleProps {
    * the app's to render — Glitch says it is ready, this shows it — so a reply
    * with one gets a copy button and the text itself under the bubble. */
   pgn?: string | null
+  /** What to say when there is no reply and nothing in flight: "Your move.",
+   * unless the game is over (`idleLine`). */
+  idle?: string
 }
 
 /**
@@ -26,12 +30,13 @@ export function AgentBubble({
   thinking,
   progress = null,
   pgn = null,
+  idle = YOUR_MOVE,
 }: AgentBubbleProps) {
   // Progress outranks the generic hint, and stands alone when there is no
   // command in flight: a dragged move is a turn too, and nothing else here
   // would say so.
   const busy = thinking || progress !== null
-  const text = busy ? (progress ?? 'Thinking…') : (commentary ?? 'Your move.')
+  const text = busy ? (progress ?? 'Thinking…') : (commentary ?? idle)
   // The bubble is clamped to three lines and scrolls inside itself (App.css),
   // which is what stops a long reply from moving the board. A scrolled box
   // keeps its offset when the text changes, so without this the next reply

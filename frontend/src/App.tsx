@@ -9,6 +9,7 @@ import { OptionsSheet } from './OptionsSheet'
 import { PostGameModal } from './PostGameModal'
 import { PromotionPicker } from './PromotionPicker'
 import { boardHighlights } from './highlights'
+import { idleLine } from './idle'
 import { useGame } from './useGame'
 import './App.css'
 
@@ -180,6 +181,7 @@ function App() {
           thinking={agentThinking}
           progress={agentProgress}
           pgn={pgn}
+          idle={idleLine(state)}
         />
         <CapturedPieces
           captured={state?.captured ?? NO_CAPTURES}

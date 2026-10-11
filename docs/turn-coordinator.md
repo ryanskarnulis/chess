@@ -287,6 +287,17 @@ event loop (`api._offloop`) so events arrive live, not in a burst. Reporting
 is wrapped and swallowed — a lost label is never a lost turn. Direct mode and
 the control buttons report nothing (no interaction window).
 
+Two more frames share the socket (#458). `type: "reply"` carries the panel's
+latest reply — `{text, game_id, seq}` — once the turn has it, behind the board
+it is about, and again after the connect snapshot, so a reload or a second tab
+shows what Glitch last said rather than "Your move.". Only the panel's own
+turns (a command, a drag) set it, never a delegate thread; a client shows it
+only while `game_id` is the board's, and `seq` keeps a re-sent reply from
+replacing a newer one. `type: "settings"` carries the `GET /api/settings`
+document whenever a settings endpoint or a command turn changed it, so every
+tab's controls follow a change made elsewhere. Neither is a key on the state
+document: that is every mutation's response, and stays the board's.
+
 
 Latency across a whole voice interaction (speech end, transcript, board,
 reply audio, playback end) is measured by joining the turn record to the
