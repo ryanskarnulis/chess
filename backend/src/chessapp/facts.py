@@ -191,7 +191,11 @@ def analysis_numbers(tool_results: Sequence[dict[str, Any]]) -> set[str]:
             for move in result.get("critical", ()):
                 record(move.get("cp_loss"), None)
             numbers.update(str(value) for value in result.get("accuracy", {}).values())
-            numbers.update(str(value) for value in result.get("counts", {}).values())
+            # Each side's counts are a dict by classification (#467): the
+            # numbers are the counts in it, and the side's total of moves.
+            for counts in result.get("counts", {}).values():
+                numbers.update(str(count) for count in counts.values())
+                numbers.add(str(sum(counts.values())))
     return numbers
 
 
