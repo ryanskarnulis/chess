@@ -369,6 +369,48 @@ def test_a_dragged_move_in_the_tier_is_the_movers_and_is_traced(tmp_path):
     assert [call["phase"] for call in record["calls"]][-1] == "mover"
 
 
+# --- the narrator is told whose move it was (#474) ------------------------------
+
+
+def _dragged_turn(tmp_path, mover, tier=GLITCH):
+    trace_path = tmp_path / "turns.jsonl"
+    ctx = glitch_ctx(mover)
+    ctx.settings.tier = tier
+    app, brain = scripted_app(ctx, tracer=JsonlTracer(trace_path))
+    TestClient(app).post("/api/game/move", json={"move": "e2e4"})
+    (record,) = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    facts, _ = brain.narrate_calls[-1]
+    return facts["engine_reply"], record
+
+
+def test_the_narrator_is_handed_glitchs_own_intent(tmp_path):
+    reply, record = _dragged_turn(tmp_path, StubMover("c7c5"))
+
+    assert reply["san"] == "c5"
+    assert reply["chosen_by"] == CHOOSER_GLITCH
+    assert reply["intent"] == "hitting the centre"
+    assert record["evidence"]["reply_chosen_by"] == CHOOSER_GLITCH
+    assert record["evidence"]["reply_intent"] == "hitting the centre"
+
+
+def test_the_narrator_is_told_a_fallback_was_not_his_and_has_no_intent(tmp_path):
+    reply, record = _dragged_turn(tmp_path, StubMover(MoverFailureKind.DEADLINE))
+
+    assert reply["san"] == "e5"
+    assert reply["chosen_by"] == CHOOSER_FALLBACK
+    assert "intent" not in reply
+    assert record["evidence"]["reply_chosen_by"] == CHOOSER_FALLBACK
+    assert record["evidence"]["reply_intent"] is None
+
+
+def test_a_stockfish_tier_reply_carries_no_attribution(tmp_path):
+    """The Stockfish tiers' briefs stay byte for byte what they were."""
+    reply, record = _dragged_turn(tmp_path, StubMover(), tier="beginner")
+
+    assert set(reply) == {"san", "capture", "check", "promotion"}
+    assert record["evidence"]["reply_chosen_by"] is None
+
+
 # --- move notes in the save ---------------------------------------------------------
 
 

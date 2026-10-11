@@ -14,6 +14,7 @@ from chessapp.game import GameSession
 from chessapp.speech_accuracy import (
     LEGACY_SCORED,
     UNSCORED,
+    chooser_of,
     merge,
     names_reply,
     score_record,
@@ -632,3 +633,33 @@ def test_a_reply_beside_a_capture_does_not_excuse_a_wrong_victim():
     )
 
     assert ("capture", False) in _counts(score)
+
+
+# --- the glitch tier (#474) ---------------------------------------------------
+
+
+def _glitch_record(draft: str, chosen_by: str, intent: str | None) -> dict:
+    record = _record(
+        draft, _session("e4", "c5"), reply="c5", fen_before=_session("e4").fen()
+    )
+    record["evidence"]["reply_chosen_by"] = chosen_by
+    record["evidence"]["reply_intent"] = intent
+    return record
+
+
+def test_a_move_his_own_intent_named_backs_the_move_class():
+    """He was handed the plan he played his move with; quoting it is not a
+    claim about the board."""
+    said = "I am going Qa5."
+    planned = _glitch_record(said, "glitch", "the Sicilian, then Qa5 to pin")
+    unplanned = _glitch_record(said, "glitch", "the Sicilian")
+
+    assert ("move", True) in _counts(score_record(planned))
+    assert ("move", False) in _counts(score_record(unplanned))
+
+
+def test_who_chose_the_reply_is_read_off_the_evidence():
+    assert chooser_of(_glitch_record("c5.", "fallback", None)) == "fallback"
+    stockfish = _record("c5.", _session("e4", "c5"), reply="c5")
+    assert chooser_of(stockfish) == "stockfish"
+    assert chooser_of(_record("Hi.", _session())) is None

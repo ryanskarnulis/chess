@@ -210,6 +210,43 @@ def test_a_promoting_reply_names_the_piece():
     ) in brief
 
 
+def test_glitchs_own_move_comes_with_the_intent_he_played_it_with():
+    """#474: in the `glitch` tier he chose the move, so he is handed his own
+    reason for it, quoted as his words from then, and the closing sentence
+    asks for it."""
+    own = {**REPLY, "chosen_by": "glitch", "intent": "eyeing f7"}
+    brief = render(build([MOVED], engine_reply=own), "e4", [MOVED])
+    assert (
+        "Your reply, already on the board: Nf6, taking their knight, check. "
+        "You chose this move yourself; what you had in mind when you played "
+        'it, in your words then: "eyeing f7". The player learns your move'
+    ) in brief
+    assert (
+        "and tell them your move, Nf6, and what you had in mind with it, your way."
+    ) in brief
+
+
+def test_a_fallback_is_said_to_be_stockfishs_and_not_his_idea():
+    """#474: live, he claimed a fallback move as his own plan."""
+    fallback = {**REPLY, "chosen_by": "fallback"}
+    brief = render(build([MOVED], engine_reply=fallback), "e4", [MOVED])
+    assert (
+        "You did not choose this move: your own pick never came, so Stockfish "
+        "played it for you at beginner strength. It was not your idea and you "
+        "had no plan with it."
+    ) in brief
+    assert "and tell them the move Stockfish played for you, Nf6, your way." in brief
+    assert "You chose this move yourself" not in brief
+
+
+def test_the_trace_says_whose_reply_it_was_only_in_the_tier():
+    own = {**REPLY, "chosen_by": "glitch", "intent": "eyeing f7"}
+    traced = build([MOVED], engine_reply=own).trace()
+    assert traced["reply_chosen_by"] == "glitch"
+    assert traced["reply_intent"] == "eyeing f7"
+    assert "reply_chosen_by" not in build([MOVED], engine_reply=REPLY).trace()
+
+
 def test_a_reply_the_engine_died_on_is_said_never_to_have_come():
     brief = render(build([MOVED], reply_owed=True), "e4", [MOVED])
     assert "Your reply to the player's move never came" in brief

@@ -135,6 +135,7 @@ from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
 from chessapp.gather import Gathered, Searcher
 from chessapp.ledger import render_record
+from chessapp.move_source import SourcedMove, reply_attribution
 from chessapp.profiles import BRAIN_CHOICES
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
@@ -720,6 +721,9 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
     `engine_reply` is the move the engine just played for Glitch in answer to
     the player's (`coordinator.settlement`), or None: the brain lifts it out
     of the facts into the handoff, where it becomes Glitch's own move to say.
+    In the `glitch` tier it also says who chose it and, on his own move, why
+    (`move_source.reply_attribution`, #474), so he gives the reason he
+    actually had and never claims a fallback as his idea.
     `reply_owed` is the coordinator's too — the player's move landed and no
     answer did, which since #365 means the engine died on it — and becomes the
     line saying the reply never came. `board_version` is lifted out the same
@@ -738,7 +742,10 @@ def narrator_facts(ctx: ToolContext, coordinator: TurnCoordinator) -> dict[str, 
         "captured": ctx.session.captured_pieces(),
         "opening": openings.opening_of(ctx.session),
         "results": ctx.results.tally(),
-        "engine_reply": _reply_facts(settled.reply)
+        "engine_reply": {
+            **_reply_facts(settled.reply),
+            **reply_attribution(settled.sourced),
+        }
         if settled is not None and settled.reply is not None
         else None,
         "reply_owed": coordinator.phase
@@ -1091,11 +1098,15 @@ def _turn_evidence(
     fens_observed: Sequence[str] = (),
     pending_reply_fen: str | None = None,
     gathered: Sequence[Mapping[str, str]] = (),
+    sourced: SourcedMove | None = None,
 ) -> TurnEvidence:
     """The record `facts.assemble` builds a turn's facts from, read off the
     live context: the session as the turn left it and the claimable settings,
     beside what the route knows about its own boards (see `facts.assemble`
-    for what each board is for)."""
+    for what each board is for). `sourced` is who chose `engine_reply`
+    (`coordinator.sourced_for`), kept so a Glitch-tier turn can be judged
+    and reported apart (#474)."""
+    attribution = reply_attribution(sourced)
     return TurnEvidence(
         session=ctx.session.to_dict(),
         settings=settings_of(
@@ -1108,6 +1119,8 @@ def _turn_evidence(
         pending_reply_fen=pending_reply_fen,
         results=ctx.results.tally(),
         gathered=tuple(gathered),
+        reply_chosen_by=attribution.get("chosen_by"),
+        reply_intent=attribution.get("intent"),
     )
 
 
@@ -2114,6 +2127,7 @@ def create_app(
                     # Spoken with the reply still owed only when the engine
                     # died on it; otherwise the reply was on the board first.
                     beats.observed_fen if beats.engine_failure else None,
+                    sourced=coordinator.sourced_for(beats.engine_reply),
                 )
                 commentary = _move_commentary(
                     draft, result, beats.engine_reply, ctx.session
@@ -3271,6 +3285,7 @@ def create_app(
                     observed,
                     narrated_before_reply,
                     notes,
+                    sourced=coordinator.sourced_for(engine_reply),
                 )
                 traced["evidence"] = turn_evidence.as_trace()
                 if memory is None:

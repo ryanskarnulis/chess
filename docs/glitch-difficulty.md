@@ -101,6 +101,12 @@ environment (`LLAMACPP_MODEL`, or `CHESSAPP_MOVER_MODEL`): the one model call
 it makes, and `glitch` is refused there without one. The tier is off the easier/harder ladder
 (`engine.STEPPED_TIERS`), and the PGN names the opponent `Glitch (own moves)`.
 
+As built (#474): the narrator's `engine_reply` carries `chosen_by` and, on
+his own move, the mover's `intent` (`move_source.reply_attribution`), and the
+brief says whose move it was (`docs/planner-narrator.md`). The turn's evidence
+keeps both, so `scripts/speech_report.py` splits Glitch-tier turns out and
+prints every fallback's words for a hand read (`docs/speech-accuracy.md`).
+
 ### 5. The mover runs on the brain's model
 
 The mover uses the model the brain picker (#435) chose, with that model's

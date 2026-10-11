@@ -142,3 +142,19 @@ def fallback_comment(reason: str) -> str:
     """The PGN comment on a fallback move: a reader of the game sees which of
     Glitch's moves were not his own."""
     return f"Glitch's mover failed ({reason}); Stockfish played this move at beginner"
+
+
+def reply_attribution(sourced: SourcedMove | None) -> dict[str, str]:
+    """Who chose a reply, as the narrator is handed it and the turn's evidence
+    keeps it (#474): nothing in the Stockfish tiers, so their briefs are what
+    they always were; in the `glitch` tier `chosen_by` (`glitch` or
+    `fallback`), and on his own move the `intent` he played it with. A
+    fallback has no intent — it was not his move — and the narrator is told
+    so instead of being handed one."""
+    if sourced is None or sourced.chooser == CHOOSER_STOCKFISH:
+        return {}
+    fields = {"chosen_by": sourced.chooser}
+    intent = (sourced.mover or {}).get("intent")
+    if sourced.chooser == CHOOSER_GLITCH and intent:
+        fields["intent"] = str(intent)
+    return fields

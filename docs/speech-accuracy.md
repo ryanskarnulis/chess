@@ -60,6 +60,17 @@ named is the *right* one is the `unplayed_reply` class. The summary line
 prints it as `reply_said=a/o`, and `as_dict` carries `replies: {owed,
 announced}`, which the gate and frontier reports merge like the rest.
 
+**Who chose the reply (#474).** In the `glitch` tier the evidence keeps
+`reply_chosen_by` (`glitch` or `fallback`) and, on his own move,
+`reply_intent`, the plan the mover played it with
+(`speech_accuracy.chooser_of`). The moves his intent names back the move
+class, because the narrator was handed it. The report splits accuracy and
+reply said by chooser (stockfish, glitch, fallback) once any Glitch-tier turn
+is present, and prints every fallback turn's draft in full. Whether he passed
+a fallback off as his own idea is read by hand from those drafts, not by a
+claim class: a reading of "my plan" against "Stockfish's move" is a language
+judgment the scorer would get wrong more often than the narrator does.
+
 ## Where the words and facts come from
 
 Trace schema 3 and later record two fields on every turn the model spoke on:
@@ -221,6 +232,7 @@ docker exec chess-app-1 cat /data/saves/turns.jsonl > /tmp/turns.jsonl
 python scripts/speech_report.py /tmp/turns.jsonl            # Markdown report
 python scripts/speech_report.py /tmp/turns.jsonl --json     # the summary dict
 python scripts/speech_report.py /tmp/turns.jsonl --since 2026-09-27 --route brain
+python scripts/speech_report.py /tmp/turns.jsonl --chooser fallback  # Glitch-tier fallbacks only
 ```
 
 It prints accuracy overall and per family, the unscored counts with their

@@ -150,8 +150,9 @@ def _widened(
     facts: VerifiedFacts,
     tool_results: Iterable[Mapping[str, Any]],
     gathered: Iterable[Mapping[str, Any]] = (),
+    intent: str | None = None,
 ) -> VerifiedFacts:
-    """The turn's facts, plus three things the reading gets wrong on correct
+    """The turn's facts, plus four things the reading gets wrong on correct
     lines, which the scorer backs (#367, #374).
 
     Found by hand-labelling the first schema-3 frontier run: both unbacked
@@ -170,6 +171,9 @@ def _widened(
       passage's words back an opening named from it, in a game that is in
       another opening or none. The notes the gather step put in front of the
       narrator (#451, `gathered`) back the same way.
+    - His own plan (#474). In the `glitch` tier the moves the mover's
+      `intent` names back the move class: "eyeing Bc4 next" is the plan he
+      was handed, not a claim about the board.
 
     Scorer-only: they were kept out of the live guard's facts while it ran,
     and the guard is retired (#368).
@@ -188,6 +192,9 @@ def _widened(
         if result["name"] == "lookup" and result["result"].get("ok") is True
         for passage in result["result"].get("passages", ())
     ] + list(gathered)
+    # His own plan (#474): in the `glitch` tier the narrator is handed the
+    # intent he played his move with, and "heading for Bc4 next" quotes it.
+    planned = named_moves(intent) if intent else frozenset()
     looked_up = {
         san for passage in passages for san in named_moves(passage.get("text", ""))
     }
@@ -201,7 +208,7 @@ def _widened(
             numbers.update(str(round(value / step) * step) for step in _CENTIPAWN_STEPS)
     return replace(
         facts,
-        moves=facts.moves | reviewed | looked_up,
+        moves=facts.moves | reviewed | looked_up | planned,
         numbers=frozenset(numbers),
         openings=frozenset(openings),
     )
@@ -215,7 +222,12 @@ def score_record(record: Mapping[str, Any]) -> TurnScore | None:
         return None  # not a turn, or a partial record a test fake wrote
     if record.get("evidence"):
         evidence = TurnEvidence.from_trace(record["evidence"], record["tools"])
-        facts = _widened(assemble(evidence), evidence.tool_results, evidence.gathered)
+        facts = _widened(
+            assemble(evidence),
+            evidence.tool_results,
+            evidence.gathered,
+            evidence.reply_intent,
+        )
         draft = record.get("draft") or ""
         reply = evidence.engine_reply_san
         return TurnScore(
@@ -434,6 +446,16 @@ class Tally:
                 if self.unscored_made[name]
             },
         }
+
+
+def chooser_of(record: Mapping[str, Any]) -> str | None:
+    """Who chose the reply a turn's words answer to (#474): `glitch` or
+    `fallback` in the `glitch` tier, `stockfish` for any other reply, and
+    None when the turn had no reply or its record predates the evidence."""
+    evidence = record.get("evidence") or {}
+    if chosen := evidence.get("reply_chosen_by"):
+        return str(chosen)
+    return "stockfish" if evidence.get("engine_reply_san") else None
 
 
 def tally(records: Iterable[Mapping[str, Any]]) -> Tally:
