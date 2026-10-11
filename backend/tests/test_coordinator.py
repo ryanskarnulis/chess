@@ -669,6 +669,78 @@ def test_engine_reply_is_not_a_callable_tool(session):
     assert not names & {"engine_reply", "request_engine_reply", "apply_engine_move"}
 
 
+# --- one move source on every route (#471) -----------------------------------
+#
+# The reply is chosen by a single seam, so the Glitch tier can swap Stockfish
+# for its mover once and have every route follow. A source here has only
+# `choose_move` — not the engine's other methods — so a route that still
+# reached past the seam would fail.
+
+
+class RecordingSource:
+    """A move source that plays `replies` in order (an exception in the list is
+    raised instead) and records the moves it was shown."""
+
+    def __init__(self, *replies: str | Exception) -> None:
+        self.replies = list(replies)
+        self.seen: list[list[str]] = []
+
+    def choose_move(self, session):
+        self.seen.append(session.move_history())
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def test_background_reply_comes_from_the_source_with_the_games_moves(session):
+    source = RecordingSource("e7e5")
+    coordinator = TurnCoordinator(ToolContext(session=session, engine=source))
+    coordinator.apply_player_move("e4")
+    reply = coordinator.collect_engine_reply()
+    assert reply is not None and reply.san == "e5"
+    # The background probe is a replay, not a bare FEN: a mover is owed the
+    # game's moves (docs/glitch-difficulty.md, decision 2).
+    assert source.seen == [["e4"]]
+
+
+def test_the_synchronous_fallback_asks_the_same_source(session):
+    source = RecordingSource(RuntimeError("background died"), "e7e5")
+    coordinator = TurnCoordinator(ToolContext(session=session, engine=source))
+    coordinator.apply_player_move("e4")
+    reply = coordinator.collect_engine_reply()
+    assert reply is not None and reply.san == "e5"
+    assert source.seen == [["e4"], ["e4"]]
+
+
+def test_settle_asks_the_source(session):
+    session.new_game("black")
+    source = RecordingSource("e2e4")
+    coordinator = TurnCoordinator(ToolContext(session=session, engine=source))
+    reply = coordinator.settle_engine_turn()
+    assert reply is not None and reply.san == "e4"
+    assert source.seen == [[]]
+
+
+def test_play_exchange_asks_the_source(session):
+    source = RecordingSource("e7e5")
+    coordinator = TurnCoordinator(ToolContext(session=session, engine=source))
+    _, reply = coordinator.play_exchange("e4")
+    assert reply is not None and reply.san == "e5"
+    assert session.move_history() == ["e4", "e5"]
+    assert source.seen == [["e4"]]
+
+
+def test_a_source_only_chooses_the_session_still_judges(session):
+    """An illegal choice meets the session's legality gate and is not played."""
+    source = RecordingSource("e2e4")  # White's move, offered on Black's turn
+    coordinator = TurnCoordinator(ToolContext(session=session, engine=source))
+    coordinator.apply_player_move("e4")
+    reply = coordinator.collect_engine_reply()
+    assert reply is not None and not reply.legal
+    assert session.move_history() == ["e4"]
+
+
 # --- the phase is observable ------------------------------------------------
 #
 # Live progress (audit item 19) reads the machine rather than being narrated
