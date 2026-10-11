@@ -228,34 +228,45 @@ def test_the_glitch_source_falls_back_on_its_own():
 def test_the_mover_record_belongs_to_the_turn_that_played_it():
     ctx = glitch_ctx(StubMover("c7c5"))
     coordinator = TurnCoordinator(ctx)
-    before = ctx.session.fen()
+    before = ctx.board_version
     coordinator.play_exchange("e4")
-    after = ctx.session.fen()
+    after = ctx.board_version
 
-    sourced = coordinator.take_mover_record(ctx.session.game_id, before, after)
+    sourced = coordinator.take_mover_record(before, after)
 
     assert sourced is not None and sourced.mover["san"] == "c5"
     assert len(sourced.calls) == 1
     # Taken once.
-    assert coordinator.take_mover_record(ctx.session.game_id, before, after) is None
+    assert coordinator.take_mover_record(before, after) is None
 
 
-def test_a_mover_record_from_an_earlier_position_is_not_this_turns():
+def test_a_mover_record_from_an_earlier_turn_is_not_this_turns():
     ctx = glitch_ctx(StubMover("c7c5"))
     coordinator = TurnCoordinator(ctx)
     coordinator.play_exchange("e4")
-    later = ctx.session.fen()
+    later = ctx.board_version
 
-    assert coordinator.take_mover_record(ctx.session.game_id, later, later) is None
+    assert coordinator.take_mover_record(later, later) is None
 
 
-def test_a_mover_record_from_another_game_is_not_this_turns():
-    ctx = glitch_ctx(StubMover("c7c5"))
-    coordinator = TurnCoordinator(ctx)
-    before = ctx.session.fen()
-    coordinator.play_exchange("e4")
+def test_a_new_game_where_glitch_moves_first_keeps_his_record(tmp_path):
+    """The new game starts below the old one's ply, so the turn is bounded by
+    board versions, which never go backwards across the swap (#482)."""
+    trace_path = tmp_path / "turns.jsonl"
+    ctx = glitch_ctx(StubMover("c7c5", "b8c6", "d2d4"))
+    app, _ = scripted_app(ctx, tracer=JsonlTracer(trace_path))
+    client = TestClient(app)
+    client.post("/api/game/move", json={"move": "e2e4"})
+    client.post("/api/game/move", json={"move": "g1f3"})
 
-    assert coordinator.take_mover_record("other", before, ctx.session.fen()) is None
+    # Mid-game, so the button asks first; the confirm is the traced turn.
+    assert client.post("/api/game/new", json={"color": "black"}).status_code == 409
+    assert client.post("/api/game/confirm", json={"confirm": True}).status_code == 200
+
+    assert ctx.session.move_history() == ["d4"]
+    records = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    assert records[-1]["mover"]["san"] == "d4"
+    assert [call["phase"] for call in records[-1]["calls"]][-1] == "mover"
 
 
 # --- choosing the tier ----------------------------------------------------------

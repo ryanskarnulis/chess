@@ -215,10 +215,11 @@ class TurnCoordinator:
         # (`take_settlement`) or a new command begins (#365).
         self._settlement: ReplySettlement | None = None
         # The last reply and who chose it (`sourced_for`), and the last mover
-        # record not yet traced (`take_mover_record`): game id, the ply the
-        # reply was played at (counted off its FEN), and the move.
+        # record not yet traced (`take_mover_record`): the board version the
+        # reply made, and the move. The version, not the game and its ply,
+        # because it never goes backwards across a game swap (#482).
         self._last_sourced: tuple[MoveResult, SourcedMove] | None = None
-        self._mover_record: tuple[str, int, SourcedMove] | None = None
+        self._mover_record: tuple[int, SourcedMove] | None = None
         # Told how long each settle waited on the engine, in whole ms — the
         # request's `engine` span (#290). Assigned by `create_app`, like
         # `on_phase`.
@@ -250,11 +251,7 @@ class TurnCoordinator:
         if reply.legal:
             self._last_sourced = (reply, sourced)
             if sourced.chooser != CHOOSER_STOCKFISH:
-                self._mover_record = (
-                    session.game_id,
-                    _fen_ply(session.fen()),
-                    sourced,
-                )
+                self._mover_record = (self._ctx.board_version, sourced)
             if sourced.fallback:
                 session.note_last_move(fallback_comment(sourced.fallback_reason))
         self._note_difficulty(session)
@@ -268,19 +265,19 @@ class TurnCoordinator:
         return sourced if played is reply else None
 
     def take_mover_record(
-        self, game_id: str, fen_before: str, fen_after: str
+        self, version_before: int, version_after: int
     ) -> SourcedMove | None:
         """The mover's last reply, for the trace record of the turn that played
-        it, and then forgotten. Only a reply in that game and between those two
-        positions is that turn's: a reply played on an untraced route (MCP)
-        must not be pinned on the next traced turn."""
+        it, and then forgotten. Only a reply between those two board versions
+        is that turn's: a reply played on an untraced route (MCP) must not be
+        pinned on the next traced turn. Versions, not positions, because a turn
+        can swap the game under itself — a new game where Glitch moves first
+        starts below the old game's ply (#482)."""
         record, self._mover_record = self._mover_record, None
         if record is None:
             return None
-        recorded_game, ply, sourced = record
-        if recorded_game != game_id:
-            return None
-        if not _fen_ply(fen_before) < ply <= _fen_ply(fen_after):
+        version, sourced = record
+        if not version_before < version <= version_after:
             return None
         return sourced
 
@@ -729,10 +726,3 @@ class TurnCoordinator:
         reply = self.collect_engine_reply()
         self.complete_turn()
         return player, reply
-
-
-def _fen_ply(fen: str) -> int:
-    """How many plies a FEN's position is into its game, by its own move
-    counter: what orders two positions of one game."""
-    fields = fen.split()
-    return (int(fields[5]) - 1) * 2 + (fields[1] == "b")
