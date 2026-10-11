@@ -22,6 +22,15 @@ INACCURACY_CP = 50
 MISTAKE_CP = 100
 BLUNDER_CP = 300
 
+# Every evaluation is ceiled to this, mover-POV, before a loss or an accuracy
+# is taken from it (lichess ceils at the same 1000 for its win chances) (#454).
+# On the raw `MATE_CP` scale a missed mate cost ~99 000 centipawns, and that
+# figure reached the planner and the review table as if it were material. Past
+# a ten-pawn edge the game is decided either way, so a slower mate, or a won
+# position still won after shedding a piece, costs nothing; the worst a move
+# can cost is turning a decided win into a decided loss, 2 * EVAL_CEILING_CP.
+EVAL_CEILING_CP = 1000
+
 
 @dataclass(frozen=True)
 class MoveAnalysis:
@@ -55,6 +64,25 @@ def captured_piece(board: chess.Board, move: chess.Move) -> str | None:
         return chess.piece_name(chess.PAWN)
     piece = board.piece_at(move.to_square)
     return chess.piece_name(piece.piece_type) if piece else None
+
+
+def ceiled_cp(score_cp: int | None, mate_in: int | None, mover: str) -> int:
+    """`pov_cp` held to +-`EVAL_CEILING_CP`: the score a loss is measured on."""
+    cp = pov_cp(score_cp, mate_in, mover)
+    return max(-EVAL_CEILING_CP, min(EVAL_CEILING_CP, cp))
+
+
+def move_loss(best_uci: str, played_uci: str, best_cp: int, played_cp: int) -> int:
+    """Centipawns `played_uci` lost against the engine's best, never negative.
+
+    The engine's own move costs nothing (#454). Its two scores come from two
+    searches, one of the position before and one of the position after, and
+    those can disagree by a few dozen centipawns about the same move; that
+    flagged "Kd1, inaccuracy, best Kd1".
+    """
+    if played_uci == best_uci:
+        return 0
+    return max(0, best_cp - played_cp)
 
 
 def classify_cp_loss(cp_loss: int) -> str:
@@ -108,7 +136,7 @@ def analyze_last_move(
 
     before = GameSession(fen=board.fen())
     best = engine.get_best_moves(before, n=1)[0]
-    best_cp = pov_cp(best.score_cp, best.mate_in, mover)
+    best_cp = ceiled_cp(best.score_cp, best.mate_in, mover)
     # Both victims read off the same board, the one before the move: that is
     # the only position in which either move is legal, and the only one that
     # can say what stood on the square.
@@ -122,9 +150,9 @@ def analyze_last_move(
         played_cp = best_cp if board.is_checkmate() else 0
     else:
         after = engine.evaluate_position(GameSession(fen=board.fen()))
-        played_cp = pov_cp(after.score_cp, after.mate_in, mover)
+        played_cp = ceiled_cp(after.score_cp, after.mate_in, mover)
 
-    cp_loss = max(0, best_cp - played_cp)
+    cp_loss = move_loss(best.uci, played.uci(), best_cp, played_cp)
     return MoveAnalysis(
         played_san=played_san,
         played_uci=played.uci(),
@@ -203,8 +231,9 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
 
     One engine analysis per position (a position's evaluation doubles as the
     score of the previous move's outcome), replayed from the root FEN so the
-    live session is never touched. Per-color accuracy is the mean of that
-    color's move accuracies.
+    live session is never touched. Every score is ceiled (`ceiled_cp`) and
+    the engine's own move costs nothing (`move_loss`). Per-color accuracy is
+    the mean of that color's move accuracies.
     """
     data = session.to_dict()
     if not data["moves"]:
@@ -218,14 +247,14 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
         mover = "white" if board.turn == chess.WHITE else "black"
         san = board.san(move)
         move_number = board.fullmove_number
-        best_cp = pov_cp(best.score_cp, best.mate_in, mover)
+        best_cp = ceiled_cp(best.score_cp, best.mate_in, mover)
         board.push(move)
         if board.is_game_over():
             played_cp = best_cp if board.is_checkmate() else 0
         else:
             next_best = engine.get_best_moves(GameSession(fen=board.fen()), n=1)[0]
-            played_cp = pov_cp(next_best.score_cp, next_best.mate_in, mover)
-        cp_loss = max(0, best_cp - played_cp)
+            played_cp = ceiled_cp(next_best.score_cp, next_best.mate_in, mover)
+        cp_loss = move_loss(best.uci, uci, best_cp, played_cp)
         reviewed.append(
             ReviewedMove(
                 san=san,
@@ -235,7 +264,11 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
                 classification=classify_cp_loss(cp_loss),
                 best_san=best.san,
                 best_uci=best.uci,
-                accuracy=move_accuracy(win_percent(best_cp), win_percent(played_cp)),
+                accuracy=(
+                    100.0
+                    if cp_loss == 0
+                    else move_accuracy(win_percent(best_cp), win_percent(played_cp))
+                ),
                 move_number=move_number,
             )
         )

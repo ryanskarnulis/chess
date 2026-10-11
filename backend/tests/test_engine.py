@@ -15,6 +15,7 @@ from chessapp.engine import (
     DIFFICULTY_TIERS,
     ELO_MAX,
     ELO_MIN,
+    FULL_STRENGTH,
     MAX_SAMPLE_LOSS,
     EnginePlayer,
     player_view,
@@ -420,3 +421,78 @@ def test_a_killed_stockfish_is_relaunched_and_keeps_its_strength():
         assert GameSession().submit_move(uci).legal
         assert player._engine is not dead
         assert player._options == {"UCI_LimitStrength": False, "Skill Level": 3}
+
+
+# --- analysis is full strength and starts from a clean hash (#454) ------------
+
+
+class AnalysingUci(FakeUci):
+    """A `FakeUci` that also answers `analyse`, recording how it was asked."""
+
+    def __init__(self):
+        super().__init__()
+        self.analysed: list[dict] = []
+
+    def analyse(self, board, limit, **kwargs):
+        self._call()
+        self.analysed.append(kwargs)
+        info = {
+            "score": chess.engine.PovScore(chess.engine.Cp(30), chess.WHITE),
+            "depth": limit.depth,
+            "pv": [next(iter(board.legal_moves))],
+        }
+        return [info] if kwargs.get("multipv") else info
+
+
+def test_every_analysis_search_is_full_strength_and_a_new_game():
+    uci = AnalysingUci()
+    open_engine, _ = launcher(uci)
+    player = EnginePlayer(open_engine=open_engine)
+    player.set_skill_level(0)
+
+    player.evaluate_position(GameSession())
+    player.get_best_moves(GameSession(), n=1)
+
+    assert [call["options"] for call in uci.analysed] == [FULL_STRENGTH] * 2
+    # A fresh game token per search is what makes python-chess send
+    # `ucinewgame`, so no search inherits another's hash.
+    first, second = (call["game"] for call in uci.analysed)
+    assert first is not None and second is not None and first is not second
+
+
+def test_analysis_leaves_the_play_strength_configured():
+    # Per-search options, never `configure`: the strength a relaunch restores,
+    # and the one play runs at, is still the difficulty's.
+    uci = AnalysingUci()
+    open_engine, _ = launcher(uci)
+    player = EnginePlayer(open_engine=open_engine)
+    player.set_elo(1500)
+
+    player.get_best_moves(GameSession(), n=1)
+
+    assert uci.configured == [{"UCI_LimitStrength": True, "UCI_Elo": 1500}]
+    assert player._options == {"UCI_LimitStrength": True, "UCI_Elo": 1500}
+
+
+@requires_stockfish
+def test_play_after_analysis_is_back_at_the_difficulty():
+    with EnginePlayer(move_time=0.05) as player:
+        player.set_skill_level(3)
+        player.evaluate_position(GameSession())
+        player.choose_move(GameSession())
+
+        config = player._engine.protocol.config
+        assert config["Skill Level"] == 3
+        assert config["UCI_LimitStrength"] is False
+
+
+@requires_stockfish
+def test_the_same_position_analyses_the_same_whatever_ran_before():
+    fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
+    with EnginePlayer(move_time=0.05) as player:
+        player.set_skill_level(0)
+        cold = player.get_best_moves(GameSession(fen=fen), n=1)
+        player.choose_move(GameSession())
+        player.evaluate_position(GameSession(fen=chess.STARTING_FEN))
+        warm = player.get_best_moves(GameSession(fen=fen), n=1)
+    assert warm == cold

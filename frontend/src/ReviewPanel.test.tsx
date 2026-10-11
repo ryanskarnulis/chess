@@ -60,6 +60,22 @@ describe('ReviewPanel', () => {
     expect(black).toHaveTextContent(/1\s*blunder/i)
   })
 
+  it('pluralises each classification count', async () => {
+    vi.mocked(fetchReview).mockResolvedValue({
+      ...REVIEW,
+      counts: {
+        white: { good: 1, inaccuracy: 8, mistake: 2, blunder: 3 },
+        black: { good: 0, inaccuracy: 1, mistake: 0, blunder: 1 },
+      },
+    })
+    render(<ReviewPanel />)
+    fireEvent.click(screen.getByRole('button', { name: /review game/i }))
+    const white = await screen.findByLabelText(/white review summary/i)
+    expect(white).toHaveTextContent('8 inaccuracies, 2 mistakes, 3 blunders')
+    const black = screen.getByLabelText(/black review summary/i)
+    expect(black).toHaveTextContent('1 inaccuracy, 1 blunder')
+  })
+
   it('lists the moves and flags a bad move with the better alternative', async () => {
     vi.mocked(fetchReview).mockResolvedValue(REVIEW)
     render(<ReviewPanel />)

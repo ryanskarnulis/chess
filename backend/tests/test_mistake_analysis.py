@@ -13,12 +13,13 @@ import chess
 import pytest
 
 from chessapp.analysis import (
+    EVAL_CEILING_CP,
     MoveAnalysis,
     analyze_last_move,
     captured_piece,
     classify_cp_loss,
 )
-from chessapp.engine import EnginePlayer
+from chessapp.engine import CandidateMove, EnginePlayer, Evaluation
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext, build_registry
 
@@ -109,6 +110,52 @@ def test_delivering_mate_is_the_best_move(engine):
     assert analysis.played_san == "Qh4#"
     assert analysis.cp_loss == 0
     assert analysis.classification == "good"
+
+
+class ScriptedEngine:
+    """Engine double: each position's best move and White-POV score, by FEN."""
+
+    def __init__(self, by_fen):
+        self.by_fen = by_fen
+
+    def get_best_moves(self, session, n=1):
+        uci, score_cp, mate_in = self.by_fen[session.fen()]
+        san = chess.Board(session.fen()).san(chess.Move.from_uci(uci))
+        return [CandidateMove(uci, san, score_cp, mate_in)]
+
+    def evaluate_position(self, session):
+        _, score_cp, mate_in = self.by_fen[session.fen()]
+        return Evaluation(score_cp, mate_in)
+
+
+def fen_after(*sans):
+    board = chess.Board()
+    for san in sans:
+        board.push_san(san)
+    return board.fen()
+
+
+def test_playing_the_best_move_costs_nothing():
+    # #454: "Kd1, inaccuracy, best Kd1". The before and after searches can
+    # disagree about the same move; the engine's own move still loses nothing.
+    engine = ScriptedEngine(
+        {fen_after(): ("e2e4", 120, None), fen_after("e4"): ("e7e5", 20, None)}
+    )
+    analysis = analyze_last_move(engine, play(GameSession(), "e4"))
+    assert analysis.best_san == analysis.played_san == "e4"
+    assert analysis.cp_loss == 0
+    assert analysis.classification == "good"
+
+
+def test_walking_into_mate_is_a_bounded_loss():
+    # Mate scores are not centipawns: a missed mate was ~99 000 cp on the
+    # MATE_CP scale, and that number reached the planner.
+    engine = ScriptedEngine(
+        {fen_after(): ("d2d4", None, 4), fen_after("e4"): ("e7e5", None, -1)}
+    )
+    analysis = analyze_last_move(engine, play(GameSession(), "e4"))
+    assert analysis.cp_loss == 2 * EVAL_CEILING_CP
+    assert analysis.classification == "blunder"
 
 
 @requires_stockfish
