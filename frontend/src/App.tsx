@@ -51,6 +51,7 @@ function App() {
     tier,
     commentary,
     agentAvailable,
+    glitchAvailable,
     agentThinking,
     agentProgress,
     sendCommand,
@@ -290,6 +291,7 @@ function App() {
             onClose={() => setSheetOpen(false)}
             onNewGame={newGame}
             tier={tier}
+            glitchAvailable={glitchAvailable}
             onSetDifficulty={setDifficulty}
             voiceOutput={voiceOutput}
             onToggleVoice={setVoiceOutput}

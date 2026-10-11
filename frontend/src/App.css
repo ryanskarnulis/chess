@@ -1000,9 +1000,11 @@
   font-size: 0.85rem;
 }
 
-/* The brain's speed hint, under its select. Line-height pinned: the
-   inherited :root value resolves to 26px at any size. */
-.options-sheet .brain-hint {
+/* The brain's speed hint and the Glitch tier's note, under their selects.
+   Line-height pinned: the inherited :root value resolves to 26px at any
+   size. */
+.options-sheet .brain-hint,
+.options-sheet .difficulty-hint {
   margin: 0.35rem 0 0;
   font-size: 0.8rem;
   line-height: 1.3;

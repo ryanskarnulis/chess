@@ -505,3 +505,26 @@ def test_the_mcp_server_has_no_mover_with_the_agent_off(monkeypatch):
     monkeypatch.setenv("LLAMACPP_MODEL", "gemma-4-26b-a4b")
     monkeypatch.setenv("CHESSAPP_AGENT", "off")
     assert mcp_server._mover_from_env() is None
+
+
+# --- what the UI is told (#475) -------------------------------------------------
+
+
+def test_settings_say_glitch_is_available_with_a_mover():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    ctx.glitch_mover = lambda: StubMover()
+    app, _ = scripted_app(ctx, brain=ScriptedBrain())
+    assert TestClient(app).get("/api/settings").json()["glitch_available"] is True
+
+
+def test_settings_say_glitch_is_unavailable_for_a_brain_with_no_mover():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    app, _ = scripted_app(ctx, brain=ScriptedBrain())
+    body = TestClient(app).get("/api/settings").json()
+    assert body["agent_available"] is True
+    assert body["glitch_available"] is False
+
+
+def test_settings_say_glitch_is_unavailable_in_direct_mode():
+    client = TestClient(build_app(engine=FakeEngine(), agent_enabled=False))
+    assert client.get("/api/settings").json()["glitch_available"] is False

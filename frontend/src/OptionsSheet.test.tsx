@@ -9,6 +9,7 @@ function sheet(overrides: Partial<Parameters<typeof OptionsSheet>[0]> = {}) {
       onClose={vi.fn()}
       onNewGame={vi.fn()}
       tier="casual"
+      glitchAvailable={true}
       onSetDifficulty={vi.fn()}
       voiceOutput={false}
       onToggleVoice={vi.fn()}
@@ -47,11 +48,31 @@ describe('OptionsSheet', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('shows a tier it has no preset for as a blank, without breaking', () => {
-    // The server can report a tier this build does not list yet (`glitch`,
-    // #473, before its picker entry in #475): no option is made up for it.
-    render(sheet({ tier: 'glitch' }))
-    expect(screen.getByRole('combobox')).toHaveValue('')
+  it('offers the Glitch tier, and says when it is the one picked', () => {
+    const { rerender } = render(sheet({ glitchAvailable: true }))
+    expect(screen.getByRole('option', { name: 'Glitch' })).toBeEnabled()
+    expect(screen.queryByText(/picks his own moves/)).not.toBeInTheDocument()
+    rerender(sheet({ tier: 'glitch', glitchAvailable: true }))
+    expect(screen.getByRole('combobox')).toHaveValue('glitch')
+    expect(screen.getByText(/picks his own moves/)).toBeInTheDocument()
+  })
+
+  it('disables the Glitch tier with the reason when there is no brain', () => {
+    render(sheet({ glitchAvailable: false }))
+    expect(screen.getByRole('option', { name: 'Glitch (needs a brain)' })).toBeDisabled()
+  })
+
+  it('leaves the Glitch tier to the server when it has not said', () => {
+    render(sheet({ glitchAvailable: null }))
+    expect(screen.getByRole('option', { name: 'Glitch' })).toBeEnabled()
+  })
+
+  it('says the brain also plays his moves, only in the Glitch tier', () => {
+    const brain = { brain: 'gemma-4-26b-a4b', cold: false, choices: ['gemma-4-26b-a4b'] }
+    const { rerender } = render(sheet({ brain }))
+    expect(screen.queryByText(/also plays his moves/)).not.toBeInTheDocument()
+    rerender(sheet({ brain, tier: 'glitch' }))
+    expect(screen.getByText(/also plays his moves/)).toBeInTheDocument()
   })
 
   it('changes difficulty', () => {

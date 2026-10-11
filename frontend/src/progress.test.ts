@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { ProgressEvent } from './api'
 import {
   NO_PROGRESS,
+  GLITCH_CHOOSING,
   SWITCHING_BRAINS,
   applyProgress,
   coldLabel,
+  moverLabel,
   progressLabel,
   type TurnProgress,
 } from './progress'
@@ -114,6 +116,23 @@ describe('applyProgress', () => {
   it('ignores a late end from a turn that is no longer on screen', () => {
     const showing = fold(event('begin', '', 'next'), event('tool', 'make_move', 'next'))
     expect(applyProgress(showing, event('end', '', 'stale'))).toEqual(showing)
+  })
+})
+
+describe('moverLabel', () => {
+  it('says Glitch is choosing the reply in the glitch tier', () => {
+    expect(moverLabel('Stockfish is calculating', 'glitch')).toBe(GLITCH_CHOOSING)
+  })
+
+  it('leaves Stockfish’s tiers and every other line alone', () => {
+    expect(moverLabel('Stockfish is calculating', 'casual')).toBe('Stockfish is calculating')
+    expect(moverLabel('Stockfish is calculating', null)).toBe('Stockfish is calculating')
+    expect(moverLabel('Validating your move', 'glitch')).toBe('Validating your move')
+    expect(moverLabel(null, 'glitch')).toBeNull()
+  })
+
+  it('is one of Glitch’s own lines, so a cold brain says why it waits', () => {
+    expect(coldLabel(GLITCH_CHOOSING, true, true)).toBe(SWITCHING_BRAINS)
   })
 })
 
