@@ -263,6 +263,12 @@ class TurnEvidence:
     # The notes the gather step found for the turn (#451), `{"topic",
     # "text"}` each: what a line quoting them is backed by.
     gathered: Sequence[Mapping[str, str]] = ()
+    # Who chose the engine's reply in the `glitch` tier (`glitch` or
+    # `fallback`) and, on his own move, the intent he played it with (#474,
+    # `move_source.reply_attribution`); None in every other tier and on a
+    # record from before them (trace schema 7 and earlier).
+    reply_chosen_by: str | None = None
+    reply_intent: str | None = None
 
     def as_trace(self) -> dict[str, Any]:
         return {
@@ -274,6 +280,8 @@ class TurnEvidence:
             "pending_reply_fen": self.pending_reply_fen,
             "results": dict(self.results) if self.results is not None else None,
             "gathered": [dict(passage) for passage in self.gathered],
+            "reply_chosen_by": self.reply_chosen_by,
+            "reply_intent": self.reply_intent,
         }
 
     @classmethod
@@ -294,6 +302,8 @@ class TurnEvidence:
             pending_reply_fen=evidence.get("pending_reply_fen"),
             results=evidence.get("results"),
             gathered=tuple(evidence.get("gathered", ())),
+            reply_chosen_by=evidence.get("reply_chosen_by"),
+            reply_intent=evidence.get("reply_intent"),
         )
 
 

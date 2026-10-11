@@ -112,3 +112,33 @@ def test_main_reads_trace_files_and_prints_json(tmp_path, capsys):
 
     summary = json.loads(capsys.readouterr().out)
     assert summary["families"] == {"capture": {"made": 1, "backed": 0}}
+
+
+def _replied(draft: str, chosen_by: str | None) -> dict:
+    turn = _turn(draft, "2026-10-11T10:00:00")
+    turn["evidence"]["engine_reply_san"] = "exd5"
+    turn["evidence"]["reply_chosen_by"] = chosen_by
+    return turn
+
+
+def test_selection_and_the_split_by_who_chose_the_reply():
+    """#474: Glitch-tier turns are reported apart, and every fallback's words
+    are printed whole, for the hand read of whether he claimed it."""
+    records = [
+        _replied("exd5 for me.", None),
+        _replied("exd5, my plan all along.", "fallback"),
+        _replied("exd5, grabbing space.", "glitch"),
+    ]
+
+    assert speech_report.select(records, chooser="fallback") == records[1:2]
+    assert speech_report.select(records, chooser="stockfish") == records[:1]
+    text = speech_report.render(speech_report.tally(records), records)
+    assert "## By who chose the reply" in text
+    assert "| fallback | 1 |" in text
+    assert "- exd5 (brain, 2026-10-11T10:00:00): 'exd5, my plan all along.'" in text
+
+
+def test_a_report_with_no_glitch_tier_turns_has_no_split():
+    records = [_replied("exd5 for me.", None)]
+    text = speech_report.render(speech_report.tally(records), records)
+    assert "By who chose" not in text

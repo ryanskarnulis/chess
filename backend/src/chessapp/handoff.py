@@ -37,6 +37,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from chessapp.move_source import CHOOSER_FALLBACK, CHOOSER_GLITCH
+
 # What the narrator is never handed, in a state view or in a tool result: every
 # spelling of "it is your move". `turn` and `fen` name the side to move (the
 # FEN string does it in its second field), and `legal_moves` / `captures` are
@@ -110,8 +112,9 @@ class Handoff:
     """What the turn did, as the harness read it off the results.
 
     `engine_reply` is the move the engine just played for the narrator in
-    answer to the player's — `{"san", "capture", "check", "promotion"}`, or
-    None — and the narrator's to announce (#365): it speaks after the reply is
+    answer to the player's — `{"san", "capture", "check", "promotion"}`, plus
+    `chosen_by` and `intent` in the `glitch` tier (#474), or None — and the
+    narrator's to announce (#365): it speaks after the reply is
     on the board,
     and the player learns the move from what it says. `reply_owed` is whether
     the player's move is still waiting on that answer as the narrator speaks,
@@ -156,6 +159,12 @@ class Handoff:
             "engine_reply": self.engine_reply.get("san") if self.engine_reply else None,
             "candidates": list(self.candidates),
             "pieces": list(self.pieces),
+            # Who chose the reply and why, in the `glitch` tier only (#474).
+            **{
+                f"reply_{key}": self.engine_reply[key]
+                for key in ("chosen_by", "intent")
+                if self.engine_reply and key in self.engine_reply
+            },
         }
 
 
@@ -268,6 +277,45 @@ def _reply_words(reply: Mapping[str, Any]) -> str:
     if reply.get("check"):
         words.append("check")
     return ", ".join(words)
+
+
+def _whose_reply(reply: Mapping[str, Any]) -> str:
+    """Who chose the reply, in the `glitch` tier only (#474): his own move
+    comes with the intent he played it with, a final answer of the mover's
+    (`play_move`), never a thought block; a fallback is said to be
+    Stockfish's, so he never presents it as his idea. Empty in every other
+    tier, where the brief is what it always was."""
+    chosen_by = reply.get("chosen_by")
+    if chosen_by == CHOOSER_GLITCH:
+        intent = reply.get("intent")
+        return "You chose this move yourself" + (
+            f"; what you had in mind when you played it, in your words "
+            f"then: {json.dumps(intent)}. "
+            if intent
+            else ". "
+        )
+    if chosen_by == CHOOSER_FALLBACK:
+        return (
+            "You did not choose this move: your own pick never came, so "
+            "Stockfish played it for you at beginner strength. It was not "
+            "your idea and you had no plan with it. "
+        )
+    return ""
+
+
+def _closing_reply(reply: Mapping[str, Any]) -> str:
+    """The reply as the closing sentence carries it (#365), with whose it was
+    in the `glitch` tier (#474): the closing sentence is the one a 12B
+    answers, so who chose the move rides there too."""
+    san = reply["san"]
+    if reply.get("chosen_by") == CHOOSER_GLITCH:
+        return (
+            f", and tell them your move, {san}, and what you had in mind "
+            "with it, your way"
+        )
+    if reply.get("chosen_by") == CHOOSER_FALLBACK:
+        return f", and tell them the move Stockfish played for you, {san}, your way"
+    return f", and tell them your move, {san}, your way"
 
 
 def _outdated(handoff: Handoff, tool_results: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -409,7 +457,8 @@ def render(
     if handoff.engine_reply:
         record.append(
             f"Your reply, already on the board: {_reply_words(handoff.engine_reply)}. "
-            "The player learns your move only from what you say; say it "
+            + _whose_reply(handoff.engine_reply)
+            + "The player learns your move only from what you say; say it "
             "however you like."
         )
     elif handoff.reply_owed:
@@ -432,11 +481,7 @@ def render(
     # said it on 9 of 20 brain-route turns; named here, 20 of 20. A paragraph
     # of its own said it as often but sent a thinking narrator past the
     # stall ceiling on half its samples.
-    reply = (
-        f", and tell them your move, {handoff.engine_reply['san']}, your way"
-        if handoff.engine_reply
-        else ""
-    )
+    reply = _closing_reply(handoff.engine_reply) if handoff.engine_reply else ""
     parts.append(
         f"Reply to the player in character{reply}. Say only what the record "
         "above shows was done; if it shows nothing done, do not say anything "

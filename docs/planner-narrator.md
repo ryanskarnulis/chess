@@ -290,7 +290,7 @@ on this model, as they were before.
 the two), is read once as the planner hands off: `player_color`, `in_check`,
 `game_over`, the player-relative `outcome` the outcome class reads (#287),
 `captured` — and two about the engine's answer, both lifted into the handoff.
-`engine_reply` (`{san, capture, check}`) is the reply the coordinator just
+`engine_reply` (`{san, capture, check, promotion}`) is the reply the coordinator just
 played, settled through the brain's `settle_reply` seam right before the facts
 are read (#365); the brief renders it in the record as "Your reply, already
 on the board: Nf6, taking their knight, check. The player learns your move
@@ -303,7 +303,15 @@ none unbacked. A paragraph of its own said it as often but sent a thinking
 narrator past the 60 s ceiling on 9 of 20 samples (a probe of interleaved
 arms, 2026-09-27; the numbers are in `docs/agent-evals.md`). `reply_owed` is left for the reply the
 engine died on: "Your reply to the player's move never came: the engine
-failed." No `history` (the refresh block's measured reason, one phase on) and
+failed." In the `glitch` tier (#474) the reply also says who chose it
+(`move_source.reply_attribution`): his own move adds "You chose this move
+yourself; what you had in mind when you played it, in your words then: …"
+with the mover's `intent` quoted, and the closing sentence asks him to say
+the move "and what you had in mind with it"; a fallback adds "You did not
+choose this move: your own pick never came, so Stockfish played it for you at
+beginner strength. It was not your idea and you had no plan with it.", and
+the closing sentence names it as "the move Stockfish played for you". Nothing
+changes in the other tiers, whose `engine_reply` carries no such keys. No `history` (the refresh block's measured reason, one phase on) and
 no side to move. `board_version` (#320) is lifted out too, and never shown as
 a number. It dates the turn's analysis: `evaluate_position` and
 `get_best_moves` results carry `position.board_version`, and one computed on

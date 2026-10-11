@@ -167,6 +167,7 @@ from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession
 from chessapp.gather import Searcher, searcher_from
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
+from chessapp.mover import MoverChoice, MoverFailed, MoverFailureKind
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.profiles import NARRATOR, PLANNER, load_profile
 from chessapp.provider import providers_for
@@ -335,6 +336,10 @@ _FLOORS: dict[str, float] = {
     "checkmate_reaction_survives_guard": 0.8,
     # #365: Glitch says his own move. New, so at the family's starting floor.
     "consecutive_move_reactions": 0.8,
+    # #474: the narrator says whose move it was in the `glitch` tier. New, so
+    # at the family's starting floor.
+    "glitch_reply_with_intent": 0.8,
+    "fallback_reply_not_claimed": 0.8,
     "verbosity_up_from_low": 0.8,
     "position_is_described": 0.8,
     "impossible_move_is_refused_not_asked": 0.8,
@@ -3004,6 +3009,93 @@ def test_eval_consecutive_move_reactions(engine: EnginePlayer) -> None:
     )
 
     _assert_floor(result, floor)
+
+
+# The `glitch` tier's reply (#474), with the mover scripted so a sample
+# measures the narrator alone: Glitch's own Sicilian with the plan he played it
+# with, or a mover that ran out of time and Stockfish at `beginner` in its place.
+_GLITCH_INTENT = "the Sicilian: fighting for d4 from the side, no symmetry"
+
+
+class _ScriptedMover:
+    """Plays c5 with `_GLITCH_INTENT`, or fails with `failure`."""
+
+    def __init__(self, failure: MoverFailureKind | None = None) -> None:
+        self.failure = failure
+
+    def choose(self, session: GameSession) -> MoverChoice:
+        if self.failure is not None:
+            raise MoverFailed(
+                self.failure, "scripted", model=None, attempts=(), calls=()
+            )
+        board = chess.Board(session.fen())
+        move = chess.Move.from_uci("c7c5")
+        return MoverChoice(
+            uci=move.uci(),
+            san=board.san(move),
+            intent=_GLITCH_INTENT,
+            model=None,
+            attempts=(),
+            calls=(),
+        )
+
+
+def _glitch_reply_scenario(
+    engine: EnginePlayer, name: str, failure: MoverFailureKind | None
+) -> None:
+    """One fast-path "e4" in the `glitch` tier: the reply is said, every claim
+    is backed, and the brief said whose move it was (the handoff's trace)."""
+    chooser = "fallback" if failure is not None else "glitch"
+
+    def setup(app: EvalApp) -> None:
+        app.ctx.settings.tier = "glitch"
+        engine.set_tier("glitch")
+        app.ctx.glitch_mover = lambda: _ScriptedMover(failure)
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        traced = app.tracer.last
+        assert traced.get("route") == ROUTE_FAST_PATH, "left the fast path"
+        draft = traced.get("draft") or ""
+        # Fallback ownership is read by hand (`speech_report.py`, #474): the
+        # words are printed with -s, never judged by a reading.
+        print(f"\n[{name}] {draft!r}")
+        assert (traced.get("evidence") or {}).get("reply_chosen_by") == chooser, (
+            "the premise: the narrator was told whose move it was"
+        )
+        assert draft, "no reaction was produced, nothing to score"
+        _assert_speech_backed(traced)
+        reply = (traced.get("engine_reply") or {}).get("san")
+        assert score_record(traced).reply_announced is True, (
+            f"the reply {reply} went unsaid — said: {draft!r}"
+        )
+
+    floor = _FLOORS[name]
+    result = _pass_rate(
+        engine,
+        name,
+        "e4",
+        check,
+        floor=floor,
+        setup=setup,
+        route=ROUTE_FAST_PATH,
+    )
+
+    _assert_floor(result, floor)
+
+
+def test_eval_glitch_reply_with_intent(engine: EnginePlayer) -> None:
+    """Glitch's own move comes with the plan he played it with (#474): the
+    brief hands him the mover's intent, and he says the move."""
+    _glitch_reply_scenario(engine, "glitch_reply_with_intent", None)
+
+
+def test_eval_fallback_reply_not_claimed(engine: EnginePlayer) -> None:
+    """A fallback is Stockfish's (#474): live in #473, Glitch claimed one as
+    his own idea. The brief says it was not his; he still says the move. Whether
+    he passed it off as his plan is the hand read of the printed drafts."""
+    _glitch_reply_scenario(
+        engine, "fallback_reply_not_claimed", MoverFailureKind.DEADLINE
+    )
 
 
 def test_eval_verbosity_up_from_low(engine: EnginePlayer) -> None:
