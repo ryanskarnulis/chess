@@ -11,6 +11,8 @@ so all of it runs here, in CI, over the shipped app with a scripted provider.
 from __future__ import annotations
 
 import dataclasses
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -421,13 +423,20 @@ def test_every_split_holds_five_wordings_of_its_task():
 
 def test_every_knowledge_wording_names_the_note_that_answers_it():
     """`knowledge_question` grades each wording on its own note: every
-    wording has one, and the player's own words already retrieve it, so a miss
-    is the planner's query and not a question the notes cannot answer."""
+    wording has one, and the gather step finds it from the player's own words
+    (#451), on the pinned vectors. A live miss is then the service or the
+    model, not a question the notes cannot answer."""
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "knowledge_vectors.json").read_text()
+    )
+    vectors = knowledge.NoteVectors(fixture["model"], fixture["notes"])
+    index = knowledge.chess_knowledge()
     wordings = KNOWLEDGE_QUESTION.dev + KNOWLEDGE_QUESTION.heldout
     assert {v.name for v in wordings} == set(_KNOWLEDGE_ANSWERS)
     for v in wordings:
         (say,) = v.says
-        assert knowledge.lookup(say.text)[0].title == _KNOWLEDGE_ANSWERS[v.name]
+        hits = index.hybrid(say.text, fixture["queries"][say.text], vectors)
+        assert _KNOWLEDGE_ANSWERS[v.name] in [hit.note.title for hit in hits], v.name
 
 
 # --- the harder scenarios' premises (#339) ---------------------------------------

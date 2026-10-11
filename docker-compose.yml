@@ -65,6 +65,11 @@ services:
       TTS_BASE_URL: http://host.docker.internal:8410/v1
       TTS_MODEL: kokoro
       TTS_VOICE: am_fenrir(2)+am_michael(1)
+      # The gather step's semantic search (#451): the shared CPU embeddings
+      # stack, ../embeddings/ on the host. Unset, or with that stack down,
+      # notes are found by keyword alone — the game is never blocked on it.
+      # The note vectors are cached in CHESSAPP_SAVE_DIR.
+      CHESSAPP_EMBEDDINGS_URL: http://host.docker.internal:8600/v1
       # Stockfish path + host/port are baked into the image ENV; saved games
       # persist to a named volume so they survive `compose down`.
       CHESSAPP_SAVE_DIR: /data/saves

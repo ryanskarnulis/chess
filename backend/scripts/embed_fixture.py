@@ -42,6 +42,20 @@ FIXTURE = (
 DECIMALS = 4
 
 
+def frontier_asks() -> set[str]:
+    """What the frontier's knowledge scenarios say (#451): `test_frontier.py`
+    checks that the gather step finds each one's note from these words."""
+    import frontier_corpus as corpus
+
+    scenarios = (corpus.KNOWLEDGE_QUESTION,)
+    return {
+        say.text
+        for scenario in scenarios
+        for variant in scenario.dev + scenario.heldout
+        for say in variant.says
+    }
+
+
 def queries() -> list[str]:
     """Every query the hybrid tests embed, once each, sorted."""
     return sorted(
@@ -50,6 +64,7 @@ def queries() -> list[str]:
         | {q for q, _, _ in SAID_IN_OPENING}
         | set(CHATTER)
         | set(TOPICAL)
+        | frontier_asks()
     )
 
 

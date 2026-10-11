@@ -50,6 +50,7 @@ def _record(
         fen_before=fen_before,
         pending_reply_fen=pending,
         results=fields.pop("results", None),
+        gathered=tuple(fields.pop("gathered", ())),
     )
     return {
         "ts": "2026-09-26T12:00:00",
@@ -403,7 +404,7 @@ def test_unbacked_leaves_out_what_the_scorer_does_not_score():
 
 
 def test_a_record_with_no_words_to_judge_has_nothing_unbacked():
-    assert unbacked({"kind": "serving", "schema": 5}) == ()
+    assert unbacked({"kind": "serving", "schema": 6}) == ()
 
 
 # --- #320: who is better, from the player's side --------------------------------
@@ -521,6 +522,23 @@ def test_without_the_lookup_the_same_words_are_unbacked():
     )
 
     assert sorted(_counts(score)) == [("move", False), ("opening", False)]
+
+
+def test_gathered_notes_back_the_same_way_a_lookup_did():
+    """#451: the notes the gather step put in front of the narrator back a
+    line quoting them, with no lookup on the turn."""
+    session = _session("d4")
+    (passage,) = _LOOKUP[1]["passages"]
+
+    score = score_record(
+        _record(
+            "The Ruy Lopez is all about Bb5, pressuring the knight.",
+            session,
+            gathered=[passage],
+        )
+    )
+
+    assert sorted(_counts(score)) == [("move", True), ("opening", True)]
 
 
 def test_a_move_the_notes_never_named_is_still_unbacked():

@@ -850,9 +850,14 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     one (and a bigger or different tool list is itself a variable: the 2026-07-13
     trace review saw capture phrasings behave differently under two lists).
 
-    One reason a tool is withheld, and it is not a prompt rule:
+    Two reasons a tool is withheld, and neither is a prompt rule:
     `BOARD_STATE_TOOLS`, always — their answers are strict subsets of the state
     block the brain is handed every turn, so a call only burns a round trip.
+    And `lookup` (#451): the gather step searches the notes with the player's
+    own words before the planner runs and puts what it found in the planner's
+    message, so a lookup call is the same search a round trip later. It was
+    the last tool before `ask_player`, so withholding it moves no schema before
+    it. The MCP surface keeps it: a delegate has no gather step.
 
     `claim_draw` used to be the second, withheld while no draw was claimable.
     It is offered on every turn now and refuses in its handler (`retry:
@@ -873,8 +878,11 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     `/api/game/hint`) still get the full registry; a withheld tool stays
     registered and dispatchable, and refuses on its own terms when it cannot run.
     """
-    return list(BOARD_STATE_TOOLS)
+    return [*BOARD_STATE_TOOLS, LOOKUP]
 
+
+# The second brain's search tool (#374): MCP only since #451.
+LOOKUP = "lookup"
 
 # The planner's clarification tool (`build_registry`, the split registry only).
 ASK_PLAYER = "ask_player"

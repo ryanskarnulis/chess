@@ -39,6 +39,7 @@ from chessapp.coordinator import TurnCoordinator
 from chessapp.deadline import NARRATION_BUDGET_S
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
+from chessapp.gather import Searcher, searcher_from
 from chessapp.llama_brain import FROM_PROFILE, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.profiles import (
@@ -95,6 +96,7 @@ def build_app(
     phase_models: dict[str, str] | None = None,
     crutches: frozenset[str] | None = None,
     provider_for: Callable[[str], ChatProvider] | None = None,
+    searcher: Searcher | None = None,
 ) -> FastAPI:
     """Assemble the full app around one shared `ToolContext`.
 
@@ -116,6 +118,8 @@ def build_app(
     (`brain_switch.BrainSwitch`). `provider_for` makes the provider for a
     model, for tests that switch brains without a server; an injected
     `provider` alone is one model's, so that app has no switch.
+    `searcher` is the gather step's (#451, `gather.Searcher`); without one
+    the app gathers no notes, which is how the unit tests run it.
 
     `agent_enabled=False` is **direct mode**: no brain is constructed at all, so
     `/api/command` 503s and the board plays the deterministic exchange. It needs
@@ -285,6 +289,10 @@ def build_app(
             client={
                 **(settings() if settings is not None else {}),
                 "reaction_budget_s": NARRATION_BUDGET_S,
+                # The gather step's search (#451): the embeddings service it
+                # asks, or None for keywords alone. Each turn's `gather`
+                # record names the model that answered.
+                "embeddings_url": searcher.service if searcher else None,
             },
             revision=app_revision(),
             experiment=os.environ.get("CHESSAPP_EXPERIMENT", ""),
@@ -364,6 +372,7 @@ def build_app(
         progress=progress,
         serving_identity=serving_identity,
         brain_switch=brain_switch,
+        searcher=searcher if agent_enabled else None,
     )
 
 
@@ -503,10 +512,11 @@ def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
     save_dir_env = os.environ.get("CHESSAPP_SAVE_DIR")
     static_dir_env = os.environ.get("CHESSAPP_STATIC_DIR")
     phase_models = phase_models_from_env()
+    agent_enabled = _agent_enabled_from_env()
     return build_app(
         llama_base_url=os.environ.get("LLAMACPP_BASE_URL", DEFAULT_LLAMA_BASE_URL),
         model=os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL),
-        agent_enabled=_agent_enabled_from_env(),
+        agent_enabled=agent_enabled,
         engine=engine if engine is not None else _engine_from_env(),
         save_dir=Path(save_dir_env) if save_dir_env else None,
         speech=_speech_from_env(),
@@ -516,6 +526,15 @@ def build_app_from_env(engine: EnginePlayer | None = None) -> FastAPI:
         context_capture=_context_capture_from_env(),
         phase_models=phase_models,
         crutches=crutches_from_env(phase_models[PLANNER]),
+        # The gather step (#451): hybrid search against the shared embeddings
+        # service when CHESSAPP_EMBEDDINGS_URL names it, keywords alone when
+        # not. Its note vectors are cached beside the saves.
+        searcher=searcher_from(
+            os.environ.get("CHESSAPP_EMBEDDINGS_URL"),
+            Path(save_dir_env) if save_dir_env else None,
+        )
+        if agent_enabled
+        else None,
     )
 
 

@@ -147,7 +147,9 @@ _CENTIPAWN_STEPS = (10, 50, 100)
 
 
 def _widened(
-    facts: VerifiedFacts, tool_results: Iterable[Mapping[str, Any]]
+    facts: VerifiedFacts,
+    tool_results: Iterable[Mapping[str, Any]],
+    gathered: Iterable[Mapping[str, Any]] = (),
 ) -> VerifiedFacts:
     """The turn's facts, plus three things the reading gets wrong on correct
     lines, which the scorer backs (#367, #374).
@@ -166,7 +168,8 @@ def _widened(
       Sicilian is sharp" on a turn that looked them up quotes the notes, not
       the board: the moves a passage names back the move class, and the
       passage's words back an opening named from it, in a game that is in
-      another opening or none.
+      another opening or none. The notes the gather step put in front of the
+      narrator (#451, `gathered`) back the same way.
 
     Scorer-only: they were kept out of the live guard's facts while it ran,
     and the guard is retired (#368).
@@ -184,7 +187,7 @@ def _widened(
         for result in tool_results
         if result["name"] == "lookup" and result["result"].get("ok") is True
         for passage in result["result"].get("passages", ())
-    ]
+    ] + list(gathered)
     looked_up = {
         san for passage in passages for san in named_moves(passage.get("text", ""))
     }
@@ -212,7 +215,7 @@ def score_record(record: Mapping[str, Any]) -> TurnScore | None:
         return None  # not a turn, or a partial record a test fake wrote
     if record.get("evidence"):
         evidence = TurnEvidence.from_trace(record["evidence"], record["tools"])
-        facts = _widened(assemble(evidence), evidence.tool_results)
+        facts = _widened(assemble(evidence), evidence.tool_results, evidence.gathered)
         draft = record.get("draft") or ""
         reply = evidence.engine_reply_san
         return TurnScore(

@@ -256,6 +256,9 @@ class TurnEvidence:
     # The results tally the turn was shown (`ResultsLog.tally`, #373), or
     # None on a record from before it (trace schema 4 and earlier).
     results: Mapping[str, Any] | None = None
+    # The notes the gather step found for the turn (#451), `{"topic",
+    # "text"}` each: what a line quoting them is backed by.
+    gathered: Sequence[Mapping[str, str]] = ()
 
     def as_trace(self) -> dict[str, Any]:
         return {
@@ -266,6 +269,7 @@ class TurnEvidence:
             "fens_observed": list(self.fens_observed),
             "pending_reply_fen": self.pending_reply_fen,
             "results": dict(self.results) if self.results is not None else None,
+            "gathered": [dict(passage) for passage in self.gathered],
         }
 
     @classmethod
@@ -285,6 +289,7 @@ class TurnEvidence:
             fens_observed=tuple(evidence.get("fens_observed", ())),
             pending_reply_fen=evidence.get("pending_reply_fen"),
             results=evidence.get("results"),
+            gathered=tuple(evidence.get("gathered", ())),
         )
 
 

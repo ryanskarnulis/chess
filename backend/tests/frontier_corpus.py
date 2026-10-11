@@ -2458,20 +2458,24 @@ RESULTS_SO_FAR = Scenario(
 # --- the second brain (#374) -----------------------------------------------------
 
 
-def looked_up(index: int, *topics: str) -> Checkpoint:
-    """Turn `index` ran `lookup` and its best passage is one of `topics`: the
-    note that answers the ask, whatever words the planner chose for it."""
+def gathered_note(index: int, *topics: str) -> Checkpoint:
+    """Turn `index` gathered one of `topics` (#451): the note that answers the
+    ask is among those the gather step put in front of both phases. Until
+    #451 the planner had to call `lookup` and write the query, and this
+    checked that lookup's best passage; the gather step searches the player's
+    own words, and the narrator reads every note it found, so any place
+    counts."""
 
     def check(e: Episode) -> bool:
-        result = e.turn(index).result("lookup") or {}
-        passages = result.get("passages") or []
-        return bool(passages) and passages[0].get("topic") in topics
+        return any(p.get("topic") in topics for p in e.turn(index).gathered)
 
-    return Checkpoint(f"looked_up_{index}", check)
+    return Checkpoint(f"gathered_note_{index}", check)
 
 
-def no_lookup(index: int) -> Checkpoint:
-    return Checkpoint(f"no_lookup_{index}", lambda e: not e.turn(index).ran("lookup"))
+def nothing_gathered(index: int) -> Checkpoint:
+    """Turn `index` gathered no note: the ask was about this game, not the
+    notes (#451; until then, that the planner called no `lookup`)."""
+    return Checkpoint(f"nothing_gathered_{index}", lambda e: not e.turn(index).gathered)
 
 
 # The note each variant's ask is answered by, by variant name.
@@ -2494,7 +2498,9 @@ KNOWLEDGE_QUESTION = Scenario(
     why=(
         "#374: a question about chess, not about this game. The 12B knows some "
         "of the answer and makes up the rest; since #374 `lookup` answers from "
-        "the local notes. Graded on the note the lookup found, never on wording."
+        "the local notes. Graded on the note the lookup found, never on wording. "
+        "Since #451 the gather step searches the player's own words before the "
+        "planner runs, and the grade is the note it gathered."
     ),
     dev=(
         Variant(
@@ -2535,7 +2541,7 @@ KNOWLEDGE_QUESTION = Scenario(
     checkpoints=(
         Checkpoint(
             "found_the_note",
-            lambda e: looked_up(1, _KNOWLEDGE_ANSWERS.get(e.variant, "")).check(e),
+            lambda e: gathered_note(1, _KNOWLEDGE_ANSWERS.get(e.variant, "")).check(e),
         ),
         still(1),
         completed(1),
@@ -2551,7 +2557,10 @@ THIS_OPENINGS_IDEAS = Scenario(
     why=(
         '#374: knowledge about the game on the board. "This opening" names '
         "nothing in the words; the state block names it (#373), and the "
-        "planner must carry that name into the lookup."
+        "planner must carry that name into the lookup. Since #451 there is no "
+        "lookup to carry it into: the gather step adds the opening on the board "
+        "when its search finds a note about openings in general, and about half "
+        "these wordings do."
     ),
     dev=wordings(
         after(*_MORPHY),
@@ -2569,7 +2578,7 @@ THIS_OPENINGS_IDEAS = Scenario(
         white_trying_to_do="what's white trying to do in this line?",
         point_for_white="what's the point of this opening for white?",
     ),
-    checkpoints=(looked_up(1, *_RUY_LOPEZ_NOTES), still(1), completed(1)),
+    checkpoints=(gathered_note(1, *_RUY_LOPEZ_NOTES), still(1), completed(1)),
 )
 
 NOT_A_LOOKUP = Scenario(
@@ -2578,7 +2587,8 @@ NOT_A_LOOKUP = Scenario(
     why=(
         "#374's near misses: the best move here and who is winning are this "
         "game's facts, answered by the engine, not by the notes. A new tool on "
-        "the menu must not draw them away."
+        "the menu must not draw them away. Since #451, nothing may be gathered "
+        "for them either: a near-miss note in context is noise."
     ),
     dev=wordings(
         AFTER_E4_E5,
@@ -2598,7 +2608,7 @@ NOT_A_LOOKUP = Scenario(
     ),
     checkpoints=(
         Checkpoint("hinted_1", lambda e: bool(e.turn(1).ran("get_best_moves"))),
-        no_lookup(1),
+        nothing_gathered(1),
         still(1),
         completed(1),
     ),
@@ -2609,7 +2619,8 @@ KNOWLEDGE_ASIDE_THEN_MOVE = Scenario(
     tier=2,
     why=(
         "#374 in a thread: a knowledge question mid-game, then a move. The "
-        "lookup moves nothing, and the move after it lands as asked."
+        "lookup moves nothing, and the move after it lands as asked. Since "
+        "#451 the note is gathered rather than looked up."
     ),
     dev=wordings(
         AFTER_E4_E5_NF3_NC6,
@@ -2658,7 +2669,7 @@ KNOWLEDGE_ASIDE_THEN_MOVE = Scenario(
         ),
     ),
     checkpoints=(
-        looked_up(1, "Italian Game"),
+        gathered_note(1, "Italian Game"),
         still(1),
         Checkpoint("played_Bc4", lambda e: e.history(after_turn=2)[4:5] == ["Bc4"]),
         completed(2),
@@ -3160,8 +3171,8 @@ EN_PASSANT_EXPLAINED_THEN_TAKEN = Scenario(
     tier=2,
     why=(
         "A rule asked about on a board where it applies, then used: the "
-        "lookup explains it and moves nothing, and 'do it' is the en passant "
-        "capture, legal on this move only."
+        "gathered note explains it (a lookup until #451) and nothing moves, "
+        "and 'do it' is the en passant capture, legal on this move only."
     ),
     dev=wordings(
         en_passant_on,
@@ -3210,7 +3221,7 @@ EN_PASSANT_EXPLAINED_THEN_TAKEN = Scenario(
         ),
     ),
     checkpoints=(
-        looked_up(1, "En passant"),
+        gathered_note(1, "En passant"),
         still(1),
         Checkpoint(
             "took_en_passant", lambda e: e.history(after_turn=2)[4:5] == ["exd6"]

@@ -401,30 +401,6 @@
   {
    "type": "function",
    "function": {
-    "name": "lookup",
-    "description": "Look something up in the chess notes: openings and their ideas, strategy,\ntactics, endgames, the rules, and chess history. For \"what's the idea behind\nthe Sicilian?\", \"why is the bishop pair good?\", \"how does en passant work?\",\n\"who was Capablanca?\". This game's position, who is winning and the best move\nare the other tools.",
-    "parameters": {
-     "properties": {
-      "query": {
-       "description": "What to look up, in a few words, naming the opening or topic.",
-       "maxLength": 200,
-       "minLength": 1,
-       "title": "Query",
-       "type": "string"
-      }
-     },
-     "required": [
-      "query"
-     ],
-     "title": "lookupArguments",
-     "type": "object",
-     "additionalProperties": false
-    }
-   }
-  },
-  {
-   "type": "function",
-   "function": {
     "name": "ask_player",
     "description": "Ask the player to choose, when their words fit more than one\nlegal move. Nothing moves; the question goes to the player. Give\nonly the parts they said and the app asks with exactly the moves\nthat fit: \"move my king's knight\" is piece and which; \"push the e\npawn\" is piece and which; \"take the pawn\" is takes, with no piece;\n\"castle\" is castle.",
     "parameters": {

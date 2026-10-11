@@ -129,6 +129,7 @@ a setting the player owns.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -164,6 +165,7 @@ from chessapp.draw_offer import judge_draw_offer
 from chessapp.engine import DEFAULT_TIER, EnginePlayer
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession
+from chessapp.gather import Searcher, searcher_from
 from chessapp.llama_brain import _DEFAULT_MAX_ITERATIONS, create_llama_brain
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.profiles import NARRATOR, PLANNER, load_profile
@@ -222,6 +224,14 @@ STOCKFISH_PATH = os.environ.get("CHESSAPP_STOCKFISH", "/usr/bin/stockfish")
 # Which model each phase runs on (#375), resolved by the same function too: a
 # split arm (`CHESSAPP_PLANNER_MODEL=…`) is the app's own wiring at that map.
 PHASE_MODELS = phase_models_from_env()
+# The gather step's search (#451), as the deployed app runs it: hybrid against
+# the shared embeddings service. Unset or down, gather searches by keyword —
+# which is the shipped fallback, so the run still measures a real agent, but a
+# gate meant to measure the shipped one wants the service up.
+EMBEDDINGS_URL = os.environ.get("CHESSAPP_EMBEDDINGS_URL", "http://127.0.0.1:8600/v1")
+# Where the note vectors are cached between runs (the app keeps them beside
+# its saves), so a run embeds the notes once, not once per process.
+EMBEDDINGS_CACHE = Path.home() / ".cache" / "chessapp"
 PLANNER_TEMPERATURE = _planner_temperature_from_env(PHASE_MODELS[PLANNER])
 # And the planner's crutches (#375): `CHESSAPP_CRUTCHES=none` is a bake-off arm.
 CRUTCHES = crutches_from_env(PHASE_MODELS[PLANNER])
@@ -561,6 +571,17 @@ class EvalApp(NamedTuple):
     tracer: _CollectingTracer
 
 
+@functools.cache
+def _eval_searcher() -> Searcher:
+    """One searcher for the whole run, warmed before the first turn so every
+    turn gathers the way a warm deployment does. A service that can't be
+    reached leaves it on keywords, said once in the run's output."""
+    searcher = searcher_from(EMBEDDINGS_URL, EMBEDDINGS_CACHE, warm=False)
+    if not searcher.warm():
+        print(f"\n[gather] {EMBEDDINGS_URL} unreachable: keyword search only")
+    return searcher
+
+
 def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
     """A fresh app + game wired exactly like `build_app`, but returning the
     `ToolContext` so a scenario can set up a position (through the session,
@@ -664,6 +685,8 @@ def _build_eval_app(engine: EnginePlayer, seed: int | None = None) -> EvalApp:
             registry=registry,
             coordinator=coordinator,
             tracer=tracer,
+            # The gather step, exactly as build_app_from_env wires it (#451).
+            searcher=_eval_searcher(),
         )
     )
     return EvalApp(client=client, ctx=ctx, provider=provider, tracer=tracer)

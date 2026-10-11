@@ -747,11 +747,17 @@ def test_the_reply_is_shown_with_his_words_not_before(path, body):
     seen: list[tuple[list[str], list[str]]] = []
 
     class Watching(ScriptedBrain):
-        def narrate(self, board_state, changes, *, command="", earlier=None):
+        def narrate(
+            self, board_state, changes, *, command="", earlier=None, gathered=()
+        ):
             published = client.get("/api/state").json()["history"]
             seen.append((ctx.session.move_history(), published))
             return super().narrate(
-                board_state, changes, command=command, earlier=earlier
+                board_state,
+                changes,
+                command=command,
+                earlier=earlier,
+                gathered=gathered,
             )
 
     app, _ = scripted_app(ctx, brain=Watching(narrations=("e5, mirror.",)))
@@ -2255,11 +2261,13 @@ class BlockingBrain(ScriptedBrain):
         self.reached = threading.Event()
         self.release = threading.Event()
 
-    def get_agent_response(self, board_state, command, *, earlier=None):
+    def get_agent_response(self, board_state, command, *, earlier=None, gathered=()):
         if not self.reached.is_set():
             self.reached.set()
             assert self.release.wait(10), "the first turn was never released"
-        return super().get_agent_response(board_state, command, earlier=earlier)
+        return super().get_agent_response(
+            board_state, command, earlier=earlier, gathered=gathered
+        )
 
 
 class QueueingLock:

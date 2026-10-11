@@ -103,7 +103,7 @@ def test_turn_record_is_versioned_and_says_what_it_is():
     """#317: a reader keys off `schema` rather than guessing from which fields
     are present, and `kind` lets other records share the file."""
     record = _record_fields()
-    assert record["schema"] == 5
+    assert record["schema"] == 6
     assert record["kind"] == "turn"
 
 

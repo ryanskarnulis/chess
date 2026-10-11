@@ -37,8 +37,11 @@ from chessapp.brain import ModelCall
 # speech re-judgeable offline (#367). 4 drops the live honesty guard's
 # fields (`guarded`, `suppressed`, `rewrite`, …) with the guard itself (#368):
 # `draft` is what Glitch said. 5 adds `evidence.results`, the results tally
-# the turn was shown (#373). Bump it on any change a reader must branch on.
-TRACE_SCHEMA = 5
+# the turn was shown (#373). 6 adds `gather`, the notes the gather step found
+# from the player's words (`source`, `ms`, `passages`; None when the app
+# gathers none), and `evidence.gathered`, their text (#451). Bump it on any
+# change a reader must branch on.
+TRACE_SCHEMA = 6
 # What a record in the trace file is. A turn, or a `serving` manifest
 # (`serving.KIND_SERVING`), written at startup and whenever what serves the app
 # changes; the kind is on every record so a reader never mistakes one for the
@@ -111,6 +114,7 @@ def turn_record(
     outcome: dict[str, Any] | None = None,
     draft: str = "",
     evidence: dict[str, Any] | None = None,
+    gather: dict[str, Any] | None = None,
     provider_failure: str = "",
     engine_failure: str = "",
     reaction_late: bool = False,
@@ -338,6 +342,8 @@ def turn_record(
         "changed": changed,
         "draft": draft,
         "evidence": evidence,
+        # The gather step's notes (#451): None when the app gathers none.
+        "gather": gather,
         "game_id": game_id,
         "interaction_id": interaction_id,
         "turn_id": turn_id,

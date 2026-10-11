@@ -3,7 +3,7 @@ the brief it renders. Pure functions over result dicts — no brain, no app."""
 
 import pytest
 
-from chessapp import api
+from chessapp import api, handoff
 from chessapp.coordinator import TurnCoordinator
 from chessapp.game import GameSession
 from chessapp.handoff import (
@@ -388,3 +388,20 @@ def test_the_live_narrator_facts_date_a_pre_reply_evaluation():
         facts=facts,
     )
     assert "your reply e5 came after it" in render(handoff, "e4, how am I?", results)
+
+
+def test_gathered_notes_leave_a_reply_a_reply():
+    """#451: notes are context, not results; a turn that only gathered some
+    called no tool and did nothing."""
+    passage = {"topic": "En passant", "text": "A pawn on its fifth rank..."}
+    built = handoff.build([], gathered=[passage])
+    assert built.kind == "reply"
+    assert built.gathered == (passage,)
+    brief = handoff.render(built, "how does en passant work", [])
+    assert f"{handoff.NARRATOR_NOTES_LABEL}:\n- En passant: A pawn" in brief
+    assert brief.index("No tool was called") < brief.index("Notes gathered")
+
+
+def test_no_notes_no_section_in_the_brief():
+    brief = handoff.render(handoff.build([]), "hi", [])
+    assert "Notes gathered" not in brief

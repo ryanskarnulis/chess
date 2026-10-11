@@ -355,7 +355,8 @@ PLANNER_OFFER_ORDER = [
     "set_difficulty",
     "set_verbosity",
     "set_voice_output",
-    "lookup",
+    # `lookup` stood here until #451: the gather step searches the notes
+    # before the planner runs, and the tool is the MCP surface's alone.
     "ask_player",
 ]
 
