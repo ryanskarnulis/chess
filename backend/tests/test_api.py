@@ -881,9 +881,33 @@ def test_the_narrator_facts_carry_the_reply_the_coordinator_settled():
 
     reply = narrator_facts(ctx, coordinator)["engine_reply"]
     assert settled is not None and settled.reply is not None
-    assert reply == {"san": settled.reply.san, "capture": None, "check": False}
+    assert reply == {
+        "san": settled.reply.san,
+        "capture": None,
+        "check": False,
+        "promotion": None,
+    }
     coordinator.take_settlement()
     assert narrator_facts(ctx, coordinator)["engine_reply"] is None
+
+
+@pytest.mark.parametrize(
+    ("reply_uci", "promotion", "check"),
+    [("a2a1q", "queen", True), ("a2a1n", "knight", False)],
+)
+def test_the_narrator_facts_name_the_replys_promotion(reply_uci, promotion, check):
+    """#456: Glitch's own promotion is his to announce, so the facts say which
+    piece it was — an underpromotion the same as a queen."""
+    session = GameSession("4k3/8/8/8/8/8/p7/4K2R w - - 0 1")
+    ctx = ToolContext(session=session, engine=FakeEngine(reply_uci))
+    coordinator = TurnCoordinator(ctx)
+
+    coordinator.apply_player_move("Rh2")
+    coordinator.settle_owed_reply()
+
+    reply = narrator_facts(ctx, coordinator)["engine_reply"]
+    assert reply["promotion"] == promotion
+    assert reply["check"] is check
 
 
 def test_the_narrator_facts_name_the_winner_from_the_players_side():

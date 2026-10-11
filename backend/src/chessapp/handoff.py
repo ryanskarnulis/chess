@@ -110,8 +110,9 @@ class Handoff:
     """What the turn did, as the harness read it off the results.
 
     `engine_reply` is the move the engine just played for the narrator in
-    answer to the player's — `{"san", "capture", "check"}`, or None — and the
-    narrator's to announce (#365): it speaks after the reply is on the board,
+    answer to the player's — `{"san", "capture", "check", "promotion"}`, or
+    None — and the narrator's to announce (#365): it speaks after the reply is
+    on the board,
     and the player learns the move from what it says. `reply_owed` is whether
     the player's move is still waiting on that answer as the narrator speaks,
     which since #365 means the engine died on it. `facts` is the fresh,
@@ -262,6 +263,8 @@ def _reply_words(reply: Mapping[str, Any]) -> str:
     words = [str(reply.get("san"))]
     if reply.get("capture"):
         words.append(f"taking their {reply['capture']}")
+    if reply.get("promotion"):
+        words.append(f"promoting to a {reply['promotion']}")
     if reply.get("check"):
         words.append("check")
     return ", ".join(words)

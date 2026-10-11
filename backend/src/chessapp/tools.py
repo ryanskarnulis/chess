@@ -1349,9 +1349,23 @@ def _piece_word(symbol: str) -> str:
         return "piece"
 
 
+def promotion_word(result: MoveResult) -> str | None:
+    """The word for the piece `result` promoted to ("rook"), or None.
+
+    Read off the move's UCI, which python-chess wrote at move time, so it is
+    board truth like `capture`. SAN says it too ("=R"), but a 12B narrating
+    from the summary fills a promotion it is not told about with the default:
+    live, Glitch called the player's cxb8=R+ a queen (#456).
+    """
+    if not result.uci:
+        return None
+    piece = chess.Move.from_uci(result.uci).promotion
+    return chess.piece_name(piece) if piece else None
+
+
 def _move_summary(result: MoveResult, mover: str) -> str:
     """One English sentence saying who moved, what they played, whose piece it
-    took and whether it checks.
+    took, what it promoted to and whether it checks.
 
     Composed by code from `MoveResult`, because attribution is deterministic
     state and a 12B asked to derive it from move-history parity gets it wrong:
@@ -1367,11 +1381,16 @@ def _move_summary(result: MoveResult, mover: str) -> str:
     clauses = []
     if result.capture:
         clauses.append(f"capturing {owner} {_piece_word(result.capture)}")
+    promotion = promotion_word(result)
+    if promotion:
+        clauses.append(f"promoting to a {promotion}")
     if result.check:
         clauses.append(f"putting {target} in check")
     if not clauses:
         return f"{opening} {result.san}."
-    return f"{opening} {result.san}, {' and '.join(clauses)}."
+    said = ", ".join(clauses[:-1])
+    said = f"{said} and {clauses[-1]}" if said else clauses[-1]
+    return f"{opening} {result.san}, {said}."
 
 
 # How a *position* summary addresses each side: the subject, and the two verbs
@@ -2180,10 +2199,12 @@ def build_registry(
             "san": result.san,
             "uci": result.uci,
             # What the move did, for whoever narrates it: the piece it took (a
-            # symbol, or null) and whether it left the opponent in check. Board
-            # truth, derived by the session at move time.
+            # symbol, or null), whether it left the opponent in check and the
+            # piece a pawn promoted to (a word, or null — #456). Board truth,
+            # derived at move time.
             "capture": result.capture,
             "check": result.check,
+            "promotion": promotion_word(result),
             # Whose move this was. Constant on this payload — `make_move` submits
             # the *player's* move and nothing else, with the engine's answer
             # reported separately under `engine_move` — but stated as data rather
