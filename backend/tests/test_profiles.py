@@ -139,6 +139,14 @@ def test_a_phase_left_out_keeps_the_default_caps():
         '[phases.mover]\ndeadline_s = "soon"\n',
         "[phases.mover]\ndeadline_s = true\n",
         '[phases.mover]\nthinking = "yes"\n',
+        # And only the mover's thinking budget, a whole number below its cap
+        # (#476): a budget the cap reaches first is no budget.
+        "[phases.planner]\nthinking_budget = 512\n",
+        "[phases.mover]\nthinking_budget = 0\n",
+        "[phases.mover]\nthinking_budget = 4096\n",
+        "[phases.mover]\nmax_tokens = 512\nthinking_budget = 1024\n",
+        "[phases.mover]\nthinking_budget = 1.5\n",
+        "[phases.mover]\nthinking_budget = true\n",
         "extra = 1\n",
         "not toml = = 1\n",
     ],
@@ -266,3 +274,21 @@ def test_every_shipped_profile_names_a_llama_swap_model():
     # names no entry would never be loaded.
     served = set(re.findall(r'^ {2}"([^"]+)":', _LLAMA_SWAP.read_text(), re.M))
     assert set(_SHIPPED) <= served
+
+
+def test_a_mover_thinking_budget_is_kept_and_described():
+    assert DEFAULT_PROFILE.phase(MOVER).thinking_budget is None
+    profile = parse_profile(
+        "p", "[phases.mover]\nmax_tokens = 4096\nthinking_budget = 1024\n", "test"
+    )
+    assert profile.phase(MOVER).thinking_budget == 1024
+    assert profile.describe()["phases"]["mover"]["thinking_budget"] == 1024
+    assert "thinking_budget" not in profile.describe()["phases"]["planner"]
+
+
+@pytest.mark.parametrize("model", ["gemma-4-26b-a4b", "qwen38-27b"])
+def test_the_big_brains_bound_the_movers_thinking(model):
+    # #476: past the cap a think ends with no move; the budget ends it first.
+    settings = load_profile(model).phase(MOVER)
+    assert settings.thinking_budget is not None
+    assert settings.thinking_budget < settings.max_tokens

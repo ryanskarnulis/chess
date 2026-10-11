@@ -314,6 +314,7 @@ class ChatProvider(Protocol):
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        thinking_budget: int | None = None,
     ) -> ChatResult: ...
 
 
@@ -400,6 +401,7 @@ class LlamaCppProvider:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        thinking_budget: int | None = None,
         cache_prompt: bool | None = None,
         seed: int | None = None,
     ) -> ChatResult:
@@ -424,6 +426,7 @@ class LlamaCppProvider:
             enable_thinking=enable_thinking,
             max_tokens=max_tokens,
             temperature=temperature,
+            thinking_budget=thinking_budget,
             cache_prompt=cache_prompt,
             seed=self.seed if seed is None else seed,
         )
@@ -437,6 +440,7 @@ class LlamaCppProvider:
         enable_thinking: bool,
         max_tokens: int | None,
         temperature: float | None,
+        thinking_budget: int | None = None,
         cache_prompt: bool | None = None,
         seed: int | None = None,
     ) -> dict[str, Any]:
@@ -459,6 +463,10 @@ class LlamaCppProvider:
             }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if thinking_budget is not None and enable_thinking:
+            # llama-server's own field: past this many thinking tokens it
+            # closes the thought and the model answers. Omitted means unbounded.
+            payload["thinking_budget_tokens"] = thinking_budget
         if cache_prompt is not None:
             # llama-server's own field (not OpenAI's); omitted means its default.
             payload["cache_prompt"] = cache_prompt
@@ -699,6 +707,7 @@ class PhasedProvider:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        thinking_budget: int | None = None,
     ) -> ChatResult:
         return self.provider_for(current_phase()).chat(
             messages,
@@ -707,6 +716,7 @@ class PhasedProvider:
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=timeout,
+            thinking_budget=thinking_budget,
         )
 
 

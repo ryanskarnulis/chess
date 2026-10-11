@@ -73,10 +73,14 @@ max_tokens = 16
 # a deadline for the whole run, retries included. The live close-out game
 # (#476, 2026-10-11) measured the mover decoding at 40-50 tok/s, not the ~60
 # first assumed, so a full 4096-token think takes ~85-100 s: at the first
-# 90 s deadline 5 of 27 moves timed out to the fallback. 120 s lets the cap,
-# not the clock, end a long think. The strength script (#476) measures the
-# rest.
+# 90 s deadline 5 of 27 moves timed out to the fallback. At 120 s the
+# strength script then found 29 of 99 thinks running past the 4096 cap with no
+# move (`truncated`, a fallback too). `thinking_budget` ends the thought
+# instead: past 1024 thinking tokens the server closes it and the model must
+# call play_move, ~25 s a move on a midgame probe (512: ~14 s, 2048: ~45 s,
+# off: ~2 s).
 [phases.mover]
 max_tokens = 4096
 thinking = true
+thinking_budget = 1024
 deadline_s = 120

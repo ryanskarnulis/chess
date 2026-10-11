@@ -69,6 +69,18 @@ def _mover(provider, profile=DEFAULT_PROFILE, clock=None) -> Mover:
 # --- the move --------------------------------------------------------------
 
 
+def test_the_profiles_thinking_budget_reaches_every_call():
+    profile = parse_profile(
+        "p", "[phases.mover]\nmax_tokens = 4096\nthinking_budget = 1024\n", "test"
+    )
+    provider = ScriptedProvider(_play("Ke2"), _play("e5"))
+    _mover(provider, profile).choose(_after_e4())
+    assert [call["thinking_budget"] for call in provider.calls] == [1024, 1024]
+    provider = ScriptedProvider(_play("e5"))
+    _mover(provider).choose(_after_e4())
+    assert provider.calls[0]["thinking_budget"] is None
+
+
 def test_a_legal_move_comes_back_with_its_intent_and_the_session_is_untouched():
     session = _after_e4()
     fen = session.fen()
