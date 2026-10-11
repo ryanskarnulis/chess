@@ -70,8 +70,16 @@ settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
   background collect (over a replayed copy that carries the game's moves), its
   synchronous fallback, `settle_engine_turn`, and so `play_exchange`. A source
   only chooses; the coordinator submits through the session's legality gate.
-  Stockfish (`EnginePlayer`) is the only source until the Glitch tier puts its
-  mover behind the same seam (`docs/glitch-difficulty.md`, decision 1).
+  `EngineSource` (Stockfish) in every tier but `glitch`, where `GlitchSource`
+  asks the mover and plays Stockfish at `beginner` when it fails
+  (`move_source.py`, `docs/glitch-difficulty.md`). Only a source with
+  `background = True` (Stockfish) is computed while the turn goes on; the mover
+  is asked synchronously at collect, so it never competes with the planner
+  for the llama-server. Each reply's `SourcedMove` says who chose it:
+  `sourced_for(reply)` for a result's `chosen_by`, `take_mover_record` for the
+  turn record of the turn that played it (matched by game and position, so a
+  reply on an untraced route is never pinned on the next turn), and a
+  fallback is noted on the move itself, for the PGN.
 - **A restored engine-to-move board is settled by the coordinator, and Glitch
   says the move.** The restoring tools report it under `engine_move` — the
   shape `make_move`'s atomic result already uses — and the narrator reads it

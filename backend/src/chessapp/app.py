@@ -37,10 +37,11 @@ from chessapp.brain_switch import BrainSwitch, BuiltBrain
 from chessapp.context_capture import ContextCapture, JsonlContextCapture
 from chessapp.coordinator import TurnCoordinator
 from chessapp.deadline import NARRATION_BUDGET_S
-from chessapp.engine import EnginePlayer
+from chessapp.engine import DEFAULT_TIER, MOVER_TIERS, EnginePlayer
 from chessapp.game import GameSession
 from chessapp.gather import Searcher, searcher_from
 from chessapp.llama_brain import FROM_PROFILE, create_llama_brain
+from chessapp.mover import Mover
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.profiles import (
     ANSWER,
@@ -278,8 +279,9 @@ def build_app(
         # back a brain with nothing to say about what serves it.
         identity = getattr(built, "serving_identity", None)
         settings = getattr(built, "client_settings", None)
+        mover = _mover_for(built)
         if identity is None:
-            return BuiltBrain(brain_model, built, brain_crutches)
+            return BuiltBrain(brain_model, built, brain_crutches, mover=mover)
         # The configuration this brain serves under (#317): the app's own
         # settings as fact, the server's as learned. Written to the trace when
         # the brain starts serving and whenever it changes, and named on every
@@ -322,6 +324,7 @@ def build_app(
             brain_crutches,
             serving_identity=brain_identity,
             on_installed=manifest.announce,
+            mover=mover,
         )
 
     def build_for(chosen: str) -> BuiltBrain:
@@ -352,6 +355,7 @@ def build_app(
         brain_switch = BrainSwitch(ctx, first, build=build_for, default=model)
         brain = brain_switch
         serving_identity = brain_switch.serving_identity
+        ctx.glitch_mover = brain_switch.mover
     elif brain is None and agent_enabled:
         # A fixed injected provider is one model's: no switch to offer.
         fixed = build_brain(
@@ -361,6 +365,19 @@ def build_app(
             fixed.on_installed()
         brain = fixed.brain
         serving_identity = fixed.serving_identity
+        ctx.glitch_mover = lambda: fixed.mover
+    if ctx.settings.tier in MOVER_TIERS and not ctx.mover_available():
+        # A `glitch` tier saved by a run that had a brain, restored by one that
+        # has none (`CHESSAPP_AGENT=off`): Glitch cannot pick his moves, and a
+        # silent `beginner` would be a different opponent under his name.
+        logger.warning(
+            "glitch_tier_unavailable tier=%s reset_to=%s",
+            ctx.settings.tier,
+            DEFAULT_TIER,
+        )
+        ctx.settings.tier = DEFAULT_TIER
+        if engine is not None:
+            engine.set_tier(DEFAULT_TIER)
 
     return create_app(
         ctx,
@@ -375,6 +392,16 @@ def build_app(
         brain_switch=brain_switch,
         searcher=searcher if agent_enabled else None,
     )
+
+
+def _mover_for(brain: object) -> Mover | None:
+    """Glitch's move picker on a built brain's provider and mover profile
+    (#473), or None for a brain that has neither (a test double)."""
+    provider = getattr(brain, "provider", None)
+    profile = getattr(brain, "phase_profiles", {}).get(MOVER)
+    if provider is None or profile is None:
+        return None
+    return Mover(provider, profile)
 
 
 def _engine_from_env() -> EnginePlayer | None:

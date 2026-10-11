@@ -1,11 +1,12 @@
 # The Glitch difficulty tier
 
 Design note for #336 (roadmap #366, step 19). **Status: agreed 2026-10-10,
-being built.** Done so far: the move-source seam (#471) and the mover phase
-itself, `mover.py` with `play_move` (#472), not yet offered to the player.
-Once the code lands this note describes the running code,
-and it amends BRIEF.md's "Stockfish is a calculation tool … difficulty" line
-in that same PR.
+being built.** Done so far: the move-source seam (#471), the mover phase
+itself, `mover.py` with `play_move` (#472), and the tier with its fallback
+(#473: `engine.DIFFICULTY_TIERS["glitch"]`, `move_source.GlitchSource`; BRIEF.md
+amended). Still to come: the narrator told the intent and the fallback
+(#474), the picker entry and "Glitch is thinking" (#475), and the strength
+script (#476). Where the code has landed this note describes it.
 
 ## What it is
 
@@ -80,6 +81,24 @@ his choice, so he never claims it as his idea.
 With the LLM off (`CHESSAPP_AGENT=off`) the tier cannot be chosen. Every
 other tier still plays a full game.
 
+As built (#473): the `glitch` profile is `beginner`'s with `mover=True`, so
+setting the tier configures Stockfish as `beginner` and the fallback is just
+the engine's move. `GlitchSource` asks the mover, and on `MoverFailed` plays
+that move with `chooser="fallback"`. The marks:
+
+- the move's PGN comment ("Glitch's mover failed (deadline); Stockfish
+  played this move at beginner"), kept in the save (`GameSession` notes);
+- the turn record's `mover` (`"fallback": true`, `outcome` the failure kind),
+  with the mover's calls in `calls`;
+- `chosen_by: "fallback"` and `fallback_reason` on the reply's result
+  (`engine_move`), on every route; `chosen_by: "glitch"` on his own moves, and
+  no key in the Stockfish tiers.
+
+`set_difficulty` and `/api/game/difficulty` refuse `glitch` with no mover and
+say why; a saved `glitch` setting falls back to the default tier at a start
+with no brain. The tier is off the easier/harder ladder
+(`engine.STEPPED_TIERS`), and the PGN names the opponent `Glitch (own moves)`.
+
 ### 5. The mover runs on the brain's model
 
 The mover uses the model the brain picker (#435) chose, with that model's
@@ -108,7 +127,11 @@ on the 26B. A dragged move, instant today, waits on it too, so the board needs
 a "Glitch is thinking" state.
 
 The mover gets its own deadline and token cap in the profile; passing either
-is a fallback (decision 4). Its prompt is append-only per game (fixed
+is a fallback (decision 4). It is never asked in the background, the way
+Stockfish starts thinking the moment the player's move lands: that call would
+compete with the planner and the narrator for the one server, and a position
+change mid-turn would throw away a 10–60 s answer. The coordinator asks it
+when the reply is collected (`MoveSource.background`). Its prompt is append-only per game (fixed
 instructions, then the growing move list) so it keeps as much prefix reuse as
 the shared cache allows (#362). Slower turns are acceptable if a live game
 feels good; that is what the live check judges.

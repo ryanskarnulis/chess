@@ -293,7 +293,7 @@
    "type": "function",
    "function": {
     "name": "set_difficulty",
-    "description": "Set how hard the engine plays: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength), skill_level (0-20), elo (1320-3190), or step (one named level up or down from the current one). Prefer tier unless the player names a number or asks for a step. This is the only thing that changes how hard the engine plays \u2014 there is no softer or sharper style to switch to. The setting persists and the player owns it: if they ask for an easier game but rule out changing the difficulty, there is nothing left to change \u2014 say so and ask, do not call this.",
+    "description": "Set how hard the engine plays: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength, glitch = Glitch picks his own moves, no engine), skill_level (0-20), elo (1320-3190), or step (one named level up or down from the current one). Prefer tier unless the player names a number or asks for a step. This is the only thing that changes how hard the engine plays \u2014 there is no softer or sharper style to switch to. The setting persists and the player owns it: if they ask for an easier game but rule out changing the difficulty, there is nothing left to change \u2014 say so and ask, do not call this.",
     "parameters": {
      "type": "object",
      "properties": {
@@ -304,7 +304,8 @@
         "casual",
         "intermediate",
         "advanced",
-        "maximum"
+        "maximum",
+        "glitch"
        ]
       },
       "skill_level": {
@@ -815,7 +816,7 @@
    "type": "function",
    "function": {
     "name": "set_difficulty",
-    "description": "Set how hard the engine plays: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength), skill_level (0-20), elo (1320-3190), or step (one named level up or down from the current one). Prefer tier unless the player names a number or asks for a step. This is the only thing that changes how hard the engine plays \u2014 there is no softer or sharper style to switch to. The setting persists and the player owns it: if they ask for an easier game but rule out changing the difficulty, there is nothing left to change \u2014 say so and ask, do not call this.",
+    "description": "Set how hard the engine plays: pass exactly one of tier (named level: beginner ~500, casual ~1000, intermediate ~1500, advanced ~2000, maximum = full strength, glitch = Glitch picks his own moves, no engine), skill_level (0-20), elo (1320-3190), or step (one named level up or down from the current one). Prefer tier unless the player names a number or asks for a step. This is the only thing that changes how hard the engine plays \u2014 there is no softer or sharper style to switch to. The setting persists and the player owns it: if they ask for an easier game but rule out changing the difficulty, there is nothing left to change \u2014 say so and ask, do not call this.",
     "parameters": {
      "type": "object",
      "properties": {
@@ -826,7 +827,8 @@
         "casual",
         "intermediate",
         "advanced",
-        "maximum"
+        "maximum",
+        "glitch"
        ]
       },
       "skill_level": {

@@ -47,6 +47,13 @@ describe('OptionsSheet', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
+  it('shows a tier it has no preset for as a blank, without breaking', () => {
+    // The server can report a tier this build does not list yet (`glitch`,
+    // #473, before its picker entry in #475): no option is made up for it.
+    render(sheet({ tier: 'glitch' }))
+    expect(screen.getByRole('combobox')).toHaveValue('')
+  })
+
   it('changes difficulty', () => {
     const onSetDifficulty = vi.fn()
     render(sheet({ onSetDifficulty }))

@@ -349,7 +349,9 @@ def turn_record(
         "gather": gather,
         # Glitch's own move choice (#472, `mover.MoverChoice.as_trace` or
         # `MoverFailed.as_trace`): what he played and meant, or why he played
-        # nothing, with every attempt. None outside the `glitch` tier.
+        # nothing, with every attempt. A fallback adds `"fallback": true`
+        # (#473): Stockfish at `beginner` played instead, and `engine_reply`
+        # is its move. None outside the `glitch` tier.
         "mover": mover,
         "game_id": game_id,
         "interaction_id": interaction_id,

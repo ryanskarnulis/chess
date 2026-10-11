@@ -154,6 +154,23 @@ _GAME_ID = re.compile(r"[0-9a-f]{32}")
 _DIFFICULTY_FIELDS = {"tier": str, "skill_level": int, "elo": int}
 
 
+def _validate_notes(value: Any, plies: int) -> dict[int, str]:
+    """The move notes off a save file: `{ply index: text}`, each index a move
+    the save holds. Absent (a save from before notes) is none."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"invalid notes: {value!r}")
+    notes: dict[int, str] = {}
+    for key, text in value.items():
+        if not (isinstance(key, str) and key.isdigit() and isinstance(text, str)):
+            raise ValueError(f"invalid note {key!r}: {text!r}")
+        if int(key) >= plies:
+            raise ValueError(f"note {key} is on a move the save does not hold")
+        notes[int(key)] = text
+    return notes
+
+
 def _validate_difficulty(value: Any) -> dict[str, Any] | None:
     """The difficulty off a save file, or None for a game the engine has not
     moved in or a save written before games recorded one. Checked like
@@ -192,6 +209,11 @@ class GameSession:
         self._revision = 0
         self._game_id = _new_game_id()
         self._difficulty: dict[str, Any] | None = None
+        # Notes on single moves, by ply index (0 = the first move in this
+        # session), written as that move's comment in the PGN. Session state:
+        # a board holds moves, never why one was played (#473: a fallback
+        # move Glitch did not choose).
+        self._notes: dict[int, str] = {}
 
     @property
     def started(self) -> str | None:
@@ -262,6 +284,18 @@ class GameSession:
         root_turn = _COLOR_NAMES[self._board.root().turn]
         return plies == 1 and root_turn != self._player_color
 
+    def note_last_move(self, text: str) -> None:
+        """Attach `text` to the last move played, as its PGN comment. Not a
+        revision: no board truth changes. Taken back with the move."""
+        if not self._board.move_stack:
+            raise ValueError("no move to note")
+        self._notes[len(self._board.move_stack) - 1] = text
+
+    @property
+    def move_notes(self) -> dict[int, str]:
+        """The notes on moves still on the board, by ply index."""
+        return dict(self._notes)
+
     def renew_game_id(self) -> None:
         """Make this a new game as far as identity goes, board untouched.
 
@@ -331,6 +365,7 @@ class GameSession:
             self._player_color = player_color
         self._game_id = _new_game_id()
         self._difficulty = None
+        self._notes = {}
         self._revision += 1
 
     def resign(self, color: str | None = None) -> Outcome:
@@ -461,6 +496,10 @@ class GameSession:
         placeholders, which is what an offline export and the older tests get.
         """
         game = chess.pgn.Game.from_board(self._board)
+        if self._notes:
+            for ply, node in enumerate(game.mainline()):
+                if ply in self._notes:
+                    node.comment = self._notes[ply]
         for tag, value in (headers or {}).items():
             game.headers[tag] = value
         outcome = self.outcome()
@@ -488,6 +527,8 @@ class GameSession:
             "started": self._started,
             "game_id": self._game_id,
             "difficulty": self._difficulty,
+            # JSON keys are strings; ply indexes read back as ints.
+            "notes": {str(ply): text for ply, text in sorted(self._notes.items())},
         }
 
     @classmethod
@@ -526,6 +567,7 @@ class GameSession:
         _validate_player_color(player_color)
         started = _validate_started(data.get("started"))
         difficulty = _validate_difficulty(data.get("difficulty"))
+        notes = _validate_notes(data.get("notes"), len(moves))
         game_id = data.get("game_id")
         if game_id is not None and not (
             isinstance(game_id, str) and _GAME_ID.fullmatch(game_id)
@@ -563,6 +605,7 @@ class GameSession:
         # is reopened. A save from before games recorded it has none, and the
         # engine's next move records the strength it plays at.
         session._difficulty = difficulty
+        session._notes = notes
         return session
 
     def save(self, path: str | Path) -> None:
@@ -599,6 +642,8 @@ class GameSession:
         undone = tuple(reversed(self.move_history()[-plies:]))
         for _ in range(plies):
             self._board.pop()
+        left = len(self._board.move_stack)
+        self._notes = {ply: text for ply, text in self._notes.items() if ply < left}
         # Every engine move taken back: what is left was not played at any
         # strength, and the engine's next move records the one it plays at.
         if not self._engine_has_moved():

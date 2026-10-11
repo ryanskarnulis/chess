@@ -27,6 +27,7 @@ from typing import Any
 
 from chessapp.brain import AgentResponse, Answer, Brain, Narration
 from chessapp.conversation import Recall
+from chessapp.mover import Mover
 from chessapp.tools import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,10 @@ class BuiltBrain:
     serving_identity: Callable[[], dict[str, str]] | None = None
     # Told once the brain is the one serving (the manifest's announcement).
     on_installed: Callable[[], None] | None = None
+    # Glitch's own move picker on this brain's model (#473): the `glitch` tier
+    # plays on whichever brain the picker chose (docs/glitch-difficulty.md,
+    # decision 5). None for a brain with nothing to pick with (a test double).
+    mover: Mover | None = None
 
 
 class BrainSwitch:
@@ -73,6 +78,10 @@ class BrainSwitch:
     def current(self) -> BuiltBrain:
         with self._lock:
             return self._current
+
+    def mover(self) -> Mover | None:
+        """The serving brain's mover: what `ToolContext.glitch_mover` asks."""
+        return self.current.mover
 
     def at_boundary(self) -> bool:
         """Install the chosen brain if it is not the one serving; True if it
