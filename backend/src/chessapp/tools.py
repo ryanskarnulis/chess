@@ -1599,6 +1599,11 @@ def _analysis_position(ctx: ToolContext) -> dict[str, Any]:
 VERDICT_LEVEL_CP = 50
 
 
+def _reviewed_by(color: str, player_color: str) -> str:
+    """Whose a reviewed side is, in `player_view`'s words (#455)."""
+    return "player" if color == player_color else "glitch"
+
+
 def _verdict_summary(advantage: int | None, mate: dict[str, Any] | None) -> str:
     """The engine's verdict as one sentence, always about "the player" (#320),
     ahead or behind, the side `player_advantage_cp` is scored from.
@@ -2134,17 +2139,34 @@ def build_registry(
         with the better alternative. For "how did I play?", "review the game", "where
         did I go wrong?"."""
         review = _review_game(_require_engine(ctx), ctx.session)
+        # Whose moves they are, said by person (#455): "my worst move" and
+        # "your best move" are asked by person, and a 12B handed sides keyed
+        # "white"/"black" answered "what was my worst move?" with Glitch's own
+        # blunder and credited Black's good moves to a player on White. The
+        # same fix #441 made to the verdict summary, in `player_view`'s words
+        # ("player" / "glitch"). A critical move keeps its `color` beside
+        # `by`, because "8... Na6" is spelled by color and `before_move`
+        # counts by it.
+        player_color = ctx.session.player_color
+
+        def by_person(per_color: dict[str, Any]) -> dict[str, Any]:
+            return {
+                _reviewed_by(color, player_color): per_color[color]
+                for color in sorted(per_color, key=lambda c: c != player_color)
+            }
+
         # A summary and the moves worth talking about, never the per-ply table
         # (#288): that is one line per move into the planner's context, and the
         # UI reads it whole from `/api/game/review`.
         return {
             "ok": True,
             "plies": len(review.moves),
-            "accuracy": review.accuracy,
-            "counts": review.counts,
+            "accuracy": by_person(review.accuracy),
+            "counts": by_person(review.counts),
             "critical": [
                 {
                     "move_number": m.move_number,
+                    "by": _reviewed_by(m.color, player_color),
                     "color": m.color,
                     "san": m.san,
                     "classification": m.classification,

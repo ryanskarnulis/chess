@@ -321,7 +321,13 @@ Glitch told the player White was winning. With the summary, 5 of 5 were right
 (`judgment_as_black`, 2026-09-28). The summary used to say "has you ahead"
 for Glitch's lead, in `describe_position`'s voice. gemma-4-26b-a4b read that
 "you" as the player 6 of 6 times, because the narrator says "you" to the
-player in every reply, so it says "behind" now (#441).
+player in every reply, so it says "behind" now (#441). `review_game` names
+sides the same way (#455): `accuracy` and `counts` are keyed `player` and
+`glitch`, the player's first, and each `critical` move carries `by`
+(`player`/`glitch`) beside its `color`, which stays for the "8... Na6"
+spelling and `before_move`'s count. Keyed `white`/`black` only, Glitch
+answered "what was my worst move?" with his own blunder and credited Black's
+good moves to a player on White.
 
 **One projection.** `narrator_result_view` drops `fen`, `turn`, `legal_moves`
 and `captures` from every result a narrator reads, on both briefs — `undo`,

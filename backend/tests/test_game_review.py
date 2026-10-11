@@ -253,11 +253,12 @@ def test_tool_reviews_the_game(engine):
     result = registry.dispatch("review_game", {})
     assert result["ok"] is True
     assert result["plies"] == len(SCHOLARS_MATE)
-    assert set(result["accuracy"]) == {"white", "black"}
-    assert set(result["counts"]) == {"white", "black"}
+    assert list(result["accuracy"]) == ["player", "glitch"]
+    assert list(result["counts"]) == ["player", "glitch"]
     # 3...Nf6?? is the game's blunder, named as the player would say it.
     assert {
         "move_number": 3,
+        "by": "glitch",
         "color": "black",
         "san": "Nf6",
         "classification": "blunder",
@@ -265,6 +266,37 @@ def test_tool_reviews_the_game(engine):
     assert result["critical"][0]["best"]
     # The per-ply table is the UI's, never the model's (#288).
     assert "moves" not in result
+
+
+@requires_stockfish
+@pytest.mark.parametrize("player_color", ["white", "black"])
+def test_tool_says_whose_moves_they_are_by_person(engine, player_color):
+    """The regression (#455): sides keyed "white"/"black" left the 12B to map
+    "my"/"your" onto colors, and it answered "what was my worst move?" with
+    Glitch's own blunder. Accuracy, counts and each critical move now say
+    whose they are, the player's first, for either color the player holds."""
+    session = play(GameSession(player_color=player_color), *SCHOLARS_MATE)
+    registry = build_registry(ToolContext(session=session, engine=engine))
+    result = registry.dispatch("review_game", {})
+    review = review_game(engine, session)
+    glitch_color = "black" if player_color == "white" else "white"
+
+    assert result["accuracy"] == {
+        "player": review.accuracy[player_color],
+        "glitch": review.accuracy[glitch_color],
+    }
+    assert list(result["accuracy"]) == ["player", "glitch"]
+    assert result["counts"] == {
+        "player": review.counts[player_color],
+        "glitch": review.counts[glitch_color],
+    }
+    assert list(result["counts"]) == ["player", "glitch"]
+    # Black's 3...Nf6?? is the blunder: the player's own when they are Black.
+    (blunder,) = [m for m in result["critical"] if m["san"] == "Nf6"]
+    assert blunder["color"] == "black"
+    assert blunder["by"] == ("player" if player_color == "black" else "glitch")
+    for move in result["critical"]:
+        assert move["by"] == ("player" if move["color"] == player_color else "glitch")
 
 
 @requires_stockfish
