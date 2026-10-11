@@ -349,6 +349,49 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Gate run 2026-10-10 on the gather step (#451, closes #448).** Before the
+planner, each turn with words searches the chess notes using the player's
+own words (`gather.py`). The planner and the narrator both get what it found,
+and `lookup` is no longer offered to the planner. Full gate on `fcd6b85`,
+gemma-4-26b-a4b, hybrid search against `../embeddings`: **56 of 56 passed**
+in 34 m 15 s. `long_capture` was 5/5 in all three conditions. Every scenario
+was above its floor; five came in at 4/5 (`ambiguous_move`,
+`my_mistake_is_mine`, `resign_never_pretends`,
+`impossible_capture_is_refused_not_asked`,
+`standing_ask_survives_the_thread`). Speech was 173/175 over 304 turns (the
+unbacked lines were one `owned_move` and one `capture`); the reply was said
+87/87.
+
+- **The planner's notes label is measured.** With a bare "Notes that may
+  help", the 26B's thinking planner digested the notes for a median 15 s.
+  With "…needs no tool, and a short note is enough" it took 5.5 s. With no
+  notes at all it took 19 s. These are replays of the captured planner
+  request, interleaved per sample.
+- **Frontier, the seven scenarios that used `lookup`, main vs branch, dev /
+  held-out:**
+  - `this_openings_ideas` fell 5→3 / 4→2 of 5. The stand-in covers half the
+    wordings; this regression was accepted on 2026-10-10.
+  - `not_a_lookup` held-out was 4/5: "what would Magnus play here?" gathers
+    the Carlsen note.
+  - Everything else was level or better: `en_passant_explained_then_taken`
+    4→5 on dev, `knight_ask_long_chat_then_pick` 3→5 held-out.
+- **Latency.** On the turns where main called `lookup`, model calls fell
+  from 3.0 to 2.1 per turn, but the median turn went from 8.6 to 16.0 s on
+  dev and from 8.9 to 11.9 s held-out. The planner now thinks over the notes
+  in its one call, where main's second planner call (after `lookup`) didn't
+  think at all. Planner thinking off on turns with notes measured 2.4 s
+  against 6.8 s in replay, with the same tool choices; Ryan chose to ship
+  with thinking on.
+- **Live check.** A scratch server with `CHESSAPP_CONTEXT_PATH` showed the
+  following:
+  - The cold start embedded and cached the notes in under 25 s.
+  - "how does en passant work?" gathered the two en passant notes in 22 ms.
+    The section sat between the board and the command, and `lookup` was not
+    in the offer.
+  - "play e4" and chatter gathered nothing and had no section.
+  - With the embeddings container stopped, the turn fell back to keywords
+    (1.2 ms) and completed.
+
 **Targeted check 2026-10-09 on #441 (verdict wording).** The analysis summary
 always names the player now ("…has the player behind…"), never "you" for
 Glitch's lead. 26B: `my_mistake_is_mine`, both `advice_*`,
