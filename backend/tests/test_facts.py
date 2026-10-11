@@ -131,6 +131,39 @@ def test_a_player_side_score_backs_both_directions():
     assert {"150", "1.5", "+1.5", "-150", "-1.5", "3"} <= numbers
 
 
+def test_a_reviews_counts_are_each_a_number_not_the_dict():
+    """#467: `counts` is a dict per side; each count, and each side's total of
+    moves, is a number the narrator may say."""
+    numbers = analysis_numbers(
+        [
+            {
+                "name": "review_game",
+                "result": {
+                    "ok": True,
+                    "critical": [],
+                    "accuracy": {"player": 81.4, "glitch": 96.2},
+                    "counts": {
+                        "player": {
+                            "good": 13,
+                            "inaccuracy": 1,
+                            "mistake": 0,
+                            "blunder": 2,
+                        },
+                        "glitch": {
+                            "good": 17,
+                            "inaccuracy": 0,
+                            "mistake": 0,
+                            "blunder": 0,
+                        },
+                    },
+                },
+            }
+        ]
+    )
+    assert {"13", "1", "0", "2", "16", "17", "81.4", "96.2"} <= numbers
+    assert not any(number.startswith("{") for number in numbers)
+
+
 def test_a_pre_320_trace_still_reads_its_white_pov_numbers():
     numbers = analysis_numbers(
         [

@@ -9,7 +9,7 @@ against the model.
 import chess
 import pytest
 
-from chessapp.facts import TurnEvidence, settings_of
+from chessapp.facts import TurnEvidence, assemble, settings_of
 from chessapp.game import GameSession
 from chessapp.speech_accuracy import (
     LEGACY_SCORED,
@@ -357,6 +357,33 @@ def test_a_count_no_rounding_reaches_is_still_unbacked():
 
     assert ("evaluation", False) in _counts(score)
     assert ("move", False) in _counts(score)
+
+
+def test_a_reviews_counts_back_the_numbers_a_review_turn_names():
+    """#467: a review turn that names its counts and an accuracy is backed,
+    and the facts it is judged on hold each count rather than the dict."""
+    review = (
+        "review_game",
+        {
+            **_REVIEW[1],
+            "accuracy": {"player": 81.4, "glitch": 96.2},
+            "counts": {
+                "player": {"good": 13, "inaccuracy": 1, "mistake": 0, "blunder": 2},
+                "glitch": {"good": 17, "inaccuracy": 0, "mistake": 0, "blunder": 0},
+            },
+        },
+    )
+    record = _record(
+        "You played 13 good moves and two blunders, 16 moves in all, "
+        "for 81.4 accuracy. I hit 96.2.",
+        _session("e4"),
+        tools=[review],
+    )
+
+    evidence = TurnEvidence.from_trace(record["evidence"], record["tools"])
+    assert {"13", "2", "16", "17"} <= assemble(evidence).numbers
+    assert unbacked(record) == ()
+    assert ("evaluation", True) in _counts(score_record(record))
 
 
 def test_the_frontier_runs_misread_lines_are_scored_as_true():
