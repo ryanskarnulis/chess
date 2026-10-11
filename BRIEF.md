@@ -14,7 +14,11 @@ The agent is the **orchestrator and personality, NOT the referee**:
 - **Deterministic code owns truth.** Board state, legality, and history live
   in `python-chess`. Its answers are final.
 - **Stockfish is a calculation tool** — evaluation, candidate moves,
-  difficulty (`Skill Level` / `UCI_Elo`) — not the app's personality.
+  difficulty (`Skill Level` / `UCI_Elo`) — not the app's personality. The
+  one exception is the `glitch` difficulty tier, where Glitch picks his own
+  moves (a model call that sees only the board) and Stockfish plays only as
+  a marked `beginner` stand-in when that pick fails
+  (`docs/glitch-difficulty.md`).
 - **The agent routes natural language to tools.** It never decides legality
   in its head and never knows the board directly; it submits moves and reads
   state through tools, so the LLM cannot corrupt the game.

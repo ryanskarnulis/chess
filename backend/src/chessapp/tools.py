@@ -66,8 +66,10 @@ from chessapp.engine import (
     DIFFICULTY_TIERS,
     ELO_MAX,
     ELO_MIN,
+    MOVER_TIERS,
     SKILL_MAX,
     SKILL_MIN,
+    STEPPED_TIERS,
     EnginePlayer,
     player_view,
 )
@@ -81,6 +83,8 @@ from chessapp.ledger import (
     difficulty_label,
 )
 from chessapp.move_parts import PartsError
+from chessapp.move_source import CHOOSER_STOCKFISH, SourcedMove
+from chessapp.mover import Mover
 from chessapp.profiles import (
     ASK_PLAYER_EXAMPLES,
     BRAIN_CHOICES,
@@ -562,6 +566,11 @@ class ToolContext:
     # default, so the MCP server and the delegate wire keep today's words;
     # app assembly sets it from the planner's profile.
     crutches: frozenset[str] = KNOWN_CRUTCHES
+    # The mover that picks Glitch's moves in the `glitch` tier (#473), asked
+    # for live because the brain picker swaps it with the brain; None, or a
+    # callable that returns None, when there is no brain to pick with
+    # (`CHESSAPP_AGENT=off`) — and then the tier cannot be chosen.
+    glitch_mover: Callable[[], Mover | None] | None = None
     _confirming: bool = False
     # Carried across session swaps so the version never goes backwards; see
     # `replace_session`. Not a public counter — `board_version` is.
@@ -589,6 +598,10 @@ class ToolContext:
             self.settings.attach_store(lambda data: _write_settings_file(path, data))
             self.results = ResultsLog.load(self.save_dir / RESULTS_FILENAME)
         self.observe_ledger()
+
+    def mover_available(self) -> bool:
+        """Whether Glitch can pick his own moves: the `glitch` tier's guard."""
+        return self.glitch_mover is not None and self.glitch_mover() is not None
 
     def note_result(self, tool: str, result: dict[str, Any]) -> None:
         """Tell the ledger what a tool result showed the player that no board
@@ -1520,13 +1533,16 @@ def _settled(coordinator: TurnCoordinator) -> dict[str, Any]:
     only has to say so truthfully, and never as a failure of the call.
     """
     try:
-        return {"engine_move": _engine_move_dict(coordinator.settle_engine_turn())}
+        reply = coordinator.settle_engine_turn()
+        return {"engine_move": _engine_move_dict(reply, coordinator.sourced_for(reply))}
     except chess.engine.EngineError:
         logger.warning("engine_settle_failed", exc_info=True)
         return {"engine_move": None, "engine_reply_owed": True}
 
 
-def _engine_move_dict(reply: MoveResult | None) -> dict[str, Any] | None:
+def _engine_move_dict(
+    reply: MoveResult | None, sourced: SourcedMove | None = None
+) -> dict[str, Any] | None:
     """How the move tools report an engine move: `{"san", "uci", "summary"}`, or
     None when the coordinator says the engine owed none. One shape for
     `make_move`'s reply and for every move that settles a restored board —
@@ -1535,11 +1551,25 @@ def _engine_move_dict(reply: MoveResult | None) -> dict[str, Any] | None:
     pipeline announce any of them with one branch."""
     if reply is None:
         return None
-    return {
+    played = {
         "san": reply.san,
         "uci": reply.uci,
         "summary": _move_summary(reply, _MOVER_ENGINE),
     }
+    played.update(chooser_fields(sourced))
+    return played
+
+
+def chooser_fields(sourced: SourcedMove | None) -> dict[str, Any]:
+    """Who chose a reply, as result keys, in the `glitch` tier only (#473):
+    `chosen_by` is `glitch` or `fallback`, and a fallback says why. Nothing in
+    every other tier, where Stockfish choosing is what a reply always meant."""
+    if sourced is None or sourced.chooser == CHOOSER_STOCKFISH:
+        return {}
+    fields: dict[str, Any] = {"chosen_by": sourced.chooser}
+    if sourced.fallback:
+        fields["fallback_reason"] = sourced.fallback_reason
+    return fields
 
 
 def _require_engine(ctx: ToolContext) -> EnginePlayer:
@@ -1701,8 +1731,15 @@ def _stepped_tier(settings: Settings, step: str) -> str:
     """The tier one step from the current one — the arithmetic a relative ask
     needs, which is the setting's and not the model's (#338). A difficulty
     set as a number has no neighbouring tier to step to, so the way out is to
-    name one."""
-    order = list(DIFFICULTY_TIERS)
+    name one. `glitch` is not on the ladder (`engine.STEPPED_TIERS`): it is
+    a different opponent, not a strength between two others."""
+    order = list(STEPPED_TIERS)
+    if settings.tier in MOVER_TIERS:
+        raise ToolError(
+            f"{settings.tier} is not on the easier/harder ladder: "
+            f"pass tier instead, one of {', '.join(order)}",
+            retry=RETRY_DIFFERENT_ARGS,
+        )
     if settings.tier not in order:
         raise ToolError(
             f"the difficulty is set as a number ({current_difficulty(settings)}), "
@@ -1718,6 +1755,19 @@ def _stepped_tier(settings: Settings, step: str) -> str:
             f"{'hardest' if index >= len(order) else 'easiest'} level"
         )
     return order[index]
+
+
+GLITCH_NEEDS_MOVER = (
+    "Glitch can't pick his own moves here: there is no model to pick them "
+    "with (the agent is off). Every other level still plays"
+)
+
+
+def _require_mover_for(ctx: ToolContext, tier: str) -> None:
+    """Refuse the `glitch` tier when there is no mover to play it (#473):
+    with no brain, the tier would only ever be Stockfish at `beginner`."""
+    if tier in MOVER_TIERS and not ctx.mover_available():
+        raise ToolError(GLITCH_NEEDS_MOVER, retry=RETRY_NEVER)
 
 
 def _player_has_moved(ctx: ToolContext) -> bool:
@@ -1804,6 +1854,10 @@ def pgn_headers(ctx: ToolContext, session: GameSession | None = None) -> dict[st
     strength_of = ctx.settings if played is None else Settings(**played)
     if ctx.engine is None:
         glitch = "Glitch"
+    elif strength_of.tier in MOVER_TIERS:
+        # He chose his own moves (#473): Stockfish was not the opponent, only
+        # the stand-in for a failed pick, and each of those carries a comment.
+        glitch = "Glitch (own moves)"
     elif (strength := _engine_strength(strength_of)) is None:
         glitch = "Glitch (Stockfish)"
     else:
@@ -2253,7 +2307,9 @@ def build_registry(
             "game_over": ctx.session.is_game_over(),
         }
         if atomic_exchange:
-            payload["engine_move"] = _engine_move_dict(reply)
+            payload["engine_move"] = _engine_move_dict(
+                reply, coordinator.sourced_for(reply)
+            )
             # The settled position, for the caller with no pipeline behind the
             # call. The split payload deliberately reports the move and not the
             # board it left: mid-exchange, that fen/turn describe a position
@@ -2792,6 +2848,7 @@ def build_registry(
         if step is not None:
             tier = _stepped_tier(ctx.settings, step)
         if tier is not None:
+            _require_mover_for(ctx, tier)
             if ctx.engine is not None:
                 ctx.engine.set_tier(tier)
             ctx.settings.tier = tier
@@ -2849,7 +2906,8 @@ def build_registry(
     set_difficulty.__doc__ = (
         "Set how hard the engine plays: pass exactly one of tier (named "
         "level: beginner ~500, casual ~1000, intermediate ~1500, advanced "
-        f"~2000, maximum = full strength), skill_level ({SKILL_MIN}-"
+        "~2000, maximum = full strength, glitch = Glitch picks his own moves, "
+        f"no engine), skill_level ({SKILL_MIN}-"
         f"{SKILL_MAX}), elo ({ELO_MIN}-{ELO_MAX}), or step (one named level "
         "up or down from the current one). Prefer tier unless the player "
         "names a number or asks for a step. This is the only thing that changes how "

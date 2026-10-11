@@ -60,9 +60,13 @@ object on the context.
 **Every reply is chosen by one move source** (`_move_source`, #471). Whether a
 reply is owed and which move it is are both asked of it, on every route: the
 background collect, its synchronous fallback, the settle and so `play_exchange`.
-Stockfish is the only source today; the Glitch tier puts its mover behind the
-same seam (`docs/glitch-difficulty.md`). A source only *chooses*: the move still
-enters the game through `session.submit_move`, here.
+Stockfish (`EngineSource`) in every tier but `glitch`, where the mover chooses
+and Stockfish at `beginner` stands in when it fails (`GlitchSource`,
+`docs/glitch-difficulty.md`). A source only *chooses*: the move still enters the
+game through `session.submit_move`, here. Who chose each reply is kept for its
+reporters: a fallback is noted on the move (the PGN comment), the mover's record
+waits for the turn's trace (`take_mover_record`), and `sourced_for` tells a
+result which reply was whose.
 """
 
 import logging
@@ -71,25 +75,23 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
+from chessapp.engine import MOVER_TIERS
 from chessapp.game import GameSession, MoveResult
+from chessapp.move_source import (
+    CHOOSER_STOCKFISH,
+    EngineSource,
+    GlitchSource,
+    MoveSource,
+    SourcedMove,
+    fallback_comment,
+)
 
 if TYPE_CHECKING:  # tools.py imports this module; don't import it back.
     from chessapp.tools import ToolContext
 
 logger = logging.getLogger(__name__)
-
-
-class MoveSource(Protocol):
-    """What chooses the reply's move: `EnginePlayer` today.
-
-    It returns a UCI string and nothing else. It never submits the move — the
-    coordinator does, through the session's legality gate — so a source can
-    be wrong without the game being wrong.
-    """
-
-    def choose_move(self, session: GameSession) -> str: ...
 
 
 class TurnPhase(StrEnum):
@@ -126,6 +128,8 @@ class ReplySettlement:
 
     reply: MoveResult | None = None
     failure: str = ""
+    # Who chose `reply` (`move_source.SourcedMove`); None with no reply.
+    sourced: SourcedMove | None = None
 
 
 def failure_name(exc: BaseException) -> str:
@@ -155,7 +159,7 @@ class _PendingReply:
         # A replayed copy, so the source sees the game's moves and not just the
         # position: Stockfish reads only the FEN, a mover reads the moves too.
         self._probe = GameSession.from_dict(session.to_dict())
-        self.uci: str | None = None
+        self.sourced: SourcedMove | None = None
         self._thread: threading.Thread | None = None
 
     def start(self, source: MoveSource) -> None:
@@ -163,25 +167,25 @@ class _PendingReply:
 
         def _compute() -> None:
             try:
-                self.uci = source.choose_move(probe)
+                self.sourced = source.choose(probe)
             except Exception:
                 # A failed background computation is simply no answer: the
                 # collector falls back to asking the engine itself, so the
                 # failure surfaces there, where today's error semantics already
                 # live (audit item 20 owns defining better ones).
-                self.uci = None
+                self.sourced = None
 
         self._thread = threading.Thread(
             target=_compute, name="engine-reply", daemon=True
         )
         self._thread.start()
 
-    def result_for(self, fen: str) -> str | None:
+    def result_for(self, fen: str) -> SourcedMove | None:
         """The computed move, or None when there isn't a usable one — the work
         failed, or it was about a different position than the board now holds."""
         if self._thread is not None:
             self._thread.join()
-        return self.uci if fen == self.fen else None
+        return self.sourced if fen == self.fen else None
 
 
 class TurnCoordinator:
@@ -210,6 +214,11 @@ class TurnCoordinator:
         # The reply `settle_owed_reply` last settled, until someone takes it
         # (`take_settlement`) or a new command begins (#365).
         self._settlement: ReplySettlement | None = None
+        # The last reply and who chose it (`sourced_for`), and the last mover
+        # record not yet traced (`take_mover_record`): game id, the ply the
+        # reply was played at (counted off its FEN), and the move.
+        self._last_sourced: tuple[MoveResult, SourcedMove] | None = None
+        self._mover_record: tuple[str, int, SourcedMove] | None = None
         # Told how long each settle waited on the engine, in whole ms — the
         # request's `engine` span (#290). Assigned by `create_app`, like
         # `on_phase`.
@@ -221,11 +230,59 @@ class TurnCoordinator:
 
     def _move_source(self) -> MoveSource | None:
         """The one thing that chooses the reply, or None when no reply is ever
-        owed. Read live, like `ctx.engine`, because the context changes under
-        the coordinator. Stockfish for now; the `glitch` tier picks its mover
-        here (#473), so every route changes source at once.
+        owed (no engine). Read live, like `ctx.engine`, because the context
+        changes under the coordinator — the difficulty, the brain and so its
+        mover. In the `glitch` tier the mover chooses (#473); every route
+        changes source at once because every route asks here.
         """
-        return self._ctx.engine
+        engine = self._ctx.engine
+        if engine is None:
+            return None
+        if self._ctx.settings.tier in MOVER_TIERS:
+            resolve = self._ctx.glitch_mover
+            return GlitchSource(resolve() if resolve is not None else None, engine)
+        return EngineSource(engine)
+
+    def _played(self, session: GameSession, sourced: SourcedMove) -> MoveResult:
+        """Submit a chosen reply through the session's legality gate, and keep
+        who chose it for the reporters (module docstring)."""
+        reply = session.submit_move(sourced.uci)
+        if reply.legal:
+            self._last_sourced = (reply, sourced)
+            if sourced.chooser != CHOOSER_STOCKFISH:
+                self._mover_record = (
+                    session.game_id,
+                    _fen_ply(session.fen()),
+                    sourced,
+                )
+            if sourced.fallback:
+                session.note_last_move(fallback_comment(sourced.fallback_reason))
+        self._note_difficulty(session)
+        return reply
+
+    def sourced_for(self, reply: MoveResult | None) -> SourcedMove | None:
+        """Who chose `reply`, if it is the last reply this coordinator played."""
+        if reply is None or self._last_sourced is None:
+            return None
+        played, sourced = self._last_sourced
+        return sourced if played is reply else None
+
+    def take_mover_record(
+        self, game_id: str, fen_before: str, fen_after: str
+    ) -> SourcedMove | None:
+        """The mover's last reply, for the trace record of the turn that played
+        it, and then forgotten. Only a reply in that game and between those two
+        positions is that turn's: a reply played on an untraced route (MCP)
+        must not be pinned on the next traced turn."""
+        record, self._mover_record = self._mover_record, None
+        if record is None:
+            return None
+        recorded_game, ply, sourced = record
+        if recorded_game != game_id:
+            return None
+        if not _fen_ply(fen_before) < ply <= _fen_ply(fen_after):
+            return None
+        return sourced
 
     @property
     def turn_id(self) -> int:
@@ -313,6 +370,9 @@ class TurnCoordinator:
         session = self._ctx.session
         if source is None or session.is_game_over():
             return
+        if not source.background:
+            # The mover is asked when the reply is collected (`MoveSource`).
+            return
         pending = _PendingReply(session)
         pending.start(source)
         self._pending = pending
@@ -376,9 +436,17 @@ class TurnCoordinator:
             return None
         self._enter(TurnPhase.ENGINE_CALCULATING)
         try:
-            uci = pending.result_for(session.fen()) if pending is not None else None
-            if uci is None:
-                uci = source.choose_move(session)
+            sourced = None
+            # A computed Stockfish reply serves only a Stockfish turn: a tier
+            # changed to `glitch` mid-turn asks the mover.
+            if pending is not None and source.background:
+                sourced = pending.result_for(session.fen())
+            if sourced is None:
+                sourced = source.choose(session)
+            # Every engine move still enters the game through the session's
+            # legality gate — background computation changes when it is
+            # decided, never who decides whether it is legal.
+            reply = self._played(session, sourced)
         except Exception:
             # An engine that dies mid-calculation must not take the turn with
             # it. The player's move stands and the reply is still owed, so the
@@ -396,11 +464,6 @@ class TurnCoordinator:
             # outcome for a caller whose move is already on the board (#284).
             self._enter(TurnPhase.PLAYER_MOVE_APPLIED)
             raise
-        # Every engine move still enters the game through the session's legality
-        # gate — background computation changes when it is decided, never who
-        # decides whether it is legal.
-        reply = session.submit_move(uci)
-        self._note_difficulty(session)
         self._enter(TurnPhase.ENGINE_MOVE_APPLIED)
         return reply
 
@@ -548,7 +611,7 @@ class TurnCoordinator:
             settlement = ReplySettlement(failure=failure_name(exc))
         else:
             self.complete_turn()
-            settlement = ReplySettlement(reply=reply)
+            settlement = ReplySettlement(reply=reply, sourced=self.sourced_for(reply))
         finally:
             elapsed = max(0, round((time.monotonic() - started) * 1000))
             self._tell(self.on_engine_time, elapsed)
@@ -610,7 +673,7 @@ class TurnCoordinator:
         self._enter(TurnPhase.ENGINE_CALCULATING)
         try:
             # The same source and the same gate as `collect_engine_reply`.
-            reply = session.submit_move(source.choose_move(session))
+            reply = self._played(session, source.choose(session))
         except Exception:
             # The engine died with the board waiting on it (#329). Back to
             # awaiting the player would be a lie the whole app acts on: nothing
@@ -622,7 +685,6 @@ class TurnCoordinator:
             # settle it on the next interaction, exactly once.
             self._enter(TurnPhase.PLAYER_MOVE_APPLIED)
             raise
-        self._note_difficulty(session)
         self._enter(TurnPhase.AWAITING_PLAYER)
         return reply
 
@@ -667,3 +729,10 @@ class TurnCoordinator:
         reply = self.collect_engine_reply()
         self.complete_turn()
         return player, reply
+
+
+def _fen_ply(fen: str) -> int:
+    """How many plies a FEN's position is into its game, by its own move
+    counter: what orders two positions of one game."""
+    fields = fen.split()
+    return (int(fields[5]) - 1) * 2 + (fields[1] == "b")

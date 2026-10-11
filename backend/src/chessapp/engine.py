@@ -12,7 +12,7 @@ import random
 import threading
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 
 import chess
@@ -54,19 +54,33 @@ class DifficultyProfile:
     elo: int | None = None
     temperature: float | None = None
     sample_depth: int = 4
+    # Glitch chooses the move himself (`mover.py`, docs/glitch-difficulty.md);
+    # the engine settings above are then only the fallback's.
+    mover: bool = False
 
 
 # Named tiers with human target strengths: beginner ~500, casual ~1000,
 # intermediate ~1500, advanced ~2000, maximum = full strength. The sampler
 # temperatures are calibration knobs — a gauntlet (see scripts/) confirms the
 # ordering beginner < casual < the 1320 UCI floor; tune from real games.
+_BEGINNER = DifficultyProfile("beginner", temperature=700, sample_depth=4)
 DIFFICULTY_TIERS = {
-    "beginner": DifficultyProfile("beginner", temperature=700, sample_depth=4),
+    "beginner": _BEGINNER,
     "casual": DifficultyProfile("casual", temperature=250, sample_depth=4),
     "intermediate": DifficultyProfile("intermediate", elo=1500),
     "advanced": DifficultyProfile("advanced", elo=2000),
     "maximum": DifficultyProfile("maximum", skill_level=20),
+    # Glitch picks his own moves (#473). The engine is set up exactly as
+    # `beginner`, because that is what plays when the mover fails (decision 4):
+    # a failure never makes him stronger than he plays on his own.
+    "glitch": replace(_BEGINNER, name="glitch", mover=True),
 }
+# The ladder a relative ask ("harder", "easier") steps along (#338): the
+# Stockfish tiers, weakest first. `glitch` is not on it — it is a different
+# opponent, not a strength between two others.
+STEPPED_TIERS = tuple(name for name, p in DIFFICULTY_TIERS.items() if not p.mover)
+# The tiers in which the mover chooses Glitch's move.
+MOVER_TIERS = frozenset(name for name, p in DIFFICULTY_TIERS.items() if p.mover)
 # What a fresh app plays at. Stockfish's own default is full strength, so an
 # engine must never be left unconfigured.
 DEFAULT_TIER = "casual"

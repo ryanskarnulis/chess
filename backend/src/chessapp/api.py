@@ -120,7 +120,12 @@ from chessapp.coordinator import (
 from chessapp.coordinator import failure_name as _failure_name
 from chessapp.deadline import NARRATION_BUDGET_S, LateReaction
 from chessapp.deadline import within_budget as _within_budget
-from chessapp.engine import validate_elo, validate_skill_level, validate_tier
+from chessapp.engine import (
+    MOVER_TIERS,
+    validate_elo,
+    validate_skill_level,
+    validate_tier,
+)
 from chessapp.facts import (
     TurnEvidence,
     relative_outcome,
@@ -135,11 +140,13 @@ from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
 from chessapp.tools import (
     CONFIRM_QUESTIONS,
+    GLITCH_NEEDS_MOVER,
     PANEL_ORIGIN,
     UNDO_PLIES_MAX,
     ToolContext,
     ToolRegistry,
     build_registry,
+    chooser_fields,
     confirm_pending,
     current_difficulty,
     live_checkpoint,
@@ -2165,7 +2172,10 @@ def create_app(
                 "uci": result.get("uci"),
                 "reason": result.get("reason"),
                 "engine_move": (
-                    _move_dict(beats.engine_reply)
+                    {
+                        **_move_dict(beats.engine_reply),
+                        **chooser_fields(coordinator.sourced_for(beats.engine_reply)),
+                    }
                     if beats.engine_reply is not None
                     else None
                 ),
@@ -2261,7 +2271,11 @@ def create_app(
                     "state": _state_dict_unlocked(ctx),
                     "commentary": ENGINE_LOST_REPLY_OWED,
                 }
-            engine_move = _move_dict(reply) if reply is not None else None
+            engine_move = (
+                {**_move_dict(reply), **chooser_fields(coordinator.sourced_for(reply))}
+                if reply is not None
+                else None
+            )
             if result.legal:
                 _publish_state()
             return {
@@ -2588,6 +2602,8 @@ def create_app(
         try:
             if request.tier is not None:
                 validate_tier(request.tier)
+                if request.tier in MOVER_TIERS and not ctx.mover_available():
+                    raise ValueError(GLITCH_NEEDS_MOVER)
                 if ctx.engine is not None:
                     ctx.engine.set_tier(request.tier)
                 ctx.settings.tier = request.tier
@@ -2652,9 +2668,22 @@ def create_app(
                 current_spans.as_trace() if current_spans is not None else None,
             )
             fields.setdefault("serving", _serving())
+            _attach_mover(fields)
             tracer.record(turn_record(**fields))
         except Exception:
             logger.warning("trace_failed", exc_info=True)
+
+    def _attach_mover(fields: dict[str, Any]) -> None:
+        """The turn's own Glitch-tier pick, if it played one (#473): the
+        mover's record in `mover`, its model calls after the turn's own."""
+        before, after = fields.get("fen_before"), fields.get("fen_after")
+        if not before or not after:
+            return
+        sourced = coordinator.take_mover_record(fields["game_id"], before, after)
+        if sourced is None:
+            return
+        fields["mover"] = sourced.mover
+        fields["calls"] = (*fields.get("calls", ()), *sourced.calls)
 
     def _serving() -> dict[str, str] | None:
         """What served this turn, or None — and never let asking cost the

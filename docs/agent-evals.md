@@ -349,6 +349,33 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Gate run 2026-10-11 on the `glitch` tier (#473).** In the default tiers
+the only change the planner sees is `set_difficulty`'s tier list, which
+gained `glitch`. In the `glitch` tier the reply beat runs the mover in place
+of Stockfish. Full gate on `c1866e5`, gemma-4-26b-a4b: **54 of 56 passed** in
+35 m. `long_capture` was 5/5 in all three conditions. Neither failure was
+caused by the change:
+
+- `fast_path_move_costs_one_call_when_chatty` ran while the model was
+  cold-loading. Its narration came in past the budget, so the turn made no
+  model call. Warm, it went 3/3.
+- `impossible_capture_is_refused_not_asked` was 9/15 in the gate. Main against
+  the branch, interleaved in blocks of 5: main 10/20 (4, 0, 5 and 1 per
+  block), branch 13/20 (3, 3, 3, 4). It was shaky before this change.
+
+The live check was one game on a scratch server, traced and captured:
+
+- It covered the restore (new game as black, an odd takeback), drag, fast path
+  and brain routes, plus MCP in-process, both live and with the llama URL
+  dead.
+- Every captured mover request held only what decision 2 allows.
+- One real fallback happened: the 26B ran out the 90 s mover deadline. It was
+  marked in the trace, the PGN and the result.
+- Speech was 14/14 backed.
+- Mover calls took 7–29 s when they played.
+
+The #451 numbers below are the previous baseline.
+
 **Gate run 2026-10-10 on the gather step (#451, closes #448).** Before the
 planner, each turn with words searches the chess notes using the player's
 own words (`gather.py`). The planner and the narrator both get what it found,

@@ -52,6 +52,9 @@ from pydantic import ConfigDict
 from chessapp.brain import RETRY_NEVER
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
+from chessapp.mover import Mover
+from chessapp.profiles import load_profile
+from chessapp.provider import LlamaCppProvider
 from chessapp.tools import (
     CONFIRM_QUESTIONS,
     MCP_ORIGIN,
@@ -323,13 +326,36 @@ def _engine_from_env() -> EnginePlayer | None:
     return EnginePlayer(path=path) if path else None
 
 
+def _mover_from_env() -> Mover | None:
+    """Glitch's move picker for the `glitch` tier (#473), or None. The MCP
+    server has no brain — its caller does the understanding — so the mover
+    is the one model call it can make, and only when `LLAMACPP_MODEL` names a
+    model to make it on (`CHESSAPP_MOVER_MODEL` overrides it, as in the app)
+    and the agent is not switched off. With None, `glitch` is refused."""
+    if os.environ.get("CHESSAPP_AGENT", "").strip().lower() == "off":
+        return None
+    model = os.environ.get("CHESSAPP_MOVER_MODEL") or os.environ.get("LLAMACPP_MODEL")
+    if not model:
+        return None
+    base_url = os.environ.get("LLAMACPP_BASE_URL", _DEFAULT_LLAMA_BASE_URL)
+    return Mover(LlamaCppProvider(base_url, model), load_profile(model))
+
+
+# The app's default (`app.DEFAULT_LLAMA_BASE_URL`), not imported: the MCP
+# server stays free of the app's assembly.
+_DEFAULT_LLAMA_BASE_URL = "http://127.0.0.1:8200/v1"
+
+
 def build_mcp_context() -> ToolContext:
     """A `ToolContext` for the MCP server, mirroring `build_app`'s assembly:
     Stockfish from the environment (optional), and — the same "never leave
     an engine unconfigured" invariant `build_app` upholds — the default
     difficulty tier applied to it immediately, since Stockfish's own default
-    is full strength."""
+    is full strength. A mover joins it when the environment names a model
+    (`_mover_from_env`), so the `glitch` tier plays over MCP too."""
     ctx = ToolContext(session=GameSession(), engine=_engine_from_env())
+    mover = _mover_from_env()
+    ctx.glitch_mover = lambda: mover
     if ctx.engine is not None:
         if ctx.settings.tier is not None:
             ctx.engine.set_tier(ctx.settings.tier)

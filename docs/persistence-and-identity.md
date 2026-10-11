@@ -14,7 +14,7 @@ Under `CHESSAPP_SAVE_DIR` (the `/data/saves` volume in the container):
 |---|---|---|
 | `settings.json` | difficulty, verbosity, voice, brain (#434) | on every settings change, best-effort |
 | `games/<name>.json` | a named save: the game plus the panel transcript | by `save_game`, atomically |
-| `live.json` | the live game: board, panel transcript, `game_id`, board version, the game's ledger (#372) | on every change, atomically, best-effort |
+| `live.json` | the live game: board, panel transcript, `game_id`, board version, the game's ledger (#372), and move notes (a `glitch`-tier fallback's PGN comment, #473) | on every change, atomically, best-effort |
 | `conversations.json` | every delegate thread: turns, soft deletes, id counters, idempotency keys | on every change, atomically, best-effort |
 | `results.jsonl` | every game that ended: its result, or its withdrawal (#373) | appended when a game ends or an ending is taken back, best-effort |
 
