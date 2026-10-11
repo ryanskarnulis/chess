@@ -47,6 +47,14 @@ export interface BoardProps {
   /** Program-drawn arrows/highlights (e.g. the hint arrow); replaces the
    * previous set on every change, so `[]` clears them. */
   autoShapes?: { orig: string; dest?: string; brush: string }[]
+  /** The move that led to the shown position, highlighted whoever played it;
+   * omitted at the root. Without it the only highlight is chessground's own
+   * from a local drag, so Glitch's reply, a reload or an undo showed none. */
+  lastMove?: [string, string]
+  /** The side whose king is in check in the shown position, or false. Named
+   * rather than `true` because a reviewed position's side to move need not be
+   * `turnColor`. */
+  check?: 'white' | 'black' | false
 }
 
 function toDests(dests?: Record<string, string[]>): Map<Key, Key[]> {
@@ -72,6 +80,8 @@ export function Board({
   viewOnly = false,
   revision,
   autoShapes,
+  lastMove,
+  check = false,
 }: BoardProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<Api | null>(null)
@@ -132,13 +142,19 @@ export function Board({
     }
   }, [])
 
-  // Push prop changes to the live instance without re-creating it.
+  // Push prop changes to the live instance without re-creating it. The last
+  // move is a dependency by value, not identity: a fresh pair each render
+  // would otherwise re-set the board (and its pieces) on every render.
+  const lastFrom = lastMove?.[0]
+  const lastTo = lastMove?.[1]
   useEffect(() => {
     apiRef.current?.set({
       fen,
       viewOnly,
       turnColor,
       orientation,
+      lastMove: lastFrom && lastTo ? [lastFrom as Key, lastTo as Key] : undefined,
+      check,
       movable: {
         free: false,
         color: viewOnly ? undefined : turnColor,
@@ -148,7 +164,7 @@ export function Board({
         },
       },
     })
-  }, [fen, viewOnly, turnColor, orientation, dests, revision])
+  }, [fen, viewOnly, turnColor, orientation, dests, revision, lastFrom, lastTo, check])
 
   // Shapes are pushed through their own API call: `set` merges config, but
   // setAutoShapes replaces the drawn set, which is what a hint needs.
