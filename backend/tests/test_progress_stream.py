@@ -20,14 +20,16 @@ one correlation id.
 
 import threading
 
+import chess
 import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.api import create_app
 from chessapp.app import build_app
-from chessapp.brain import AgentResponse, ToolCall
+from chessapp.brain import AgentResponse, ModelCall, ToolCall
 from chessapp.coordinator import TurnPhase
 from chessapp.game import GameSession
+from chessapp.mover import MoverChoice
 from chessapp.progress import (
     BRAIN_NARRATING,
     BRAIN_PLANNING,
@@ -363,3 +365,116 @@ def test_the_event_loop_stays_free_while_a_turn_runs(blocking):
     finally:
         brain.release.set()
         caller.join(5)
+
+
+# --- board controls that owe Glitch's reply (#475) ----------------------------
+#
+# In the `glitch` tier the reply is a model call of 10–60 s, so a new game as
+# black, its confirmation and an odd takeback are waits like a drag's: each is
+# an interaction the client hears about, run off the loop.
+
+
+class GlitchMover:
+    """Plays the first legal move, optionally parked until released."""
+
+    def __init__(self, *, block: bool = False) -> None:
+        self.block = block
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def choose(self, session):
+        self.entered.set()
+        if self.block:
+            assert self.release.wait(5), "test never released the mover"
+        board = chess.Board(session.fen())
+        move = next(iter(board.legal_moves))
+        return MoverChoice(
+            uci=move.uci(),
+            san=board.san(move),
+            intent="testing",
+            model="m",
+            attempts=(),
+            calls=(ModelCall(phase="mover", ms=1),),
+        )
+
+
+def glitch_client(mover=None, session=None):
+    ctx = ToolContext(session=session or GameSession(), engine=FakeEngine())
+    ctx.settings.tier = "glitch"
+    mover = mover or GlitchMover()
+    ctx.glitch_mover = lambda: mover
+    app, _ = scripted_app(ctx, brain=ScriptedBrain())
+    return TestClient(app), ctx
+
+
+def test_a_new_game_as_black_reports_glitchs_first_move():
+    client, ctx = glitch_client()
+    with client.websocket_connect("/ws") as ws:
+        events = drain(
+            ws, lambda: client.post("/api/game/new", json={"color": "black"})
+        )
+    assert steps(events)[0] == (KIND_BEGIN, "")
+    assert (KIND_PHASE, TurnPhase.ENGINE_CALCULATING) in steps(events)
+    assert len({event["correlation_id"] for event in events}) == 1
+    assert len(ctx.session.move_history()) == 1
+
+
+def test_a_confirmed_new_game_as_black_reports_glitchs_first_move():
+    session = GameSession()
+    session.submit_move("e2e4")
+    session.submit_move("e7e5")
+    client, ctx = glitch_client(session=session)
+    assert client.post("/api/game/new", json={"color": "black"}).status_code == 409
+    with client.websocket_connect("/ws") as ws:
+        events = drain(
+            ws, lambda: client.post("/api/game/confirm", json={"confirm": True})
+        )
+    assert (KIND_PHASE, TurnPhase.ENGINE_CALCULATING) in steps(events)
+    assert len(ctx.session.move_history()) == 1
+
+
+def test_an_odd_takeback_reports_the_reply_it_settles():
+    session = GameSession()
+    session.submit_move("e2e4")
+    session.submit_move("e7e5")
+    client, ctx = glitch_client(session=session)
+    with client.websocket_connect("/ws") as ws:
+        events = drain(ws, lambda: client.post("/api/game/undo", json={"plies": 1}))
+    assert (KIND_PHASE, TurnPhase.ENGINE_CALCULATING) in steps(events)
+    assert len(ctx.session.move_history()) == 2
+
+
+def test_the_event_loop_stays_free_while_glitch_picks_his_first_move():
+    mover = GlitchMover(block=True)
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    ctx.settings.tier = "glitch"
+    ctx.glitch_mover = lambda: mover
+    app, _ = scripted_app(ctx, brain=ScriptedBrain())
+    with TestClient(app) as client:
+        caller = threading.Thread(
+            target=lambda: client.post("/api/game/new", json={"color": "black"})
+        )
+        caller.start()
+        try:
+            assert mover.entered.wait(5), "the new game never asked the mover"
+            answered = threading.Event()
+            probe = threading.Thread(
+                target=lambda: (client.get("/api/state"), answered.set())
+            )
+            probe.start()
+            assert answered.wait(5), "the event loop was blocked by the mover"
+            probe.join(5)
+        finally:
+            mover.release.set()
+            caller.join(5)
+
+
+def test_stockfishs_tiers_put_no_line_up_for_a_board_control():
+    """Stockfish's reply is instant: a new game as black is no turn to show."""
+    client, ctx = scripted_client(engine=FakeEngine("e2e4"))
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # connect snapshot
+        client.post("/api/game/new", json={"color": "black"})
+        message = ws.receive_json()
+    assert message["type"] == "state"
+    assert len(ctx.session.move_history()) == 1

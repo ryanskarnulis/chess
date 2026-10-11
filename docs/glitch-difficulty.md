@@ -134,6 +134,16 @@ planner → mover → narrator. Expect roughly 10–60 s for one thinking mover 
 on the 26B. A dragged move, instant today, waits on it too, so the board needs
 a "Glitch is thinking" state.
 
+That state (#475) is the progress line every route already broadcasts: the
+reply's wait is the coordinator's `engine_calculating` phase, which the UI
+calls "Glitch is thinking about his move" in this tier and "Stockfish is
+calculating" in the others. The board controls that can leave Glitch to move
+(a new game as black, its confirmation, an odd takeback) run off the event
+loop, and in this tier as a progress interaction like a drag, so the line
+shows there too and nothing else stops while he thinks. `/api/settings` says whether the
+tier can be chosen (`glitch_available`); the Options sheet disables it with
+the reason when it can't, and the brain picker says the brain plays his moves.
+
 The mover gets its own deadline and token cap in the profile; passing either
 is a fallback (decision 4). It is never asked in the background, the way
 Stockfish starts thinking the moment the player's move lands: that call would

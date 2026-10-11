@@ -570,6 +570,23 @@ describe('useGame', () => {
     expect(result.current.agentProgress).toBe('Stockfish is calculating')
   })
 
+  it('says Glitch is choosing the reply in the glitch tier (#475)', async () => {
+    const fallback = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+      String(url).endsWith('/api/settings')
+        ? jsonResponse({ voice_output: false, tier: 'glitch', glitch_available: true })
+        : fallback(url, init),
+    )
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.tier).toBe('glitch'))
+    expect(result.current.glitchAvailable).toBe(true)
+    act(() => {
+      FakeWebSocket.instances[0].emit(progressFrame('begin'))
+      FakeWebSocket.instances[0].emit(progressFrame('phase', 'engine_calculating'))
+    })
+    expect(result.current.agentProgress).toBe('Glitch is thinking about his move')
+  })
+
   it('clears the line when the turn ends', async () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())

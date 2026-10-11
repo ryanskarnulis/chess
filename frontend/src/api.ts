@@ -465,6 +465,9 @@ export interface Settings {
    * only — which the UI shows as a state rather than letting the player find
    * out from a 503 on the command box. */
   agent_available?: boolean
+  /** Whether the `glitch` tier can be chosen: a brain that can pick his moves
+   * (#475). Absent from an older backend. */
+  glitch_available?: boolean
   /** Glitch's brain (#434); absent from an older backend. */
   brain?: string
   brain_serving?: string | null

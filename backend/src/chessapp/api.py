@@ -2309,6 +2309,7 @@ def create_app(
         turn_id: int,
         version_before: int,
         fen_before: str,
+        correlation_id: str | None = None,
     ) -> None:
         """Record one board-control interaction — the buttons' half of a turn.
 
@@ -2320,7 +2321,9 @@ def create_app(
         confirmed by voice was diagnosable and the identical reset confirmed by a
         button was not. `result` is None when nothing was dispatched — a decline —
         which the record shows as no tools and no mutations rather than a
-        fabricated result.
+        fabricated result. `correlation_id` is the progress interaction's, when
+        the control ran inside one, so the line the player saw and the record
+        are one search apart.
         """
         _trace_turn(
             utterance=op,
@@ -2332,7 +2335,7 @@ def create_app(
             stop_reason="completed",
             changed=ctx.board_version != version_before,
             turn_id=turn_id,
-            correlation_id=new_correlation_id(),
+            correlation_id=correlation_id or new_correlation_id(),
             mutations=ctx.board_version - version_before,
             fen_before=fen_before,
             fen_after=ctx.session.fen(),
@@ -2340,8 +2343,27 @@ def create_app(
             tool_results=[{"name": op, "result": result}] if result is not None else [],
         )
 
+    @contextmanager
+    def _control_window() -> Iterator[str | None]:
+        """A board control that can owe Glitch's reply, run as an interaction.
+
+        A new game as black, its confirmation and an odd takeback all leave the
+        engine to move, and in the `glitch` tier that move is a model call of
+        10–60 s (#475). Bracketed like a drag, the wait is a progress line every
+        client sees (the caller runs it off the loop, so nothing else stops
+        while it lasts). Stockfish's reply is instant, so the other tiers open
+        no interaction: a takeback is not a turn to put a line up for. Yields
+        the interaction's id for the control's trace record, or None.
+        """
+        if ctx.settings.tier not in MOVER_TIERS:
+            yield None
+            return
+        correlation_id = new_correlation_id()
+        with progress.interaction(correlation_id, coordinator.turn_id):
+            yield correlation_id
+
     def _run_destructive(
-        name: str, args: dict[str, Any]
+        name: str, args: dict[str, Any], correlation_id: str | None = None
     ) -> dict[str, Any] | JSONResponse:
         """Dispatch a destructive UI action through the registry — gate included.
 
@@ -2376,6 +2398,7 @@ def create_app(
             turn_id=turn_id,
             version_before=version_before,
             fen_before=fen_before,
+            correlation_id=correlation_id,
         )
         armed = ctx.pending
         if result.get("ok") is False and armed is not None and armed.name == name:
@@ -2406,7 +2429,13 @@ def create_app(
             request.version if request is not None else None,
             request.game_id if request is not None else None,
         ):
-            outcome = _run_destructive("new_game", {"player_color": color})
+            with _control_window() as correlation_id:
+                outcome = await _offloop(
+                    _run_destructive,
+                    "new_game",
+                    {"player_color": color},
+                    correlation_id,
+                )
             if isinstance(outcome, JSONResponse):
                 return outcome
             _publish_state()
@@ -2455,7 +2484,8 @@ def create_app(
                     "confirmed": False,
                     "state": _state_dict_unlocked(ctx),
                 }
-            confirmed = confirm_pending(registry, ctx, PANEL_ORIGIN)
+            with _control_window() as correlation_id:
+                confirmed = await _offloop(confirm_pending, registry, ctx, PANEL_ORIGIN)
             assert confirmed is not None  # armed above, and only this consumes it
             name, result = confirmed
             _trace_control(
@@ -2465,6 +2495,7 @@ def create_app(
                 turn_id=turn_id,
                 version_before=version_before,
                 fen_before=fen_before,
+                correlation_id=correlation_id,
             )
             if result.get("ok") is not True:
                 raise HTTPException(
@@ -2503,14 +2534,16 @@ def create_app(
             # A client may send its own `plies`, and an odd count leaves the
             # engine to move on a board no turn is open over. The coordinator
             # settles it before anyone is shown the position — the same rule the
-            # tool follows, because it is the same board either way.
-            try:
-                coordinator.settle_engine_turn()
-            except chess.engine.EngineError:
-                # The takeback stands and the reply is left owed (#329): the
-                # next move request or command collects it, as after any
-                # engine death with the engine to move.
-                logger.warning("engine_settle_failed", exc_info=True)
+            # tool follows, because it is the same board either way. In the
+            # `glitch` tier that is a model call, so it runs as an interaction.
+            with _control_window():
+                try:
+                    await _offloop(coordinator.settle_engine_turn)
+                except chess.engine.EngineError:
+                    # The takeback stands and the reply is left owed (#329):
+                    # the next move request or command collects it, as after
+                    # any engine death with the engine to move.
+                    logger.warning("engine_settle_failed", exc_info=True)
             _publish_state()
             return {
                 "undone": list(result.undone),
@@ -3511,6 +3544,10 @@ def create_app(
             "skill_level": s.skill_level,
             "elo": s.elo,
             "agent_available": brain is not None,
+            # Whether the `glitch` tier can be chosen (#475): a brain that can
+            # pick his moves. Not `agent_available` — a brain without a mover
+            # is an agent with no Glitch tier.
+            "glitch_available": ctx.mover_available(),
             **_brain_settings(),
         }
 

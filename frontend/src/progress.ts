@@ -9,6 +9,7 @@
 // for each of them would read as a flicker rather than as information.
 
 import type { ProgressEvent } from './api'
+import { isMoverTier } from './difficulty'
 
 /** What the player is told while a turn runs, and which turn it is about. */
 export interface TurnProgress {
@@ -32,6 +33,10 @@ const BRAIN_LABELS: Record<string, string> = {
   planning: 'Glitch is thinking',
   narrating: 'Glitch is reacting',
 }
+
+const STOCKFISH_CALCULATING = PHASE_LABELS.engine_calculating
+/** The reply's wait in the `glitch` tier, where his brain picks the move. */
+export const GLITCH_CHOOSING = 'Glitch is thinking about his move'
 
 // Every tool the registry holds, in the player's language. A tool missing from
 // here still shows something readable (see `toolLabel`) rather than nothing —
@@ -63,6 +68,7 @@ const TOOL_LABELS: Record<string, string> = {
 // The lines that say Glitch's brain is working — the ones a cold brain (#435)
 // makes slow, so they are the ones it speaks over.
 const GLITCH_LABELS = new Set([
+  GLITCH_CHOOSING,
   ...Object.values(BRAIN_LABELS),
   ...Object.values(PHASE_LABELS).filter((l) => l.startsWith('Glitch')),
 ])
@@ -79,6 +85,16 @@ export const SWITCHING_BRAINS = 'Glitch is switching brains…'
 export function coldLabel(label: string | null, busy: boolean, cold: boolean): string | null {
   if (!cold || !busy) return label
   return label === null || GLITCH_LABELS.has(label) ? SWITCHING_BRAINS : label
+}
+
+/**
+ * The reply's wait, said for the tier it is played in: the backend's
+ * `engine_calculating` phase is wherever the reply is chosen, and in the
+ * `glitch` tier that is Glitch's brain, not Stockfish (#475). Read with the
+ * tier as it is now, the way the backend reads it when it asks.
+ */
+export function moverLabel(label: string | null, tier: string | null): string | null {
+  return label === STOCKFISH_CALCULATING && isMoverTier(tier) ? GLITCH_CHOOSING : label
 }
 
 function toolLabel(name: string): string {

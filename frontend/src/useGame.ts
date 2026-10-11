@@ -28,7 +28,7 @@ import {
   type SocketMessage,
 } from './api'
 import { drawAnswer } from './draw'
-import { NO_PROGRESS, applyProgress, coldLabel, type TurnProgress } from './progress'
+import { NO_PROGRESS, applyProgress, coldLabel, moverLabel, type TurnProgress } from './progress'
 import { isPromotion, type PromotionPiece } from './promotion'
 import { playText } from './tts'
 import {
@@ -145,6 +145,9 @@ export interface UseGame {
    * mode: Stockfish only, and the command box is a designed dead state rather
    * than a 503 waiting to happen. */
   agentAvailable: boolean | null
+  /** Whether the `glitch` tier can be chosen (a brain that picks his moves);
+   * null until settings load, or from a backend that does not say. */
+  glitchAvailable: boolean | null
   /** True while a command is in flight with the agent. */
   agentThinking: boolean
   /**
@@ -216,6 +219,7 @@ export function useGame(): UseGame {
   const [agentThinking, setAgentThinking] = useState(false)
   const [progress, setProgress] = useState<TurnProgress>(NO_PROGRESS)
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
+  const [glitchAvailable, setGlitchAvailable] = useState<boolean | null>(null)
   const [voiceOutput, setVoiceOutputState] = useState<boolean | null>(null)
   const [tier, setTierState] = useState<string | null>(null)
   const [brain, setBrainState] = useState<BrainSettings | null>(null)
@@ -320,6 +324,7 @@ export function useGame(): UseGame {
       // Undefined (an older backend) stays null: unknown is not direct mode,
       // and the indicator only claims what the server actually said.
       setAgentAvailable(s.agent_available ?? null)
+      setGlitchAvailable(s.glitch_available ?? null)
       adoptBrain(readBrainSettings(s))
     },
     [adoptBrain],
@@ -760,9 +765,10 @@ export function useGame(): UseGame {
     tier,
     commentary: reply !== null && reply.gameId === state?.game_id ? reply.text : null,
     agentAvailable,
+    glitchAvailable,
     agentThinking,
     agentProgress: coldLabel(
-      progress.label,
+      moverLabel(progress.label, tier),
       agentThinking || progress.correlationId !== null,
       brain?.cold ?? false,
     ),
