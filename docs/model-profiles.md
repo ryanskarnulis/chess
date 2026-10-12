@@ -214,6 +214,19 @@ and has had no gate run. One known limit: the 60 s planning deadline
 (`llama_brain._DEFAULT_PLANNING_DEADLINE_S`) is checked between planner
 round trips, so a multi-step ask can stop after one or two ~30 s calls.
 
+Its planner thinks at `effort = "low"` (#490), not the template's `xhigh`
+default. `probe_planner.py` on the 26 dev items, 2026-10-11, arms interleaved
+per sample (`--arm xhigh:effort=none --arm low:effort=low`):
+
+| Planner level | Score | Median / p90 per call | Longest | Median tokens |
+|---|---|---|---|---|
+| `xhigh` (none sent) | 52/52 | 43 s / 106 s | 212 s | 233 |
+| `low` | 52/52 | 32 s / 47 s | 121 s | 159 |
+| `medium` (one sample) | 25/26 | 40 s / 55 s | 82 s | 211 |
+
+Low lost nothing and more than halved the slow tail. It is a probe result,
+not a gate run.
+
 ### The planner screens (2026-10-03 and 2026-10-07)
 
 `probe_planner.py` on its 26 dev items, every arm with all five crutches and
