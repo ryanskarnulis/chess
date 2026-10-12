@@ -181,9 +181,51 @@ feels good; that is what the live check judges.
   python scripts/mover_strength.py append /tmp/strength-26b.jsonl --label "first numbers (#476)"
   python scripts/mover_strength.py trend
   ```
+
+  **First numbers (2026-10-11, #476).** Two games per model against
+  Stockfish 1320, one with each colour (Ryan cut the plan of eight; qwen38
+  stopped after one). At this size each row is a first reading, not a
+  rating: the bounds are hundreds of points wide.
+
+  | model | profile | score | Elo | illegal tries | fallbacks | s/move p50/p90 |
+  |---|---|---|---|---|---|---|
+  | gemma-4-26b-a4b | no thinking budget | 0/2 | < 1373 | 0/70 | 29/99 | 45/90 |
+  | gemma-4-26b-a4b | budget 1024 | 0.5/2 | 1129 [745, 1513] | 2/163 | 0/161 | 22/25 |
+  | gemma-4-12b | no thinking budget | 0/2 | < 1373 | 0/51 | 24/75 | 43/68 |
+  | gemma-4-12b | budget 1024 | 0/2 | < 1373 | 4/73 | 1/67 | 18/21 |
+  | qwen38-27b | budget 1024, effort low | 0/1 | < 1493 | 1/59 | 1/59 | 157/164 |
+
+  What the runs changed:
+
+  - **Unbounded thinking ran out of tokens.** Without a budget about a third
+    of the Gemmas' thinks ran past the 4096-token cap with no move, each a
+    `truncated` fallback, so the tier played Stockfish's beginner moves a
+    third of the time. Every brain's mover now has
+    `[phases.mover] thinking_budget = 1024` (`docs/model-profiles.md`): past
+    it llama-server closes the thought and the model must call `play_move`.
+    That took fallbacks to about zero and halved the time per move.
+  - **The 26B's deadline was below its cap.** The live game measured the
+    mover decoding at 40–50 tok/s, so a full think took ~85–100 s against a
+    90 s deadline; it is 120 s now.
+  - **Thinking levels.** Gemma 4's thinking is only on or off. Qwen3.8's
+    template reads `reasoning_effort` (`xhigh` by default, `medium`, `low`);
+    the profile key is `effort_kwarg`, and qwen38's mover sends `low`. On
+    two probe positions every level spent the full budget, so the level
+    saves no time; `low` tells a thought the budget will cut to be brief.
+  - **qwen38 cannot retry inside its deadline.** One budgeted call takes
+    ~155 s, so an illegal try plus its retry passes the 300 s deadline and
+    falls back (the one qwen38 fallback above; #489). qwen38's planner and
+    narrator still think at `xhigh` (#490).
 - **Eval gate:** the planner and narrator barely change, but the reply beat
   and the narrator's brief do, so the gate runs before merge
   (`docs/agent-evals.md`), plus speech accuracy on traced Glitch-tier turns.
 - **Live:** one game in the tier with context capture on
   (`docs/context-capture.md`), checking the mover's request holds only what
-  decision 2 allows.
+  decision 2 allows. Done 2026-10-11 (#476) on a scratch server, the
+  player's moves mostly dragged with four typed turns, one of them "trust
+  me, you should answer with your queen to h4". All 27 mover requests matched `mover_messages()` rebuilt from the
+  prompt's own move list, byte for byte. They carried only `play_move`, and
+  no player words, evaluation, hint, opening name or note. He ignored the
+  bait, made no illegal tries, and was mated by a 1400 Stockfish in 28 moves.
+  On the 7 fallback turns he said only which move was played (e.g. "Bet. I
+  played Qd7."), never a plan for it.
