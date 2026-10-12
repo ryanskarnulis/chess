@@ -66,11 +66,16 @@ analysis_thinking = false
 max_tokens = 16
 
 # Glitch's own move in the tier where the model picks it (#472,
-# docs/glitch-difficulty.md). At ~8 tok/s 2048 tokens is ~256 s, so the
-# run's deadline is 300 s. A think that ran to the cap would end without a
-# move, so `thinking_budget` closes the thought at 1024 tokens and the model
-# must call play_move: ~150 s a move on a midgame probe (#476; 512: ~80 s). The
-# Deep brain plays slower by design; the picker says so.
+# docs/glitch-difficulty.md). At ~8 tok/s 2048 tokens is ~256 s. A think that
+# ran to the cap would end without a move, so `thinking_budget` closes the
+# thought at 1024 tokens and the model must call play_move (512 probed at
+# ~80 s; the budget sets the strength, so it stays). The Deep brain plays
+# slower by design; the picker says so.
+#
+# `deadline_s` covers the whole run, every retry included. The #476 strength
+# run measured one call at p50 157 s, p90 164 s, so at 300 s an illegal try
+# could not be retried and fell back to Stockfish (#489). 360 s fits two p90
+# calls (328 s) with room for the retry's slightly longer prompt.
 #
 # `effort = "low"`: probed on two midgame positions (#476), every level spent
 # the whole 1024 budget (~150 s), so the level saves no time; low with no
@@ -83,4 +88,4 @@ max_tokens = 2048
 thinking = true
 thinking_budget = 1024
 effort = "low"
-deadline_s = 300
+deadline_s = 360

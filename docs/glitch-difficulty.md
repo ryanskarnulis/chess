@@ -212,10 +212,12 @@ feels good; that is what the live check judges.
     the profile key is `effort_kwarg`, and qwen38's mover sends `low`. On
     two probe positions every level spent the full budget, so the level
     saves no time; `low` tells a thought the budget will cut to be brief.
-  - **qwen38 cannot retry inside its deadline.** One budgeted call takes
-    ~155 s, so an illegal try plus its retry passes the 300 s deadline and
-    falls back (the one qwen38 fallback above; #489). qwen38's planner and
-    narrator still think at `xhigh` (#490).
+  - **qwen38 could not retry inside its deadline (resolved, #489).** One
+    budgeted call takes ~155 s (p50 157 s, p90 164 s), so an illegal try
+    plus its retry passed the old 300 s deadline and fell back (the one
+    qwen38 fallback above). Its mover's `deadline_s` is now 360 s, two p90
+    calls with room for the retry's longer prompt; the 1024 budget stays.
+    qwen38's planner and narrator still think at `xhigh` (#490).
 - **Eval gate:** the planner and narrator barely change, but the reply beat
   and the narrator's brief do, so the gate runs before merge
   (`docs/agent-evals.md`), plus speech accuracy on traced Glitch-tier turns.
