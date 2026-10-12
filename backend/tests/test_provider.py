@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import pytest
 
+from chessapp.profiles import ModelProfile, parse_profile
 from chessapp.provider import (
     ChatResult,
     LlamaCppProvider,
@@ -64,6 +65,7 @@ def _provider_returning(
     *,
     status_code: int = 200,
     captured: list[dict[str, Any]] | None = None,
+    profile: ModelProfile | None = None,
 ) -> LlamaCppProvider:
     """A provider whose MockTransport answers every POST with `body`, capturing
     the request payload into `captured` when given one."""
@@ -74,7 +76,9 @@ def _provider_returning(
         return httpx.Response(status_code, json=body)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    return LlamaCppProvider("http://llm.test/v1", "gemma-4-12b", client=client)
+    return LlamaCppProvider(
+        "http://llm.test/v1", "gemma-4-12b", client=client, profile=profile
+    )
 
 
 # --- the request the provider sends ----------------------------------------
@@ -232,6 +236,36 @@ def test_a_thinking_budget_rides_only_a_thinking_request():
     assert captured[0]["thinking_budget_tokens"] == 1024
     assert "thinking_budget_tokens" not in captured[1]
     assert "thinking_budget_tokens" not in captured[2]
+
+
+def test_an_effort_rides_a_thinking_request_under_the_profiles_key():
+    profile = parse_profile(
+        "p",
+        'thinking_kwarg = "enable_thinking"\neffort_kwarg = "reasoning_effort"\n',
+        "test",
+    )
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    provider = _provider_returning(body, captured=captured, profile=profile)
+    provider.chat(_USER, enable_thinking=True, effort="low")
+    provider.chat(_USER, enable_thinking=False, effort="low")
+    provider.chat(_USER, enable_thinking=True)
+    assert captured[0]["chat_template_kwargs"] == {
+        "enable_thinking": True,
+        "reasoning_effort": "low",
+    }
+    # Thinking off asks for no level, and no level leaves the template's own.
+    assert captured[1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured[2]["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_an_effort_without_a_key_sends_nothing():
+    captured: list[dict[str, Any]] = []
+    body = _completion_body({"role": "assistant", "content": "ok"})
+    _provider_returning(body, captured=captured).chat(
+        _USER, enable_thinking=True, effort="low"
+    )
+    assert captured[0]["chat_template_kwargs"] == {"enable_thinking": True}
 
 
 def test_chat_with_tools_sends_them_verbatim_with_auto_choice():

@@ -147,6 +147,12 @@ def test_a_phase_left_out_keeps_the_default_caps():
         "[phases.mover]\nmax_tokens = 512\nthinking_budget = 1024\n",
         "[phases.mover]\nthinking_budget = 1.5\n",
         "[phases.mover]\nthinking_budget = true\n",
+        # And only the mover's effort, a level name, sent under a key the
+        # profile names (#476): a level with no key would be silently dropped.
+        '[phases.mover]\neffort = "low"\n',
+        'effort_kwarg = "reasoning_effort"\n[phases.planner]\neffort = "low"\n',
+        'effort_kwarg = "reasoning_effort"\n[phases.mover]\neffort = 1\n',
+        'effort_kwarg = "reasoning_effort"\n[phases.mover]\neffort = ""\n',
         "extra = 1\n",
         "not toml = = 1\n",
     ],
@@ -292,3 +298,18 @@ def test_the_big_brains_bound_the_movers_thinking(model):
     settings = load_profile(model).phase(MOVER)
     assert settings.thinking_budget is not None
     assert settings.thinking_budget < settings.max_tokens
+
+
+def test_a_mover_effort_is_kept_with_its_key_and_described():
+    assert DEFAULT_PROFILE.effort_kwarg is None
+    assert DEFAULT_PROFILE.phase(MOVER).effort is None
+    profile = parse_profile(
+        "p",
+        'effort_kwarg = "reasoning_effort"\n[phases.mover]\neffort = "low"\n',
+        "test",
+    )
+    assert profile.effort_kwarg == "reasoning_effort"
+    assert profile.phase(MOVER).effort == "low"
+    described = profile.describe()
+    assert described["effort_kwarg"] == "reasoning_effort"
+    assert described["phases"]["mover"]["effort"] == "low"

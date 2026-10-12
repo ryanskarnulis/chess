@@ -339,6 +339,7 @@ class ScriptedProvider:
         temperature: float | None = None,
         timeout: float | None = None,
         thinking_budget: int | None = None,
+        effort: str | None = None,
     ) -> ChatResult:
         self.calls.append(
             {
@@ -357,6 +358,7 @@ class ScriptedProvider:
                 "timeout": timeout,
                 # And the mover's thinking budget, which only it sends.
                 "thinking_budget": thinking_budget,
+                "effort": effort,
             }
         )
         turn = self._turns[min(len(self.calls) - 1, len(self._turns) - 1)]
@@ -464,6 +466,7 @@ class CountingProvider:
         temperature: float | None = None,
         timeout: float | None = None,
         thinking_budget: int | None = None,
+        effort: str | None = None,
     ) -> ChatResult:
         self.requests.append(
             {
@@ -485,6 +488,7 @@ class CountingProvider:
                 temperature=temperature,
                 timeout=timeout,
                 thinking_budget=thinking_budget,
+                effort=effort,
             )
             return result
         finally:
