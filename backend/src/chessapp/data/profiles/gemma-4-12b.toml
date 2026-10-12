@@ -56,11 +56,14 @@ max_tokens = 4096
 max_tokens = 16
 
 # Glitch's own move in the tier where the model picks it (#472,
-# docs/glitch-difficulty.md). Starting values, not measured: a thinking
-# choice capped at 4096 tokens (~60 s at this model's speed) inside a 90 s
-# deadline for the whole run, retries included. The strength script (#476)
-# measures them.
+# docs/glitch-difficulty.md): a thinking choice capped at 4096 tokens inside
+# a 90 s deadline for the whole run, retries included. Without a budget the
+# strength script (#476) found 17 of 56 thinks running past the cap with no
+# move (`truncated`, a Stockfish fallback), as the 26B's had. The 1024-token
+# thinking budget closes the thought first and makes the model call
+# play_move, as on the 26B and qwen38.
 [phases.mover]
 max_tokens = 4096
 thinking = true
+thinking_budget = 1024
 deadline_s = 90
