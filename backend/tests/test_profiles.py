@@ -292,8 +292,8 @@ def test_a_mover_thinking_budget_is_kept_and_described():
     assert "thinking_budget" not in profile.describe()["phases"]["planner"]
 
 
-@pytest.mark.parametrize("model", ["gemma-4-26b-a4b", "qwen38-27b"])
-def test_the_big_brains_bound_the_movers_thinking(model):
+@pytest.mark.parametrize("model", ["gemma-4-12b", "gemma-4-26b-a4b", "qwen38-27b"])
+def test_every_brain_bounds_the_movers_thinking(model):
     # #476: past the cap a think ends with no move; the budget ends it first.
     settings = load_profile(model).phase(MOVER)
     assert settings.thinking_budget is not None
