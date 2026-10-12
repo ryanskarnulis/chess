@@ -29,7 +29,13 @@ import pytest
 from chessapp.app import DEFAULT_MODEL
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
-from chessapp.profiles import NARRATOR, PLANNER, load_profile
+from chessapp.profiles import (
+    NARRATOR,
+    PLANNER,
+    ModelProfile,
+    load_profile,
+    parse_profile,
+)
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import ToolContext, brain_tool_definitions, build_registry
 from fakes import FakeEngine
@@ -98,7 +104,7 @@ class _Server:
         return _tool_call("make_move", {"move": "e4", "source": "said_the_move"})
 
 
-def _requests(model: str) -> list[str]:
+def _requests(model: str, profile: ModelProfile | None = None) -> list[str]:
     server = _Server()
     client = httpx.Client(transport=httpx.MockTransport(server))
     ctx = ToolContext(session=GameSession(), engine=FakeEngine())
@@ -108,7 +114,9 @@ def _requests(model: str) -> list[str]:
         model=model,
         dispatcher=registry,
         tool_definitions=lambda: brain_tool_definitions(registry, ctx),
-        provider=LlamaCppProvider("http://llm.test/v1", model, client=client),
+        provider=LlamaCppProvider(
+            "http://llm.test/v1", model, client=client, profile=profile
+        ),
     )
     brain.get_agent_response(_BOARD, "play e4")
     brain.get_agent_response(_BOARD, "how am I doing")
@@ -158,3 +166,28 @@ def test_the_golden_covers_every_phase_and_its_thinking_settings(model):
     assert {r["max_tokens"] for r in planner} == {planning.max_tokens}
     assert {r["max_tokens"] for r in words} == {4096, 16}
     assert {r["temperature"] for r in planner} == {planning.temperature}
+    # The planner's thinking level rides its calls and no others (#490).
+    key = profile.effort_kwarg
+    sent = {r["chat_template_kwargs"].get(key) if key else None for r in planner}
+    assert sent == {planning.effort if planning.thinking else None}
+    assert not any(key and key in r["chat_template_kwargs"] for r in words)
+
+
+def test_a_planner_effort_is_sent_on_planner_calls_only():
+    # #490 at the wire: a profile's planner `effort` reaches every planner
+    # request under its `effort_kwarg`; the narrator's and the answer
+    # reader's requests carry none, even the narrator's thinking one.
+    text = (
+        'thinking_kwarg = "enable_thinking"\neffort_kwarg = "reasoning_effort"\n'
+        "[phases.planner]\nthinking = true\n"
+    )
+    for effort in ("low", None):
+        level = f'effort = "{effort}"\n' if effort else ""
+        profile = parse_profile("leveled", text + level, "test")
+        bodies = [json.loads(b) for b in _requests("leveled", profile)]
+        planner = [b["chat_template_kwargs"] for b in bodies if "tools" in b]
+        words = [b["chat_template_kwargs"] for b in bodies if "tools" not in b]
+        assert planner and words
+        assert [k.get("reasoning_effort") for k in planner] == [effort] * len(planner)
+        assert all("reasoning_effort" not in k for k in words)
+        assert any(k["enable_thinking"] for k in words)  # the analysis words

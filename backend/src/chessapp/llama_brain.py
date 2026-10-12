@@ -350,6 +350,9 @@ class LlamaBrain:
     # The planner reasons before every call, not only after analysis: the
     # planner profile's `thinking` (#298). Off for gemma-4-12b.
     planner_thinking: bool = False
+    # The level those thinking calls ask the template for: the planner
+    # profile's `effort` (#490), under its `effort_kwarg`. None sends none.
+    planner_effort: str | None = None
     # The narrator thinks once an analysis tool has answered: the narrator
     # profile's `analysis_thinking` (#440). On for gemma-4-12b.
     narrator_analysis_thinking: bool = True
@@ -1286,8 +1289,9 @@ class LlamaBrain:
         thinking: bool | None = None,
     ) -> ChatResult:
         # The provider owns the wire (model, top_p, top_k, the payload shape);
-        # the brain owns the policy knobs — whether the thinking channel is on,
-        # the planner phase's temperature and its generation ceiling. Tools are
+        # the brain owns the policy knobs — whether the thinking channel is on
+        # and at what level, the planner phase's temperature and its generation
+        # ceiling. Tools are
         # always offered: the loop
         # ends when the model declines to use them, not because we took them
         # away (the phase that may not act is the narrator, and it is a
@@ -1303,6 +1307,7 @@ class LlamaBrain:
                 ),
                 max_tokens=self.planner_max_tokens,
                 temperature=self.planner_temperature,
+                effort=self.planner_effort,
             )
 
     def _messages(
@@ -1620,6 +1625,7 @@ def create_llama_brain(
         planner_prompt=planner_prompt,
         enable_thinking=enable_thinking,
         planner_thinking=profiles[PLANNER].phase(PLANNER).thinking,
+        planner_effort=profiles[PLANNER].phase(PLANNER).effort,
         narrator_analysis_thinking=profiles[NARRATOR].phase(NARRATOR).analysis_thinking,
         max_iterations=max_iterations,
         max_corrections=max_corrections,

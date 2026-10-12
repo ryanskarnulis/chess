@@ -10,7 +10,8 @@
 thinking_kwarg = "enable_thinking"
 # Qwen3.8's template reads a thinking level: `xhigh` (its default, with an
 # instruction to validate assumptions and weigh alternatives), `medium`, or
-# `low` ("keep your thinking brief"). Only the mover sets one (#476).
+# `low` ("keep your thinking brief"). The mover (#476) and the planner (#490)
+# set one; the narrator never thinks, so it has none to set.
 effort_kwarg = "reasoning_effort"
 
 quirks = [
@@ -50,10 +51,18 @@ top_k = 20
 # The cap stays 2,048: at ~8 tok/s that is ~256 s, just inside the provider's
 # 300 s read timeout, so a bigger one would end a runaway on the timeout
 # instead of the cap. Temperature 0.3 is carried from gemma-4-12b (#286).
+#
+# `effort = "low"` (#490): probe_planner on the 26 dev items, 2026-10-11,
+# arms interleaved per sample. xhigh (the template's default, no level sent)
+# 52/52 at a median 43 s per call, p90 106 s, longest 212 s, median 233
+# completion tokens; low 52/52 at 32 s, p90 47 s, longest 121 s, 159 tokens;
+# medium 25/26 at 40 s, p90 55 s (one sample). No accuracy lost, and the slow
+# tail more than halved. Probe only: no gate run.
 [phases.planner]
 temperature = 0.3
 max_tokens = 2048
 thinking = true
+effort = "low"
 
 # The narrator never thinks, even about an analysis result (#440's key): one
 # thinking narrator sample ran 727 tokens, ~93 s, past the 60 s narration

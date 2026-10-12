@@ -15,7 +15,7 @@ writing its profile, not editing code.
 | `[phases.planner]` `thinking` | `true` makes the planner reason before every call, not only after an analysis tool has answered (#298). Default `false`. |
 | `[phases.mover]` `thinking`, `deadline_s` | The mover (Glitch choosing his own move in the `glitch` tier, #472) thinks unless told `false`. `deadline_s` is the wall clock for its whole run, retries included. Mover only. Defaults: thinking on, 4096 tokens, 90 s. |
 | `[phases.mover]` `thinking_budget` | The most thinking tokens one mover call may spend, sent as llama-server's `thinking_budget_tokens`: past it the server closes the thought and the model must call `play_move` (#476). Below `max_tokens`, or the cap ends a think first, with no move. Unset: thinking bounded only by `max_tokens`. Mover only; the 26B and qwen38 set 1024. |
-| `effort_kwarg`, `[phases.mover]` `effort` | A template's own thinking level (#476). `effort_kwarg` names the `chat_template_kwargs` key the model's template reads (Qwen3.8: `reasoning_effort`, levels `low`, `medium`, `xhigh`, default `xhigh`; Gemma 4 has none, only on/off). The mover's `effort` is sent under it on its thinking calls; left out, the template's default applies. A level without the key is refused. |
+| `effort_kwarg`, `[phases.mover\|planner]` `effort` | A template's own thinking level (#476, #490). `effort_kwarg` names the `chat_template_kwargs` key the model's template reads (Qwen3.8: `reasoning_effort`, levels `low`, `medium`, `xhigh`, default `xhigh`; Gemma 4 has none, only on/off). The mover's and the planner's `effort` is sent under it on that phase's thinking calls; left out, the template's default applies. A level without the key is refused. The narrator and answer phases take none: only Qwen3.8 reads a level, and its narrator never thinks. |
 | `[phases.narrator]` `analysis_thinking` | The brain's rule turns the narrator's thinking on once an analysis tool has answered. `false` keeps those words a plain call (#440). Narrator only. Default `true`. |
 | `crutches` | Guidance that exists only because this model needed it (below). |
 | `quirks` | Measured standing facts about the model, as text, for the manifest and the reader. |
@@ -213,6 +213,19 @@ thinking narrator turn took ~93 s. It keeps all five crutches, unmeasured,
 and has had no gate run. One known limit: the 60 s planning deadline
 (`llama_brain._DEFAULT_PLANNING_DEADLINE_S`) is checked between planner
 round trips, so a multi-step ask can stop after one or two ~30 s calls.
+
+Its planner thinks at `effort = "low"` (#490), not the template's `xhigh`
+default. `probe_planner.py` on the 26 dev items, 2026-10-11, arms interleaved
+per sample (`--arm xhigh:effort=none --arm low:effort=low`):
+
+| Planner level | Score | Median / p90 per call | Longest | Median tokens |
+|---|---|---|---|---|
+| `xhigh` (none sent) | 52/52 | 43 s / 106 s | 212 s | 233 |
+| `low` | 52/52 | 32 s / 47 s | 121 s | 159 |
+| `medium` (one sample) | 25/26 | 40 s / 55 s | 82 s | 211 |
+
+Low lost nothing and more than halved the slow tail. It is a probe result,
+not a gate run.
 
 ### The planner screens (2026-10-03 and 2026-10-07)
 
