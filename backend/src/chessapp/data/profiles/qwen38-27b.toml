@@ -8,6 +8,10 @@
 # analysis_thinking are measured (below); the crutches and the rest are
 # starting values. Replace each with what a gate measures, and say so.
 thinking_kwarg = "enable_thinking"
+# Qwen3.8's template reads a thinking level: `xhigh` (its default, with an
+# instruction to validate assumptions and weigh alternatives), `medium`, or
+# `low` ("keep your thinking brief"). Only the mover sets one (#476).
+effort_kwarg = "reasoning_effort"
 
 quirks = [
     # A profile has one sampling set, and the app thinks on only a few
@@ -67,8 +71,16 @@ max_tokens = 16
 # move, so `thinking_budget` closes the thought at 1024 tokens and the model
 # must call play_move: ~150 s a move on a midgame probe (#476; 512: ~80 s). The
 # Deep brain plays slower by design; the picker says so.
+#
+# `effort = "low"`: probed on two midgame positions (#476), every level spent
+# the whole 1024 budget (~150 s), so the level saves no time; low with no
+# budget ran to the 2048 cap with no move. Low is chosen because a thought
+# the budget will cut short is better told to be brief than to weigh every
+# alternative. Two positions say nothing about strength; the strength script
+# does.
 [phases.mover]
 max_tokens = 2048
 thinking = true
 thinking_budget = 1024
+effort = "low"
 deadline_s = 300

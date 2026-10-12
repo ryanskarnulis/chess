@@ -315,6 +315,7 @@ class ChatProvider(Protocol):
         temperature: float | None = None,
         timeout: float | None = None,
         thinking_budget: int | None = None,
+        effort: str | None = None,
     ) -> ChatResult: ...
 
 
@@ -402,6 +403,7 @@ class LlamaCppProvider:
         temperature: float | None = None,
         timeout: float | None = None,
         thinking_budget: int | None = None,
+        effort: str | None = None,
         cache_prompt: bool | None = None,
         seed: int | None = None,
     ) -> ChatResult:
@@ -427,6 +429,7 @@ class LlamaCppProvider:
             max_tokens=max_tokens,
             temperature=temperature,
             thinking_budget=thinking_budget,
+            effort=effort,
             cache_prompt=cache_prompt,
             seed=self.seed if seed is None else seed,
         )
@@ -441,6 +444,7 @@ class LlamaCppProvider:
         max_tokens: int | None,
         temperature: float | None,
         thinking_budget: int | None = None,
+        effort: str | None = None,
         cache_prompt: bool | None = None,
         seed: int | None = None,
     ) -> dict[str, Any]:
@@ -458,9 +462,12 @@ class LlamaCppProvider:
             if key in sampling:
                 payload[key] = sampling[key]
         if self.profile.thinking_kwarg is not None:
-            payload["chat_template_kwargs"] = {
-                self.profile.thinking_kwarg: enable_thinking
-            }
+            kwargs: dict[str, Any] = {self.profile.thinking_kwarg: enable_thinking}
+            if enable_thinking and effort is not None and self.profile.effort_kwarg:
+                # The template's own thinking level (Qwen3.8's
+                # `reasoning_effort`); omitted, its default applies.
+                kwargs[self.profile.effort_kwarg] = effort
+            payload["chat_template_kwargs"] = kwargs
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if thinking_budget is not None and enable_thinking:
@@ -708,6 +715,7 @@ class PhasedProvider:
         temperature: float | None = None,
         timeout: float | None = None,
         thinking_budget: int | None = None,
+        effort: str | None = None,
     ) -> ChatResult:
         return self.provider_for(current_phase()).chat(
             messages,
@@ -717,6 +725,7 @@ class PhasedProvider:
             temperature=temperature,
             timeout=timeout,
             thinking_budget=thinking_budget,
+            effort=effort,
         )
 
 

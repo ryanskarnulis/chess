@@ -8,6 +8,9 @@ id it describes. It holds what changes with the model and nothing else:
 - `thinking_kwarg` — the `chat_template_kwargs` key that turns the model's
   thinking channel on and off, or absent for a model with no toggle (the
   request then carries no `chat_template_kwargs` at all).
+- `effort_kwarg` — the `chat_template_kwargs` key a model's template reads for
+  how hard to think (Qwen3.8's `reasoning_effort`), or absent for a model
+  with no such levels (Gemma 4's thinking is only on or off).
 - `[phases.<phase>]` — per-phase `temperature` (a phase without one samples at
   `sampling.temperature`) and `max_tokens`, for the phases in `PHASES`; and
   for the planner alone, `thinking`: whether it reasons before every call,
@@ -15,7 +18,9 @@ id it describes. It holds what changes with the model and nothing else:
   `analysis_thinking`: whether its words about an analysis tool's answer are
   thought through first (on unless a profile turns it off, #440); for the
   mover alone (#472), `thinking` too and `deadline_s`, the wall clock its
-  whole run (every retry included) may take.
+  whole run (every retry included) may take, `thinking_budget`, the most
+  thinking tokens one call may spend (#476), and `effort`, the level sent as
+  `effort_kwarg` on its thinking calls (#476).
 - `crutches` — the guidance that exists only because this model needed it
   (`KNOWN_CRUTCHES`; docs/model-profiles.md says what each one is and what it
   was measured to fix). A better model runs without them.
@@ -81,7 +86,14 @@ BRAIN_CHOICES = ("gemma-4-12b", "gemma-4-26b-a4b", "qwen38-27b")
 DEFAULT_NAME = "default"
 
 _SAMPLING_KEYS = ("temperature", "top_p", "top_k")
-_TOP_LEVEL_KEYS = {"sampling", "thinking_kwarg", "phases", "crutches", "quirks"}
+_TOP_LEVEL_KEYS = {
+    "sampling",
+    "thinking_kwarg",
+    "effort_kwarg",
+    "phases",
+    "crutches",
+    "quirks",
+}
 
 
 class ProfileError(ValueError):
@@ -97,7 +109,9 @@ class PhaseSettings:
     `deadline_s` is the mover's alone: how long its whole run may take, and so
     is `thinking_budget`: the most thinking tokens one of its calls may spend
     before the server closes the thought and the model must answer (`None`
-    leaves thinking bounded only by `max_tokens`)."""
+    leaves thinking bounded only by `max_tokens`), and `effort`: the thinking
+    level its calls ask the template for, under the profile's `effort_kwarg`
+    (`None` sends none, and the template's default applies)."""
 
     max_tokens: int
     temperature: float | None = None
@@ -105,6 +119,7 @@ class PhaseSettings:
     analysis_thinking: bool = True
     deadline_s: float | None = None
     thinking_budget: int | None = None
+    effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +132,7 @@ class ModelProfile:
         default_factory=lambda: MappingProxyType({})
     )
     thinking_kwarg: str | None = "enable_thinking"
+    effort_kwarg: str | None = None
     phases: MappingProxyType[str, PhaseSettings] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -139,6 +155,7 @@ class ModelProfile:
             "source": self.source,
             "sampling": dict(self.sampling),
             "thinking_kwarg": self.thinking_kwarg,
+            "effort_kwarg": self.effort_kwarg,
             "phases": {
                 name: {
                     "max_tokens": settings.max_tokens,
@@ -153,6 +170,7 @@ class ModelProfile:
                         {
                             "deadline_s": settings.deadline_s,
                             "thinking_budget": settings.thinking_budget,
+                            "effort": settings.effort,
                         }
                         if name == MOVER
                         else {}
@@ -209,6 +227,7 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
         if phase == MOVER:
             allowed.add("deadline_s")
             allowed.add("thinking_budget")
+            allowed.add("effort")
         _only(name, f"phases.{phase}", settings, allowed)
         thinking = settings.get("thinking", phases[phase].thinking)
         analysis_thinking = settings.get("analysis_thinking", True)
@@ -242,6 +261,17 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
                 f"profile {name!r}: phases.{phase}.thinking_budget must be a "
                 f"positive whole number below max_tokens ({max_tokens})"
             )
+        effort = settings.get("effort")
+        if effort is not None:
+            if not isinstance(effort, str) or not effort:
+                raise ProfileError(
+                    f"profile {name!r}: phases.{phase}.effort must be a level name"
+                )
+            if not data.get("effort_kwarg"):
+                # A level with no key to send it under would be silently dropped.
+                raise ProfileError(
+                    f"profile {name!r}: phases.{phase}.effort needs effort_kwarg"
+                )
         phases[phase] = PhaseSettings(
             max_tokens=max_tokens,
             temperature=settings.get("temperature"),
@@ -249,6 +279,7 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
             analysis_thinking=analysis_thinking,
             deadline_s=None if deadline_s is None else float(deadline_s),
             thinking_budget=thinking_budget,
+            effort=effort,
         )
     crutches = frozenset(data.get("crutches", ()))
     unknown = crutches - KNOWN_CRUTCHES
@@ -262,6 +293,7 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
             {key: sampling[key] for key in _SAMPLING_KEYS if key in sampling}
         ),
         thinking_kwarg=thinking if thinking else None,
+        effort_kwarg=data.get("effort_kwarg") or None,
         phases=MappingProxyType(phases),
         crutches=crutches,
         quirks=tuple(data.get("quirks", ())),

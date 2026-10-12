@@ -81,6 +81,17 @@ def test_the_profiles_thinking_budget_reaches_every_call():
     assert provider.calls[0]["thinking_budget"] is None
 
 
+def test_the_profiles_effort_reaches_the_call():
+    profile = parse_profile(
+        "p",
+        'effort_kwarg = "reasoning_effort"\n[phases.mover]\neffort = "low"\n',
+        "test",
+    )
+    provider = ScriptedProvider(_play("e5"))
+    _mover(provider, profile).choose(_after_e4())
+    assert provider.calls[0]["effort"] == "low"
+
+
 def test_a_legal_move_comes_back_with_its_intent_and_the_session_is_untouched():
     session = _after_e4()
     fen = session.fen()

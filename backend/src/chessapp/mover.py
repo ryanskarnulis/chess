@@ -294,6 +294,7 @@ class _Run:
                     temperature=self.mover.temperature,
                     timeout=remaining,
                     thinking_budget=settings.thinking_budget,
+                    effort=settings.effort,
                 )
         except ToolCallArgumentsError as exc:
             self._count(started, CALL_BAD_ARGS, remaining, failure=exc.failure)
