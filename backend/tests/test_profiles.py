@@ -147,10 +147,14 @@ def test_a_phase_left_out_keeps_the_default_caps():
         "[phases.mover]\nmax_tokens = 512\nthinking_budget = 1024\n",
         "[phases.mover]\nthinking_budget = 1.5\n",
         "[phases.mover]\nthinking_budget = true\n",
-        # And only the mover's effort, a level name, sent under a key the
-        # profile names (#476): a level with no key would be silently dropped.
+        # And only the mover's and the planner's effort (#476, #490), a level
+        # name, sent under a key the profile names: a level with no key would
+        # be silently dropped. The narrator and the answer take none.
         '[phases.mover]\neffort = "low"\n',
-        'effort_kwarg = "reasoning_effort"\n[phases.planner]\neffort = "low"\n',
+        '[phases.planner]\neffort = "low"\n',
+        'effort_kwarg = "reasoning_effort"\n[phases.narrator]\neffort = "low"\n',
+        'effort_kwarg = "reasoning_effort"\n[phases.answer]\neffort = "low"\n',
+        'effort_kwarg = "reasoning_effort"\n[phases.planner]\neffort = 1\n',
         'effort_kwarg = "reasoning_effort"\n[phases.mover]\neffort = 1\n',
         'effort_kwarg = "reasoning_effort"\n[phases.mover]\neffort = ""\n',
         "extra = 1\n",
@@ -313,3 +317,25 @@ def test_a_mover_effort_is_kept_with_its_key_and_described():
     described = profile.describe()
     assert described["effort_kwarg"] == "reasoning_effort"
     assert described["phases"]["mover"]["effort"] == "low"
+
+
+def test_a_planner_effort_is_kept_described_and_reaches_the_brain():
+    # #490: the planner's thinking calls carry a level too.
+    assert DEFAULT_PROFILE.phase(PLANNER).effort is None
+    profile = parse_profile(
+        "p",
+        'effort_kwarg = "reasoning_effort"\n[phases.planner]\nthinking = true\n'
+        'effort = "low"\n',
+        "test",
+    )
+    assert profile.phase(PLANNER).effort == "low"
+    assert profile.describe()["phases"]["planner"]["effort"] == "low"
+    assert "effort" not in profile.describe()["phases"]["narrator"]
+    brain = create_llama_brain(
+        base_url="http://llm.test/v1",
+        model="p",
+        dispatcher=build_registry(ToolContext(session=GameSession())),
+        tool_definitions=[],
+        provider=LlamaCppProvider("http://llm.test/v1", "p", profile=profile),
+    )
+    assert brain.planner_effort == "low"

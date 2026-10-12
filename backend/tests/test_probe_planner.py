@@ -867,6 +867,24 @@ def test_an_arm_without_a_thinking_knob_thinks_as_its_profile_does() -> None:
     assert parse_arm("x:thinking=off").thinking_for(thinks) is False
 
 
+def test_an_effort_arm_names_a_level_and_control_keeps_the_profiles() -> None:
+    """#490: thinking levels interleave in one run; `none` sends none."""
+    leveled = LlamaCppProvider(
+        "http://llm.test/v1",
+        "t",
+        profile=parse_profile(
+            "t",
+            'effort_kwarg = "reasoning_effort"\n[phases.planner]\neffort = "low"\n',
+            "test",
+        ),
+    )
+    assert parse_arm("control").effort_for(leveled) == "low"
+    assert parse_arm("x:effort=medium").effort_for(leveled) == "medium"
+    assert parse_arm("x:effort=none").effort_for(leveled) is None
+    with pytest.raises(SystemExit):
+        parse_arm("x:effort=")
+
+
 def test_a_crutches_arm_offers_exactly_the_crutches_it_names() -> None:
     """#432: with and without crutches interleave in one probe run."""
     assert parse_arm("x:crutches=none").crutches == frozenset()

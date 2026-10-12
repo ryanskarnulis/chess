@@ -14,7 +14,8 @@ state view (`api._agent_state_dict`), the tool offer `build_app` makes
 planner's own generation ceiling and thinking. An arm varies exactly one of
 its knobs: the planner prompt text, the planner temperature, llama-server's
 per-request `cache_prompt`, one tool's description text, the model id, the
-shape `legal_moves` is shown in, `make_move`'s schema, or thinking (#351).
+shape `legal_moves` is shown in, `make_move`'s schema, thinking (#351), or
+the thinking level (#490).
 
 Each sample is classified from the wire result alone — the tool calls the
 model made, or `no_tool` — and scored against the corpus item's rule. No
@@ -39,8 +40,10 @@ Arm spec: `NAME[:key=value[,key=value...]]` with keys `prompt=@file`,
 `tool_schema=provenance|form|square` (`make_move` says where its move came
 from, or how the words chose it, scored as the app would check it),
 `tool_schema=parts_tool|parts_make_move|parts_ask` (a move described by its
-parts, resolved to the moves that fit as the app would, #371), `thinking=on`
-and `crutches=none|all|<name>+<name>` (the brain's offer with exactly those
+parts, resolved to the moves that fit as the app would, #371), `thinking=on`,
+`effort=<level>|none` (the template's thinking level under the profile's
+`effort_kwarg`, #490; `none` sends none) and
+`crutches=none|all|<name>+<name>` (the brain's offer with exactly those
 crutches, #432; unset, the model's profile's or `CHESSAPP_CRUTCHES`).
 `control` (no keys) is the shipped planner. `--fresh` calls llama-swap's
 `/unload` before the first sample so the session is new; it refuses while a
@@ -528,6 +531,10 @@ class Arm:
     tool_schema: str | None = None
     # None: the planner profile's own `thinking`, as the app sends (#298).
     thinking: bool | None = None
+    # The thinking level sent under the profile's `effort_kwarg` (#490): the
+    # planner profile's own unless the arm names one; `effort=none` sends
+    # none, so the template's default applies.
+    effort: str | None = FROM_PROFILE
     # None: the crutches the app would give the model (`crutches_from_env`);
     # a set is the offer with exactly those (#432).
     crutches: frozenset[str] | None = None
@@ -544,6 +551,14 @@ class Arm:
         if self.thinking is None:
             return provider.profile.phase(PLANNER).thinking
         return self.thinking
+
+    def effort_for(self, provider: LlamaCppProvider) -> str | None:
+        """The thinking level this arm's planner call asks for: the arm's
+        knob, else the planner profile's, which is what the shipped call
+        sends."""
+        if self.effort is FROM_PROFILE:
+            return provider.profile.phase(PLANNER).effort
+        return self.effort
 
     def view(self, state: dict[str, Any]) -> dict[str, Any]:
         """The planner's opening state as this arm shows it."""
@@ -1012,6 +1027,10 @@ def parse_arm(spec: str, read: Callable[[str], str] = Path.read_text) -> Arm:
             if value.lower() not in ("on", "off"):
                 raise SystemExit(f"arm {name!r}: thinking must be on|off")
             kwargs["thinking"] = value.lower() == "on"
+        elif key == "effort":
+            if not value:
+                raise SystemExit(f"arm {name!r}: effort must be a level or none")
+            kwargs["effort"] = None if value.lower() == "none" else value
         elif key == "crutches":
             kwargs["crutches"] = parse_crutches(value, arm=name)
         else:
@@ -1586,6 +1605,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 enable_thinking=arm.thinking_for(providers[model]),
                 max_tokens=providers[model].profile.phase(PLANNER).max_tokens,
                 temperature=arm.temperature_for(providers[model]),
+                effort=arm.effort_for(providers[model]),
                 cache_prompt=arm.cache_prompt,
                 seed=args.seed,
             )
@@ -1647,6 +1667,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     enable_thinking=arm.thinking_for(provider),
                     max_tokens=provider.profile.phase(PLANNER).max_tokens,
                     temperature=arm.temperature_for(provider),
+                    effort=arm.effort_for(provider),
                     cache_prompt=arm.cache_prompt,
                     seed=seed,
                 )
@@ -1695,6 +1716,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "state_view": arm.state_view,
                 "tool_schema": arm.tool_schema,
                 "thinking": arm.thinking_for(provider),
+                "effort": arm.effort_for(provider),
                 "running_sha": running_sha,
                 "running_models": running_models,
                 "session_fresh": session_fresh,

@@ -1443,6 +1443,29 @@ def test_a_thinking_planner_reasons_on_every_call_but_the_narrator_does_not():
     assert [c["enable_thinking"] for c in provider.calls] == [True, True, False]
 
 
+def test_a_planner_effort_rides_only_the_planner_calls():
+    # #490: the planner profile's `effort` goes out on every planner call; the
+    # narrator's calls carry none (its analysis thinking runs at the
+    # template's own level), and a brain without one sends none at all.
+    brain, provider = make_brain(
+        tool_calls_turn(("evaluate_position", {})),
+        text_turn("evaluated the position"),
+        text_turn("up two pawns"),
+        planner_thinking=True,
+        planner_effort="low",
+    )
+    brain.get_agent_response(board_state={}, command="how am I doing?")
+    assert [c["effort"] for c in provider.calls] == ["low", "low", None]
+    brain, provider = make_brain(
+        tool_calls_turn(("make_move", {"move": "e4"})),
+        text_turn("played e4"),
+        text_turn("nice move"),
+        planner_thinking=True,
+    )
+    brain.get_agent_response(board_state={}, command="play e4")
+    assert [c["effort"] for c in provider.calls] == [None, None, None]
+
+
 def test_a_narrator_profile_can_keep_analysis_words_unthought():
     # #440: gemma-4-26b-a4b's narrator thought 500-2,300 tokens over an
     # analysis result (11-53 s) for words it said as well without; its

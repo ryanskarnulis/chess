@@ -14,7 +14,8 @@ id it describes. It holds what changes with the model and nothing else:
 - `[phases.<phase>]` — per-phase `temperature` (a phase without one samples at
   `sampling.temperature`) and `max_tokens`, for the phases in `PHASES`; and
   for the planner alone, `thinking`: whether it reasons before every call,
-  not only once an analysis tool has answered (#298); for the narrator alone,
+  not only once an analysis tool has answered (#298), and `effort`, the level
+  sent as `effort_kwarg` on its thinking calls (#490); for the narrator alone,
   `analysis_thinking`: whether its words about an analysis tool's answer are
   thought through first (on unless a profile turns it off, #440); for the
   mover alone (#472), `thinking` too and `deadline_s`, the wall clock its
@@ -106,12 +107,13 @@ class PhaseSettings:
     `thinking` is the planner's and the mover's, and `analysis_thinking` the
     narrator's: the brain's rule turns the narrator's thinking on once an
     analysis tool has answered, and a profile can switch that off.
+    `effort` is the planner's and the mover's too (#490): the thinking level
+    their thinking calls ask the template for, under the profile's
+    `effort_kwarg` (`None` sends none, and the template's default applies).
     `deadline_s` is the mover's alone: how long its whole run may take, and so
     is `thinking_budget`: the most thinking tokens one of its calls may spend
     before the server closes the thought and the model must answer (`None`
-    leaves thinking bounded only by `max_tokens`), and `effort`: the thinking
-    level its calls ask the template for, under the profile's `effort_kwarg`
-    (`None` sends none, and the template's default applies)."""
+    leaves thinking bounded only by `max_tokens`)."""
 
     max_tokens: int
     temperature: float | None = None
@@ -166,11 +168,11 @@ class ModelProfile:
                         if name == NARRATOR
                         else {}
                     ),
+                    **({"effort": settings.effort} if name in (PLANNER, MOVER) else {}),
                     **(
                         {
                             "deadline_s": settings.deadline_s,
                             "thinking_budget": settings.thinking_budget,
-                            "effort": settings.effort,
                         }
                         if name == MOVER
                         else {}
@@ -222,12 +224,12 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
         allowed = {"max_tokens", "temperature"}
         if phase in (PLANNER, MOVER):
             allowed.add("thinking")
+            allowed.add("effort")
         if phase == NARRATOR:
             allowed.add("analysis_thinking")
         if phase == MOVER:
             allowed.add("deadline_s")
             allowed.add("thinking_budget")
-            allowed.add("effort")
         _only(name, f"phases.{phase}", settings, allowed)
         thinking = settings.get("thinking", phases[phase].thinking)
         analysis_thinking = settings.get("analysis_thinking", True)
