@@ -1,9 +1,9 @@
 # Glitch's sight: board facts and looking ahead
 
 Design note for the Glitch tier's next step (#494, roadmap #366 step 20).
-**Status: proposed 2026-10-12, not yet agreed.** It builds on the tier as
-built (`docs/glitch-difficulty.md`) and amends that note's decision 2, what
-the mover sees.
+**Status: agreed 2026-10-12; decisions 1 and 2 amended the same day
+(#496).** It builds on the tier as built (`docs/glitch-difficulty.md`) and
+amends that note's decision 2, what the mover sees.
 
 ## Why
 
@@ -30,57 +30,75 @@ in his head and see where they land (**`try_line`**).
 
 ## Decisions
 
-### 1. The line: python-chess is the board, Stockfish is the engine
+### 1. The line: his eyes, not his judgement
 
 The tier's promise stands: "the model chooses, and no engine helps it
-choose." What the mover may be given is anything the **rules** say about a
-position on the board or a line he names himself:
+choose." Today he plays blindfold: he gets the moves, a FEN and a grid of
+letters, and has to work out from them what attacks and defends what. Board
+facts give him what a player sees by looking at the board, and nothing a
+player has to work out. The test for a fact: **could he point at it on the
+board without moving a piece in his head and without deciding anything?**
 
-- what attacks and defends each piece, and which pieces are pinned;
-- which pieces hang, by a fixed static rule (decision 2);
-- the moves the other side has that capture or give check;
-- whether a position is check, checkmate, stalemate or a rules draw;
+What passes:
+
+- where every piece stands;
+- what directly attacks each piece, and what directly defends it;
+- which pieces are pinned to their king, and by what;
+- whether the side to move is in check, and from what;
 - the material count, in the usual 1/3/3/5/9.
 
-What he is never given is anything that **judges or searches**:
+What fails, and is never in the facts:
 
-- no evaluation, centipawns or win chances;
-- no best move, ranking or "safe moves" filter of the legal list;
-- no search the code chooses: code never picks the other side's reply in a
-  line, and there is no exchange calculator (SEE) that resolves a whole
-  trade for him;
+- any verdict on a piece: no "hanging", "safe" or "loose" label, however
+  simple the rule (amended 2026-10-12, #496). Seeing "d4: attacked by Qd7;
+  defended by Rd1, pawn c3" and deciding whether to take is his job;
+- the other side's moves: no list of their captures or checks "as if it were
+  their move". That is a move generator looking one ply ahead, not something
+  seen, and it describes the position before his move, not after it;
+- mate, stalemate or a draw marked on any move. In a position he is to move
+  in, the game is not over;
+- anything that judges or searches: no evaluation, best move, ranking,
+  "safe moves" filter, exchange calculator (SEE), or reply code picks;
 - nothing from Stockfish, the notes, the opening's name or the conversation
   (decision 2 of `docs/glitch-difficulty.md` is otherwise unchanged).
 
-The test for a new fact: could a careful human read it off the board, one
-move at a time, without calculating a line? If it needs a line, it belongs
-to `try_line`, where he names the line.
+Threats and "what happens if I play this" are found by looking ahead, with
+`try_line` (decision 3), where he names the line. Whether a line ending in
+mate is reported as mate is settled there (#498).
 
 ### 2. Board facts: a deterministic module, in the mover's prompt
 
-A new module, `board_facts.py`, builds the facts from a `chess.Board` alone.
-It is pure python-chess, thoroughly tested, and knows nothing of the model.
+`board_facts.py` builds the facts from a `chess.Board` alone. It is pure
+python-chess, never imports the engine, is thoroughly tested, and knows
+nothing of the model. It returns a structured form for traces and tests, and
+a text rendering for the prompt.
 
-**Hanging**, statically: a piece (not the king) is hanging when it is
-attacked and either undefended or attacked by a piece worth less. That is
-the glance a player gives the board. It is wrong sometimes (an x-ray, a
-pinned defender), and it says nothing about what to do. Attackers and
-defenders are direct ones only; batteries and x-rays are for `try_line`.
+Attackers and defenders are direct ones only, cheapest first. A piece behind
+another on the same line (a battery, an x-ray) is not counted, and a pinned
+defender still counts, with the pin listed separately. A pawn that has just
+moved two squares is attacked by a pawn that may take it en passant. The king
+is never listed as attacked (check covers that), but attacks and defends
+like any piece. Only attacked pieces get attackers and defenders; every piece
+is placed, but a full attack map of the board would make the prompt long, and
+the 12B has done worse with long prompts.
 
 The facts go in the mover's user message after the board and before the
-legal moves. Sketch, from the position before 17… Qxd4:
+legal moves (#497), the side to move first. From the position before
+17… Qxd4:
 
 ```
-Board facts (from the rules; no judgement of the position):
+Board facts (what is on the board; nothing here judges it):
+Black: Kg8, Qd7, Ra8, Rd8, Be7, pawns a7 b7 c6 e6 f7 g7 h7.
+White: Kc1, Qe2, Rd1, Re1, Bg3, Ne4, pawns a2 b2 c3 d4 f2 g2 h4.
 Material: White 32, Black 29.
 Black's pieces under attack: none.
 White's pieces under attack:
-  pawn d4: attacked by Qd7; defended by Rd1, pawn c3
+  pawn d4: attacked by Qd7; defended by pawn c3, Rd1
   pawn h4: attacked by Be7; defended by Bg3
-If White were to move now: captures none; checks Nf6+.
+Pinned to the king: none.
 ```
 
-The exact wording is the build step's to settle and measure. The position
+#497 may still adjust the wording with its measurement. The position
 changes every call anyway, so the prompt stays append-only (#362): fixed
 instructions, then the growing moves, then this position's section.
 
