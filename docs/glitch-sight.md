@@ -2,7 +2,8 @@
 
 Design note for the Glitch tier's next step (#494, roadmap #366 step 20).
 **Status: agreed 2026-10-12; decisions 1 and 2 amended the same day
-(#496).** It builds on the tier as built (`docs/glitch-difficulty.md`) and
+(#496); decision 3 built 2026-10-13 (#498), off everywhere until #499
+measures it.** It builds on the tier as built (`docs/glitch-difficulty.md`) and
 amends that note's decision 2, what the mover sees.
 
 ## Why
@@ -64,8 +65,9 @@ What fails, and is never in the facts:
   (decision 2 of `docs/glitch-difficulty.md` is otherwise unchanged).
 
 Threats and "what happens if I play this" are found by looking ahead, with
-`try_line` (decision 3), where he names the line. Whether a line ending in
-mate is reported as mate is settled there (#498).
+`try_line` (decision 3), where he names the line. A line that ends in mate
+is reported as mate (#498): once the line is played the game on that board is
+over, which the rules say, not a judgement.
 
 ### 2. Board facts: a deterministic module, in the mover's prompt
 
@@ -126,6 +128,32 @@ The game is never touched. Lines are played on a copy, and `play_move` alone
 reaches the coordinator's legality gate (#471). The turn record's `mover`
 gains `looks` (each line asked and what came back), and `intent` can cite a
 line he looked at.
+
+**As built (#498).** `[phases.mover] look_calls`, 0 in every profile, and at
+0 the request is byte for byte what it was. With looks on:
+
+- The system prompt gains one paragraph on `try_line`, asking for lines that
+  start with his move and go on with the replies he expects, like
+  "Qxd4 cxd4". Whether he writes the replies is the open question for #499.
+- A line is read as notation: move numbers ("17... Qxd4 18. cxd4"), commas
+  and `!`/`?` are skipped, and SAN or UCI is accepted, like `play_move`.
+- Each line comes back as text: the line numbered as a score sheet writes
+  it, the FEN and board at its end, whose move, how the game stands (mate,
+  stalemate, a draw, a draw that may be claimed: the game's own moves count
+  toward repetitions), the board facts there, and the material at the end and
+  before the line. The facts at a line's end are shown whatever
+  `board_facts` says: they are how a one-move look shows "queen d4: attacked
+  by pawn c3". Material is shown here though it left the prompt (#497): at
+  the end of a line he chose, the count is the outcome he asked about. Both
+  are first in line to change if #499 finds them leading him astray.
+- A ply past mate is not played, and the line says so. Lines past 3 and
+  plies past 6 are named as not played.
+- A reply with at least one look in it is not an attempt; any other reply
+  is. A look past the cap, or with no lines, is refused and that reply is an
+  attempt, so a run makes at most `MAX_ATTEMPTS` + `look_calls` calls.
+- Calls in one reply run in order: a `play_move` after a `try_line` plays,
+  and anything after it is told the move is already played.
+- The blunder suite records each sample's looks and reports looks per move.
 
 ### 4. Model knowledge goes in the profile
 

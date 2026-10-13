@@ -149,6 +149,10 @@ def test_a_phase_left_out_keeps_the_default_caps():
         "[phases.mover]\nthinking_budget = true\n",
         "[phases.mover]\nboard_facts = 1\n",
         "[phases.planner]\nboard_facts = true\n",
+        "[phases.mover]\nlook_calls = -1\n",
+        "[phases.mover]\nlook_calls = 1.5\n",
+        "[phases.mover]\nlook_calls = true\n",
+        "[phases.planner]\nlook_calls = 2\n",
         # And only the mover's and the planner's effort (#476, #490), a level
         # name, sent under a key the profile names: a level with no key would
         # be silently dropped. The narrator and the answer take none.
@@ -349,3 +353,12 @@ def test_mover_board_facts_default_off_and_are_described():
     assert profile.phase(MOVER).board_facts is True
     assert profile.describe()["phases"]["mover"]["board_facts"] is True
     assert "board_facts" not in profile.describe()["phases"]["planner"]
+
+
+def test_mover_look_calls_default_to_none_and_are_described():
+    # 0 leaves try_line out of the request (#498).
+    assert DEFAULT_PROFILE.phase(MOVER).look_calls == 0
+    profile = parse_profile("p", "[phases.mover]\nlook_calls = 2\n", "test")
+    assert profile.phase(MOVER).look_calls == 2
+    assert profile.describe()["phases"]["mover"]["look_calls"] == 2
+    assert "look_calls" not in profile.describe()["phases"]["planner"]

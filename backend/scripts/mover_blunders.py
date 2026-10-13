@@ -411,6 +411,7 @@ def ask(
             **record,
             "outcome": str(failed.kind),
             "attempts": attempts,
+            "looks": [look.as_trace() for look in failed.looks],
             "calls": _calls(failed.calls),
         }
     board = chess.Board(session.fen())
@@ -421,6 +422,7 @@ def ask(
         "san": choice.san,
         "intent": choice.intent,
         "attempts": [attempt.verdict for attempt in choice.attempts],
+        "looks": [look.as_trace() for look in choice.looks],
         "calls": _calls(choice.calls),
         **judge_move(judge, board, chess.Move.from_uci(choice.uci)),
     }
@@ -492,7 +494,8 @@ def _mean(values: Sequence[float]) -> float | None:
 def rates(samples: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """One arm's samples, read: the blunder rate and its one-sided 95% Wilson
     bounds, the centipawn loss, the same per tag, the fallbacks and why,
-    the illegal attempts and the seconds per move."""
+    the illegal attempts, the looks per move (#498) and the seconds per
+    move."""
     samples = list(samples)
     played = [s for s in samples if s["outcome"] == PLAYED]
     blunders = sum(s["blunder"] for s in played)
@@ -501,6 +504,8 @@ def rates(samples: Iterable[dict[str, Any]]) -> dict[str, Any]:
     attempts = [verdict for s in samples for verdict in s["attempts"]]
     fallbacks = [s for s in samples if s["outcome"] != PLAYED]
     seconds = [sum(call["ms"] for call in s["calls"]) / 1000 for s in samples]
+    # Reports from before #498 have no looks: none were possible.
+    looks = [len(s.get("looks", ())) for s in samples]
     by_tag: dict[str, dict[str, Any]] = {}
     for tag in sorted({tag for s in played for tag in s["tags"]}):
         tagged = [s for s in played if tag in s["tags"]]
@@ -521,6 +526,7 @@ def rates(samples: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "by_tag": by_tag,
         "attempts": len(attempts),
         "illegal_attempts": attempts.count(ILLEGAL),
+        "looks_per_move": _mean(looks),
         "fallbacks": len(fallbacks),
         "fallback_kinds": dict(Counter(s["outcome"] for s in fallbacks)),
         "seconds_per_move_p50": _round(statistics.median(seconds) if seconds else None),
@@ -567,12 +573,18 @@ def _rate_cell(line: dict[str, Any]) -> str:
     )
 
 
+def _looks_cell(line: dict[str, Any]) -> str:
+    # History from before #498 has no looks column: none were possible.
+    looks = line.get("looks_per_move")
+    return "—" if looks is None else str(looks)
+
+
 def trend(lines: Iterable[dict[str, Any]], model: str | None = None) -> str:
     """The history as a table, oldest first, one row per arm per run."""
     header = (
         "date        model             profile       corpus        "
         "blunders              cp loss mean/med  fallback      "
-        "s/move p50/p90  label"
+        "s/move p50/p90  looks  label"
     )
     rows = [header]
     for line in lines:
@@ -584,6 +596,7 @@ def trend(lines: Iterable[dict[str, Any]], model: str | None = None) -> str:
             f"{line['corpus_sha']:<13} {_rate_cell(line):<21} {loss:<17} "
             f"{_share(line['fallbacks'], line['samples']):<13} "
             f"{line['seconds_per_move_p50']}/{line['seconds_per_move_p90']:<10} "
+            f"{_looks_cell(line):<6} "
             f"{line['label']}"
             + ("" if line["arm"] == line["model"] else f" [{line['arm']}]")
         )

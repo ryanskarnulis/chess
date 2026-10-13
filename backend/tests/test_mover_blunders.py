@@ -472,6 +472,12 @@ def test_rates_read_blunders_losses_fallbacks_and_time():
     assert read["seconds_per_move_p90"] == 3.0
 
 
+def test_rates_count_looks_per_move_and_read_old_reports_as_none():
+    # Samples from before #498 carry no looks; they read as none taken.
+    looked = _sample() | {"looks": [{"lines": [], "dropped": []}] * 2}
+    assert rates([looked, _sample()])["looks_per_move"] == 1.0
+
+
 def test_a_run_with_no_moves_reads_without_dividing_by_zero():
     read = rates([_sample(outcome="deadline")])
     assert read["blunder_rate"] is None
