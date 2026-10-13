@@ -131,11 +131,14 @@ positions and judges each move afterwards with Stockfish at a fixed depth:
 the centipawns it gives up against the best move, and a **blunder** when that
 is 150 or more.
 
-- **Corpus:** positions where the mover has gone wrong (the four above,
-  traced Glitch-tier games, the strength script's games), plus positions with
-  something free to take, so an arm that only makes him timid scores badly.
-  The mover sees exactly what it sees in a game, built from each position's
-  moves.
+- **Corpus:** positions where the mover has gone wrong, harvested from games
+  he played (`harvest`, from a saved session, a PGN or a strength report;
+  a fallback's move is never counted as his). Positions where the other side
+  had just given something up are tagged `free`, so an arm that only makes
+  him timid scores badly. Decided positions (best move beyond ±500) are left
+  out: losing faster there is not measurable, which drops 19… Bf6 and
+  21… Rd8. The mover sees exactly what it sees in a game, built from each
+  position's moves.
 - **Report:** blunder rate, mean centipawn loss, seconds per move, looks per
   move, fallbacks; several samples per position, with arms interleaved per
   position (consecutive samples on one server are correlated).
@@ -144,7 +147,23 @@ is 150 or more.
 - Stockfish only judges, after the move is chosen. Nothing it says reaches
   the mover. Never in CI; it needs the GPU.
 
-The baseline is the tier as it plays today, recorded before any change.
+The baseline is the tier as it plays today, recorded before any change, on
+the default brain, gemma-4-12b. The 26B and qwen38 are for experiments and
+get no baseline unless one is wanted.
+
+**Baseline (2026-10-12, #495).** Corpus `9b35b985c627` of 9 positions: the four
+from game `927c238e` (7… O-O, 11… Bxe4, 13… Nxd4, 17… Qxd4) and five from
+one 12B strength game against Stockfish 1320 (lost in 30 moves). Three
+samples each, judged at depth 18:
+
+| model | blunders | cp loss mean / median | fallbacks | s/move p50 / p90 |
+|---|---|---|---|---|
+| gemma-4-12b | 23/27, 85% [71%, 93%] | 292 / 310 | 0/27 | 17.6 / 20.0 |
+
+High by construction, since every position is one he blundered in, which
+leaves the room a better arm needs to show. Small too: grow it with
+`harvest` from future Glitch-tier games (the live trace's `live.json`, or a
+strength report) before a result is read as more than a direction.
 
 ### 6. What does not change
 
