@@ -18,7 +18,9 @@ its PR: `CHESSAPP_RECORD_GOLDEN=1 pytest tests/test_mover_bytes.py`.
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import httpx
@@ -28,7 +30,7 @@ from chessapp.brain import PHASE_MOVER
 from chessapp.context_capture import JsonlContextCapture
 from chessapp.game import GameSession
 from chessapp.mover import PLAY_MOVE, Mover
-from chessapp.profiles import MOVER, load_profile
+from chessapp.profiles import MOVER, ModelProfile, load_profile
 from chessapp.provider import LlamaCppProvider
 from test_profile_bytes import _PINNED
 
@@ -80,11 +82,13 @@ class _Server:
         )
 
 
-def _choose(model: str, session: GameSession, *moves: str, capture=None) -> list[str]:
+def _choose(
+    model: str, session: GameSession, *moves: str, capture=None, profile=None
+) -> list[str]:
     server = _Server(*moves)
     client = httpx.Client(transport=httpx.MockTransport(server))
     provider = LlamaCppProvider(_BASE, model, client=client, capture=capture)
-    Mover(provider, load_profile(model)).choose(session)
+    Mover(provider, profile or load_profile(model)).choose(session)
     return server.bodies
 
 
@@ -103,18 +107,22 @@ def _set_up() -> GameSession:
     return session
 
 
-def _requests(model: str) -> list[str]:
+def _requests(model: str, profile=None) -> list[str]:
     return [
-        *_choose(model, _after_e4(), "e5"),
-        *_choose(model, _set_up(), "O-O"),
-        *_choose(model, _after_e4(), "Nf3", "Nf6"),
+        *_choose(model, _after_e4(), "e5", profile=profile),
+        *_choose(model, _set_up(), "O-O", profile=profile),
+        *_choose(model, _after_e4(), "Nf3", "Nf6", profile=profile),
     ]
 
 
-@pytest.mark.parametrize("model", _PINNED)
-def test_each_pinned_model_sends_the_recorded_mover_bytes(model):
-    sent = _requests(model)
-    golden = _golden(model)
+def _with_board_facts(model: str, on: bool) -> ModelProfile:
+    profile = load_profile(model)
+    phases = dict(profile.phases)
+    phases[MOVER] = replace(phases[MOVER], board_facts=on)
+    return replace(profile, phases=MappingProxyType(phases))
+
+
+def _check_golden(sent: list[str], golden: Path) -> None:
     if os.environ.get("CHESSAPP_RECORD_GOLDEN"):
         golden.parent.mkdir(exist_ok=True)
         golden.write_text(json.dumps(sent, indent=1) + "\n")
@@ -122,6 +130,25 @@ def test_each_pinned_model_sends_the_recorded_mover_bytes(model):
     assert len(sent) == len(recorded) == 4
     for index, (now, then) in enumerate(zip(sent, recorded, strict=True)):
         assert now == then, f"mover request {index} changed"
+
+
+@pytest.mark.parametrize("model", _PINNED)
+def test_each_pinned_model_sends_the_recorded_mover_bytes(model):
+    _check_golden(_requests(model), _golden(model))
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_the_default_brain_pins_both_board_facts_forms(on):
+    # Off and on whatever the profile says, so flipping its default moves
+    # no pin but the default one (#497).
+    model = "gemma-4-12b"
+    sent = _requests(model, _with_board_facts(model, on))
+    name = f"{model.replace('-', '_')}_mover_requests_facts_{'on' if on else 'off'}"
+    _check_golden(sent, _golden(model).with_name(name + ".json"))
+    bodies = [json.loads(body) for body in sent]
+    for body in bodies:
+        user = body["messages"][1]["content"]
+        assert ("Board facts (" in user) is on
 
 
 @pytest.mark.parametrize("model", _PINNED)

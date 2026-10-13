@@ -147,6 +147,8 @@ def test_a_phase_left_out_keeps_the_default_caps():
         "[phases.mover]\nmax_tokens = 512\nthinking_budget = 1024\n",
         "[phases.mover]\nthinking_budget = 1.5\n",
         "[phases.mover]\nthinking_budget = true\n",
+        "[phases.mover]\nboard_facts = 1\n",
+        "[phases.planner]\nboard_facts = true\n",
         # And only the mover's and the planner's effort (#476, #490), a level
         # name, sent under a key the profile names: a level with no key would
         # be silently dropped. The narrator and the answer take none.
@@ -339,3 +341,11 @@ def test_a_planner_effort_is_kept_described_and_reaches_the_brain():
         provider=LlamaCppProvider("http://llm.test/v1", "p", profile=profile),
     )
     assert brain.planner_effort == "low"
+
+
+def test_mover_board_facts_default_off_and_are_described():
+    assert DEFAULT_PROFILE.phase(MOVER).board_facts is False
+    profile = parse_profile("p", "[phases.mover]\nboard_facts = true\n", "test")
+    assert profile.phase(MOVER).board_facts is True
+    assert profile.describe()["phases"]["mover"]["board_facts"] is True
+    assert "board_facts" not in profile.describe()["phases"]["planner"]

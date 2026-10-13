@@ -10,10 +10,10 @@ head and without deciding anything?
 
 So this module says where every piece stands, which pieces are attacked and
 by what, what defends them, which pieces are pinned to their king, whether
-the side to move is in check, and the material in 1/3/3/5/9. Attackers and
-defenders are direct ones: a piece behind another on the same line (an
-x-ray, a battery) is not counted, and a pinned defender still counts, with
-the pin listed separately.
+the side to move is in check, and (in the structured form only) the material
+in 1/3/3/5/9. Attackers and defenders are direct ones: a piece behind another
+on the same line (an x-ray, a battery) is not counted, and a pinned defender
+still counts, with the pin listed separately.
 
 It never concludes. There is no "hanging", no "safe", no list of the other
 side's captures or checks, no mate marked, no evaluation and no search:
@@ -113,14 +113,13 @@ class BoardFacts:
         }
 
     def text(self) -> str:
-        """The facts as the prompt section, the side to move first."""
+        """The facts as the prompt section, the side to move first. The
+        material count stays in the structured form only: in the prompt it
+        sent the 12B after material to win back (#497)."""
         order = [self.turn, _other(self.turn)]
         lines = ["Board facts (what is on the board; nothing here judges it):"]
         for side in order:
             lines.append(f"{side.capitalize()}: {_piece_list(self.pieces[side])}.")
-        lines.append(
-            f"Material: White {self.material['white']}, Black {self.material['black']}."
-        )
         for side in order:
             attacked = self.attacked[side]
             if not attacked:
