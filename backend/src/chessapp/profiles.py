@@ -113,7 +113,10 @@ class PhaseSettings:
     `deadline_s` is the mover's alone: how long its whole run may take, and so
     is `thinking_budget`: the most thinking tokens one of its calls may spend
     before the server closes the thought and the model must answer (`None`
-    leaves thinking bounded only by `max_tokens`)."""
+    leaves thinking bounded only by `max_tokens`). `board_facts` is the
+    mover's too (#497): whether its request carries the board facts
+    (`board_facts.py`, docs/glitch-sight.md) between the board and the legal
+    moves."""
 
     max_tokens: int
     temperature: float | None = None
@@ -122,6 +125,7 @@ class PhaseSettings:
     deadline_s: float | None = None
     thinking_budget: int | None = None
     effort: str | None = None
+    board_facts: bool = False
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,7 @@ class ModelProfile:
                         {
                             "deadline_s": settings.deadline_s,
                             "thinking_budget": settings.thinking_budget,
+                            "board_facts": settings.board_facts,
                         }
                         if name == MOVER
                         else {}
@@ -230,12 +235,15 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
         if phase == MOVER:
             allowed.add("deadline_s")
             allowed.add("thinking_budget")
+            allowed.add("board_facts")
         _only(name, f"phases.{phase}", settings, allowed)
         thinking = settings.get("thinking", phases[phase].thinking)
         analysis_thinking = settings.get("analysis_thinking", True)
+        board_facts = settings.get("board_facts", phases[phase].board_facts)
         for key, value in (
             ("thinking", thinking),
             ("analysis_thinking", analysis_thinking),
+            ("board_facts", board_facts),
         ):
             if not isinstance(value, bool):
                 raise ProfileError(
@@ -282,6 +290,7 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
             deadline_s=None if deadline_s is None else float(deadline_s),
             thinking_budget=thinking_budget,
             effort=effort,
+            board_facts=board_facts,
         )
     crutches = frozenset(data.get("crutches", ()))
     unknown = crutches - KNOWN_CRUTCHES

@@ -45,7 +45,8 @@ What passes:
 - what directly attacks each piece, and what directly defends it;
 - which pieces are pinned to their king, and by what;
 - whether the side to move is in check, and from what;
-- the material count, in the usual 1/3/3/5/9.
+- the material count, in the usual 1/3/3/5/9 (in traces only: in the
+  prompt it sent the 12B after material to win back, #497).
 
 What fails, and is never in the facts:
 
@@ -90,7 +91,6 @@ legal moves (#497), the side to move first. From the position before
 Board facts (what is on the board; nothing here judges it):
 Black: Kg8, Qd7, Ra8, Rd8, Be7, pawns a7 b7 c6 e6 f7 g7 h7.
 White: Kc1, Qe2, Rd1, Re1, Bg3, Ne4, pawns a2 b2 c3 d4 f2 g2 h4.
-Material: White 32, Black 29.
 Black's pieces under attack: none.
 White's pieces under attack:
   pawn d4: attacked by Qd7; defended by pawn c3, Rd1
@@ -188,6 +188,65 @@ strength report) before a result is read as more than a direction.
 The planner, the narrator and their prompts; the fallback; the draw-offer
 rule; the player's hints, analysis and review; personality (tone only). The
 Stockfish tiers are untouched: this is the mover's context alone.
+
+## Result of step 3 (#497): no gain on the 12B, facts stay off
+
+The key shipped as `[phases.mover] board_facts`, off by default, with both
+request forms pinned. On gemma-4-12b the facts made the mover worse, so no
+profile turns them on.
+
+**Blunder suite** (corpus `9b35b985c627`, 5 samples a position, arms
+interleaved, idle GPU, 2026-10-13; `docs/mover-blunders-history.jsonl`). The
+facts were this note's first wording, material line included:
+
+| arm | blunders | cp loss mean / median | fallbacks | s/move p50 / p90 |
+|---|---|---|---|---|
+| off | 27/44, 61% [49%, 72%] | 226 / 201 | 1/45 | 18.3 / 21.1 |
+| facts | 33/43, 77% [65%, 86%] | 265 / 278 | 2/45 | 18.6 / 20.7 |
+
+The off arm's `profile_sha` differs from the baseline's only because the
+profile now describes `board_facts`. The facts helped at 13… Nxd4 (the best
+move, f5, 3 of 4) and hurt most at 17… Qxd4 (5 of 5 with facts, 0 of 5
+without).
+
+**Screen on 17… Qxd4 alone** (8 to 10 samples an arm a round, five rounds;
+blunder = Qxd4, or Bxh4, which Bg3 takes back the same way):
+
+| arm | material line | thinking budget | blunders |
+|---|---|---|---|
+| off | | 1024 | 16/38, 42% |
+| facts as first written | yes | 1024 | 12/13 |
+| + a system-prompt line on what a defender can do | yes | 1024 | 6/8 |
+| reworded: "White can take back on d4 with pawn c3 (1), Rd1 (5)" | yes | 1024 | 6/8 |
+| the same + the system-prompt line | yes | 1024 | 7/8 |
+| facts as first written | no | 1024 | 19/28, 68% |
+| defenders listed first | no | 1024 | 7/8 |
+| facts after the legal moves | no | 1024 | 4/8 |
+| defenders first, after the legal moves | no | 1024 | 7/8 |
+| each defender's capture: "pawn c3 (cxd4), Rd1 (Rxd4)" | no | 1024 | 9/10 |
+| the same | no | 2048 | 9/20 |
+| facts as first written | no | 2048 | 6/9 |
+| off | | 2048 | 7/10 |
+
+One round of 8 swings widely (off alone ran 0/5 to 6/8), but three things
+held:
+
+- **The material line drove the grab.** His intents read "regain material",
+  "restore material balance". It is gone from the prompt rendering.
+- **The other side's attacked pieces read as a capture menu.** Bxh4 came up
+  13 times across the facts arms and never in 48 samples without them, its
+  intent "capture the undefended h4 pawn" beside "defended by Bg3 (Bxh4)".
+- **He reads the facts and cannot use them.** Context capture shows him
+  quoting "defended by c3 and Rd1", then reasoning "White cannot take back
+  with the rook on d1 because it's on d1" and "c3 is a pawn". Nearly every
+  call, with facts or without, spends the whole thinking budget; doubling
+  it doubled the seconds a move (~34 s) and did not help without facts.
+
+So the gap is the step from "defended by c3" to "cxd4 takes my queen", which
+is what `try_line` (#498) shows him directly: he plays the line on a copy and
+sees the position after it. The facts are re-measured beside the looks in
+#499, where listing only his own attacked pieces (no capture menu) is the
+first variant to try.
 
 ## Order of work
 

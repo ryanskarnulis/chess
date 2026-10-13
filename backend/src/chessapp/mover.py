@@ -9,7 +9,9 @@ for, skip or steer it.
 
 **What it sees is the board and nothing else** (decision 2). The game's
 moves, the position as a FEN and a readable board, which side it plays, and
-the legal moves. Never the conversation, never anything Stockfish computed,
+the legal moves, and when the profile turns them on, the board facts
+(`board_facts.py`, #497): what attacks and defends what, read off the board
+by python-chess. Never the conversation, never anything Stockfish computed,
 never the knowledge notes or the opening's name. That is enforced by what it
 is given: `Mover.choose` takes a `GameSession` and reads only its board, so
 there is nothing else in reach to leak. `tests/test_mover_bytes.py` pins the
@@ -47,6 +49,7 @@ from typing import Any
 import chess
 from pydantic import BaseModel, ValidationError
 
+from chessapp.board_facts import board_facts as facts_for
 from chessapp.brain import (
     CALL_BAD_ARGS,
     CALL_FAILED,
@@ -252,7 +255,7 @@ class _Run:
         self.mover = mover
         self.session = session
         self.board = board
-        self.messages = mover_messages(session)
+        self.messages = mover_messages(session, board_facts=mover.settings.board_facts)
         self.attempts: list[MoverAttempt] = []
         self.calls: list[ModelCall] = []
         self.started = mover.clock()
@@ -466,12 +469,16 @@ class _Run:
         )
 
 
-def mover_messages(session: GameSession) -> list[dict[str, Any]]:
+def mover_messages(
+    session: GameSession, *, board_facts: bool = False
+) -> list[dict[str, Any]]:
     """The mover's opening request for the side to move in `session`: the
-    fixed instructions and side, then the moves, then the position. Built
-    from the board alone (module docstring)."""
+    fixed instructions and side, then the moves, then the position, with its
+    board facts when the profile asks for them (#497). Built from the board
+    alone (module docstring)."""
     board = chess.Board(session.fen())
     side = session.turn
+    facts = f"{facts_for(board).text()}\n\n" if board_facts else ""
     return [
         {"role": "system", "content": _SYSTEM.format(side=side.capitalize())},
         {
@@ -480,6 +487,7 @@ def mover_messages(session: GameSession) -> list[dict[str, Any]]:
                 f"{_moves_section(session)}\n\n"
                 f"Position:\nFEN: {board.fen()}\n{_board_text(board)}\n"
                 f"{side.capitalize()} to move.\n\n"
+                f"{facts}"
                 f"Legal moves: {', '.join(session.legal_moves())}"
             ),
         },

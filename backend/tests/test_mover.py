@@ -10,8 +10,10 @@ else, append-only per game. The exact bytes are `test_mover_bytes.py`'s.
 import inspect
 import json
 
+import chess
 import pytest
 
+from chessapp.board_facts import board_facts
 from chessapp.brain import CALL_BAD_ARGS, CALL_FAILED, CALL_OK, CALL_TRUNCATED
 from chessapp.game import GameSession
 from chessapp.mover import (
@@ -311,7 +313,10 @@ def test_the_mover_is_given_a_session_and_nothing_else():
     # Decision 2 is held by construction: no conversation, settings, analysis
     # or notes can reach a call that is handed only the game.
     assert list(inspect.signature(Mover.choose).parameters) == ["self", "session"]
-    assert list(inspect.signature(mover_messages).parameters) == ["session"]
+    assert list(inspect.signature(mover_messages).parameters) == [
+        "session",
+        "board_facts",
+    ]
 
 
 def test_the_request_is_the_board_and_only_the_board():
@@ -355,6 +360,41 @@ def test_the_prompt_is_append_only_across_a_game():
     session.submit_move("Nf3")
     later = mover_messages(session)
     assert later[0] == first[0]
+    before, _, _ = first[1]["content"].partition("\n\nPosition:")
+    assert later[1]["content"].startswith(before + " ")
+
+
+def test_board_facts_sit_between_the_board_and_the_legal_moves():
+    session = _after_e4()
+    plain = mover_messages(session)[1]["content"]
+    seen = mover_messages(session, board_facts=True)[1]["content"]
+    before, _, legal = plain.partition("Legal moves: ")
+    assert seen == (
+        before
+        + board_facts(chess.Board(session.fen())).text()
+        + "\n\nLegal moves: "
+        + legal
+    )
+    assert "Black: Ke8, Qd8" in seen
+
+
+def test_the_profile_turns_board_facts_on():
+    profile = parse_profile("p", "[phases.mover]\nboard_facts = true\n", "test")
+    provider = ScriptedProvider(_play("e5"))
+    _mover(provider, profile).choose(_after_e4())
+    assert "Board facts (" in provider.calls[0]["messages"][1]["content"]
+    provider = ScriptedProvider(_play("e5"))
+    _mover(provider).choose(_after_e4())
+    assert "Board facts (" not in provider.calls[0]["messages"][1]["content"]
+
+
+def test_the_prompt_with_board_facts_is_append_only_across_a_game():
+    session = GameSession()
+    session.submit_move("e4")
+    first = mover_messages(session, board_facts=True)
+    session.submit_move("e5")
+    session.submit_move("Nf3")
+    later = mover_messages(session, board_facts=True)
     before, _, _ = first[1]["content"].partition("\n\nPosition:")
     assert later[1]["content"].startswith(before + " ")
 

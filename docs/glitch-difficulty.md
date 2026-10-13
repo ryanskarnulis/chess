@@ -46,6 +46,12 @@ what a human gets by looking at the board: it makes illegal moves impossible
 to want, not good moves easier to find. The choice among them is entirely the
 model's.
 
+With `[phases.mover] board_facts = true` it also sees the **board facts**
+(#497, `docs/glitch-sight.md` decisions 1 and 2): where every piece stands,
+what attacks and defends each attacked piece, pins, check and material. They
+are what a player sees by looking at the board, never a verdict on it, and
+they come from python-chess alone.
+
 It never sees:
 
 - **The conversation.** Not the player's words, not Glitch's. Otherwise
