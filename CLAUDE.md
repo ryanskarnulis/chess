@@ -35,6 +35,8 @@ CHESSAPP_TRAJ_SEED=7 pytest tests/test_trajectories.py -k replay -s   # replay o
 python scripts/check_profile.py gemma-4-26b-a4b          # a model's profile vs its server (docs/model-profiles.md)
 python scripts/mover_strength.py play gemma-4-26b-a4b --report /tmp/strength.jsonl   # Glitch-tier mover vs Stockfish; idle GPU, hours (docs/glitch-difficulty.md)
 python scripts/mover_strength.py trend                   # mover strength history, per model and profile
+python scripts/mover_blunders.py play gemma-4-12b --report /tmp/blunders.jsonl   # mover blunder rate on a fixed corpus; idle GPU, ~10 min (docs/glitch-sight.md)
+python scripts/mover_blunders.py trend                   # mover blunder history, per model and profile
 ```
 
 Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
