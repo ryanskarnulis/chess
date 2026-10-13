@@ -20,8 +20,9 @@ id it describes. It holds what changes with the model and nothing else:
   thought through first (on unless a profile turns it off, #440); for the
   mover alone (#472), `thinking` too and `deadline_s`, the wall clock its
   whole run (every retry included) may take, `thinking_budget`, the most
-  thinking tokens one call may spend (#476), and `effort`, the level sent as
-  `effort_kwarg` on its thinking calls (#476).
+  thinking tokens one call may spend (#476), `effort`, the level sent as
+  `effort_kwarg` on its thinking calls (#476), `board_facts` (#497) and
+  `look_calls`, how many `try_line` looks a run may make (#498).
 - `crutches` — the guidance that exists only because this model needed it
   (`KNOWN_CRUTCHES`; docs/model-profiles.md says what each one is and what it
   was measured to fix). A better model runs without them.
@@ -116,7 +117,8 @@ class PhaseSettings:
     leaves thinking bounded only by `max_tokens`). `board_facts` is the
     mover's too (#497): whether its request carries the board facts
     (`board_facts.py`, docs/glitch-sight.md) between the board and the legal
-    moves."""
+    moves, and so is `look_calls` (#498): how many `try_line` calls one run
+    may make, `0` leaving the tool out of the request."""
 
     max_tokens: int
     temperature: float | None = None
@@ -126,6 +128,7 @@ class PhaseSettings:
     thinking_budget: int | None = None
     effort: str | None = None
     board_facts: bool = False
+    look_calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -178,6 +181,7 @@ class ModelProfile:
                             "deadline_s": settings.deadline_s,
                             "thinking_budget": settings.thinking_budget,
                             "board_facts": settings.board_facts,
+                            "look_calls": settings.look_calls,
                         }
                         if name == MOVER
                         else {}
@@ -236,6 +240,7 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
             allowed.add("deadline_s")
             allowed.add("thinking_budget")
             allowed.add("board_facts")
+            allowed.add("look_calls")
         _only(name, f"phases.{phase}", settings, allowed)
         thinking = settings.get("thinking", phases[phase].thinking)
         analysis_thinking = settings.get("analysis_thinking", True)
@@ -257,6 +262,16 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
         ):
             raise ProfileError(
                 f"profile {name!r}: phases.{phase}.deadline_s must be a positive number"
+            )
+        look_calls = settings.get("look_calls", phases[phase].look_calls)
+        if (
+            isinstance(look_calls, bool)
+            or not isinstance(look_calls, int)
+            or (look_calls < 0)
+        ):
+            raise ProfileError(
+                f"profile {name!r}: phases.{phase}.look_calls must be a whole "
+                "number, 0 or more"
             )
         max_tokens = int(settings.get("max_tokens", phases[phase].max_tokens))
         thinking_budget = settings.get("thinking_budget")
@@ -291,6 +306,7 @@ def parse_profile(name: str, text: str, source: str) -> ModelProfile:
             thinking_budget=thinking_budget,
             effort=effort,
             board_facts=board_facts,
+            look_calls=look_calls,
         )
     crutches = frozenset(data.get("crutches", ()))
     unknown = crutches - KNOWN_CRUTCHES

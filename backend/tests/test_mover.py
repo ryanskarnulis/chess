@@ -3,8 +3,10 @@
 Against a scripted provider: a legal move comes back with its intent, an
 illegal one is refused with the reason and retried under the budget, and every
 way of running out (attempts, deadline, token cap, a dead provider) is a typed
-failure, never a move. Plus what the mover is shown: the board and nothing
-else, append-only per game. The exact bytes are `test_mover_bytes.py`'s.
+failure, never a move. Looking ahead with `try_line` (#498): lines played on a
+copy, capped by the profile, never an attempt. Plus what the mover is shown:
+the board and nothing else, append-only per game. The exact bytes are
+`test_mover_bytes.py`'s.
 """
 
 import inspect
@@ -20,10 +22,15 @@ from chessapp.mover import (
     BAD_ARGS,
     ILLEGAL,
     MAX_ATTEMPTS,
+    MAX_LINE_PLIES,
+    MAX_LINES,
     NO_CALL,
+    NO_LOOKS,
     PLAY_MOVE,
     PLAY_MOVE_TOOL,
     PLAYED,
+    TRY_LINE,
+    TRY_LINE_TOOL,
     Mover,
     MoverFailed,
     MoverFailureKind,
@@ -316,6 +323,7 @@ def test_the_mover_is_given_a_session_and_nothing_else():
     assert list(inspect.signature(mover_messages).parameters) == [
         "session",
         "board_facts",
+        "look_calls",
     ]
 
 
@@ -406,3 +414,241 @@ def test_the_trace_says_what_was_played_and_tried():
     assert (trace["uci"], trace["san"], trace["intent"]) == ("e7e5", "e5", "mirror")
     assert [a["verdict"] for a in trace["attempts"]] == [ILLEGAL, PLAYED]
     assert trace["attempts"][0]["move"] == "Ke2"
+
+
+# --- looking ahead (#498) ----------------------------------------------------
+
+
+def _looks(calls: int = 2, extra: str = ""):
+    return parse_profile("p", f"[phases.mover]\nlook_calls = {calls}\n{extra}", "t")
+
+
+def _try(*lines):
+    return tool_calls_turn((TRY_LINE, {"lines": list(lines)}))
+
+
+def _answer(call: dict, index: int = -1) -> str:
+    return call["messages"][index]["content"]
+
+
+def test_without_looks_the_tool_and_its_instructions_are_left_out():
+    provider = ScriptedProvider(_play("e5"))
+    _mover(provider).choose(_after_e4())
+    assert provider.calls[0]["tools"] == [PLAY_MOVE_TOOL]
+    assert TRY_LINE not in provider.calls[0]["messages"][0]["content"]
+
+
+def test_with_looks_the_tool_is_listed_and_explained():
+    provider = ScriptedProvider(_play("e5"))
+    _mover(provider, _looks(2)).choose(_after_e4())
+    assert provider.calls[0]["tools"] == [PLAY_MOVE_TOOL, TRY_LINE_TOOL]
+    system = provider.calls[0]["messages"][0]["content"]
+    assert system.startswith(mover_messages(_after_e4())[0]["content"])
+    assert "calling try_line, up to 2 times" in system
+    assert f"up to {MAX_LINES} lines" in system
+
+
+def test_a_look_plays_the_line_on_a_copy_and_is_not_an_attempt():
+    session = _after_e4()
+    fen = session.fen()
+    provider = ScriptedProvider(_try("e5 Nf3 Nc6"), _play("e5"))
+    choice = _mover(provider, _looks()).choose(session)
+    assert choice.san == "e5"
+    assert session.fen() == fen
+    assert [a.verdict for a in choice.attempts] == [PLAYED]
+    (look,) = choice.looks
+    (line,) = look.lines
+    assert line.played == ("e5", "Nf3", "Nc6")
+    assert line.stopped == ""
+    assert line.fen.startswith("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/")
+    answer = _answer(provider.calls[1])
+    assert provider.calls[1]["messages"][-1]["role"] == "tool"
+    assert answer.startswith("Played on a copy of the board; nothing was played")
+    assert "Line 1: 1... e5 2. Nf3 Nc6\nPosition at its end:\nFEN: r1bqkbnr/" in answer
+    assert "White to move." in answer
+    assert "Looks left: 1." in answer
+    # The history only grows.
+    first = provider.calls[0]["messages"]
+    assert provider.calls[1]["messages"][: len(first)] == first
+
+
+def test_the_end_of_a_line_shows_its_facts_and_material_whatever_the_prompt():
+    # The prompt's facts are off; at a line's end they are what he looked for.
+    provider = ScriptedProvider(_try("Nf6 e5"), _play("e5"))
+    _mover(provider, _looks()).choose(_after_e4())
+    answer = _answer(provider.calls[1])
+    assert "Board facts (" not in provider.calls[0]["messages"][1]["content"]
+    assert "Board facts (" in answer
+    assert "Nf6: attacked by pawn e5" in answer
+    assert "Material (1/3/3/5/9): White 39, Black 39; before the line" in answer
+
+
+def test_a_line_that_takes_material_shows_both_counts():
+    # 17... Qxd4 18. cxd4 from game 927c238e: the queen is gone at the end.
+    session = GameSession(
+        fen="r2r2k1/pp1qbppp/2p1p3/8/3PN2P/2P3B1/PP2QPP1/2KRR3 b - - 0 17"
+    )
+    provider = ScriptedProvider(_try("17... Qxd4 18. cxd4"), _play("Rf8"))
+    _mover(provider, _looks()).choose(session)
+    answer = _answer(provider.calls[1])
+    assert "Line 1: 17... Qxd4 18. cxd4\n" in answer
+    assert "White 31, Black 20; before the line White 32, Black 29." in answer
+
+
+def test_an_illegal_ply_stops_the_line_with_the_reason():
+    provider = ScriptedProvider(_try("e5 Nf3 Nf3", "Ke2", "Nf6"), _play("e5"))
+    choice = _mover(provider, _looks()).choose(_after_e4())
+    stopped, never, fine = choice.looks[0].lines
+    assert stopped.played == ("e5", "Nf3")
+    assert "Nf3 is not a legal move there" in stopped.stopped
+    assert never.played == ()
+    assert fine.played == ("Nf6",)
+    answer = _answer(provider.calls[1])
+    assert "Line 1: 1... e5 2. Nf3\nStopped there: Nf3 is not a legal move" in answer
+    assert "Line 2: not played: Ke2 is not a legal move there; legal" in answer
+
+
+def test_an_ambiguous_ply_names_the_moves_it_could_be():
+    session = GameSession(fen="4k3/8/8/8/8/8/8/1N2KN2 w - - 0 1")
+    provider = ScriptedProvider(_try("Nd2"), _play("Nbd2"))
+    choice = _mover(provider, _looks()).choose(session)
+    assert "ambiguous" in choice.looks[0].lines[0].stopped
+    assert "Nbd2" in choice.looks[0].lines[0].stopped
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["1... e5 2. Nf3"],
+        ["e5! Nf3!?"],
+        ["e7e5 g1f3"],
+        ["e5, Nf3"],
+        "e5 Nf3",
+        [["e5", "Nf3"]],
+        ["1…e5 2.Nf3"],
+    ],
+)
+def test_a_line_may_be_written_as_a_score_sheet_writes_it(lines):
+    provider = ScriptedProvider(
+        tool_calls_turn((TRY_LINE, {"lines": lines})), _play("e5")
+    )
+    choice = _mover(provider, _looks()).choose(_after_e4())
+    assert choice.looks[0].lines[0].played == ("e5", "Nf3")
+
+
+def test_a_look_plays_only_so_many_lines_and_plies():
+    long = "e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O"
+    provider = ScriptedProvider(_try(long, "d5", "c5", "e6"), _play("e5"))
+    choice = _mover(provider, _looks()).choose(_after_e4())
+    look = choice.looks[0]
+    assert len(look.lines) == MAX_LINES
+    assert look.dropped == ("e6",)
+    assert len(look.lines[0].played) == MAX_LINE_PLIES
+    assert "only the first 6 moves" in look.lines[0].stopped
+    answer = _answer(provider.calls[1])
+    assert "Only 3 lines a look; not played: e6" in answer
+
+
+def test_a_line_ending_in_mate_says_so_and_plays_nothing_past_it():
+    session = GameSession(
+        fen="r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+    )
+    provider = ScriptedProvider(_try("Qxf7# Ke7"), _play("Qxf7#"))
+    choice = _mover(provider, _looks()).choose(session)
+    (line,) = choice.looks[0].lines
+    assert line.played == ("Qxf7#",)
+    assert line.status == "checkmate, White wins"
+    assert "the game is over there" in line.stopped
+    assert "The game: checkmate, White wins." in _answer(provider.calls[1])
+
+
+def test_a_line_sees_the_games_own_repetitions():
+    session = GameSession()
+    for move in ("Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6", "Ng1"):
+        session.submit_move(move)
+    provider = ScriptedProvider(_try("Ng8"), _play("Ng8"))
+    choice = _mover(provider, _looks()).choose(session)
+    status = choice.looks[0].lines[0].status
+    assert status == "a draw may be claimed by threefold repetition"
+
+
+def test_a_look_past_the_cap_is_refused_and_is_an_attempt():
+    provider = ScriptedProvider(_try("e5"), _try("d5"), _play("e5"))
+    choice = _mover(provider, _looks(1)).choose(_after_e4())
+    assert choice.san == "e5"
+    assert len(choice.looks) == 1
+    assert [a.verdict for a in choice.attempts] == [NO_LOOKS, PLAYED]
+    assert "No looks left; play your move next." in _answer(provider.calls[1])
+    refusal = json.loads(_answer(provider.calls[2]))
+    assert refusal["ok"] is False
+    assert refusal["error"] == "no looks left; play your move"
+    # Still listed, so the request's prefix still caches.
+    assert provider.calls[2]["tools"] == [PLAY_MOVE_TOOL, TRY_LINE_TOOL]
+
+
+def test_looks_do_not_spend_attempts_but_the_run_still_ends():
+    provider = ScriptedProvider(
+        _try("e5"), _play("Ke2"), _try("d5"), _play("Ke2"), _try("c5"), _play("Ke2")
+    )
+    with pytest.raises(MoverFailed) as failed:
+        _mover(provider, _looks(2)).choose(_after_e4())
+    assert failed.value.kind is MoverFailureKind.RETRIES
+    # Two looks, then three replies that are attempts (one of them a refused
+    # third look): MAX_ATTEMPTS + look_calls calls at most.
+    assert len(provider.calls) == MAX_ATTEMPTS + 2
+    assert len(failed.value.looks) == 2
+    assert [a.verdict for a in failed.value.attempts] == [ILLEGAL, ILLEGAL, NO_LOOKS]
+    assert len(failed.value.as_trace()["looks"]) == 2
+
+
+def test_a_look_and_a_move_in_one_reply_are_both_answered_in_order():
+    provider = ScriptedProvider(
+        tool_calls_turn(
+            (TRY_LINE, {"lines": ["d5 exd5"]}),
+            (PLAY_MOVE, {"move": "e5", "intent": "centre"}),
+            (TRY_LINE, {"lines": ["c5"]}),
+        )
+    )
+    choice = _mover(provider, _looks()).choose(_after_e4())
+    assert choice.san == "e5"
+    assert len(choice.looks) == 1
+    assert len(provider.calls) == 1
+
+
+def test_a_look_with_no_lines_is_refused_as_bad_arguments():
+    provider = ScriptedProvider(
+        tool_calls_turn((TRY_LINE, {"lines": ["  "]})),
+        tool_calls_turn((TRY_LINE, {"moves": "e5"})),
+        _play("e5"),
+    )
+    choice = _mover(provider, _looks()).choose(_after_e4())
+    assert [a.verdict for a in choice.attempts] == [BAD_ARGS, BAD_ARGS, PLAYED]
+    assert choice.looks == ()
+
+
+def test_try_line_without_looks_is_no_tool():
+    provider = ScriptedProvider(_try("e5"), _play("e5"))
+    choice = _mover(provider).choose(_after_e4())
+    assert [a.verdict for a in choice.attempts] == [BAD_ARGS, PLAYED]
+    assert "there is no tool 'try_line'" in choice.attempts[0].reason
+
+
+def test_the_deadline_covers_looks():
+    clock = _Clock(step=20.0)
+    provider = ScriptedProvider(_try("e5"))
+    with pytest.raises(MoverFailed) as failed:
+        _mover(provider, _looks(8), clock=clock).choose(_after_e4())
+    assert failed.value.kind is MoverFailureKind.DEADLINE
+    assert failed.value.looks
+    assert failed.value.attempts == ()
+
+
+def test_the_trace_carries_each_look():
+    provider = ScriptedProvider(_try("e5 Nf3", "Ke2"), _play("e5"))
+    trace = _mover(provider, _looks()).choose(_after_e4()).as_trace()
+    (look,) = trace["looks"]
+    assert [line["played"] for line in look["lines"]] == [["e5", "Nf3"], []]
+    assert look["lines"][0]["asked"] == "e5 Nf3"
+    assert "not a legal move" in look["lines"][1]["stopped"]
+    plain = _mover(ScriptedProvider(_play("e5"))).choose(_after_e4()).as_trace()
+    assert plain["looks"] == []

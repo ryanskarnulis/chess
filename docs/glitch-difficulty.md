@@ -52,6 +52,12 @@ what attacks and defends each attacked piece, pins, check and material. They
 are what a player sees by looking at the board, never a verdict on it, and
 they come from python-chess alone.
 
+With `[phases.mover] look_calls` above 0 he can also **look ahead** with
+`try_line` (#498, `docs/glitch-sight.md` decision 3): he names a line, his
+move first, and python-chess plays it on a copy and shows the board where it
+ends. He picks every move in the line; code never extends it, picks a reply
+or says which line is better.
+
 It never sees:
 
 - **The conversation.** Not the player's words, not Glitch's. Otherwise

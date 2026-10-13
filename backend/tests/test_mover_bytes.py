@@ -10,7 +10,9 @@ bytes and fail here.
 
 The positions: Black's first move after 1.e4; a game from a set-up position
 with a few moves played; and a retry, where the first answer is illegal and
-the second request carries the refusal.
+the second request carries the refusal. With looks on (#498), the default
+brain's form is pinned too: a look, then a move, so the second request carries
+the tool's answer.
 
 Re-record only for a change that is *meant* to move the bytes, and say so in
 its PR: `CHESSAPP_RECORD_GOLDEN=1 pytest tests/test_mover_bytes.py`.
@@ -29,7 +31,7 @@ import pytest
 from chessapp.brain import PHASE_MOVER
 from chessapp.context_capture import JsonlContextCapture
 from chessapp.game import GameSession
-from chessapp.mover import PLAY_MOVE, Mover
+from chessapp.mover import PLAY_MOVE, TRY_LINE, Mover
 from chessapp.profiles import MOVER, ModelProfile, load_profile
 from chessapp.provider import LlamaCppProvider
 from test_profile_bytes import _PINNED
@@ -44,9 +46,10 @@ def _golden(model: str) -> Path:
 
 class _Server:
     """Plays the scripted moves in order, one per completion, and renders a
-    template for the context capture."""
+    template for the context capture. A list is a look: `try_line` with those
+    lines."""
 
-    def __init__(self, *moves: str) -> None:
+    def __init__(self, *moves: str | list[str]) -> None:
         self.moves = list(moves)
         self.bodies: list[str] = []
 
@@ -55,13 +58,15 @@ class _Server:
             return httpx.Response(200, json={"prompt": "<rendered>"})
         self.bodies.append(request.content.decode("utf-8"))
         move = self.moves.pop(0)
+        name, args = (
+            (TRY_LINE, {"lines": move})
+            if isinstance(move, list)
+            else (PLAY_MOVE, {"move": move, "intent": "a plan"})
+        )
         call = {
             "id": f"c{len(self.bodies)}",
             "type": "function",
-            "function": {
-                "name": PLAY_MOVE,
-                "arguments": json.dumps({"move": move, "intent": "a plan"}),
-            },
+            "function": {"name": name, "arguments": json.dumps(args)},
         }
         return httpx.Response(
             200,
@@ -83,7 +88,11 @@ class _Server:
 
 
 def _choose(
-    model: str, session: GameSession, *moves: str, capture=None, profile=None
+    model: str,
+    session: GameSession,
+    *moves: str | list[str],
+    capture=None,
+    profile=None,
 ) -> list[str]:
     server = _Server(*moves)
     client = httpx.Client(transport=httpx.MockTransport(server))
@@ -115,19 +124,19 @@ def _requests(model: str, profile=None) -> list[str]:
     ]
 
 
-def _with_board_facts(model: str, on: bool) -> ModelProfile:
+def _with_mover(model: str, **settings: Any) -> ModelProfile:
     profile = load_profile(model)
     phases = dict(profile.phases)
-    phases[MOVER] = replace(phases[MOVER], board_facts=on)
+    phases[MOVER] = replace(phases[MOVER], **settings)
     return replace(profile, phases=MappingProxyType(phases))
 
 
-def _check_golden(sent: list[str], golden: Path) -> None:
+def _check_golden(sent: list[str], golden: Path, count: int = 4) -> None:
     if os.environ.get("CHESSAPP_RECORD_GOLDEN"):
         golden.parent.mkdir(exist_ok=True)
         golden.write_text(json.dumps(sent, indent=1) + "\n")
     recorded = json.loads(golden.read_text())
-    assert len(sent) == len(recorded) == 4
+    assert len(sent) == len(recorded) == count
     for index, (now, then) in enumerate(zip(sent, recorded, strict=True)):
         assert now == then, f"mover request {index} changed"
 
@@ -142,13 +151,40 @@ def test_the_default_brain_pins_both_board_facts_forms(on):
     # Off and on whatever the profile says, so flipping its default moves
     # no pin but the default one (#497).
     model = "gemma-4-12b"
-    sent = _requests(model, _with_board_facts(model, on))
+    sent = _requests(model, _with_mover(model, board_facts=on))
     name = f"{model.replace('-', '_')}_mover_requests_facts_{'on' if on else 'off'}"
     _check_golden(sent, _golden(model).with_name(name + ".json"))
     bodies = [json.loads(body) for body in sent]
     for body in bodies:
         user = body["messages"][1]["content"]
         assert ("Board facts (" in user) is on
+
+
+def test_the_default_brain_pins_the_looks_form():
+    # Looks on whatever the profile says (#498): the instructions and the
+    # second tool in the first request, the look's answer in the second.
+    model = "gemma-4-12b"
+    sent = [
+        *_choose(
+            model,
+            _after_e4(),
+            ["e5 Nf3 Nc6", "c5 Nf3"],
+            "e5",
+            profile=_with_mover(model, look_calls=2),
+        ),
+    ]
+    name = f"{model.replace('-', '_')}_mover_requests_looks.json"
+    _check_golden(sent, _golden(model).with_name(name), count=2)
+    first, second = (json.loads(body) for body in sent)
+    assert [tool["function"]["name"] for tool in first["tools"]] == [
+        PLAY_MOVE,
+        TRY_LINE,
+    ]
+    assert "try_line, up to 2 times" in first["messages"][0]["content"]
+    answer = second["messages"][-1]
+    assert answer["role"] == "tool"
+    assert answer["content"].startswith("Played on a copy of the board")
+    assert all("reasoning_content" not in message for message in second["messages"])
 
 
 @pytest.mark.parametrize("model", _PINNED)

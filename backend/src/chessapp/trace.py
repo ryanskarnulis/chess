@@ -43,9 +43,11 @@ from chessapp.brain import ModelCall
 # the move Glitch chose himself in the `glitch` tier (#472; None in every other
 # tier), and the `mover` phase in `calls`. 8 adds `evidence.reply_chosen_by`
 # and `evidence.reply_intent`, who chose the reply in the `glitch` tier and why
-# (#474), and the handoff's `reply_chosen_by`/`reply_intent`. Bump it on any
-# change a reader must branch on.
-TRACE_SCHEMA = 8
+# (#474), and the handoff's `reply_chosen_by`/`reply_intent`. 9 adds
+# `mover.looks`, each `try_line` look the mover made and what came back (#498;
+# empty when the profile allows none). Bump it on any change a reader must
+# branch on.
+TRACE_SCHEMA = 9
 # What a record in the trace file is. A turn, or a `serving` manifest
 # (`serving.KIND_SERVING`), written at startup and whenever what serves the app
 # changes; the kind is on every record so a reader never mistakes one for the

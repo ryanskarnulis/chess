@@ -16,6 +16,7 @@ writing its profile, not editing code.
 | `[phases.mover]` `thinking`, `deadline_s` | The mover (Glitch choosing his own move in the `glitch` tier, #472) thinks unless told `false`. `deadline_s` is the wall clock for its whole run, retries included. Mover only. Defaults: thinking on, 4096 tokens, 90 s. |
 | `[phases.mover]` `thinking_budget` | The most thinking tokens one mover call may spend, sent as llama-server's `thinking_budget_tokens`: past it the server closes the thought and the model must call `play_move` (#476). Below `max_tokens`, or the cap ends a think first, with no move. Unset: thinking bounded only by `max_tokens`. Mover only; the 26B and qwen38 set 1024. |
 | `[phases.mover]` `board_facts` | Whether the mover's request carries the board facts (`board_facts.py`, `docs/glitch-sight.md`) between the board and the legal moves (#497). Off keeps the request as it was. Mover only. Default off. |
+| `[phases.mover]` `look_calls` | How many `try_line` looks one mover run may make (#498, `docs/glitch-sight.md` decision 3). `0` leaves the tool and its instructions out, so the request is as it was. Past the cap the tool stays listed and refuses. Looks never count against `MAX_ATTEMPTS`; `deadline_s` covers them. Mover only. Default 0. |
 | `effort_kwarg`, `[phases.mover\|planner]` `effort` | A template's own thinking level (#476, #490). `effort_kwarg` names the `chat_template_kwargs` key the model's template reads (Qwen3.8: `reasoning_effort`, levels `low`, `medium`, `xhigh`, default `xhigh`; Gemma 4 has none, only on/off). The mover's and the planner's `effort` is sent under it on that phase's thinking calls; left out, the template's default applies. A level without the key is refused. The narrator and answer phases take none: only Qwen3.8 reads a level, and its narrator never thinks. |
 | `[phases.narrator]` `analysis_thinking` | The brain's rule turns the narrator's thinking on once an analysis tool has answered. `false` keeps those words a plain call (#440). Narrator only. Default `true`. |
 | `crutches` | Guidance that exists only because this model needed it (below). |
@@ -68,17 +69,25 @@ and slower.
 - Its one tool is `play_move(move, intent)`. Code checks the move is legal,
   refuses one that is not with the reason, and allows `MAX_ATTEMPTS` (3)
   replies in all.
+- With `look_calls` above 0 it also has `try_line(lines)` (#498): up to 3
+  lines of up to 6 plies, his move first, played on a copy of the board. Each
+  comes back as the board at its end, its board facts, how the game stands
+  (mate, stalemate, a draw) and the material before and after. A reply that
+  looked is not an attempt, so a run makes at most `MAX_ATTEMPTS` +
+  `look_calls` calls.
 - Out of attempts, past `deadline_s`, cut off at `max_tokens`, or with the
   provider down, it raises `MoverFailed` with that kind. Running out is
   never a move. The caller plays something else (#473).
 - `tests/test_mover_bytes.py` pins its exact requests for each pinned
   model on three positions (`fixtures/<model>_mover_requests.json`), so
-  nothing can leak into them unnoticed. Re-record only for a change that is
+  nothing can leak into them unnoticed. The default brain's forms with
+  board facts on and off, and with looks on, are pinned beside it. Re-record only for a change that is
   meant to move them: `CHESSAPP_RECORD_GOLDEN=1 pytest
   tests/test_mover_bytes.py`.
 - Its calls are tagged `mover` in the trace's `calls` and in the context
   capture. The turn record's `mover` field holds what it played and meant,
-  or why it played nothing, with every attempt.
+  or why it played nothing, with every attempt and every look (`looks`,
+  trace schema 9).
 
 Each shipped profile's `[phases.mover]` numbers are starting values. The
 strength script (#476) measures them.

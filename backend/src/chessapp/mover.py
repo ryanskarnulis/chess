@@ -3,7 +3,8 @@
 In the `glitch` difficulty tier the model picks Glitch's move and no engine
 helps it. This module is that pick: one model phase, `mover`, beside the
 brain's planner, narrator and answer reader, with one tool, `play_move(move,
-intent)`. It is a move *source* (`coordinator.MoveSource`), not a step in the
+intent)`, and a second, `try_line(lines)`, when the profile allows it (#498).
+It is a move *source* (`coordinator.MoveSource`), not a step in the
 planner's loop, so no turn's language reaches it and the planner cannot ask
 for, skip or steer it.
 
@@ -31,6 +32,16 @@ is one, and never cuts or rewrites its words (CLAUDE.md). It is a final
 answer, not a thought, so it may reach the narrator. Thinking is never fed
 back into history.
 
+**Looking ahead is his, the board is code's** (#498, docs/glitch-sight.md
+decision 3). With `[phases.mover] look_calls` above 0, `try_line` lets him
+name up to `MAX_LINES` lines of up to `MAX_LINE_PLIES` plies, his move first,
+and code plays each on a copy of the board and shows where it lands: the
+board, its facts, how the game stands and the material. It never extends a
+line, picks a reply or compares lines. A look never counts against
+`MAX_ATTEMPTS`; past `look_calls` the tool stays listed (the prefix still
+caches) and refuses, and that reply is an attempt. The deadline covers looks
+like every call. At `0` the tool is left out and the request is as before.
+
 **Running out is a failure the caller sees, never a move.** Its own deadline
 and token cap come from the profile's `[phases.mover]`. Passing either,
 exhausting the attempts, or a provider that is down raises `MoverFailed` with
@@ -40,6 +51,7 @@ its kind, and the caller (#473) decides what plays instead.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -50,6 +62,7 @@ import chess
 from pydantic import BaseModel, ValidationError
 
 from chessapp.board_facts import board_facts as facts_for
+from chessapp.board_facts import material
 from chessapp.brain import (
     CALL_BAD_ARGS,
     CALL_FAILED,
@@ -76,12 +89,21 @@ from chessapp.provider import (
 MAX_ATTEMPTS = 3
 
 PLAY_MOVE = "play_move"
+TRY_LINE = "try_line"
+
+# How much one look may ask for (docs/glitch-sight.md decision 3): a few
+# candidate moves, each a short exchange. Longer lines are what an engine
+# reads, and every line is prompt the next call carries.
+MAX_LINES = 3
+MAX_LINE_PLIES = 6
 
 # An attempt's verdict.
 PLAYED = "played"
 ILLEGAL = "illegal"
 NO_CALL = "no_call"
 BAD_ARGS = "bad_args"
+# A `try_line` past the profile's `look_calls`: refused, and an attempt.
+NO_LOOKS = "no_looks"
 
 _STANDARD_START = chess.STARTING_FEN
 
@@ -96,6 +118,16 @@ play_move once:
 like "developing, eyeing f7".
 
 The choice is yours alone."""
+
+# Added to the instructions when the profile allows looks (#498). Without them
+# the request is the one `_SYSTEM` alone makes, byte for byte.
+_LOOKS = """
+
+Before you play, you may look ahead by calling try_line, up to {calls} \
+times. Give it up to {lines} lines, each starting with your move and going on \
+with the replies you expect, up to {plies} moves in all, like "Qxd4 cxd4". \
+Each line is played on a copy of the board, and you see the position where \
+it ends. Looking never plays a move; only play_move does."""
 
 PLAY_MOVE_TOOL: dict[str, Any] = {
     "type": "function",
@@ -120,9 +152,42 @@ PLAY_MOVE_TOOL: dict[str, Any] = {
 }
 
 
+TRY_LINE_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": TRY_LINE,
+        "description": (
+            "Look ahead before you play: each line is played on a copy of the "
+            "board and you see where it ends. Nothing is played."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        f"Up to {MAX_LINES} lines, each your move then the "
+                        f"replies you expect, up to {MAX_LINE_PLIES} moves in "
+                        'SAN (e.g. "Qxd4 cxd4").'
+                    ),
+                },
+            },
+            "required": ["lines"],
+        },
+    },
+}
+
+
 class _PlayMoveArgs(BaseModel):
     move: str
     intent: str
+
+
+class _TryLineArgs(BaseModel):
+    # One line as a bare string, or a line as a list of moves, is still a
+    # line: the shape of the arguments, not words to interpret.
+    lines: list[str | list[str]] | str
 
 
 class MoverFailureKind(StrEnum):
@@ -158,6 +223,42 @@ class MoverAttempt:
 
 
 @dataclass(frozen=True)
+class LineResult:
+    """One line of a look: what he asked, the plies code played, why it
+    stopped early if it did, and where it ended."""
+
+    asked: str
+    played: tuple[str, ...]
+    stopped: str
+    fen: str
+    status: str
+
+    def as_trace(self) -> dict[str, Any]:
+        return {
+            "asked": self.asked,
+            "played": list(self.played),
+            "stopped": self.stopped,
+            "fen": self.fen,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class Look:
+    """One `try_line` call that was answered with lines: what it asked and
+    what came back. A refused call is an attempt instead, not a look."""
+
+    lines: tuple[LineResult, ...]
+    dropped: tuple[str, ...] = ()
+
+    def as_trace(self) -> dict[str, Any]:
+        return {
+            "lines": [line.as_trace() for line in self.lines],
+            "dropped": list(self.dropped),
+        }
+
+
+@dataclass(frozen=True)
 class MoverChoice:
     """The move the mover chose, legal by code's check, with its intent."""
 
@@ -167,6 +268,7 @@ class MoverChoice:
     model: str | None
     attempts: tuple[MoverAttempt, ...]
     calls: tuple[ModelCall, ...]
+    looks: tuple[Look, ...] = ()
 
     def as_trace(self) -> dict[str, Any]:
         """The turn record's `mover` field (`trace.turn_record`). The model
@@ -178,6 +280,7 @@ class MoverChoice:
             "san": self.san,
             "intent": self.intent,
             "attempts": [attempt.as_trace() for attempt in self.attempts],
+            "looks": [look.as_trace() for look in self.looks],
         }
 
 
@@ -193,6 +296,7 @@ class MoverFailed(Exception):
         model: str | None,
         attempts: tuple[MoverAttempt, ...],
         calls: tuple[ModelCall, ...],
+        looks: tuple[Look, ...] = (),
     ) -> None:
         super().__init__(f"mover {kind}: {detail}")
         self.kind = kind
@@ -200,6 +304,7 @@ class MoverFailed(Exception):
         self.model = model
         self.attempts = attempts
         self.calls = calls
+        self.looks = looks
 
     def as_trace(self) -> dict[str, Any]:
         return {
@@ -210,6 +315,7 @@ class MoverFailed(Exception):
             "san": None,
             "intent": None,
             "attempts": [attempt.as_trace() for attempt in self.attempts],
+            "looks": [look.as_trace() for look in self.looks],
         }
 
 
@@ -255,21 +361,33 @@ class _Run:
         self.mover = mover
         self.session = session
         self.board = board
-        self.messages = mover_messages(session, board_facts=mover.settings.board_facts)
+        settings = mover.settings
+        self.messages = mover_messages(
+            session, board_facts=settings.board_facts, look_calls=settings.look_calls
+        )
+        self.tools = [PLAY_MOVE_TOOL] + ([TRY_LINE_TOOL] if settings.look_calls else [])
         self.attempts: list[MoverAttempt] = []
         self.calls: list[ModelCall] = []
+        self.looks: list[Look] = []
         self.started = mover.clock()
         deadline_s = mover.settings.deadline_s
         self.deadline = None if deadline_s is None else self.started + deadline_s
 
     def play(self) -> MoverChoice:
-        for _ in range(MAX_ATTEMPTS):
+        # A reply that looked is not an attempt. Looks are capped, so the run
+        # still ends: at most MAX_ATTEMPTS + look_calls replies.
+        spent = 0
+        while spent < MAX_ATTEMPTS:
+            looked = len(self.looks)
             result = self._call()
             if result is None:
+                spent += 1
                 continue
             choice = self._read(result)
             if choice is not None:
                 return choice
+            if len(self.looks) == looked:
+                spent += 1
         raise self._failed(
             MoverFailureKind.RETRIES, f"no legal move in {MAX_ATTEMPTS} replies"
         )
@@ -291,7 +409,7 @@ class _Run:
             with model_phase(PHASE_MOVER):
                 result = self.mover.provider.chat(
                     self.messages,
-                    tools=[PLAY_MOVE_TOOL],
+                    tools=self.tools,
                     enable_thinking=settings.thinking,
                     max_tokens=settings.max_tokens,
                     temperature=self.mover.temperature,
@@ -306,8 +424,8 @@ class _Run:
                 {
                     "role": "user",
                     "content": (
-                        f"Your play_move call failed before it ran: {exc}. "
-                        "Call play_move again with JSON arguments."
+                        f"Your {exc.tool_name} call failed before it ran: "
+                        f"{exc}. Call {exc.tool_name} again with JSON arguments."
                     ),
                 }
             )
@@ -348,6 +466,7 @@ class _Run:
             return None
         chosen: MoverChoice | None = None
         for call in result.tool_calls:
+            answer: dict[str, Any] | str
             if chosen is not None:
                 answer = {"ok": False, "error": "your move is already played"}
             else:
@@ -356,16 +475,20 @@ class _Run:
                 {
                     "role": "tool",
                     "tool_call_id": call.id,
-                    "content": json.dumps(answer),
+                    "content": answer
+                    if isinstance(answer, str)
+                    else json.dumps(answer),
                 }
             )
         return chosen
 
     def _judge(
         self, name: str, arguments: dict[str, Any]
-    ) -> tuple[MoverChoice | None, dict[str, Any]]:
+    ) -> tuple[MoverChoice | None, dict[str, Any] | str]:
         """One call, checked by code: the choice if it is a legal move with an
         intent, else the refusal the model reads."""
+        if name == TRY_LINE and self.mover.settings.look_calls:
+            return None, self._look(arguments)
         if name != PLAY_MOVE:
             reason = f"there is no tool {name!r}; call play_move"
             self.attempts.append(MoverAttempt(BAD_ARGS, reason=reason))
@@ -401,8 +524,39 @@ class _Run:
             model=self.mover.model,
             attempts=tuple(self.attempts),
             calls=tuple(self.calls),
+            looks=tuple(self.looks),
         )
         return choice, {"ok": True, "played": san}
+
+    def _look(self, arguments: dict[str, Any]) -> dict[str, Any] | str:
+        """One `try_line` call: the lines played on a copy of the board as
+        the text he reads, or the refusal. The session is never touched."""
+        left = self.mover.settings.look_calls - len(self.looks)
+        if left <= 0:
+            reason = "no looks left; play your move"
+            self.attempts.append(MoverAttempt(NO_LOOKS, reason=reason))
+            return _refusal(reason, "call play_move")
+        try:
+            args = _TryLineArgs.model_validate(arguments)
+        except ValidationError:
+            reason = 'try_line needs lines: a list of lines in SAN, like ["Qxd4 cxd4"]'
+            self.attempts.append(MoverAttempt(BAD_ARGS, reason=reason))
+            return _refusal(reason, "call try_line again, or play_move")
+        asked = [args.lines] if isinstance(args.lines, str) else args.lines
+        texts = [line if isinstance(line, str) else " ".join(line) for line in asked]
+        texts = [text.strip() for text in texts if text.strip()]
+        if not texts:
+            reason = "try_line got no lines; give at least one, your move first"
+            self.attempts.append(MoverAttempt(BAD_ARGS, reason=reason))
+            return _refusal(reason, "call try_line again, or play_move")
+        start = _game_board(self.session)
+        results = [_play_line(start, text) for text in texts[:MAX_LINES]]
+        look = Look(
+            lines=tuple(result for result, _ in results),
+            dropped=tuple(texts[MAX_LINES:]),
+        )
+        self.looks.append(look)
+        return _look_text(start, look, [text for _, text in results], left - 1)
 
     def _legal(self, text: str) -> tuple[chess.Move | None, str]:
         """`text` as a legal move here (SAN, then UCI, the order
@@ -466,27 +620,31 @@ class _Run:
             model=self.mover.model,
             attempts=tuple(self.attempts),
             calls=tuple(self.calls),
+            looks=tuple(self.looks),
         )
 
 
 def mover_messages(
-    session: GameSession, *, board_facts: bool = False
+    session: GameSession, *, board_facts: bool = False, look_calls: int = 0
 ) -> list[dict[str, Any]]:
     """The mover's opening request for the side to move in `session`: the
-    fixed instructions and side, then the moves, then the position, with its
-    board facts when the profile asks for them (#497). Built from the board
-    alone (module docstring)."""
+    fixed instructions and side (and how to look ahead, when `look_calls`
+    allows it, #498), then the moves, then the position, with its board facts
+    when the profile asks for them (#497). Built from the board alone (module
+    docstring)."""
     board = chess.Board(session.fen())
     side = session.turn
     facts = f"{facts_for(board).text()}\n\n" if board_facts else ""
+    system = _SYSTEM.format(side=side.capitalize())
+    if look_calls:
+        system += _LOOKS.format(calls=look_calls, lines=MAX_LINES, plies=MAX_LINE_PLIES)
     return [
-        {"role": "system", "content": _SYSTEM.format(side=side.capitalize())},
+        {"role": "system", "content": system},
         {
             "role": "user",
             "content": (
                 f"{_moves_section(session)}\n\n"
-                f"Position:\nFEN: {board.fen()}\n{_board_text(board)}\n"
-                f"{side.capitalize()} to move.\n\n"
+                f"Position:\n{_position_text(board)}\n\n"
                 f"{facts}"
                 f"Legal moves: {', '.join(session.legal_moves())}"
             ),
@@ -515,6 +673,12 @@ def _moves_section(session: GameSession) -> str:
     return f"{start}Moves so far: {' '.join(parts)}"
 
 
+def _position_text(board: chess.Board) -> str:
+    """The FEN, the board and whose move it is."""
+    side = "White" if board.turn == chess.WHITE else "Black"
+    return f"FEN: {board.fen()}\n{_board_text(board)}\n{side} to move."
+
+
 def _board_text(board: chess.Board) -> str:
     """The board as text, White at the bottom: rank labels on the left, file
     labels below, upper case for White's pieces and lower case for Black's."""
@@ -532,3 +696,158 @@ def _board_text(board: chess.Board) -> str:
 
 def _refusal(error: str, retry: str = "call play_move again") -> dict[str, Any]:
     return {"ok": False, "error": error, "retry": retry}
+
+
+# --- looking ahead (#498) ----------------------------------------------------
+
+# Score-sheet clutter around a move: "17.", "17...", "…", and the !/? a
+# player annotates with. Notation, not words: what is left is a SAN or UCI move
+# for python-chess to read, or not.
+_MOVE_NUMBER = re.compile(r"^\d*(?:\.+|…)")
+_ANNOTATION = re.compile(r"[!?]+$")
+
+
+def _plies(text: str) -> list[str]:
+    tokens = []
+    for raw in re.split(r"[\s,;]+", text):
+        token = _ANNOTATION.sub("", _MOVE_NUMBER.sub("", raw.strip()))
+        if token and token.strip(".…"):
+            tokens.append(token)
+    return tokens
+
+
+def _game_board(session: GameSession) -> chess.Board:
+    """The game's board with its moves, so a line that repeats a position
+    is seen to."""
+    board = chess.Board(session.position_fens()[0])
+    for san in session.move_history():
+        board.push_san(san)
+    return board
+
+
+def _parse(board: chess.Board, text: str) -> tuple[chess.Move | None, str]:
+    """`text` as a legal move on `board` (SAN, then UCI), or why not, with
+    the legal moves like it: `play_move`'s refusal, on the line's board."""
+    alternatives = GameSession(fen=board.fen()).move_alternatives
+    try:
+        return board.parse_san(text), ""
+    except chess.AmbiguousMoveError:
+        options = alternatives(text)
+        return None, (
+            f"{text} is ambiguous: more than one piece can play it"
+            + (f" (one of {', '.join(options)})" if options else "")
+        )
+    except ValueError:
+        pass
+    try:
+        move = chess.Move.from_uci(text)
+    except ValueError:
+        move = None
+    if move is not None and move in board.legal_moves:
+        return move, ""
+    options = alternatives(text)
+    return None, (
+        f"{text} is not a legal move there"
+        + (f"; legal moves like it: {', '.join(options)}" if options else "")
+    )
+
+
+def _status(board: chess.Board) -> str:
+    """How the game stands on `board`: over and how, or a draw that may be
+    claimed, or "" while it goes on. The rules', read off the board."""
+    outcome = board.outcome()
+    if outcome is not None:
+        if outcome.termination == chess.Termination.CHECKMATE:
+            winner = "White" if outcome.winner == chess.WHITE else "Black"
+            return f"checkmate, {winner} wins"
+        reason = outcome.termination.name.lower().replace("_", " ")
+        return f"drawn by {reason}"
+    if board.can_claim_threefold_repetition():
+        return "a draw may be claimed by threefold repetition"
+    if board.can_claim_fifty_moves():
+        return "a draw may be claimed by the fifty-move rule"
+    return ""
+
+
+def _play_line(start: chess.Board, asked: str) -> tuple[LineResult, str]:
+    """`asked` played on a copy of `start`, as far as it is legal, and the
+    text he reads about it."""
+    board = start.copy()
+    tokens = _plies(asked)
+    played: list[str] = []
+    stopped = ""
+    for token in tokens[:MAX_LINE_PLIES]:
+        if board.is_game_over():
+            stopped = "the game is over there; the rest was not played"
+            break
+        move, reason = _parse(board, token)
+        if move is None:
+            stopped = reason
+            break
+        played.append(board.san(move))
+        board.push(move)
+    else:
+        if len(tokens) > MAX_LINE_PLIES:
+            stopped = (
+                f"only the first {MAX_LINE_PLIES} moves are played; the rest was not"
+            )
+    result = LineResult(
+        asked=asked,
+        played=tuple(played),
+        stopped=stopped,
+        fen=board.fen(),
+        status=_status(board),
+    )
+    return result, _line_text(start, board, result)
+
+
+def _numbered(start: chess.Board, sans: tuple[str, ...]) -> str:
+    """`sans` from `start` as a score sheet writes them: "17... Qxd4 18. cxd4"."""
+    number, white = start.fullmove_number, start.turn == chess.WHITE
+    parts = []
+    for index, san in enumerate(sans):
+        if white:
+            parts.append(f"{number}. {san}")
+        elif index == 0:
+            parts.append(f"{number}... {san}")
+        else:
+            parts.append(san)
+        if not white:
+            number += 1
+        white = not white
+    return " ".join(parts)
+
+
+def _line_text(start: chess.Board, end: chess.Board, result: LineResult) -> str:
+    if not result.played:
+        return f"not played: {result.stopped}"
+    lines = [_numbered(start, result.played)]
+    if result.stopped:
+        lines.append(f"Stopped there: {result.stopped}.")
+    lines.append(f"Position at its end:\n{_position_text(end)}")
+    if result.status:
+        lines.append(f"The game: {result.status}.")
+    lines.append(facts_for(end).text())
+    lines.append(
+        "Material (1/3/3/5/9): "
+        f"White {material(end, chess.WHITE)}, Black {material(end, chess.BLACK)}; "
+        f"before the line White {material(start, chess.WHITE)}, "
+        f"Black {material(start, chess.BLACK)}."
+    )
+    return "\n".join(lines)
+
+
+def _look_text(start: chess.Board, look: Look, texts: list[str], left: int) -> str:
+    """What one look answers: each line in turn, then what was left out and
+    how many looks remain."""
+    parts = ["Played on a copy of the board; nothing was played in the game."]
+    for number, text in enumerate(texts, 1):
+        parts.append(f"Line {number}: {text}")
+    if look.dropped:
+        parts.append(
+            f"Only {MAX_LINES} lines a look; not played: {'; '.join(look.dropped)}"
+        )
+    parts.append(
+        f"Looks left: {left}." if left else "No looks left; play your move next."
+    )
+    return "\n\n".join(parts)
