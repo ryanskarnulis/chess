@@ -235,6 +235,18 @@ feels good; that is what the live check judges.
     qwen38 fallback above). Its mover's `deadline_s` is now 360 s, two p90
     calls with room for the retry's longer prompt; the 1024 budget stays.
     qwen38's planner now thinks at `low` too (#490); its narrator never thinks.
+  - **A thought cut off by the budget could run on as prose (#505).** About
+    1 run in 15 on the 12B (6 of 90 in the #499 off arms), the budget closes
+    the thought mid-sentence and the model goes on reasoning in plain text
+    to `max_tokens`, never calling `play_move`: ~70 s, then a fallback with
+    two attempts unspent. A reply cut off before it calls anything is now an
+    attempt: its words are dropped, never fed back, and the same request is
+    asked again, so the run fails `truncated` only when the last attempt was
+    one. The 12B's mover cap is 2048 (its calls that played took p50 1,063,
+    max 2,173 tokens), so a runaway costs ~35 s and leaves time for the
+    retry inside 90 s. `tool_choice: "required"` was probed and does not
+    help: llama-server let 7,000 characters of prose through after the
+    thought all the same.
 - **Eval gate:** the planner and narrator barely change, but the reply beat
   and the narrator's brief do, so the gate runs before merge
   (`docs/agent-evals.md`), plus speech accuracy on traced Glitch-tier turns.

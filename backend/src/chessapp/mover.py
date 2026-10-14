@@ -43,7 +43,9 @@ caches) and refuses, and that reply is an attempt. The deadline covers looks
 like every call. At `0` the tool is left out and the request is as before.
 
 **Running out is a failure the caller sees, never a move.** Its own deadline
-and token cap come from the profile's `[phases.mover]`. Passing either,
+and token cap come from the profile's `[phases.mover]`. A reply cut off by the
+cap before it called anything is an attempt (#505): its words are dropped, not
+fed back, and the same request is asked again. Passing the deadline,
 exhausting the attempts, or a provider that is down raises `MoverFailed` with
 its kind, and the caller (#473) decides what plays instead.
 """
@@ -104,6 +106,8 @@ NO_CALL = "no_call"
 BAD_ARGS = "bad_args"
 # A `try_line` past the profile's `look_calls`: refused, and an attempt.
 NO_LOOKS = "no_looks"
+# A reply that hit `max_tokens` without a call (#505): an attempt, asked again.
+TRUNCATED = "truncated"
 
 _STANDARD_START = chess.STARTING_FEN
 
@@ -198,7 +202,7 @@ class MoverFailureKind(StrEnum):
     RETRIES = "retries"
     #: The run's `deadline_s` passed.
     DEADLINE = "deadline"
-    #: A reply hit `max_tokens` without calling the tool.
+    #: Every attempt was spent and the last hit `max_tokens` without a call.
     TRUNCATED = "truncated"
     #: The provider failed, inside the deadline.
     PROVIDER = "provider"
@@ -388,6 +392,12 @@ class _Run:
                 return choice
             if len(self.looks) == looked:
                 spent += 1
+        if self.attempts and self.attempts[-1].verdict == TRUNCATED:
+            raise self._failed(
+                MoverFailureKind.TRUNCATED,
+                f"the last of {MAX_ATTEMPTS} replies hit max_tokens "
+                f"({self.mover.settings.max_tokens}) without a move",
+            )
         raise self._failed(
             MoverFailureKind.RETRIES, f"no legal move in {MAX_ATTEMPTS} replies"
         )
@@ -398,8 +408,9 @@ class _Run:
         return self.deadline - self.mover.clock()
 
     def _call(self) -> ChatResult | None:
-        """One round trip. `None` after a reply whose arguments were not
-        JSON, which is an attempt the model gets to correct."""
+        """One round trip. `None` after a reply that is an attempt with
+        nothing to read: arguments that were not JSON, which the model gets
+        to correct, or a reply cut off before it called anything."""
         remaining = self._remaining()
         if remaining is not None and remaining <= 0:
             raise self._failed(MoverFailureKind.DEADLINE, "deadline passed")
@@ -444,10 +455,17 @@ class _Run:
             result=result,
         )
         if truncated and not result.tool_calls:
-            raise self._failed(
-                MoverFailureKind.TRUNCATED,
-                f"reply hit max_tokens ({settings.max_tokens}) without a move",
+            # A runaway, not an answer (#505): the 12B sometimes writes prose
+            # past its thought to the cap. Its words never reach the history,
+            # so the next call is the same request, a fresh sample of it.
+            self.attempts.append(
+                MoverAttempt(
+                    TRUNCATED,
+                    reason=f"reply hit max_tokens ({settings.max_tokens}) "
+                    "without a move",
+                )
             )
+            return None
         return result
 
     def _read(self, result: ChatResult) -> MoverChoice | None:
