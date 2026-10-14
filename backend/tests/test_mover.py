@@ -427,8 +427,10 @@ def _try(*lines):
     return tool_calls_turn((TRY_LINE, {"lines": list(lines)}))
 
 
-def _answer(call: dict, index: int = -1) -> str:
-    return call["messages"][index]["content"]
+def _answer(call: dict) -> str:
+    """The last tool answer the call carries."""
+    tool = [m for m in call["messages"] if m["role"] == "tool"]
+    return tool[-1]["content"]
 
 
 def test_without_looks_the_tool_and_its_instructions_are_left_out():
@@ -462,7 +464,6 @@ def test_a_look_plays_the_line_on_a_copy_and_is_not_an_attempt():
     assert line.stopped == ""
     assert line.fen.startswith("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/")
     answer = _answer(provider.calls[1])
-    assert provider.calls[1]["messages"][-1]["role"] == "tool"
     assert answer.startswith("Played on a copy of the board; nothing was played")
     assert "Line 1: 1... e5 2. Nf3 Nc6\nPosition at its end:\nFEN: r1bqkbnr/" in answer
     assert "White to move." in answer
@@ -652,3 +653,33 @@ def test_the_trace_carries_each_look():
     assert "not a legal move" in look["lines"][1]["stopped"]
     plain = _mover(ScriptedProvider(_play("e5"))).choose(_after_e4()).as_trace()
     assert plain["looks"] == []
+
+
+def test_a_reply_that_only_looked_ends_his_turn():
+    # The next reply starts a turn of its own (#499): a tool answer last would
+    # have Gemma 4's template open his thought for him.
+    provider = ScriptedProvider(_try("e5"), _try("d5"), _play("e5"))
+    _mover(provider, _looks(2)).choose(_after_e4())
+    after_one, after_two = provider.calls[1]["messages"], provider.calls[2]["messages"]
+    assert [m["role"] for m in after_one[-3:]] == ["assistant", "tool", "user"]
+    assert after_one[-1]["content"] == (
+        "Play your move with play_move, or look again with try_line."
+    )
+    assert after_two[-1]["content"] == "Play your move with play_move."
+
+
+def test_only_a_reply_with_a_look_and_no_move_gains_the_turn():
+    provider = ScriptedProvider(
+        tool_calls_turn(
+            (TRY_LINE, {"lines": ["d5"]}),
+            (PLAY_MOVE, {"move": "Ke2", "intent": "a"}),
+        ),
+        _play("e5"),
+    )
+    _mover(provider, _looks(2)).choose(_after_e4())
+    # A look and an illegal move: the look counted, so the turn still ends.
+    assert provider.calls[1]["messages"][-1]["role"] == "user"
+    # An illegal move alone is answered by its refusal, as before looks.
+    provider = ScriptedProvider(_try("d5"), _play("Ke2"), _play("e5"))
+    _mover(provider, _looks(2)).choose(_after_e4())
+    assert provider.calls[2]["messages"][-1]["role"] == "tool"

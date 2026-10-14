@@ -74,7 +74,11 @@ and slower.
   comes back as the board at its end, its board facts, how the game stands
   (mate, stalemate, a draw) and the material before and after. A reply that
   looked is not an attempt, so a run makes at most `MAX_ATTEMPTS` +
-  `look_calls` calls.
+  `look_calls` calls. A reply that only looked ends his turn with a short
+  user turn, so the next reply opens its own thought: after a tool answer,
+  Gemma 4's template opens it for him, and the 12B closed it unread (#499).
+  No shipped profile turns looks on: on the 12B they did not pay
+  (`docs/glitch-sight.md`).
 - Out of attempts, past `deadline_s`, cut off at `max_tokens`, or with the
   provider down, it raises `MoverFailed` with that kind. Running out is
   never a move. The caller plays something else (#473).

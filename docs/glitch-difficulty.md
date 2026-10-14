@@ -58,6 +58,11 @@ move first, and python-chess plays it on a copy and shows the board where it
 ends. He picks every move in the line; code never extends it, picks a reply
 or says which line is better.
 
+Neither is on in any shipped profile. On the default brain, gemma-4-12b,
+neither made fewer bad moves, and looks doubled the time a move takes
+(#497, #499; `docs/glitch-sight.md` has the numbers). They are there for a
+stronger model to be measured with.
+
 It never sees:
 
 - **The conversation.** Not the player's words, not Glitch's. Otherwise
