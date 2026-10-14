@@ -62,8 +62,17 @@ max_tokens = 16
 # move (`truncated`, a Stockfish fallback), as the 26B's had. The 1024-token
 # thinking budget closes the thought first and makes the model call
 # play_move, as on the 26B and qwen38.
+#
+# The cap is 2048, not 4096 (#505): about 1 run in 15 the budget cuts the
+# thought mid-sentence and the 12B goes on reasoning in prose to the cap,
+# never calling. In the #499 off-arm runs (87 calls that played) a call took
+# p50 1,063 / p90 1,072 / max 2,173 tokens, so 2048 keeps all but the rarest,
+# and a runaway costs ~35 s instead of ~70 s. A cut-off reply is an attempt
+# and asked again, so that leaves room for a retry inside the deadline.
+# tool_choice "required" does not stop it: llama-server lets the prose
+# through after the thought all the same (probe 2026-10-14).
 [phases.mover]
-max_tokens = 4096
+max_tokens = 2048
 thinking = true
 thinking_budget = 1024
 deadline_s = 90

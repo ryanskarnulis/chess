@@ -29,6 +29,7 @@ from chessapp.mover import (
     PLAY_MOVE,
     PLAY_MOVE_TOOL,
     PLAYED,
+    TRUNCATED,
     TRY_LINE,
     TRY_LINE_TOOL,
     Mover,
@@ -221,13 +222,55 @@ def test_the_first_legal_call_of_several_is_the_move_and_each_is_answered():
 # --- running out -------------------------------------------------------------
 
 
-def test_a_reply_cut_off_by_the_token_cap_is_a_failure():
-    provider = ScriptedProvider(text_turn(None, finish_reason="length"))
+def _runaway():
+    return text_turn("The move Qxe6+ is a powerful... Wait,", finish_reason="length")
+
+
+def test_a_reply_cut_off_by_the_token_cap_is_an_attempt_and_asked_again():
+    provider = ScriptedProvider(_runaway(), _play("e5"))
+    choice = _mover(provider).choose(_after_e4())
+    assert choice.san == "e5"
+    assert [a.verdict for a in choice.attempts] == [TRUNCATED, PLAYED]
+    assert [c.status for c in choice.calls] == [CALL_TRUNCATED, CALL_OK]
+    # Its words are dropped (#505): the retry is the same request again.
+    first, second = (call["messages"] for call in provider.calls)
+    assert second == first
+    assert not any("Wait" in str(m.get("content")) for m in second)
+
+
+def test_every_attempt_cut_off_is_a_truncated_failure():
+    provider = ScriptedProvider(*[_runaway() for _ in range(MAX_ATTEMPTS)])
     with pytest.raises(MoverFailed) as failed:
         _mover(provider).choose(_after_e4())
     assert failed.value.kind is MoverFailureKind.TRUNCATED
-    assert [c.status for c in failed.value.calls] == [CALL_TRUNCATED]
+    assert [a.verdict for a in failed.value.attempts] == [TRUNCATED] * MAX_ATTEMPTS
+    assert [c.status for c in failed.value.calls] == [CALL_TRUNCATED] * MAX_ATTEMPTS
+
+
+def test_running_out_after_a_refusal_is_retries_even_with_a_cut_off_before():
+    provider = ScriptedProvider(_runaway(), _play("Ke2"), _play("Ke7"))
+    with pytest.raises(MoverFailed) as failed:
+        _mover(provider).choose(_after_e4())
+    assert failed.value.kind is MoverFailureKind.RETRIES
+    assert [a.verdict for a in failed.value.attempts] == [TRUNCATED, ILLEGAL, ILLEGAL]
+
+
+def test_a_cut_off_that_spends_the_deadline_is_a_deadline_failure():
+    clock = _Clock(step=50.0)
+    provider = ScriptedProvider(_runaway(), _play("e5"))
+    with pytest.raises(MoverFailed) as failed:
+        _mover(provider, clock=clock).choose(_after_e4())
+    assert failed.value.kind is MoverFailureKind.DEADLINE
+    assert [a.verdict for a in failed.value.attempts] == [TRUNCATED]
     assert len(provider.calls) == 1
+
+
+def test_a_cut_off_reply_that_called_play_move_is_read():
+    called = tool_calls_turn((PLAY_MOVE, {"move": "e5", "intent": "the centre"}))
+    provider = ScriptedProvider(called.model_copy(update={"finish_reason": "length"}))
+    choice = _mover(provider).choose(_after_e4())
+    assert choice.san == "e5"
+    assert [c.status for c in choice.calls] == [CALL_TRUNCATED]
 
 
 def test_a_dead_provider_is_a_failure():
