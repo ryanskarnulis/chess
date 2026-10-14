@@ -12,7 +12,7 @@ The positions: Black's first move after 1.e4; a game from a set-up position
 with a few moves played; and a retry, where the first answer is illegal and
 the second request carries the refusal. With looks on (#498), the default
 brain's form is pinned too: a look, then a move, so the second request carries
-the tool's answer.
+the tool's answer and the turn after it (#499).
 
 Re-record only for a change that is *meant* to move the bytes, and say so in
 its PR: `CHESSAPP_RECORD_GOLDEN=1 pytest tests/test_mover_bytes.py`.
@@ -162,7 +162,8 @@ def test_the_default_brain_pins_both_board_facts_forms(on):
 
 def test_the_default_brain_pins_the_looks_form():
     # Looks on whatever the profile says (#498): the instructions and the
-    # second tool in the first request, the look's answer in the second.
+    # second tool in the first request, the look's answer in the second, then
+    # a turn of his own (#499).
     model = "gemma-4-12b"
     sent = [
         *_choose(
@@ -181,8 +182,9 @@ def test_the_default_brain_pins_the_looks_form():
         TRY_LINE,
     ]
     assert "try_line, up to 2 times" in first["messages"][0]["content"]
-    answer = second["messages"][-1]
+    answer, turn = second["messages"][-2:]
     assert answer["role"] == "tool"
+    assert turn["role"] == "user"
     assert answer["content"].startswith("Played on a copy of the board")
     assert all("reasoning_content" not in message for message in second["messages"])
 

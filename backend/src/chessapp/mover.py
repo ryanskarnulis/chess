@@ -465,6 +465,7 @@ class _Run:
             )
             return None
         chosen: MoverChoice | None = None
+        looked = len(self.looks)
         for call in result.tool_calls:
             answer: dict[str, Any] | str
             if chosen is not None:
@@ -478,6 +479,19 @@ class _Run:
                     "content": answer
                     if isinstance(answer, str)
                     else json.dumps(answer),
+                }
+            )
+        if chosen is None and len(self.looks) > looked:
+            # His turn ends with the look, and the next reply starts a turn of
+            # its own (#499). Left to continue his turn after a tool answer,
+            # Gemma 4's template opens the thought for him, and the 12B closes
+            # it unread or loops on it until the token cap.
+            left = self.mover.settings.look_calls - len(self.looks)
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": "Play your move with play_move"
+                    + (", or look again with try_line." if left else "."),
                 }
             )
         return chosen

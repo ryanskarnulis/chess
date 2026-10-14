@@ -2,8 +2,10 @@
 
 Design note for the Glitch tier's next step (#494, roadmap #366 step 20).
 **Status: agreed 2026-10-12; decisions 1 and 2 amended the same day
-(#496); decision 3 built 2026-10-13 (#498), off everywhere until #499
-measures it.** It builds on the tier as built (`docs/glitch-difficulty.md`) and
+(#496); decision 3 built 2026-10-13 (#498). Done 2026-10-14 (#499): on
+the default brain neither the facts nor the looks earned their place, so both
+stay off and the tools wait for a stronger model ("Result of steps 4 and
+5").** It builds on the tier as built (`docs/glitch-difficulty.md`) and
 amends that note's decision 2, what the mover sees.
 
 ## Why
@@ -153,6 +155,9 @@ line he looked at.
   attempt, so a run makes at most `MAX_ATTEMPTS` + `look_calls` calls.
 - Calls in one reply run in order: a `play_move` after a `try_line` plays,
   and anything after it is told the move is already played.
+- A reply that looked and played nothing ends his turn: a user turn follows
+  the look's answer ("Play your move with play_move, or look again with
+  try_line."), so his next reply starts a turn of its own (#499, below).
 - The blunder suite records each sample's looks and reports looks per move.
 
 ### 4. Model knowledge goes in the profile
@@ -276,6 +281,57 @@ sees the position after it. The facts are re-measured beside the looks in
 #499, where listing only his own attacked pieces (no capture menu) is the
 first variant to try.
 
+## Result of steps 4 and 5 (#498, #499): no gain on the 12B, looks stay off
+
+`try_line` works as designed: lines are played, refused and reported
+correctly. The 12B cannot make use of it. Two suite runs, corpus
+`9b35b985c627`, 5 samples a position, arms interleaved, idle GPU,
+2026-10-14 (`docs/mover-blunders-history.jsonl`). "Bad" counts a blunder or
+a fallback, since a fallback's move is not his and drops out of the blunder
+rate:
+
+| run | arm | blunders | bad | fallbacks | s/move p50 / p90 | looks a move |
+|---|---|---|---|---|---|---|
+| look continues his turn | off | 34/42 | 37/45 | 3 | 18.0 / 21.5 | |
+| | `look_calls = 2` | 26/36 | 35/45 | 9 | 21.7 / 68.8 | 0.8 |
+| a fresh turn after a look | off | 31/42 | 34/45 | 3 | 19.7 / 30.8 | |
+| | `look_calls = 2` | 29/39 | 35/45 | 6 | 39.4 / 88.7 | 0.9 |
+
+The off arm alone has read 61% to 85% blunders across this note's runs, so
+a few points either way is noise. What held:
+
+- **He looks, and imagines the wrong replies.** He looked on four moves in
+  five, almost always once, with three lines. At 17… Qxd4 the reply that
+  loses the queen, cxd4, never appeared in any line. He tried Nf6+, moves
+  that were not legal there, and once `Qxd4 c3`: the defending pawn's
+  square, not its capture. Seeing where a line ends does not help a player
+  who cannot come up with the line. The one clear gain was m12b-7w in the
+  first run (dxe5 five times of five, against 4/5 blunders off), and it did
+  not repeat in the second.
+- **Gemma 4's template opened his thought for him after a look.** With
+  thinking on and a tool answer last, the template ends the prompt with
+  `<|channel>thought\n` rather than a fresh `<|turn>model`. The 12B closed
+  it at once (about 35 tokens: the `play_move` he had already chosen, no
+  reasoning about what he saw), and about one time in seven looped on empty
+  thought markers to `max_tokens`. That was the first run's extra
+  fallbacks. Replaying those calls without `thinking_budget` behaved the
+  same, so the budget was not the cause.
+- **A fresh turn fixed the mechanism, not the result.** Ending his turn
+  after a look (a short user turn, so the next reply opens its own
+  thought) brought the reasoning back, about 1,060 tokens after a look, and
+  left one token-cap fallback, against off's three. Bad moves did not
+  change, a move took twice as long, and three ~20 s calls overran the
+  90 s deadline four times. The fresh turn stays: it is right for any model,
+  and nothing reaches it while looks are off.
+
+So no default changes. `board_facts` and `look_calls` stay off in every
+profile, and the gate, the strength run and the live game step 5 planned
+around new defaults do not apply. The facts variant #499 listed (his own
+attacked pieces only) was not run: the gap both runs show is coming up with
+the other side's reply, which no listing of the position supplies. Both
+tools, the suite and its corpus stay for the next brain; a model that can
+read "defended by pawn c3" as "cxd4" is the one to measure them on.
+
 ## Order of work
 
 Sub-issues of #494, in order:
@@ -291,7 +347,8 @@ Sub-issues of #494, in order:
    capture, and the close-out.
 
 If a step measures worse, stop and discuss (roadmap #366). A null result is
-a valid outcome: the facts stay off and the note records why.
+a valid outcome: the facts stay off and the note records why. Steps 3 and 5
+were both null on the 12B: see their results above.
 
 ## Measuring it
 
