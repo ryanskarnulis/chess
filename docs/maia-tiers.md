@@ -109,6 +109,10 @@ straight back to the square it just left, over six games against `casual`:
 | 600 | beginner | 36 | +382 |
 | 600 | casual | 35.5 | +359 |
 | 600, temperature 1.5 | beginner | 37 | +436 |
+| 1000 | casual | 38 | +512 |
+| 1000 | intermediate | 7 | −269 |
+| 1000 | Maia 600 | 36 | +382 |
+| 1000 | Maia 1400 | 11 | −168 |
 | 1400 | intermediate | 20 | ±0 |
 | 1800 | intermediate | 25.5 | +98 |
 | 2200 | advanced | 23.5 | +61 |
@@ -116,32 +120,30 @@ straight back to the square it just left, over six games against `casual`:
 
 Cutting the tail makes every setting stronger, by roughly 300–400 Elo.
 
-## Proposed tier map (for #512)
+## The tier map (decided 2026-10-17, for #512)
 
 Every Maia tier at temperature 1.0 and `TopP 0.9`, a sampled human move with
 the tail cut:
 
-| tier | today | proposed | measured against today |
-|---|---|---|---|
-| `maximum` | Stockfish skill 20 | unchanged | — |
-| `advanced` | `UCI_Elo` 2000 | Maia 2200 | +61 (40 games) |
-| `intermediate` | `UCI_Elo` 1500 | Maia 1400 | ±0 (40 games) |
-| `casual` | sampler, T 250 | **open** | Maia 600 is +359 |
-| `beginner` | sampler, T 700 | **open** | Maia 600 is +382 |
-| `glitch` fallback | as `beginner` | as `beginner` | — |
+| tier | today | becomes | against today's tier | step from the tier below |
+|---|---|---|---|---|
+| `maximum` | Stockfish skill 20 | unchanged | — | — |
+| `advanced` | `UCI_Elo` 2000 | Maia 2200 | +61 | — |
+| `intermediate` | `UCI_Elo` 1500 | Maia 1400 | ±0 | +168 (Maia 1000) |
+| `casual` | sampler, T 250 | Maia 1000 | +512 | +382 (Maia 600) |
+| `beginner` | sampler, T 700 | Maia 600 | +382 | — |
+| `glitch` fallback | as `beginner` | as `beginner`: Maia 600 | — | — |
 
-The two tiers above `casual` swap one for one at about today's strength. The
-two at the bottom do not: no setting Maia was trained on, played without its
-shuffling, is as weak as today's `casual`, let alone `beginner`. The choices:
+All 40 games. The two upper tiers swap one for one at about today's strength.
+The two at the bottom cannot: no setting Maia was trained on, played without
+its shuffling, is as weak as today's `casual`. Ryan's call: the bottom of the
+ladder gets harder and plays like a person, `beginner` at the bottom of Maia's
+trained range (600) and `casual` at 1000, evenly spaced below `intermediate`.
 
-1. **Keep the Stockfish sampler for `beginner` and `casual`.** Strengths
-   unchanged; only the upper two tiers become human-shaped.
-2. **`casual` becomes Maia 600 (`TopP 0.9`); `beginner` keeps the sampler.**
-   `casual` gets about 350 Elo harder but plays like a person; the bottom tier
-   (and so the Glitch fallback) stays where it is.
-3. **Both become Maia**, `beginner` below 600 with the tail cut. Outside its
-   training data and not measured here; would need its own shuffle check and
-   a look at live games.
+The Glitch fallback stays "play as `beginner`", so it becomes Maia 600 too.
+That may be stronger than the mover plays on his own (the 12B has only an
+upper bound, below about 1373 on the Stockfish scale), which relaxes decision 4
+in `docs/glitch-difficulty.md`; Ryan accepted that, and #512 rewords it.
 
 The Maia tiers' Elo labels are not our tier targets: Maia's ratings are
 Lichess blitz, and `TopP` shifts strength by hundreds of points, so the map is
