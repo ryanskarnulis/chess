@@ -177,6 +177,8 @@ describe('MicButton (hands-free conversation mode)', () => {
           finishAgent = resolve
         }),
     )
+    render(<MicButton onTranscript={onTranscript} disabled={false} />)
+    await enterConversation()
     let finishSpeech!: () => void
     vi.mocked(audioIdle).mockImplementation(
       () =>
@@ -184,8 +186,6 @@ describe('MicButton (hands-free conversation mode)', () => {
           finishSpeech = resolve
         }),
     )
-    render(<MicButton onTranscript={onTranscript} disabled={false} />)
-    await enterConversation()
 
     speak()
     await waitFor(() => expect(onTranscript).toHaveBeenCalled())
@@ -341,6 +341,70 @@ describe('MicButton (hands-free conversation mode)', () => {
 
     expect(fakeVad.resume).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /voice conversation/i })).toBeInTheDocument()
+  })
+
+  it('restarting during the spoken reply waits it out, then hears the next utterance (#508)', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ text: 'castle' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const onTranscript = vi.fn(async () => {})
+    // One reply, still playing: every audioIdle() waits on the same clip.
+    let finishSpeech!: () => void
+    const reply = new Promise<void>((resolve) => {
+      finishSpeech = resolve
+    })
+    render(<MicButton onTranscript={onTranscript} disabled={false} />)
+    await enterConversation()
+    vi.mocked(audioIdle).mockImplementation(() => reply)
+
+    speak()
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledTimes(1))
+    // Stop and start straight away, while the agent is still talking.
+    fireEvent.click(screen.getByRole('button', { name: /stop listening/i }))
+    fireEvent.click(screen.getByRole('button', { name: /voice conversation/i }))
+    await act(async () => {})
+    // The mic stays shut over the reply: nothing it says can be captured.
+    expect(createVad).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button')).not.toHaveClass('mic-listening')
+
+    await act(async () => finishSpeech())
+    await waitFor(() => expect(createVad).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button')).toHaveClass('mic-listening'))
+
+    // The ended session's latch is gone: the first utterance is transcribed.
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ text: 'resign' })))
+    speak()
+    await waitFor(() => expect(onTranscript).toHaveBeenLastCalledWith('resign', undefined))
+    expect(onTranscript).toHaveBeenCalledTimes(2)
+  })
+
+  it('an ended turn settling late does not unlock the next session mid-utterance (#508)', async () => {
+    stubTranscribeResponse({ ok: true, text: 'castle' })
+    let finishFirst!: () => void
+    const onTranscript = vi
+      .fn<(text: string) => Promise<void>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishFirst = resolve
+          }),
+      )
+      .mockImplementation(() => new Promise<void>(() => {}))
+    render(<MicButton onTranscript={onTranscript} disabled={false} />)
+    await enterConversation()
+    speak()
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledTimes(1))
+
+    // Restart; the new session's turn is in flight when the old one settles.
+    fireEvent.click(screen.getByRole('button', { name: /stop listening/i }))
+    await enterConversation()
+    speak()
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledTimes(2))
+    await act(async () => finishFirst())
+
+    // A VAD event slipping through now is still dropped: the latch is held.
+    speak()
+    await act(async () => {})
+    expect(onTranscript).toHaveBeenCalledTimes(2)
   })
 
   it('destroys the VAD on unmount', async () => {
