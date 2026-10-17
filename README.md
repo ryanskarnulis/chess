@@ -7,7 +7,7 @@ A local-first, self-hosted chess app for the home network, playable from any bro
 The agent is the orchestrator and personality, **not** the referee:
 
 - **Deterministic code owns truth.** `python-chess` holds board state, validates every move, and keeps history. Its answers are final.
-- **Stockfish is a calculation tool** — evaluation, candidate moves, and difficulty (`Skill Level` / `UCI_Elo`) — not the app's personality.
+- **Stockfish is a calculation tool** — evaluation, candidate moves, and the `maximum` difficulty — not the app's personality. The tiers below `maximum` play Maia-3, a human-like model, with Stockfish standing in when it is not attached (`docs/maia-tiers.md`).
 - **The LLM only routes natural language to tools.** It submits moves and the engine accepts or rejects; it reads state through tools. It cannot corrupt the game.
 - The app plays a full game against Stockfish with the LLM switched off — the agent layer is an optional enhancement on top.
 
@@ -51,4 +51,4 @@ Development is test-driven (red → green → refactor) with an agile, phase-dri
 
 ## License
 
-Personal, non-distributed home-network project (private repo). Key dependencies (python-chess, Stockfish) are GPL — a licensing pass is required before any public distribution. See the license note in `BRIEF.md`.
+Personal, non-distributed home-network project (private repo). Key dependencies (python-chess, Stockfish) are GPL, and Maia-3 is AGPL — a licensing pass is required before any public distribution. See the license note in `BRIEF.md`.

@@ -1,9 +1,11 @@
-"""Stockfish bridge via python-chess UCI.
+"""Stockfish bridge via python-chess UCI, and the tiers' move.
 
 Stockfish is a calculation tool, not the referee: it proposes moves, but
 every move still enters the game through `GameSession.submit_move`, and
 `choose_move` works on a copy of the position so the engine can never
-touch session truth.
+touch session truth. Below `maximum` the tiers play Maia-3's human-like move
+instead when it is attached (`maia.py`, #510), with Stockfish's settings for
+the tier as the stand-in when it is not.
 """
 
 import logging
@@ -19,6 +21,7 @@ import chess
 import chess.engine
 
 from chessapp.game import GameSession, MoveResult
+from chessapp.maia import MaiaEngine, MaiaSettings
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,10 @@ class DifficultyProfile:
     much it loses versus the best (see `sample_weighted`). A higher
     temperature flattens that distribution — more, and worse, mistakes — so
     it, not a raw strength setting, is what makes a tier weak.
+
+    `maia` is the tier's move when Maia-3 is attached (#510): the rating it
+    plays as and how it samples. The Stockfish settings beside it are then
+    the stand-in, played only when Maia is missing or fails.
     """
 
     name: str
@@ -54,25 +61,33 @@ class DifficultyProfile:
     elo: int | None = None
     temperature: float | None = None
     sample_depth: int = 4
+    maia: MaiaSettings | None = None
     # Glitch chooses the move himself (`mover.py`, docs/glitch-difficulty.md);
     # the engine settings above are then only the fallback's.
     mover: bool = False
 
 
-# Named tiers with human target strengths: beginner ~500, casual ~1000,
-# intermediate ~1500, advanced ~2000, maximum = full strength. The sampler
-# temperatures are calibration knobs — a gauntlet (see scripts/) confirms the
-# ordering beginner < casual < the 1320 UCI floor; tune from real games.
-_BEGINNER = DifficultyProfile("beginner", temperature=700, sample_depth=4)
+# Named tiers. Below `maximum` each plays Maia-3 at a rating, sampling with
+# the long tail cut (docs/maia-tiers.md, measured against the Stockfish
+# settings beside it with scripts/calibrate_difficulty.py): `intermediate` and
+# `advanced` play at about the strength those settings did, `beginner` and
+# `casual` harder, since no rating Maia was trained on plays as weakly as the
+# sampler. The Stockfish settings are the stand-in when Maia is not attached.
+_BEGINNER = DifficultyProfile(
+    "beginner", temperature=700, sample_depth=4, maia=MaiaSettings(600)
+)
 DIFFICULTY_TIERS = {
     "beginner": _BEGINNER,
-    "casual": DifficultyProfile("casual", temperature=250, sample_depth=4),
-    "intermediate": DifficultyProfile("intermediate", elo=1500),
-    "advanced": DifficultyProfile("advanced", elo=2000),
+    "casual": DifficultyProfile(
+        "casual", temperature=250, sample_depth=4, maia=MaiaSettings(1000)
+    ),
+    "intermediate": DifficultyProfile(
+        "intermediate", elo=1500, maia=MaiaSettings(1400)
+    ),
+    "advanced": DifficultyProfile("advanced", elo=2000, maia=MaiaSettings(2200)),
     "maximum": DifficultyProfile("maximum", skill_level=20),
     # Glitch picks his own moves (#473). The engine is set up exactly as
-    # `beginner`, because that is what plays when the mover fails (decision 4):
-    # a failure never makes him stronger than he plays on his own.
+    # `beginner`, because that is what plays when the mover fails (decision 4).
     "glitch": replace(_BEGINNER, name="glitch", mover=True),
 }
 # The ladder a relative ask ("harder", "easier") steps along (#338): the
@@ -209,6 +224,12 @@ def validate_elo(elo: object) -> int:
     return elo
 
 
+def tier_plays_maia(tier: str | None) -> bool:
+    """Whether `tier` plays Maia-3's move when Maia is attached."""
+    profile = DIFFICULTY_TIERS.get(tier) if tier is not None else None
+    return profile is not None and profile.maia is not None
+
+
 def validate_tier(name: object) -> DifficultyProfile:
     profile = DIFFICULTY_TIERS.get(name) if isinstance(name, str) else None
     if profile is None:
@@ -218,7 +239,8 @@ def validate_tier(name: object) -> DifficultyProfile:
 
 
 class EnginePlayer:
-    """One Stockfish process playing moves at a configurable strength."""
+    """One Stockfish process playing moves at a configurable strength, and
+    Maia-3 for the tiers that have it, when one is attached."""
 
     def __init__(
         self,
@@ -226,6 +248,7 @@ class EnginePlayer:
         move_time: float = DEFAULT_MOVE_TIME,
         rng: random.Random | None = None,
         open_engine: Callable[[str], Any] = chess.engine.SimpleEngine.popen_uci,
+        maia: MaiaEngine | None = None,
     ):
         self._path = path
         # Injectable so the relaunch can be tested without killing a process.
@@ -245,6 +268,16 @@ class EnginePlayer:
         # straight, at whatever raw strength is configured).
         self._sample_temperature: float | None = None
         self._sample_depth = 0
+        # The human-like move for the tiers below `maximum` (#510), and the
+        # set tier's settings for it: None when no Maia is attached or the
+        # strength is not a Maia tier, and Stockfish plays.
+        self._maia = maia
+        self._maia_settings: MaiaSettings | None = None
+
+    @property
+    def has_maia(self) -> bool:
+        """Whether Maia-3 is attached, so its tiers play its move."""
+        return self._maia is not None
 
     def _run(self, work: Callable[[Any], _T]) -> _T:
         """Run one call against the engine, relaunching Stockfish once if its
@@ -302,6 +335,8 @@ class EnginePlayer:
 
     def close(self) -> None:
         self._closed = True
+        if self._maia is not None:
+            self._maia.close()
         self._engine.quit()
 
     def _clear_sampler(self) -> None:
@@ -311,13 +346,15 @@ class EnginePlayer:
     def set_skill_level(self, level: int) -> None:
         validate_skill_level(level)
         # Raw knobs mean exactly the UCI strength asked for — no leftover
-        # tier weakening on top.
+        # tier weakening on top, and no Maia.
         self._clear_sampler()
+        self._maia_settings = None
         self._configure({"UCI_LimitStrength": False, "Skill Level": level})
 
     def set_elo(self, elo: int) -> None:
         validate_elo(elo)
         self._clear_sampler()
+        self._maia_settings = None
         self._configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
 
     def set_tier(self, name: str) -> None:
@@ -337,11 +374,22 @@ class EnginePlayer:
                 {"UCI_LimitStrength": False, "Skill Level": profile.skill_level}
             )
             self._clear_sampler()
+        # Stockfish above is set up either way: it is the stand-in whenever
+        # Maia is missing or fails.
+        self._maia_settings = profile.maia if self._maia is not None else None
 
     def choose_move(self, session: GameSession) -> str:
-        """The engine's move for the current position, as UCI."""
+        """The move for the current position at the set strength, as UCI:
+        Maia's for a tier that has it when Maia is attached, else Stockfish's."""
         if session.is_game_over():
             raise ValueError("cannot choose a move: game is over")
+        if self._maia is not None and self._maia_settings is not None:
+            try:
+                return self._maia.choose_move(session, self._maia_settings)
+            except (chess.engine.EngineError, TimeoutError, ValueError):
+                # Played by Stockfish at the tier's settings instead, so the
+                # reply still comes; the log says Maia failed.
+                logger.warning("maia_move_failed_stockfish_plays", exc_info=True)
         board = chess.Board(session.fen())
         if self._sample_temperature is not None:
             return self._sample_move(board)

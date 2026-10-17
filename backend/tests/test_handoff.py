@@ -226,16 +226,19 @@ def test_glitchs_own_move_comes_with_the_intent_he_played_it_with():
     ) in brief
 
 
-def test_a_fallback_is_said_to_be_stockfishs_and_not_his_idea():
-    """#474: live, he claimed a fallback move as his own plan."""
+def test_a_fallback_is_said_to_be_the_backup_engines_and_not_his_idea():
+    """#474: live, he claimed a fallback move as his own plan. Named as the
+    backup engine, not Stockfish: Maia-3 plays it when attached (#510)."""
     fallback = {**REPLY, "chosen_by": "fallback"}
     brief = render(build([MOVED], engine_reply=fallback), "e4", [MOVED])
     assert (
-        "You did not choose this move: your own pick never came, so Stockfish "
-        "played it for you at beginner strength. It was not your idea and you "
+        "You did not choose this move: your own pick never came, so the backup "
+        "engine played it for you at beginner strength. It was not your idea and you "
         "had no plan with it."
     ) in brief
-    assert "and tell them the move Stockfish played for you, Nf6, your way." in brief
+    assert (
+        "and tell them the move the backup engine played for you, Nf6, your way."
+    ) in brief
     assert "You chose this move yourself" not in brief
 
 

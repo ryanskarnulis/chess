@@ -308,9 +308,11 @@ failed." In the `glitch` tier (#474) the reply also says who chose it
 yourself; what you had in mind when you played it, in your words then: …"
 with the mover's `intent` quoted, and the closing sentence asks him to say
 the move "and what you had in mind with it"; a fallback adds "You did not
-choose this move: your own pick never came, so Stockfish played it for you at
-beginner strength. It was not your idea and you had no plan with it.", and
-the closing sentence names it as "the move Stockfish played for you". Nothing
+choose this move: your own pick never came, so the backup engine played it
+for you at beginner strength. It was not your idea and you had no plan with
+it.", and the closing sentence names it as "the move the backup engine played
+for you" (named so since #512: Maia-3 plays `beginner` when attached, so
+"Stockfish" would not always be true). Nothing
 changes in the other tiers, whose `engine_reply` carries no such keys. No `history` (the refresh block's measured reason, one phase on) and
 no side to move. `board_version` (#320) is lifted out too, and never shown as
 a number. It dates the turn's analysis: `evaluate_position` and

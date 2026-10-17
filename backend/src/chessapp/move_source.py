@@ -1,4 +1,4 @@
-"""What chooses Glitch's reply: Stockfish, or Glitch himself (#471, #473).
+"""What chooses Glitch's reply: the engine, or Glitch himself (#471, #473).
 
 The coordinator asks one `MoveSource` for every reply, on every route
 (`TurnCoordinator._move_source`). A source only *chooses*: it returns a
@@ -8,15 +8,15 @@ without the game being wrong.
 
 Two sources:
 
-- `EngineSource`: Stockfish at the set difficulty, in every tier but `glitch`.
+- `EngineSource`: the engine at the set difficulty (Maia-3 below `maximum`
+  when it is attached, Stockfish otherwise, #510), in every tier but `glitch`.
 - `GlitchSource`: the `glitch` tier (docs/glitch-difficulty.md). The mover
   (`mover.py`) chooses; when it fails — retries spent, deadline passed, a
-  truncated reply, the provider down — Stockfish plays at `beginner`
+  truncated reply, the provider down — the engine plays at `beginner`
   (decision 4). The engine is already configured as `beginner` in this tier
   (`engine.DIFFICULTY_TIERS["glitch"]`), so the fallback is simply the
-  engine's move, and a failure never makes Glitch stronger than he plays on
-  his own. The fallback is marked, never silent: `chooser` says so, and the
-  coordinator writes it to the PGN, the trace and the reply's result.
+  engine's move. The fallback is marked, never silent: `chooser` says so, and
+  the coordinator writes it to the PGN, the trace and the reply's result.
 """
 
 from __future__ import annotations
@@ -30,8 +30,10 @@ if TYPE_CHECKING:
     from chessapp.brain import ModelCall
     from chessapp.mover import Mover
 
-# Who chose a reply. `fallback` is Stockfish standing in for a mover that
-# returned no move, in the `glitch` tier.
+# Who chose a reply. `stockfish` is the engine at the set difficulty (Maia-3
+# or Stockfish, #510; the value predates Maia and stays for the traces);
+# `fallback` is the engine standing in for a mover that returned no move, in
+# the `glitch` tier.
 CHOOSER_STOCKFISH = "stockfish"
 CHOOSER_GLITCH = "glitch"
 CHOOSER_FALLBACK = "fallback"
@@ -65,7 +67,7 @@ class MoveSource(Protocol):
     """What chooses the reply's move.
 
     `background` says whether the coordinator may compute it off the main
-    thread while the turn goes on (Stockfish, ~0.1 s, on its own process). The
+    thread while the turn goes on (the engine, ~0.1 s, on its own process). The
     mover may not: it shares the one llama-server with the planner and the
     narrator, and a background call would compete with them for it.
     """
@@ -80,7 +82,7 @@ class _Engine(Protocol):
 
 
 class EngineSource:
-    """Stockfish's move at the set difficulty."""
+    """The engine's move at the set difficulty."""
 
     background = True
 
@@ -92,8 +94,8 @@ class EngineSource:
 
 
 class GlitchSource:
-    """Glitch's own move, from the mover; Stockfish at `beginner` when the mover
-    fails. A dead Stockfish under a failed mover raises, and the coordinator
+    """Glitch's own move, from the mover; the engine at `beginner` when the
+    mover fails. A dead engine under a failed mover raises, and the coordinator
     leaves the reply owed exactly as it does for any engine failure (#284)."""
 
     background = False
@@ -141,12 +143,15 @@ class GlitchSource:
 def fallback_comment(reason: str) -> str:
     """The PGN comment on a fallback move: a reader of the game sees which of
     Glitch's moves were not his own."""
-    return f"Glitch's mover failed ({reason}); Stockfish played this move at beginner"
+    return (
+        f"Glitch's mover failed ({reason}); the backup engine played this move "
+        "at beginner"
+    )
 
 
 def reply_attribution(sourced: SourcedMove | None) -> dict[str, str]:
     """Who chose a reply, as the narrator is handed it and the turn's evidence
-    keeps it (#474): nothing in the Stockfish tiers, so their briefs are what
+    keeps it (#474): nothing in the engine tiers, so their briefs are what
     they always were; in the `glitch` tier `chosen_by` (`glitch` or
     `fallback`), and on his own move the `intent` he played it with. A
     fallback has no intent — it was not his move — and the narrator is told

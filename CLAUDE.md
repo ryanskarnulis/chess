@@ -44,7 +44,8 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 ## Rules
 
 - **Deterministic code owns game truth.** `python-chess` decides legality and
-  holds state; Stockfish calculates; the model only routes language to tools
+  holds state; Stockfish calculates (Maia-3 plays the tiers below `maximum`,
+  `docs/maia-tiers.md`); the model only routes language to tools
   and must never be able to corrupt the game. The app plays a full game with
   the LLM off (`CHESSAPP_AGENT=off`).
 - **Code owns actions; the model owns understanding and speech.**

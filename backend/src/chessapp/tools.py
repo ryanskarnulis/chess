@@ -72,6 +72,7 @@ from chessapp.engine import (
     STEPPED_TIERS,
     EnginePlayer,
     player_view,
+    tier_plays_maia,
 )
 from chessapp.game import GameSession, MoveResult
 from chessapp.ledger import (
@@ -199,7 +200,7 @@ class Settings:
     # Which model Glitch thinks with (#434), one of `profiles.BRAIN_CHOICES`;
     # `None` is the deployment's own (`LLAMACPP_MODEL`). Switched at the next
     # turn boundary (`brain_switch.BrainSwitch`), never inside a turn. Tone and
-    # understanding only: Stockfish still plays, so it never moves strength.
+    # understanding only: the engine still plays, so it never moves strength.
     brain: str | None = None
 
     def snapshot(self) -> dict[str, Any]:
@@ -1563,7 +1564,7 @@ def _engine_move_dict(
 def chooser_fields(sourced: SourcedMove | None) -> dict[str, Any]:
     """Who chose a reply, as result keys, in the `glitch` tier only (#473):
     `chosen_by` is `glitch` or `fallback`, and a fallback says why. Nothing in
-    every other tier, where Stockfish choosing is what a reply always meant."""
+    every other tier, where the engine choosing is what a reply always meant."""
     if sourced is None or sourced.chooser == CHOOSER_STOCKFISH:
         return {}
     fields: dict[str, Any] = {"chosen_by": sourced.chooser}
@@ -1765,7 +1766,7 @@ GLITCH_NEEDS_MOVER = (
 
 def _require_mover_for(ctx: ToolContext, tier: str) -> None:
     """Refuse the `glitch` tier when there is no mover to play it (#473):
-    with no brain, the tier would only ever be Stockfish at `beginner`."""
+    with no brain, the tier would only ever be the engine at `beginner`."""
     if tier in MOVER_TIERS and not ctx.mover_available():
         raise ToolError(GLITCH_NEEDS_MOVER, retry=RETRY_NEVER)
 
@@ -1855,13 +1856,21 @@ def pgn_headers(ctx: ToolContext, session: GameSession | None = None) -> dict[st
     if ctx.engine is None:
         glitch = "Glitch"
     elif strength_of.tier in MOVER_TIERS:
-        # He chose his own moves (#473): Stockfish was not the opponent, only
+        # He chose his own moves (#473): the engine was not the opponent, only
         # the stand-in for a failed pick, and each of those carries a comment.
         glitch = "Glitch (own moves)"
-    elif (strength := _engine_strength(strength_of)) is None:
-        glitch = "Glitch (Stockfish)"
     else:
-        glitch = f"Glitch (Stockfish, {strength})"
+        # The engine that plays the tier (#510): Maia-3 below `maximum` when
+        # it is attached, Stockfish otherwise and for a raw Elo or skill.
+        name = (
+            "Maia-3"
+            if ctx.engine.has_maia and tier_plays_maia(strength_of.tier)
+            else "Stockfish"
+        )
+        strength = _engine_strength(strength_of)
+        glitch = (
+            f"Glitch ({name})" if strength is None else f"Glitch ({name}, {strength})"
+        )
     started = session.started
     player_is_white = session.player_color == "white"
     return {

@@ -1,10 +1,10 @@
-# Maia-3 tiers: the spike (#511)
+# Maia-3 tiers
 
-Measured 2026-10-17 for #510: can [Maia-3](https://github.com/CSSLab/maia3), a
-model trained to play like a human of a given rating, stand in for the
-Stockfish settings behind the tiers below `maximum`? This note is what the
-spike found and the tier map it proposes for #512. Nothing here changes the
-app yet.
+The tiers below `maximum` play [Maia-3](https://github.com/CSSLab/maia3), a
+model trained to play like a human of a given rating, in place of the
+Stockfish settings they used to play (#510). This note is what the spike
+measured on 2026-10-17 (#511), the tier map Ryan chose from it, and how it is
+built (#512).
 
 ## What Maia-3 is
 
@@ -148,6 +148,26 @@ in `docs/glitch-difficulty.md`; Ryan accepted that, and #512 rewords it.
 The Maia tiers' Elo labels are not our tier targets: Maia's ratings are
 Lichess blitz, and `TopP` shifts strength by hundreds of points, so the map is
 read off games against today's tiers, not off the label.
+
+## As built (#512)
+
+- `maia.py`: `MaiaEngine`, one `maia3-uci` process (the 79M model, CPU, four
+  torch threads, `--use-uci-history`), handed the game's moves from the
+  position it began at and all three options on every call. A dead process
+  is started again once, as Stockfish is (#329).
+- `engine.py`: each tier's `DifficultyProfile.maia` holds its `MaiaSettings`.
+  `EnginePlayer.set_tier` still sets Stockfish up at the tier's old settings,
+  and `choose_move` plays Maia's move when one is attached, or Stockfish's when
+  it is not, or when Maia fails (logged `maia_move_failed_stockfish_plays`).
+  `maximum`, a raw Elo and a raw skill level are Stockfish's.
+- `CHESSAPP_MAIA` names the executable and `CHESSAPP_MAIA_CHECKPOINT` the
+  weights; unset, or a process that will not start, means no Maia (logged
+  `maia_unavailable`). The image installs Maia-3 in its own venv
+  (`/opt/maia`, CPU torch, pinned commit and weights) and sets both.
+- Who played is said truthfully: the PGN header names "Maia-3" for its tiers,
+  and the narrator calls the `glitch` fallback "the backup engine", which is
+  true whichever engine played it. Reviews, hints and analysis stay
+  Stockfish's.
 
 ## Reproduce
 

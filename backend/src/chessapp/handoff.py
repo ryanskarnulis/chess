@@ -283,7 +283,7 @@ def _whose_reply(reply: Mapping[str, Any]) -> str:
     """Who chose the reply, in the `glitch` tier only (#474): his own move
     comes with the intent he played it with, a final answer of the mover's
     (`play_move`), never a thought block; a fallback is said to be
-    Stockfish's, so he never presents it as his idea. Empty in every other
+    the backup engine's, so he never presents it as his idea. Empty in every other
     tier, where the brief is what it always was."""
     chosen_by = reply.get("chosen_by")
     if chosen_by == CHOOSER_GLITCH:
@@ -297,7 +297,7 @@ def _whose_reply(reply: Mapping[str, Any]) -> str:
     if chosen_by == CHOOSER_FALLBACK:
         return (
             "You did not choose this move: your own pick never came, so "
-            "Stockfish played it for you at beginner strength. It was not "
+            "the backup engine played it for you at beginner strength. It was not "
             "your idea and you had no plan with it. "
         )
     return ""
@@ -314,7 +314,10 @@ def _closing_reply(reply: Mapping[str, Any]) -> str:
             "with it, your way"
         )
     if reply.get("chosen_by") == CHOOSER_FALLBACK:
-        return f", and tell them the move Stockfish played for you, {san}, your way"
+        return (
+            f", and tell them the move the backup engine played for you, {san}, "
+            "your way"
+        )
     return f", and tell them your move, {san}, your way"
 
 
