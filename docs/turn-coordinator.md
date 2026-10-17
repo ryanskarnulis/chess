@@ -70,10 +70,11 @@ settle_engine_turn: awaiting_player → engine_calculating → awaiting_player
   background collect (over a replayed copy that carries the game's moves), its
   synchronous fallback, `settle_engine_turn`, and so `play_exchange`. A source
   only chooses; the coordinator submits through the session's legality gate.
-  `EngineSource` (Stockfish) in every tier but `glitch`, where `GlitchSource`
-  asks the mover and plays Stockfish at `beginner` when it fails
+  `EngineSource` (the engine: Maia-3 below `maximum` when attached, else
+  Stockfish) in every tier but `glitch`, where `GlitchSource` asks the mover
+  and plays the engine at `beginner` when it fails
   (`move_source.py`, `docs/glitch-difficulty.md`). Only a source with
-  `background = True` (Stockfish) is computed while the turn goes on; the mover
+  `background = True` (the engine) is computed while the turn goes on; the mover
   is asked synchronously at collect, so it never competes with the planner
   for the llama-server. Each reply's `SourcedMove` says who chose it:
   `sourced_for(reply)` for a result's `chosen_by`, `take_mover_record` for the

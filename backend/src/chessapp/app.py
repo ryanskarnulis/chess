@@ -41,6 +41,7 @@ from chessapp.engine import DEFAULT_TIER, MOVER_TIERS, EnginePlayer
 from chessapp.game import GameSession
 from chessapp.gather import Searcher, searcher_from
 from chessapp.llama_brain import FROM_PROFILE, create_llama_brain
+from chessapp.maia import maia_from_env
 from chessapp.mover import Mover
 from chessapp.personality import PLANNER_PROMPT, system_prompt_for
 from chessapp.profiles import (
@@ -406,7 +407,11 @@ def _mover_for(brain: object) -> Mover | None:
 
 def _engine_from_env() -> EnginePlayer | None:
     path = os.environ.get("CHESSAPP_STOCKFISH")
-    return EnginePlayer(path=path) if path else None
+    if not path:
+        return None
+    # Maia-3 plays the tiers below `maximum` when CHESSAPP_MAIA names it
+    # (#510); without it they play their Stockfish settings.
+    return EnginePlayer(path=path, maia=maia_from_env())
 
 
 def _speech_from_env() -> SpeechClient | None:

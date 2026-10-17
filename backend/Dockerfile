@@ -37,6 +37,30 @@ COPY backend/src ./src
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir .
 
+# --- maia stage: Maia-3 in a venv of its own, weights included (#510) ----------
+# The tiers below `maximum` play Maia-3's human-like move (docs/maia-tiers.md).
+# It runs as its own UCI process, like Stockfish, from its own venv: torch and
+# the AGPL-licensed maia3 package stay out of the app's. CPU torch only (no
+# CUDA wheels), and the 79M checkpoint baked in so it never fetches at runtime.
+# Pinned: the code, torch and the weights the tier map was measured with.
+FROM python:3.12-slim AS maia
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG MAIA3_COMMIT=1e13597c42d4858b7cfd7cfdae01e297263364b2
+ARG MAIA3_WEIGHTS_REVISION=a107d6ceb7b298cb04ae1da4edffe2939858b894
+RUN python -m venv /opt/maia \
+    && /opt/maia/bin/pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu torch==2.14.1 \
+    && /opt/maia/bin/pip install --no-cache-dir \
+        "maia3 @ git+https://github.com/CSSLab/maia3@${MAIA3_COMMIT}" \
+    && /opt/maia/bin/python -c "from huggingface_hub import hf_hub_download; \
+hf_hub_download('UofTCSSLab/Maia3-79M', 'maia3-79m.pt', \
+revision='${MAIA3_WEIGHTS_REVISION}', local_dir='/opt/maia/weights')" \
+    && rm -rf /opt/maia/weights/.cache
+
 # --- runtime stage -------------------------------------------------------------
 FROM python:3.12-slim
 
@@ -46,10 +70,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/venv /opt/venv
+COPY --from=maia /opt/maia /opt/maia
 COPY --from=frontend /ui/dist /opt/frontend
 
 # PATH puts the venv first (resolves `chessapp` + `python`). CHESSAPP_STOCKFISH
 # attaches the engine by default; still optional — unset it to run engine-off.
+# CHESSAPP_MAIA attaches Maia-3 for the tiers below `maximum`, with its baked-in
+# weights; unset it and those tiers play their Stockfish settings.
 # CHESSAPP_STATIC_DIR serves the baked-in UI at / (unset it for API-only).
 # Host 0.0.0.0 so the app is reachable across the home network.
 # The commit this image was built from (#317): the image carries no .git, so
@@ -60,6 +87,8 @@ ARG CHESSAPP_REVISION=unknown
 ENV PATH=/opt/venv/bin:$PATH \
     CHESSAPP_REVISION=$CHESSAPP_REVISION \
     CHESSAPP_STOCKFISH=/usr/games/stockfish \
+    CHESSAPP_MAIA=/opt/maia/bin/maia3-uci \
+    CHESSAPP_MAIA_CHECKPOINT=/opt/maia/weights/maia3-79m.pt \
     CHESSAPP_STATIC_DIR=/opt/frontend \
     CHESSAPP_HOST=0.0.0.0 \
     CHESSAPP_PORT=8000

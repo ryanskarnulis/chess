@@ -59,6 +59,8 @@ class FakeEngine:
         # exit at all (`app.serve`). Recorded, not counted: closing twice is
         # harmless and closing never is the bug.
         self.closed = False
+        # No Maia-3 behind the double (#510): its tiers read as Stockfish's.
+        self.has_maia = False
 
     def play_move(self, session):
         return session.submit_move(self.reply_uci)

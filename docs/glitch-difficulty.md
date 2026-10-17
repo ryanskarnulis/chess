@@ -87,29 +87,38 @@ A test pins the mover's request bytes per position (like
   tiers he explains Stockfish's move. Thinking stays on and is never fed back
   into history (CLAUDE.md).
 
-### 4. Fallback: Stockfish at `beginner`
+### 4. Fallback: the engine at `beginner`
 
 If the retries run out, the call passes its deadline or the provider is down,
-the coordinator plays Stockfish's move at the `beginner` tier, so a failure
-never makes Glitch stronger than he plays on his own. The fallback is marked
-in the trace record and as a PGN comment, and the narrator is told it was not
-his choice, so he never claims it as his idea.
+the coordinator plays the engine's move at the `beginner` tier. The fallback
+is marked in the trace record and as a PGN comment, and the narrator is told
+it was not his choice, so he never claims it as his idea.
+
+Amended 2026-10-17 (#512): the decision first said a failure "never makes
+Glitch stronger than he plays on his own", which held while `beginner` was
+Stockfish's weakest sampler. `beginner` is now Maia-3 at 600 (#510,
+`docs/maia-tiers.md`), which may play stronger than the mover, and Ryan chose
+to keep the fallback as `beginner` anyway rather than pin it to the old
+sampler. Without Maia attached it is Stockfish's `beginner` settings, as
+before.
 
 With the LLM off (`CHESSAPP_AGENT=off`) the tier cannot be chosen. Every
 other tier still plays a full game.
 
 As built (#473): the `glitch` profile is `beginner`'s with `mover=True`, so
-setting the tier configures Stockfish as `beginner` and the fallback is just
-the engine's move. `GlitchSource` asks the mover, and on `MoverFailed` plays
+setting the tier configures the engine as `beginner` (Maia-3 at 600 when
+attached, Stockfish's sampler otherwise) and the fallback is just the engine's
+move. `GlitchSource` asks the mover, and on `MoverFailed` plays
 that move with `chooser="fallback"`. The marks:
 
-- the move's PGN comment ("Glitch's mover failed (deadline); Stockfish
-  played this move at beginner"), kept in the save (`GameSession` notes);
+- the move's PGN comment ("Glitch's mover failed (deadline); the backup
+  engine played this move at beginner"), kept in the save (`GameSession`
+  notes);
 - the turn record's `mover` (`"fallback": true`, `outcome` the failure kind),
   with the mover's calls in `calls`;
 - `chosen_by: "fallback"` and `fallback_reason` on the reply's result
   (`engine_move`), on every route; `chosen_by: "glitch"` on his own moves, and
-  no key in the Stockfish tiers.
+  no key in the engine tiers.
 
 `set_difficulty` and `/api/game/difficulty` refuse `glitch` with no mover and
 say why; a saved `glitch` setting falls back to the default tier at a start

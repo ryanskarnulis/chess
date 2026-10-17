@@ -60,8 +60,8 @@ object on the context.
 **Every reply is chosen by one move source** (`_move_source`, #471). Whether a
 reply is owed and which move it is are both asked of it, on every route: the
 background collect, its synchronous fallback, the settle and so `play_exchange`.
-Stockfish (`EngineSource`) in every tier but `glitch`, where the mover chooses
-and Stockfish at `beginner` stands in when it fails (`GlitchSource`,
+The engine (`EngineSource`) in every tier but `glitch`, where the mover chooses
+and the engine at `beginner` stands in when it fails (`GlitchSource`,
 `docs/glitch-difficulty.md`). A source only *chooses*: the move still enters the
 game through `session.submit_move`, here. Who chose each reply is kept for its
 reporters: a fallback is noted on the move (the PGN comment), the mover's record

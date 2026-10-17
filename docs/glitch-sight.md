@@ -124,7 +124,7 @@ Each call is a model round trip on the shared GPU, so the profile caps them
 move". The tool stays in the list, so the request's prefix still caches. A
 look never counts against `MAX_ATTEMPTS`, which stays the budget for illegal
 `play_move`s. The run's `deadline_s` covers looks too, and passing it is the
-usual fallback (Stockfish `beginner`).
+usual fallback (the engine at `beginner`).
 
 The game is never touched. Lines are played on a copy, and `play_move` alone
 reaches the coordinator's legality gate (#471). The turn record's `mover`

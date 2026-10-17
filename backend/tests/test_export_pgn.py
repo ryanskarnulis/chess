@@ -148,6 +148,29 @@ def test_strength_is_spelled_the_way_it_was_set(setting, value, expected):
     assert pgn_headers(ctx)["Black"] == expected
 
 
+@pytest.mark.parametrize(
+    ("setting", "value", "expected"),
+    [
+        ("tier", "casual", "Glitch (Maia-3, casual)"),
+        ("tier", "advanced", "Glitch (Maia-3, advanced)"),
+        ("tier", "maximum", "Glitch (Stockfish, maximum)"),
+        ("elo", 1400, "Glitch (Stockfish, 1400 Elo)"),
+    ],
+)
+def test_with_maia_attached_the_header_names_the_engine_that_plays(
+    setting, value, expected
+):
+    """#510: below `maximum` the tiers play Maia-3 when it is attached, and the
+    header may not credit Stockfish with its moves; `maximum` and the raw
+    knobs are still Stockfish's."""
+    engine = FakeEngine()
+    engine.has_maia = True
+    ctx = ToolContext(session=GameSession(), engine=engine)
+    ctx.settings.tier = None
+    setattr(ctx.settings, setting, value)
+    assert pgn_headers(ctx)["Black"] == expected
+
+
 def test_no_engine_claims_no_stockfish():
     """Direct mode off, brain-only, a game replayed from a save: whatever it
     was played against, it was not this deployment's engine."""

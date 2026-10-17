@@ -52,6 +52,7 @@ from pydantic import ConfigDict
 from chessapp.brain import RETRY_NEVER
 from chessapp.engine import EnginePlayer
 from chessapp.game import GameSession
+from chessapp.maia import maia_from_env
 from chessapp.mover import Mover
 from chessapp.profiles import load_profile
 from chessapp.provider import LlamaCppProvider
@@ -323,7 +324,11 @@ def _engine_from_env() -> EnginePlayer | None:
     """Same discovery as `chessapp.app`'s: unset `CHESSAPP_STOCKFISH` means
     no engine, not a crash."""
     path = os.environ.get("CHESSAPP_STOCKFISH")
-    return EnginePlayer(path=path) if path else None
+    if not path:
+        return None
+    # Maia-3 plays the tiers below `maximum` when CHESSAPP_MAIA names it
+    # (#510); without it they play their Stockfish settings.
+    return EnginePlayer(path=path, maia=maia_from_env())
 
 
 def _mover_from_env() -> Mover | None:

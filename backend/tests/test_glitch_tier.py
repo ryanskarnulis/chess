@@ -184,7 +184,8 @@ def test_a_failed_mover_falls_back_to_the_engine_and_says_so(kind):
     assert sourced.mover["outcome"] == str(kind)
     # The PGN carries it on that move.
     assert ctx.session.move_notes == {
-        1: f"Glitch's mover failed ({kind}); Stockfish played this move at beginner"
+        1: f"Glitch's mover failed ({kind}); the backup engine played this move "
+        "at beginner"
     }
     game = chess.pgn.read_game(io.StringIO(ctx.session.export_pgn()))
     moves = list(game.mainline())

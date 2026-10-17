@@ -196,7 +196,7 @@ class _TryLineArgs(BaseModel):
 
 class MoverFailureKind(StrEnum):
     """Why the mover returned no move. Each is the caller's to handle (#473
-    plays Stockfish at `beginner`); none of them is ever a move."""
+    plays the engine at `beginner`); none of them is ever a move."""
 
     #: Every attempt was illegal, made no call, or had bad arguments.
     RETRIES = "retries"
