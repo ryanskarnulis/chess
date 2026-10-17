@@ -15,7 +15,7 @@ Everything runs in containers on your own hardware (the app, Speaches for STT, K
 
 ## Status
 
-Playable end-to-end: web board, voice in and out, the Glitch agent, analysis and whole-game review, and a delegate API the workspace conductor drives. What's next is ordered in the pinned [roadmap, #366](https://github.com/ryanskarnulis/chess/issues/366), and the rest of the backlog is in [GitHub issues](https://github.com/ryanskarnulis/chess/issues); progress is the closed issues and merged PRs. The full design rationale lives in [`BRIEF.md`](BRIEF.md).
+Playable end-to-end: web board, voice in and out, the Glitch agent, analysis and whole-game review, and a delegate API the workspace conductor drives. What's next is ordered in the pinned [release roadmap, #525](https://github.com/ryanskarnulis/chess/issues/525), and the rest of the backlog is in [GitHub issues](https://github.com/ryanskarnulis/chess/issues); progress is the closed issues and merged PRs. The full design rationale lives in [`BRIEF.md`](BRIEF.md).
 
 Roadmap:
 
@@ -23,7 +23,8 @@ Roadmap:
 2. Voice (self-hosted STT/TTS) — **done 2026-07-06**
 3. Settings by natural speech + the single dialed-in personality (Glitch) and a custom voice — **done 2026-07-11** (#93/#97)
 4. Physical board (Chessnut Move) — separate, walled-off project
-5. Agent redesign — code owns actions and the model owns speech, a running story of the game, a second brain, and a harness built for the next model — **in progress** ([roadmap #366](https://github.com/ryanskarnulis/chess/issues/366))
+5. Agent redesign — code owns actions and the model owns speech, a running story of the game, a second brain, and a harness built for the next model — **done 2026-10-17** ([roadmap #366](https://github.com/ryanskarnulis/chess/issues/366))
+6. Public release (v0.1.0) — easy setup for players and local-AI enthusiasts — **in progress** ([roadmap #525](https://github.com/ryanskarnulis/chess/issues/525))
 
 ## Repo layout
 

@@ -71,7 +71,7 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
 - **Never feed model thought blocks back into history** — final answers only.
 - **Backlog is GitHub issues** (`gh issue list`). File follow-up work as an
   issue, never in a markdown file; PRs close issues with `Closes #N`. The
-  pinned roadmap #366 orders the work: its sub-issues are the steps in order,
+  pinned roadmap #525 (the v0.1.0 release) orders the work: its sub-issues are the steps in order,
   so take the first open one unless told otherwise. `P1`–`P3` labels are
   rough priority, not the order.
 - **Git:** never commit to `main`. Branch → PR → squash-merge on green CI
