@@ -15,7 +15,12 @@ concurrency: deploy
 
 jobs:
   deploy:
-    if: github.event.workflow_run.conclusion == 'success'
+    # The branches filter above matches a branch *name*, so a fork's PR from a
+    # branch called main would pass it: also require a push to this repo.
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: [self-hosted, homelab]
     steps:
       - name: Pull deploy clone and rebuild stack

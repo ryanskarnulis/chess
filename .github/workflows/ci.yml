@@ -41,10 +41,16 @@ jobs:
   # clones the canonical agent-standard repo next to this checkout and runs
   # check-sync.sh; drift surfaces as a warning annotation, never a failure.
   # This checkout doubles as the canonical voice-module source, so only
-  # agent-standard is cloned. Runs on the homelab runner because the repo is
-  # private — the default GITHUB_TOKEN is single-repo, but the runner's gh
+  # agent-standard is cloned. Runs on the homelab runner because agent-standard
+  # is private — the default GITHUB_TOKEN is single-repo, but the runner's gh
   # credential helper can clone it.
+  #
+  # Push to main only, never on pull_request: this repo is public, and a fork's
+  # PR runs the workflow file from its own branch, so a PR-triggered job on the
+  # self-hosted runner would let anyone run commands on the homelab workstation.
+  # Only reviewed, merged code reaches this job.
   sync-check:
+    if: github.event_name == 'push'
     runs-on: [self-hosted, homelab]
     defaults:
       run:
