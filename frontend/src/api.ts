@@ -623,7 +623,7 @@ export async function fetchHint(): Promise<HintResponse | null> {
   return (await res.json().catch(() => null)) as HintResponse | null
 }
 
-export interface ReviewedMove {
+export interface ReviewedMove extends ReviewEval {
   san: string
   uci: string
   color: 'white' | 'black'
@@ -632,6 +632,16 @@ export interface ReviewedMove {
   /** The engine's preferred move from the same position, in SAN. */
   best: string
   accuracy: number
+  /** The move number as the board counts it (a FEN-resumed game counts on). */
+  move_number: number
+}
+
+/** One point of the evaluation graph (#528), always from the player's side. */
+export interface ReviewEval {
+  /** Centipawns, positive when the player is better, ceiled at ±1000. */
+  player_eval_cp: number
+  /** A mate on the board: who delivers it, in how many (0: it is mate). */
+  mate: { in: number; for: 'player' | 'glitch' } | null
 }
 
 export interface GameReview {
@@ -640,6 +650,10 @@ export interface GameReview {
   accuracy: Record<string, number>
   /** Per-color classification counts. */
   counts: Record<string, Record<string, number>>
+  /** The side every `player_eval_cp` is measured from. */
+  player_color: 'white' | 'black'
+  /** The root position's evaluation, before the first reviewed move. */
+  start: ReviewEval
 }
 
 /** Fetch the whole-game review, or null if the backend refused (no engine →

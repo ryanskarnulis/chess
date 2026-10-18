@@ -236,6 +236,111 @@ def test_a_slower_mate_is_not_a_mistake():
     assert e4.classification == "good"
 
 
+# --- the evaluation graph (#528) ---------------------------------------------
+
+
+def test_the_eval_is_whites_point_of_view_after_every_move():
+    # White a pawn up, then Black a pawn up: the mover-POV score would read
+    # +100 twice; the graph's line must read +100 then -100.
+    engine = ScriptedEngine(
+        {
+            after(): ("e2e4", 30, None),
+            after("e4"): ("e7e5", 100, None),
+            after("e4", "e5"): ("g1f3", -100, None),
+        }
+    )
+    review = review_game(engine, play(GameSession(), "e4", "e5"))
+    assert review.start_eval_white_cp == 30
+    assert review.start_mate_in is None
+    assert [m.eval_white_cp for m in review.moves] == [100, -100]
+    assert [m.mate_in for m in review.moves] == [None, None]
+
+
+def test_a_mate_on_the_board_is_ceiled_and_keeps_its_distance():
+    engine = ScriptedEngine(
+        {
+            after(): ("e2e4", None, 4),
+            after("e4"): ("e7e5", None, -3),
+            after("e4", "e5"): ("g1f3", 5000, None),
+        }
+    )
+    review = review_game(engine, play(GameSession(), "e4", "e5"))
+    assert (review.start_eval_white_cp, review.start_mate_in) == (EVAL_CEILING_CP, 4)
+    first, second = review.moves
+    assert (first.eval_white_cp, first.mate_in) == (-EVAL_CEILING_CP, -3)
+    assert (second.eval_white_cp, second.mate_in) == (EVAL_CEILING_CP, None)
+
+
+def test_a_delivered_mate_ends_at_the_winners_ceiling():
+    moves = ("f3", "e5", "g4", "Qh4#")  # fool's mate: Black mates
+    engine = ScriptedEngine(
+        {
+            after(): ("e2e4", 30, None),
+            after("f3"): ("e7e5", -20, None),
+            after("f3", "e5"): ("e1f2", -80, None),
+            after("f3", "e5", "g4"): ("d8h4", None, -1),
+        }
+    )
+    review = review_game(engine, play(GameSession(), *moves))
+    mate = review.moves[-1]
+    assert mate.san == "Qh4#"
+    assert (mate.eval_white_cp, mate.mate_in) == (-EVAL_CEILING_CP, 0)
+
+
+def test_a_stalemate_ends_level():
+    fen = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"
+    session = GameSession(fen=fen)
+    engine = ScriptedEngine({fen: ("g6h6", None, 1)})
+    review = review_game(engine, play(session, "Kh6"))
+    (last,) = review.moves
+    assert (last.eval_white_cp, last.mate_in) == (0, None)
+
+
+def test_a_resumed_game_starts_where_it_stood():
+    fen = "4k3/8/8/8/8/8/4P3/4K2R b - - 0 30"
+    session = GameSession(fen=fen)
+    board = chess.Board(fen)
+    board.push_san("Kd7")
+    engine = ScriptedEngine(
+        {fen: ("e8d7", 600, None), board.fen(): ("h1h7", 620, None)}
+    )
+    review = review_game(engine, play(session, "Kd7"))
+    assert review.start_eval_white_cp == 600
+    (kd7,) = review.moves
+    assert (kd7.color, kd7.move_number, kd7.eval_white_cp) == ("black", 30, 620)
+
+
+@pytest.mark.parametrize(
+    ("player_color", "cp", "mate_for"),
+    [("white", 1, "player"), ("black", -1, "glitch")],
+)
+def test_the_review_endpoint_graphs_from_the_players_side(player_color, cp, mate_for):
+    from fastapi.testclient import TestClient
+
+    from chessapp.api import create_app
+
+    engine = ScriptedEngine(
+        {
+            after(): ("e2e4", 30, None),
+            after("e4"): ("e7e5", 100, None),
+            after("e4", "e5"): ("g1f3", None, 2),
+        }
+    )
+    session = play(GameSession(player_color=player_color), "e4", "e5")
+    body = (
+        TestClient(create_app(ToolContext(session=session, engine=engine)))
+        .get("/api/game/review")
+        .json()
+    )
+    assert body["player_color"] == player_color
+    assert body["start"] == {"player_eval_cp": 30 * cp, "mate": None}
+    first, second = body["moves"]
+    assert first["move_number"] == second["move_number"] == 1
+    assert (first["player_eval_cp"], first["mate"]) == (100 * cp, None)
+    assert second["player_eval_cp"] == EVAL_CEILING_CP * cp
+    assert second["mate"] == {"in": 2, "for": mate_for}
+
+
 # --- the tool ---------------------------------------------------------------
 
 

@@ -1,4 +1,5 @@
 import type { GameReview, ReviewedMove } from './api'
+import { EvalGraph } from './EvalGraph'
 
 export interface ReviewPanelProps {
   /** The finished review, or null while it runs or when it could not. */
@@ -113,8 +114,7 @@ function ReviewResults({
           />
         ))}
       </div>
-      {/* The evaluation graph (#528) goes here, between the cards and the
-          legend. */}
+      <EvalGraph review={review} />
       <p className="review-legend">
         {(['inaccuracy', 'mistake', 'blunder'] as const).map((c) => (
           <span key={c}>
