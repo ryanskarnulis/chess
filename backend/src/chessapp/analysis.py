@@ -197,6 +197,13 @@ class ReviewedMove:
     # The move number as a player says it ("my 12th move"), read off the board
     # before the move — so a game resumed from a mid-game FEN counts from there.
     move_number: int = 0
+    # The position the move left, for the review's evaluation graph (#528):
+    # White's point of view, so the line doesn't flip sign every ply, and
+    # ceiled like every other score so one mate doesn't flatten the rest.
+    # `mate_in` is White-POV signed beside it; a delivered mate is 0, its
+    # winner read off the sign of `eval_white_cp`.
+    eval_white_cp: int = 0
+    mate_in: int | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +214,11 @@ class GameReview:
     moves: tuple[ReviewedMove, ...]
     accuracy: dict[str, float]
     counts: dict[str, dict[str, int]]
+    # The root position's evaluation, same shape as `ReviewedMove`'s, so the
+    # graph starts at move 0 — and a game resumed from a FEN starts where it
+    # really stood rather than at 0.
+    start_eval_white_cp: int = 0
+    start_mate_in: int | None = None
 
 
 def win_percent(cp: int) -> float:
@@ -241,6 +253,7 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
 
     board = chess.Board(data["root_fen"])
     best = engine.get_best_moves(GameSession(fen=board.fen()), n=1)[0]
+    start = (ceiled_cp(best.score_cp, best.mate_in, "white"), best.mate_in)
     reviewed: list[ReviewedMove] = []
     for uci in data["moves"]:
         move = chess.Move.from_uci(uci)
@@ -251,9 +264,16 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
         board.push(move)
         if board.is_game_over():
             played_cp = best_cp if board.is_checkmate() else 0
+            # Mate on the board is the mover's whole ceiling, whatever the
+            # search before it promised; any other ending is level.
+            won = EVAL_CEILING_CP if board.is_checkmate() else 0
+            eval_white_cp = won if mover == "white" else -won
+            mate_in: int | None = 0 if board.is_checkmate() else None
         else:
             next_best = engine.get_best_moves(GameSession(fen=board.fen()), n=1)[0]
             played_cp = ceiled_cp(next_best.score_cp, next_best.mate_in, mover)
+            eval_white_cp = ceiled_cp(next_best.score_cp, next_best.mate_in, "white")
+            mate_in = next_best.mate_in
         cp_loss = move_loss(best.uci, uci, best_cp, played_cp)
         reviewed.append(
             ReviewedMove(
@@ -270,6 +290,8 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
                     else move_accuracy(win_percent(best_cp), win_percent(played_cp))
                 ),
                 move_number=move_number,
+                eval_white_cp=eval_white_cp,
+                mate_in=mate_in,
             )
         )
         if board.is_game_over():
@@ -289,7 +311,13 @@ def review_game(engine: EnginePlayer, session: GameSession) -> GameReview:
             c: sum(1 for m in color_moves if m.classification == c)
             for c in CLASSIFICATIONS
         }
-    return GameReview(moves=tuple(reviewed), accuracy=accuracy, counts=counts)
+    return GameReview(
+        moves=tuple(reviewed),
+        accuracy=accuracy,
+        counts=counts,
+        start_eval_white_cp=start[0],
+        start_mate_in=start[1],
+    )
 
 
 def critical_moves(

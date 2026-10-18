@@ -282,6 +282,118 @@
   color: var(--muted);
 }
 
+/* The evaluation over the game (#528): above the zero line is the player's,
+   in the "You" card's glow; below is Glitch's, in violet. The paths stretch
+   to the plot (non-scaling strokes); dots and the cursor are HTML on top so
+   they stay round. */
+.eval-graph {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 6px;
+  margin: 0;
+  padding: 0 20px 14px;
+}
+
+.eval-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 104px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.eval-plot {
+  position: relative;
+  height: 104px;
+  touch-action: pan-y;
+  cursor: crosshair;
+  border-radius: 4px;
+  outline: none;
+}
+
+.eval-plot:focus-visible {
+  box-shadow: 0 0 0 2px var(--glow-soft);
+}
+
+.eval-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.eval-area-you {
+  fill: var(--glow-soft);
+}
+
+.eval-area-glitch {
+  fill: var(--violet-soft);
+}
+
+.eval-zero {
+  stroke: var(--silk-border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.eval-line {
+  fill: none;
+  stroke: var(--silk-strong);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.eval-dot,
+.eval-cursor-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--surface);
+  pointer-events: none;
+}
+
+.eval-dot-mistake {
+  background: color-mix(in srgb, var(--warn), var(--danger));
+}
+
+.eval-dot-blunder {
+  background: var(--danger);
+}
+
+.eval-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid var(--silk-strong);
+  pointer-events: none;
+}
+
+.eval-cursor-dot {
+  left: 0;
+  background: var(--ink);
+}
+
+.eval-caption {
+  grid-column: 2;
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  /* One line always, so reading a move never shifts the list below. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .review-legend {
   display: flex;
   gap: 16px;

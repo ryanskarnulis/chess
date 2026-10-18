@@ -13,10 +13,15 @@ const REVIEW: GameReview = {
       classification: 'good',
       best: 'e4',
       accuracy: 100,
+      move_number: 1,
+      player_eval_cp: 30,
+      mate: null,
     },
   ],
   accuracy: { white: 97.1, black: 50 },
   counts: { white: { good: 1 }, black: {} },
+  player_color: 'white',
+  start: { player_eval_cp: 20, mate: null },
 }
 
 function outcome(overrides: Partial<Outcome> = {}): Outcome {

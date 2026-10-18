@@ -438,6 +438,23 @@ def _state_dict_unlocked(ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+def _review_eval(
+    eval_white_cp: int, mate_in: int | None, player_color: str
+) -> dict[str, Any]:
+    """One point of the review's evaluation graph (#528), from the player's
+    side: `player_eval_cp` is positive when the player is better, already
+    ceiled, and `mate` says who mates in how many, in `player_view`'s words
+    ("player" / "glitch"). The winner of a mate comes off the sign of the
+    ceiled score, because a delivered mate is `mate_in` 0 and 0 has no sign."""
+    cp = eval_white_cp if player_color == "white" else -eval_white_cp
+    mate = (
+        None
+        if mate_in is None
+        else {"in": abs(mate_in), "for": "player" if cp > 0 else "glitch"}
+    )
+    return {"player_eval_cp": cp, "mate": mate}
+
+
 def _session_snapshot(ctx: ToolContext) -> tuple[int, GameSession]:
     """Detach the game from the live board, under the mutation boundary.
 
@@ -3772,6 +3789,7 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail="review unavailable: the engine stopped"
             ) from exc
+        player_color = snapshot.player_color
         return {
             "moves": [
                 {
@@ -3782,11 +3800,17 @@ def create_app(
                     "classification": m.classification,
                     "best": m.best_san,
                     "accuracy": m.accuracy,
+                    "move_number": m.move_number,
+                    **_review_eval(m.eval_white_cp, m.mate_in, player_color),
                 }
                 for m in review.moves
             ],
             "accuracy": review.accuracy,
             "counts": review.counts,
+            "player_color": player_color,
+            "start": _review_eval(
+                review.start_eval_white_cp, review.start_mate_in, player_color
+            ),
         }
 
     @app.get("/api/game/pgn")

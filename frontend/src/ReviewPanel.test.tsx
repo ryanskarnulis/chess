@@ -13,6 +13,9 @@ const REVIEW: GameReview = {
       classification: 'good',
       best: 'e4',
       accuracy: 100,
+      move_number: 1,
+      player_eval_cp: 30,
+      mate: null,
     },
     {
       san: 'g5',
@@ -22,6 +25,9 @@ const REVIEW: GameReview = {
       classification: 'blunder',
       best: 'e5',
       accuracy: 42.3,
+      move_number: 1,
+      player_eval_cp: 380,
+      mate: null,
     },
   ],
   accuracy: { white: 97.1, black: 42.3 },
@@ -29,6 +35,8 @@ const REVIEW: GameReview = {
     white: { good: 1, inaccuracy: 0, mistake: 0, blunder: 0 },
     black: { good: 0, inaccuracy: 0, mistake: 0, blunder: 1 },
   },
+  player_color: 'white',
+  start: { player_eval_cp: 20, mate: null },
 }
 
 function panel(overrides: Partial<Parameters<typeof ReviewPanel>[0]> = {}) {
