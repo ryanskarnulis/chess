@@ -4,8 +4,9 @@ import { Board } from './Board'
 import { BottomBar } from './BottomBar'
 import { CapturedPieces } from './CapturedPieces'
 import { CommandBox } from './CommandBox'
+import { ConfirmSheet } from './ConfirmSheet'
+import { GameMenu } from './GameMenu'
 import { MoveStrip } from './MoveStrip'
-import { OptionsSheet } from './OptionsSheet'
 import { PostGameModal } from './PostGameModal'
 import { PromotionPicker } from './PromotionPicker'
 import { boardHighlights } from './highlights'
@@ -47,6 +48,8 @@ function App() {
     resign,
     claimDraw,
     offerDraw,
+    question,
+    answerQuestion,
     setDifficulty,
     tier,
     commentary,
@@ -68,7 +71,11 @@ function App() {
     hintShapes,
     requestHint,
   } = useGame()
-  const [sheetOpen, setSheetOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  // The Game menu's Resign… asks here first, in the app's own sheet, before
+  // anything is sent — resigning is the one op that always asks, even where
+  // the backend's gate would stand aside (before the player has moved).
+  const [resignAsk, setResignAsk] = useState(false)
   // The conductor hands off to chess by navigating here with what the user
   // actually said (`/?intent=let's play chess as black`). Run it through the
   // agent so the session opens already acting on it. Scrub the param first —
@@ -161,8 +168,10 @@ function App() {
       ? 'Connecting…'
       : state.game_over
         ? `Game over — ${state.outcome?.result ?? ''}`
-        : reviewing
-          ? 'Reviewing — press the forward arrow to return'
+        : viewPly !== null
+          ? viewPly === 0
+            ? 'Viewing the starting position — tap › to return'
+            : `Viewing move ${Math.ceil(viewPly / 2)} — tap › to return`
           : null
   const playerCaptures = (
     <CapturedPieces
@@ -196,8 +205,6 @@ function App() {
         commentary={commentary}
         thinking={agentThinking}
         progress={agentProgress}
-        voiceOutput={voiceOutput}
-        onToggleVoice={setVoiceOutput}
         showCommentary={false}
         disabled={agentAvailable === false}
       />
@@ -246,7 +253,7 @@ function App() {
       )}
       {state && !state.game_over && !playerMoved && (
         <div className="side-picker">
-          <span>Playing as {capitalize(state.player_color)}</span>
+          <span>Playing as {capitalize(state.player_color)} ·</span>
           <button type="button" onClick={() => newGame(otherColor)}>
             Switch to {capitalize(otherColor)}
           </button>
@@ -275,21 +282,21 @@ function App() {
             />
           )}
           <BottomBar
-            onOptions={() => setSheetOpen(true)}
-            onResign={resign}
-            onDraw={drawClaimable ? claimDraw : offerDraw}
-            onHint={requestHint}
             onUndo={undo}
-            resignDisabled={state.game_over}
-            drawClaimable={drawClaimable}
-            drawDisabled={state.game_over}
-            hintDisabled={state.game_over || reviewing}
+            onHint={requestHint}
+            onGame={() => setMenuOpen((o) => !o)}
             undoDisabled={!undoable || reviewing}
+            hintDisabled={state.game_over || reviewing}
+            gameOpen={menuOpen}
           />
-          <OptionsSheet
-            open={sheetOpen}
-            onClose={() => setSheetOpen(false)}
+          <GameMenu
+            open={menuOpen}
+            onClose={() => setMenuOpen(false)}
             onNewGame={newGame}
+            drawClaimable={drawClaimable}
+            gameOver={state.game_over}
+            onDraw={drawClaimable ? claimDraw : offerDraw}
+            onResign={() => setResignAsk(true)}
             tier={tier}
             glitchAvailable={glitchAvailable}
             onSetDifficulty={setDifficulty}
@@ -299,6 +306,20 @@ function App() {
             onSetBrain={setBrain}
           />
         </>
+      )}
+      {/* The app's one yes/no question: the resign it asks itself, or the one
+          a gated op (new game, claim draw, …) came back with. A resign
+          confirmed here answers the gate's identical question too. */}
+      {resignAsk ? (
+        <ConfirmSheet
+          question={{ op: 'resign' }}
+          onAnswer={(yes) => {
+            setResignAsk(false)
+            if (yes) void resign({ confirmed: true })
+          }}
+        />
+      ) : (
+        question && <ConfirmSheet question={question} onAnswer={answerQuestion} />
       )}
     </main>
   )

@@ -30,4 +30,13 @@ describe('PromotionPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Queen' }))
     expect(onCancel).not.toHaveBeenCalled()
   })
+
+  // The tiles wear the board's own artwork, so the piece picked is the piece
+  // that lands — not a font glyph that looks nothing like it.
+  it("draws each tile in the board's piece art, in the pawn's colour", () => {
+    render(<PromotionPicker color="black" onSelect={vi.fn()} onCancel={vi.fn()} />)
+    const art = screen.getByRole('button', { name: 'Rook' }).querySelector('.piece-art')
+    expect(art).toHaveClass('rook', 'black')
+    expect(document.body.textContent).not.toMatch(/[♔-♟]/u)
+  })
 })

@@ -167,7 +167,7 @@ calculating" in the others. The board controls that can leave Glitch to move
 (a new game as black, its confirmation, an odd takeback) run off the event
 loop, and in this tier as a progress interaction like a drag, so the line
 shows there too and nothing else stops while he thinks. `/api/settings` says whether the
-tier can be chosen (`glitch_available`); the Options sheet disables it with
+tier can be chosen (`glitch_available`); the Game menu disables it with
 the reason when it can't, and the brain picker says the brain plays his moves.
 
 The mover gets its own deadline and token cap in the profile; passing either

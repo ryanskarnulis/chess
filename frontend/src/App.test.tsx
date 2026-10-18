@@ -114,6 +114,12 @@ function deferState() {
   })
 }
 
+/** Open the Game menu from the bar, once the bar is up. */
+async function openGameMenu() {
+  fireEvent.click(await screen.findByRole('button', { name: /^game$/i }))
+  return screen.getByRole('dialog', { name: 'Game' })
+}
+
 // The conductor hands a user off to chess by navigating here with the thing
 // they actually said (`/?intent=…`); we run it through the agent so Glitch
 // opens the session already acting on it.
@@ -182,17 +188,46 @@ describe('App layout', () => {
     expect(screen.queryByRole('complementary')).not.toBeInTheDocument()
   })
 
-  it('opens the options sheet from the bottom bar', async () => {
+  it('opens the Game menu from the bar, and closes it from there too', async () => {
     stubMatchMedia(false)
     render(<App />)
-    await waitFor(() =>
-      expect(screen.getByRole('navigation', { name: /game controls/i })).toBeInTheDocument(),
-    )
-    screen.getByRole('button', { name: /options/i }).click()
-    await waitFor(() =>
-      expect(screen.getByRole('dialog', { name: /options/i })).toBeInTheDocument(),
-    )
+    const bar = await screen.findByRole('navigation', { name: /game controls/i })
+    expect(bar.querySelectorAll('button')).toHaveLength(3)
+    await openGameMenu()
     expect(screen.getByRole('button', { name: /new game/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^game$/i })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: /^game$/i }))
+    expect(screen.queryByRole('dialog', { name: 'Game' })).not.toBeInTheDocument()
+  })
+
+  // Voice output is a setting now: it left the command row for the menu.
+  it('keeps the voice switch in the menu, not the command row', async () => {
+    render(<App />)
+    await screen.findByRole('navigation', { name: /game controls/i })
+    expect(screen.queryByRole('button', { name: /voice output/i })).not.toBeInTheDocument()
+    await openGameMenu()
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: /speak replies aloud/i })).toBeInTheDocument(),
+    )
+  })
+})
+
+describe('stepping back through moves', () => {
+  it('says which move is on the board and how to return', async () => {
+    served = state({
+      history: ['e4', 'e5', 'Nf3'],
+      fens: [START_FEN, START_FEN, START_FEN, START_FEN],
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Previous move' }))
+    expect(screen.getByText('Viewing move 1 — tap › to return')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /undo/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /hint/i })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Previous move' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Previous move' }))
+    expect(
+      screen.getByText('Viewing the starting position — tap › to return'),
+    ).toBeInTheDocument()
   })
 })
 
@@ -287,7 +322,7 @@ describe('player color', () => {
     expect(
       await screen.findByRole('button', { name: 'Switch to Black' }),
     ).toBeInTheDocument()
-    expect(screen.getByText('Playing as White')).toBeInTheDocument()
+    expect(screen.getByText('Playing as White ·')).toBeInTheDocument()
   })
 
   it('keeps the switch while only the engine has moved', async () => {
@@ -322,18 +357,17 @@ describe('draw button', () => {
   it('offers the claim, enabled, once the backend says a draw is claimable', async () => {
     served = state({ history: ['Nf3', 'Nf6'], claimable_draws: ['threefold_repetition'] })
     render(<App />)
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /claim draw/i })).toBeEnabled(),
-    )
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    await openGameMenu()
+    expect(screen.getByRole('button', { name: /claim draw/i })).toBeEnabled()
     expect(screen.queryByRole('button', { name: /offer draw/i })).not.toBeInTheDocument()
   })
 
   it('sends the claim through the gated endpoint', async () => {
     served = state({ history: ['Nf3', 'Nf6'], claimable_draws: ['fifty_moves'] })
     render(<App />)
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /claim draw/i })).toBeEnabled(),
-    )
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    await openGameMenu()
     fireEvent.click(screen.getByRole('button', { name: /claim draw/i }))
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -361,9 +395,8 @@ describe('draw button', () => {
         : respond(url),
     )
     render(<App />)
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /offer draw/i })).toBeEnabled(),
-    )
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    await openGameMenu()
     fireEvent.click(screen.getByRole('button', { name: /offer draw/i }))
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -386,7 +419,103 @@ describe('draw button', () => {
       claimable_draws: [],
     })
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: /draw/i })).toBeDisabled())
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    // The post-game sheet is up; wave it away to reach the bar.
+    fireEvent.click(await screen.findByRole('button', { name: /look at the board/i }))
+    await openGameMenu()
+    expect(screen.getByRole('button', { name: /draw/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /resign/i })).toBeDisabled()
+  })
+})
+
+// Resigning always asks first, in the app's own sheet: a tap in the menu
+// never ends the game by itself (#529). A yes answers the gate's identical
+// question too, so the player is asked once, never twice.
+describe('resign', () => {
+  const resignCalls = () =>
+    fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/game/resign'))
+
+  it('asks in the confirm sheet, and only a yes resigns', async () => {
+    served = state({ history: ['e4', 'e5'] })
+    render(<App />)
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    await openGameMenu()
+    fireEvent.click(screen.getByRole('button', { name: /resign/i }))
+    // The menu gives way to the question; nothing has been sent.
+    expect(screen.queryByRole('dialog', { name: 'Game' })).not.toBeInTheDocument()
+    expect(screen.getByRole('alertdialog', { name: 'Resign this game?' })).toBeInTheDocument()
+    expect(resignCalls()).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep playing' }))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(resignCalls()).toHaveLength(0)
+
+    await openGameMenu()
+    fireEvent.click(screen.getByRole('button', { name: /resign/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Resign' }))
+    await waitFor(() => expect(resignCalls()).toHaveLength(1))
+  })
+
+  it('answers the gate itself rather than asking a second time', async () => {
+    served = state({ history: ['e4', 'e5'] })
+    const respond = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/game/resign')
+        ? Promise.resolve({
+            ok: false,
+            status: 409,
+            json: () =>
+              Promise.resolve({ detail: 'Resign?', confirm: true, op: 'resign' }),
+          })
+        : respond(url),
+    )
+    render(<App />)
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    await openGameMenu()
+    fireEvent.click(screen.getByRole('button', { name: /resign/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Resign' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/game/confirm',
+        expect.objectContaining({ body: expect.stringContaining('"confirm":true') }),
+      ),
+    )
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+})
+
+// The gate's own questions (a new game mid-game, a draw claim) are asked in
+// the same sheet, never the browser's `window.confirm`.
+describe('confirm sheet for the gate', () => {
+  it('asks before a gated new game and sends the answer back', async () => {
+    served = state({ history: ['e4', 'e5'] })
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const respond = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/game/new')
+        ? Promise.resolve({
+            ok: false,
+            status: 409,
+            json: () =>
+              Promise.resolve({ detail: 'Start a new one?', confirm: true, op: 'new_game' }),
+          })
+        : respond(url),
+    )
+    render(<App />)
+    await waitFor(() => expect(boardProps.length).toBeGreaterThan(0))
+    await openGameMenu()
+    fireEvent.click(screen.getByRole('button', { name: /new game/i }))
+    const sheet = await screen.findByRole('alertdialog', { name: 'Start a new game?' })
+    expect(confirmSpy).not.toHaveBeenCalled()
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Keep playing' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/game/confirm',
+        expect.objectContaining({ body: expect.stringContaining('"confirm":false') }),
+      ),
+    )
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 })
 
@@ -607,7 +736,7 @@ describe('post-game screen', () => {
       expect(screen.getByRole('dialog', { name: /game over/i })).toBeInTheDocument(),
     )
     expect(screen.getByText(/you won/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /review game/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /review the game/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /new game/i })).toBeInTheDocument()
   })
 
@@ -617,12 +746,10 @@ describe('post-game screen', () => {
     await waitFor(() =>
       expect(screen.getByRole('dialog', { name: /game over/i })).toBeInTheDocument(),
     )
-    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /look at the board/i }))
     // Hidden, not unmounted (a fetched review must survive reopening) —
     // but gone from the accessibility tree either way.
     expect(screen.queryByRole('dialog', { name: /game over/i })).not.toBeInTheDocument()
-    // Review lives in the modal now — nothing visible under the board.
-    expect(document.querySelector('.review-panel')).not.toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: /results/i }))
     expect(screen.getByRole('dialog', { name: /game over/i })).toBeInTheDocument()
   })
@@ -678,7 +805,7 @@ describe('agent bubble across reloads and tabs', () => {
     await waitFor(() =>
       expect(screen.getByRole('navigation', { name: /game controls/i })).toBeInTheDocument(),
     )
-    screen.getByRole('button', { name: /options/i }).click()
+    await openGameMenu()
     const select = (await screen.findByRole('combobox', {
       name: /difficulty/i,
     })) as HTMLSelectElement

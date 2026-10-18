@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { fetchPgn, type Outcome } from './api'
+import { fetchPgn, fetchReview, type GameReview, type Outcome } from './api'
 import { COPY_IDLE, copyText } from './clipboard'
 import { ReviewPanel } from './ReviewPanel'
 
@@ -23,9 +23,11 @@ function verdict(outcome: Outcome, playerColor: 'white' | 'black'): string {
 }
 
 /**
- * The post-game screen: pops up when the game ends with the player's verdict,
- * the review flow, and what comes next (new game, PGN export). Presentational
- * over the outcome the backend declared — nothing is decided here.
+ * The post-game sheet: rises when the game ends with the player's verdict and
+ * what comes next — a new game, the review, the PGN, or a look at the final
+ * board. Presentational over the outcome the backend declared — nothing is
+ * decided here. It owns the review's fetch, so a review run once (a
+ * whole-game engine pass) is kept for the rest of the post-game.
  */
 export function PostGameModal({
   outcome,
@@ -35,6 +37,10 @@ export function PostGameModal({
   onClose,
 }: PostGameModalProps) {
   const [copyLabel, setCopyLabel] = useState(COPY_IDLE)
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [review, setReview] = useState<GameReview | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [unavailable, setUnavailable] = useState(false)
   // Inline (not a class) so jsdom's computed styles see it too.
   const hidden = open ? undefined : { display: 'none' as const }
 
@@ -50,33 +56,59 @@ export function PostGameModal({
     setCopyLabel(await copyText(pgn))
   }
 
+  // The review runs Stockfish over the whole game, so it runs once, when first
+  // asked for, and again only on a retry after a refusal.
+  const runReview = async () => {
+    setLoading(true)
+    setUnavailable(false)
+    try {
+      const result = await fetchReview()
+      if (result) setReview(result)
+      else setUnavailable(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const openReview = () => {
+    setReviewOpen(true)
+    if (review === null && !loading) void runReview()
+  }
+
   return (
-    <>
-      <div className="postgame-backdrop" style={hidden} onClick={onClose} />
-      <div
-        className="postgame-modal"
-        style={hidden}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Game over"
-      >
+    <div style={hidden}>
+      <div className="sheet-backdrop postgame-backdrop" onClick={onClose} />
+      <section className="sheet postgame-modal" role="dialog" aria-modal="true" aria-label="Game over">
+        <span className="sheet-handle" aria-hidden="true" />
         <h2 className="postgame-verdict">{verdict(outcome, playerColor)}</h2>
         <p className="postgame-detail">
           {`${outcome.termination.replaceAll('_', ' ')} · ${outcome.result}`}
         </p>
-        <div className="postgame-actions">
-          <button type="button" onClick={() => onNewGame()}>
-            New game
-          </button>
-          <button type="button" onClick={copyPgn}>
+        <button type="button" className="postgame-primary" onClick={() => onNewGame()}>
+          New game
+        </button>
+        <button type="button" className="postgame-secondary" onClick={openReview}>
+          Review the game
+        </button>
+        <div className="postgame-links">
+          <button type="button" className="postgame-link" onClick={copyPgn}>
             {copyLabel}
           </button>
-          <button type="button" className="postgame-close" onClick={onClose}>
-            Close
+          <button type="button" className="postgame-link postgame-close" onClick={onClose}>
+            Look at the board
           </button>
         </div>
-        <ReviewPanel />
-      </div>
-    </>
+      </section>
+      {reviewOpen && (
+        <ReviewPanel
+          review={review}
+          loading={loading}
+          unavailable={unavailable}
+          playerColor={playerColor}
+          onRetry={() => void runReview()}
+          onDone={() => setReviewOpen(false)}
+        />
+      )}
+    </div>
   )
 }

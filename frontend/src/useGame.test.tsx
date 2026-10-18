@@ -3,6 +3,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useGame } from './useGame'
 import type { GameState, MoveResponse } from './api'
 
+type GameHook = { current: ReturnType<typeof useGame> }
+
+/**
+ * Run a gated op and answer the question it raises in the confirm sheet, the
+ * way a tap on the sheet would. Returns what the player was asked.
+ */
+async function answering(
+  result: GameHook,
+  run: () => Promise<void>,
+  yes: boolean,
+): Promise<string | undefined> {
+  let pending: Promise<void> = Promise.resolve()
+  act(() => {
+    pending = run()
+  })
+  await waitFor(() => expect(result.current.question).not.toBeNull())
+  const asked = result.current.question?.detail
+  await act(async () => {
+    result.current.answerQuestion(yes)
+    await pending
+  })
+  return asked
+}
+
 // Playback is a side effect owned by tts.ts (tested there); here we only
 // assert the hook asks for it when — and only when — the backend says so.
 vi.mock('./tts', () => ({ playText: vi.fn(async () => 'ended' as const) }))
@@ -445,7 +469,6 @@ describe('useGame', () => {
   })
 
   it('adopts stale-409 state while answering a destructive confirmation', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => true))
     fetchMock.mockImplementation((url: string) => {
       const path = String(url)
       if (path.includes('/api/game/confirm'))
@@ -480,9 +503,7 @@ describe('useGame', () => {
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state?.version).toBe(1))
 
-    await act(async () => {
-      await result.current.newGame()
-    })
+    await answering(result, () => result.current.newGame(), true)
 
     expect(result.current.state?.version).toBe(2)
     expect(result.current.state?.fen).toBe(AFTER_E4_FEN)
@@ -1752,8 +1773,6 @@ describe('useGame', () => {
   }
 
   it('asks before a gated new game, then confirms it', async () => {
-    const confirmSpy = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmSpy)
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     fetchMock.mockImplementation(gated('new_game', 'Start a new one?'))
@@ -1761,11 +1780,10 @@ describe('useGame', () => {
       FakeWebSocket.instances[0].emit({ type: 'state', state: reviewableState() })
     })
 
-    await act(async () => {
-      await result.current.newGame()
-    })
+    const asked = await answering(result, () => result.current.newGame(), true)
 
-    expect(confirmSpy).toHaveBeenCalledWith('Start a new one?')
+    expect(asked).toBe('Start a new one?')
+    expect(result.current.question).toBeNull()
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/confirm',
       expect.objectContaining({
@@ -1777,7 +1795,6 @@ describe('useGame', () => {
   })
 
   it('cancels a gated new game and leaves the board where it was', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => false))
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     act(() => {
@@ -1786,9 +1803,7 @@ describe('useGame', () => {
     fetchMock.mockImplementation(gated('new_game', 'Start a new one?'))
     const revisionBefore = result.current.revision
 
-    await act(async () => {
-      await result.current.newGame()
-    })
+    await answering(result, () => result.current.newGame(), false)
 
     // The cancel still goes to the server — it is what disarms the op — but
     // nothing on the board moves.
@@ -1801,8 +1816,6 @@ describe('useGame', () => {
   })
 
   it('asks before a gated resignation, then confirms it', async () => {
-    const confirmSpy = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmSpy)
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     fetchMock.mockImplementation((url: string) => {
@@ -1822,17 +1835,42 @@ describe('useGame', () => {
       return jsonResponse(state())
     })
 
-    await act(async () => {
-      await result.current.resign()
+    const asked = await answering(result, () => result.current.resign(), true)
+
+    expect(asked).toBe('Resign?')
+    expect(result.current.state?.game_over).toBe(true)
+  })
+
+  it('answers the gate yes without asking again when the resign was confirmed in the app', async () => {
+    const { result } = renderHook(() => useGame())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+    fetchMock.mockImplementation((url: string) => {
+      const path = String(url)
+      if (path.includes('/api/game/confirm'))
+        return jsonResponse({ op: 'resign', confirmed: true, state: state({ game_over: true }) })
+      if (path.includes('/api/game/resign'))
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ detail: 'Resign?', confirm: true, op: 'resign' }),
+        })
+      return jsonResponse(state())
     })
 
-    expect(confirmSpy).toHaveBeenCalledWith('Resign?')
+    await act(async () => {
+      await result.current.resign({ confirmed: true })
+    })
+
+    // The player already said yes in the sheet: one prompt, never two.
+    expect(result.current.question).toBeNull()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/game/confirm',
+      expect.objectContaining({ body: JSON.stringify({ confirm: true, version: 1 }) }),
+    )
     expect(result.current.state?.game_over).toBe(true)
   })
 
   it('asks before a gated draw claim, then confirms it', async () => {
-    const confirmSpy = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmSpy)
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     fetchMock.mockImplementation((url: string) => {
@@ -1860,11 +1898,9 @@ describe('useGame', () => {
       return jsonResponse(state())
     })
 
-    await act(async () => {
-      await result.current.claimDraw()
-    })
+    const asked = await answering(result, () => result.current.claimDraw(), true)
 
-    expect(confirmSpy).toHaveBeenCalledWith('That ends the game in a draw. Claim it?')
+    expect(asked).toBe('That ends the game in a draw. Claim it?')
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/game/confirm',
       expect.objectContaining({ body: JSON.stringify({ confirm: true, version: 1 }) }),
@@ -1873,14 +1909,12 @@ describe('useGame', () => {
   })
 
   it('does not ask when the gate stood aside', async () => {
-    const confirmSpy = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmSpy)
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     await act(async () => {
       await result.current.newGame('black')
     })
-    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(result.current.question).toBeNull()
   })
 
   // --- transport failures on the remaining helpers ------------------------
@@ -1939,8 +1973,6 @@ describe('useGame', () => {
   })
 
   it('resolves gated lifecycle calls that never reached the server without asking anything', async () => {
-    const confirmSpy = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmSpy)
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     const revisionBefore = result.current.revision
@@ -1953,7 +1985,7 @@ describe('useGame', () => {
       await expect(result.current.claimDraw()).resolves.toBeUndefined()
     })
     // No state and no question came back: nothing to ask, nothing to move.
-    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(result.current.question).toBeNull()
     expect(result.current.revision).toBe(revisionBefore)
   })
 
@@ -1971,7 +2003,6 @@ describe('useGame', () => {
   }
 
   it('resolves a confirmation answer that never reached the server and leaves the board untouched', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => true))
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     act(() => {
@@ -1982,15 +2013,12 @@ describe('useGame', () => {
     // redeploy mid-dialog. Nothing may move on a state the server never sent.
     gateAsksFirst()
     routeAnswers('/api/game/confirm', REFUSED_CONNECTION)
-    await act(async () => {
-      await expect(result.current.newGame()).resolves.toBeUndefined()
-    })
+    await answering(result, () => result.current.newGame(), true)
     expect(result.current.state?.history).toEqual(['e4', 'e5'])
     expect(result.current.revision).toBe(revisionBefore)
   })
 
   it('drops a confirmed answer whose 200 carries no state rather than applying nothing', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => true))
     const { result } = renderHook(() => useGame())
     await waitFor(() => expect(result.current.state).not.toBeNull())
     act(() => {
@@ -2001,9 +2029,7 @@ describe('useGame', () => {
     // A truncated body still parses as OK at the HTTP layer; `apply` may only
     // ever be handed a real GameState, never `undefined` off a cast.
     routeAnswers('/api/game/confirm', TRUNCATED_OK_BODY)
-    await act(async () => {
-      await expect(result.current.newGame()).resolves.toBeUndefined()
-    })
+    await answering(result, () => result.current.newGame(), true)
     expect(result.current.state?.history).toEqual(['e4', 'e5'])
     expect(result.current.revision).toBe(revisionBefore)
   })

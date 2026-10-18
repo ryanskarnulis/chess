@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react'
 import { GatewayLink } from './GatewayLink'
-import { SpeakerOffIcon, SpeakerOnIcon } from './icons'
 import { MicButton } from './MicButton'
 import { unlockAudio } from './tts'
 import { beginInteraction } from './voiceTiming'
@@ -20,10 +19,6 @@ export interface CommandBoxProps {
   /** What the turn in flight is doing right now, when it has said. Same
    * contract as `AgentBubble`'s: the specific line wins over the generic. */
   progress?: string | null
-  /** Whether replies are spoken aloud; null hides the toggle until known. */
-  voiceOutput: boolean | null
-  /** Ask the parent to turn voice output on/off (the mute toggle). */
-  onToggleVoice: (enabled: boolean) => void
   /** Render the commentary/thinking block below the input (default). The
    * mobile layout passes false and stages commentary in the agent bubble. */
   showCommentary?: boolean
@@ -43,8 +38,6 @@ export function CommandBox({
   commentary,
   thinking,
   progress = null,
-  voiceOutput,
-  onToggleVoice,
   showCommentary = true,
   disabled = false,
 }: CommandBoxProps) {
@@ -71,37 +64,12 @@ export function CommandBox({
   return (
     <section className="command-box" aria-label="Agent">
       <form onSubmit={handleSubmit}>
-        {/* Back-to-gateway lives in the row as its leftmost control (it used
-            to float over the mic on phone widths). Renders nothing off the
-            gateway domain — the row then simply starts at the mic. */}
+        {/* Back-to-gateway lives in the row as its leftmost control. Renders
+            nothing off the gateway domain — the row then starts at the input. */}
         <GatewayLink />
-        {/* Voice in/out controls lead the row so they hold their position
-            regardless of how the input or commentary below reflows. */}
-        {/* Voice in: the transcript goes down the exact same pipeline as a
-            typed command. Renders nothing in unsupporting browsers. */}
-        <MicButton
-          onTranscript={onSubmit}
-          /* The player's wait starts when they stop speaking (#317). */
-          beginUtterance={() => beginInteraction('voice')}
-          disabled={locked}
-        />
-        {/* Voice out: mute/unmute. Hidden until the setting has loaded so
-            the toggle never shows a state it just guessed. */}
-        {voiceOutput !== null && (
-          <button
-            type="button"
-            className="voice-toggle"
-            aria-label={voiceOutput ? 'Turn voice output off' : 'Turn voice output on'}
-            title={voiceOutput ? 'Mute the agent' : 'Speak replies aloud'}
-            onClick={() => {
-              // Unmuting is a gesture too — prime playback while we have it.
-              unlockAudio()
-              onToggleVoice(!voiceOutput)
-            }}
-          >
-            {voiceOutput ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
-          </button>
-        )}
+        {/* One flat, underlined field: the input, the ↑ submit docked while
+            there is text to send, and the mic at its right end. Whether
+            replies are spoken is a setting, so it lives in the Game menu. */}
         <div className={sendable ? 'command-input command-input-sendable' : 'command-input'}>
           <input
             type="text"
@@ -117,6 +85,14 @@ export function CommandBox({
               ↑
             </button>
           )}
+          {/* Voice in: the transcript goes down the exact same pipeline as a
+              typed command. Renders nothing in unsupporting browsers. */}
+          <MicButton
+            onTranscript={onSubmit}
+            /* The player's wait starts when they stop speaking (#317). */
+            beginUtterance={() => beginInteraction('voice')}
+            disabled={locked}
+          />
         </div>
       </form>
       {showCommentary &&
