@@ -47,24 +47,6 @@ export function MenuIcon(props: IconProps) {
   )
 }
 
-export function FlagIcon(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M6 21V4" />
-      <path d="M6 4h11l-2 3.5L17 11H6" />
-    </Icon>
-  )
-}
-
-export function DrawIcon(props: IconProps) {
-  // An equals sign: the half-point the two sides split.
-  return (
-    <Icon {...props}>
-      <path d="M5 9.5h14M5 14.5h14" />
-    </Icon>
-  )
-}
-
 export function BulbIcon(props: IconProps) {
   return (
     <Icon {...props}>
@@ -102,25 +84,6 @@ export function ListeningIcon(props: IconProps) {
       <path d="M5 11a7 7 0 0 0 14 0" />
       <path d="M12 18v3" />
       <path d="M2.5 8.5v3M21.5 8.5v3" />
-    </Icon>
-  )
-}
-
-export function SpeakerOnIcon(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M4 9.5h3L11 6v12l-4-3.5H4Z" />
-      <path d="M15 9.5a3.5 3.5 0 0 1 0 5" />
-      <path d="M17.5 7a7 7 0 0 1 0 10" />
-    </Icon>
-  )
-}
-
-export function SpeakerOffIcon(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M4 9.5h3L11 6v12l-4-3.5H4Z" />
-      <path d="m15.5 9.5 5 5M20.5 9.5l-5 5" />
     </Icon>
   )
 }

@@ -1,7 +1,7 @@
 import type { PromotionPiece } from './promotion'
 
 export interface PromotionPickerProps {
-  /** Colour of the promoting pawn — picks which piece glyphs to show. */
+  /** Colour of the promoting pawn — picks which side's artwork to show. */
   color: 'white' | 'black'
   /** Fired with the chosen piece's UCI letter. */
   onSelect: (piece: PromotionPiece) => void
@@ -9,22 +9,19 @@ export interface PromotionPickerProps {
   onCancel: () => void
 }
 
-const PIECES: { piece: PromotionPiece; label: string }[] = [
-  { piece: 'q', label: 'Queen' },
-  { piece: 'r', label: 'Rook' },
-  { piece: 'b', label: 'Bishop' },
-  { piece: 'n', label: 'Knight' },
+const PIECES: { piece: PromotionPiece; label: string; role: string }[] = [
+  { piece: 'q', label: 'Queen', role: 'queen' },
+  { piece: 'r', label: 'Rook', role: 'rook' },
+  { piece: 'b', label: 'Bishop', role: 'bishop' },
+  { piece: 'n', label: 'Knight', role: 'knight' },
 ]
 
-const GLYPHS: Record<'white' | 'black', Record<PromotionPiece, string>> = {
-  white: { q: '♕', r: '♖', b: '♗', n: '♘' },
-  black: { q: '♛', r: '♜', b: '♝', n: '♞' },
-}
-
 /**
- * Modal overlay letting the user pick the piece a promoting pawn becomes.
- * Purely presentational — the parent owns the pending move and submits the
- * chosen piece as the UCI suffix. Clicking the backdrop cancels.
+ * Overlay that dims the board and lets the user pick the piece a promoting
+ * pawn becomes, drawn in the board's own piece art (`.piece-art`, styled in
+ * chessground.nightsilk.css). Purely presentational — the parent owns the
+ * pending move and submits the chosen piece as the UCI suffix. Clicking
+ * outside the tiles cancels.
  */
 export function PromotionPicker({ color, onSelect, onCancel }: PromotionPickerProps) {
   return (
@@ -34,8 +31,9 @@ export function PromotionPicker({ color, onSelect, onCancel }: PromotionPickerPr
       aria-label="Choose promotion piece"
       onClick={onCancel}
     >
+      <p className="promotion-caption">Promote to</p>
       <div className="promotion-picker" onClick={(e) => e.stopPropagation()}>
-        {PIECES.map(({ piece, label }) => (
+        {PIECES.map(({ piece, label, role }) => (
           <button
             key={piece}
             type="button"
@@ -43,10 +41,11 @@ export function PromotionPicker({ color, onSelect, onCancel }: PromotionPickerPr
             aria-label={label}
             onClick={() => onSelect(piece)}
           >
-            <span aria-hidden>{GLYPHS[color][piece]}</span>
+            <span className={`piece-art ${role} ${color}`} aria-hidden="true" />
           </button>
         ))}
       </div>
+      <p className="promotion-caption promotion-cancel">Tap outside to cancel</p>
     </div>
   )
 }

@@ -1,7 +1,23 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PostGameModal } from './PostGameModal'
-import type { Outcome } from './api'
+import type { GameReview, Outcome } from './api'
+
+const REVIEW: GameReview = {
+  moves: [
+    {
+      san: 'e4',
+      uci: 'e2e4',
+      color: 'white',
+      cp_loss: 5,
+      classification: 'good',
+      best: 'e4',
+      accuracy: 100,
+    },
+  ],
+  accuracy: { white: 97.1, black: 50 },
+  counts: { white: { good: 1 }, black: {} },
+}
 
 function outcome(overrides: Partial<Outcome> = {}): Outcome {
   return { termination: 'checkmate', winner: 'white', result: '1-0', ...overrides }
@@ -46,11 +62,21 @@ describe('PostGameModal', () => {
     expect(screen.getByText('insufficient material · 1/2-1/2')).toBeInTheDocument()
   })
 
-  it('offers the review flow', () => {
+  it('opens the review in its own sheet, fetching it once', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(REVIEW) }))
+    vi.stubGlobal('fetch', fetchMock)
     render(
       <PostGameModal outcome={outcome()} playerColor="white" onNewGame={noop} onClose={noop} />,
     )
-    expect(screen.getByRole('button', { name: /review game/i })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: /game review/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /review the game/i }))
+    expect(await screen.findByText('97.1%')).toBeInTheDocument()
+    // Done goes back to the game-over sheet; reopening keeps the review.
+    fireEvent.click(screen.getByRole('button', { name: /done/i }))
+    expect(screen.queryByRole('dialog', { name: /game review/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /review the game/i }))
+    expect(screen.getByText('97.1%')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('starts a new game', () => {
@@ -65,12 +91,12 @@ describe('PostGameModal', () => {
     expect(onNewGame).toHaveBeenCalledWith()
   })
 
-  it('closes from the button and the backdrop', () => {
+  it('closes from "Look at the board" and the backdrop', () => {
     const onClose = vi.fn()
     const { container } = render(
       <PostGameModal outcome={outcome()} playerColor="white" onNewGame={noop} onClose={onClose} />,
     )
-    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /look at the board/i }))
     fireEvent.click(container.querySelector('.postgame-backdrop')!)
     expect(onClose).toHaveBeenCalledTimes(2)
   })

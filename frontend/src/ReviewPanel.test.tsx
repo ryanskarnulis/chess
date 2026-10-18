@@ -1,12 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ReviewPanel } from './ReviewPanel'
 import type { GameReview } from './api'
-
-// The panel talks to the backend only through the typed client; mocking it
-// keeps these tests off the network, same as the other component tests.
-vi.mock('./api', () => ({ fetchReview: vi.fn() }))
-import { fetchReview } from './api'
 
 const REVIEW: GameReview = {
   moves: [
@@ -36,65 +31,98 @@ const REVIEW: GameReview = {
   },
 }
 
-beforeEach(() => {
-  vi.mocked(fetchReview).mockReset()
-})
+function panel(overrides: Partial<Parameters<typeof ReviewPanel>[0]> = {}) {
+  return (
+    <ReviewPanel
+      review={REVIEW}
+      loading={false}
+      unavailable={false}
+      playerColor="white"
+      onRetry={vi.fn()}
+      onDone={vi.fn()}
+      {...overrides}
+    />
+  )
+}
 
 describe('ReviewPanel', () => {
-  it('shows only the review button until asked', () => {
-    render(<ReviewPanel />)
-    expect(screen.getByRole('button', { name: /review game/i })).toBeInTheDocument()
-    expect(fetchReview).not.toHaveBeenCalled()
-    expect(screen.queryByText(/accuracy/i)).not.toBeInTheDocument()
+  it('is its own sheet, closed by Done', () => {
+    const onDone = vi.fn()
+    render(panel({ onDone }))
+    expect(screen.getByRole('dialog', { name: /game review/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /done/i }))
+    expect(onDone).toHaveBeenCalledTimes(1)
   })
 
-  it('fetches on demand and shows per-color accuracy and counts', async () => {
-    vi.mocked(fetchReview).mockResolvedValue(REVIEW)
-    render(<ReviewPanel />)
-    fireEvent.click(screen.getByRole('button', { name: /review game/i }))
-    expect(fetchReview).toHaveBeenCalledTimes(1)
-    expect(await screen.findByText('97.1%')).toBeInTheDocument()
+  it('says it is working while the review runs', () => {
+    render(panel({ review: null, loading: true }))
+    expect(screen.getByText(/reviewing…/i)).toBeInTheDocument()
+  })
+
+  it('shows per-side accuracy and counts, the player first as "You"', () => {
+    render(panel({ playerColor: 'black' }))
+    const cards = document.querySelectorAll('.review-color')
+    expect(cards[0]).toHaveTextContent(/you · black/i)
+    expect(cards[1]).toHaveTextContent(/glitch · white/i)
+    expect(screen.getByText('97.1%')).toBeInTheDocument()
     expect(screen.getByText('42.3%')).toBeInTheDocument()
-    // Black's blunder shows up in the classification counts.
     const black = screen.getByLabelText(/black review summary/i)
     expect(black).toHaveTextContent(/1\s*blunder/i)
   })
 
-  it('pluralises each classification count', async () => {
-    vi.mocked(fetchReview).mockResolvedValue({
-      ...REVIEW,
-      counts: {
-        white: { good: 1, inaccuracy: 8, mistake: 2, blunder: 3 },
-        black: { good: 0, inaccuracy: 1, mistake: 0, blunder: 1 },
-      },
-    })
-    render(<ReviewPanel />)
-    fireEvent.click(screen.getByRole('button', { name: /review game/i }))
-    const white = await screen.findByLabelText(/white review summary/i)
-    expect(white).toHaveTextContent('8 inaccuracies, 2 mistakes, 3 blunders')
-    const black = screen.getByLabelText(/black review summary/i)
-    expect(black).toHaveTextContent('1 inaccuracy, 1 blunder')
+  it('pluralises each classification count', () => {
+    render(
+      panel({
+        review: {
+          ...REVIEW,
+          counts: {
+            white: { good: 1, inaccuracy: 8, mistake: 2, blunder: 3 },
+            black: { good: 0, inaccuracy: 1, mistake: 0, blunder: 1 },
+          },
+        },
+      }),
+    )
+    expect(screen.getByLabelText(/white review summary/i)).toHaveTextContent(
+      '8 inaccuracies, 2 mistakes, 3 blunders',
+    )
+    expect(screen.getByLabelText(/black review summary/i)).toHaveTextContent(
+      '1 inaccuracy, 1 blunder',
+    )
   })
 
-  it('lists the moves and flags a bad move with the better alternative', async () => {
-    vi.mocked(fetchReview).mockResolvedValue(REVIEW)
-    render(<ReviewPanel />)
-    fireEvent.click(screen.getByRole('button', { name: /review game/i }))
-    const row = (await screen.findByText('g5')).closest('tr')!
-    expect(row).toHaveTextContent(/blunder/i)
-    expect(row).toHaveTextContent('e5')
-    // A good move is not second-guessed with an alternative.
-    const goodRow = screen.getByText('e4').closest('tr')!
-    expect(goodRow).not.toHaveTextContent(/blunder|inaccuracy|mistake/i)
+  it('pairs the moves into numbered rows and notes the better move under a flagged one', () => {
+    render(panel())
+    const row = screen.getByText('g5').closest('li')!
+    expect(row).toHaveTextContent('1.')
+    expect(row).toHaveTextContent('e4')
+    expect(row).toHaveClass('review-row-flagged')
+    expect(screen.getByLabelText('blunder')).toHaveTextContent('??')
+    expect(row).toHaveTextContent('Glitch’s 1… g5 — best was e5')
   })
 
-  it('reports when review is unavailable instead of crashing', async () => {
-    // Null is the client's word for a refused request (no engine / no moves).
-    vi.mocked(fetchReview).mockResolvedValue(null)
-    render(<ReviewPanel />)
-    fireEvent.click(screen.getByRole('button', { name: /review game/i }))
-    expect(await screen.findByText(/review unavailable/i)).toBeInTheDocument()
-    // The button stays so the user can retry (e.g. engine came back).
-    expect(screen.getByRole('button', { name: /review game/i })).toBeInTheDocument()
+  it('leaves good moves unremarked', () => {
+    render(panel({ review: { ...REVIEW, moves: [REVIEW.moves[0]] } }))
+    const row = screen.getByText('e4').closest('li')!
+    expect(row).not.toHaveClass('review-row-flagged')
+    expect(row).not.toHaveTextContent(/best was/)
+  })
+
+  it('credits a flagged move to the player as "Your"', () => {
+    render(panel({ playerColor: 'black' }))
+    expect(screen.getByText('Your 1… g5 — best was e5')).toBeInTheDocument()
+  })
+
+  it('starts a Black-first game with an empty White cell', () => {
+    render(panel({ review: { ...REVIEW, moves: [REVIEW.moves[1]] } }))
+    const row = screen.getByText('g5').closest('li')!
+    expect(row.querySelectorAll('.review-cell')[0]).toBeEmptyDOMElement()
+  })
+
+  it('reports when review is unavailable and offers a retry', () => {
+    const onRetry = vi.fn()
+    render(panel({ review: null, unavailable: true, onRetry }))
+    expect(screen.getByText(/review unavailable/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
   })
 })

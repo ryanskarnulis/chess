@@ -22,8 +22,6 @@ function setup(overrides: Partial<React.ComponentProps<typeof CommandBox>> = {})
     onSubmit: vi.fn(),
     commentary: null as string | null,
     thinking: false,
-    voiceOutput: false as boolean | null,
-    onToggleVoice: vi.fn(),
     ...overrides,
   }
   render(<CommandBox {...props} />)
@@ -130,40 +128,17 @@ describe('CommandBox', () => {
     expect(unlockAudio).toHaveBeenCalled()
   })
 
-  it('unlocks audio playback when voice output is toggled on', () => {
-    setup({ voiceOutput: false })
-    fireEvent.click(screen.getByRole('button', { name: /turn voice output on/i }))
-    expect(unlockAudio).toHaveBeenCalled()
-  })
-
   it('displays the agent commentary', () => {
     setup({ commentary: 'A bold opening!' })
     expect(screen.getByText('A bold opening!')).toBeInTheDocument()
   })
 
-  it('draws the voice toggle as a monochrome inline icon, never a color emoji', () => {
-    setup({ voiceOutput: true })
-    expect(document.body.textContent).not.toMatch(/\p{Extended_Pictographic}/u)
-    const icon = screen.getByRole('button', { name: /turn voice output off/i }).querySelector('svg')
-    expect(icon).toHaveAttribute('aria-hidden', 'true')
-  })
-
-  it('offers a voice-output toggle that reports the opposite of the current state', () => {
-    const props = setup({ voiceOutput: false })
-    const toggle = screen.getByRole('button', { name: /turn voice output on/i })
-    fireEvent.click(toggle)
-    expect(props.onToggleVoice).toHaveBeenCalledWith(true)
-  })
-
-  it('lets the user mute when voice output is on', () => {
-    const props = setup({ voiceOutput: true })
-    fireEvent.click(screen.getByRole('button', { name: /turn voice output off/i }))
-    expect(props.onToggleVoice).toHaveBeenCalledWith(false)
-  })
-
-  it('hides the voice toggle until the setting has loaded', () => {
-    setup({ voiceOutput: null })
+  // Whether replies are spoken is a setting: it moved to the Game menu, and
+  // the row keeps only what talking to Glitch needs.
+  it('carries no voice-output toggle', () => {
+    setup()
     expect(screen.queryByRole('button', { name: /voice output/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
   })
 
   it('shows a thinking indicator and disables input while the agent works', () => {

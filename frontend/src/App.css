@@ -66,31 +66,6 @@
   margin: 0;
 }
 
-.difficulty {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-}
-
-.difficulty select {
-  flex: 1 1 auto;
-  padding: 0.3rem 0.5rem;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
-}
-
-.difficulty select:focus-visible {
-  outline: none;
-  border-color: var(--glow);
-  box-shadow: 0 0 12px var(--glow-soft);
-}
-
 /* Pre-game side switch: shown until the player makes their first move.
 
    Deliberately no `text-transform: capitalize` on either rule. A transform
@@ -102,23 +77,28 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.6rem;
+  gap: 0.35rem;
+  min-height: 44px;
+  font-size: 16px;
+  line-height: 1.2;
   color: var(--muted);
 }
 
+/* A text link, not a boxed button: the switch is an offer, and the line it
+   sits in already says what it switches from. */
 .side-picker button {
-  padding: 0.35rem 0.8rem;
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
+  min-height: 44px;
+  padding: 0 2px;
+  background: none;
+  border: none;
+  color: var(--glow);
+  font: 600 16px/1.2 var(--sans);
   cursor: pointer;
-  transition: border-color 0.25s, box-shadow 0.25s;
 }
 
-.side-picker button:hover {
-  border-color: var(--glow);
-  box-shadow: 0 0 12px var(--glow-soft);
+.side-picker button:hover,
+.side-picker button:focus-visible {
+  text-decoration: underline;
 }
 
 /* One owner's captures, left-aligned on a full-width row of their own:
@@ -215,67 +195,162 @@
   font-weight: 600;
 }
 
-/* Post-game review panel. */
-.review-summary {
+/* Post-game review: its own near-full-height sheet over the game-over one. */
+.app .review-panel {
+  top: 44px;
+  z-index: 33;
+  padding: 0;
+  gap: 0;
+  text-align: left;
+}
+
+.review-backdrop {
+  z-index: 32;
+}
+
+.review-header {
   display: flex;
-  gap: 1rem;
-  margin-bottom: 0.5rem;
+  align-items: center;
+  min-height: 56px;
+  padding: 0 8px 0 20px;
+  border-bottom: 1px solid rgba(199, 211, 228, 0.12);
+}
+
+.app .review-header h2 {
+  flex: 1;
+  font-size: 20px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--ink);
+}
+
+.review-done,
+.review-retry {
+  min-height: 44px;
+  padding: 0 12px;
+  background: none;
+  border: none;
+  color: var(--glow);
+  font: 600 16px var(--sans);
+  cursor: pointer;
+}
+
+.review-status {
+  padding: 1rem 20px;
+}
+
+.review-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px 20px;
 }
 
 .review-color {
   display: flex;
   flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: rgba(199, 211, 228, 0.05);
+  border: 1px solid rgba(199, 211, 228, 0.18);
+}
+
+.review-color-you {
+  background: rgba(155, 231, 255, 0.08);
+  border-color: rgba(155, 231, 255, 0.25);
 }
 
 .review-color-label {
   color: var(--muted);
-  font-size: 0.85rem;
-  text-transform: capitalize;
+  font-size: 13px;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .review-accuracy {
   font-weight: 700;
-  font-size: 1.1rem;
+  font-size: 30px;
+  line-height: 1.2;
 }
 
 .review-counts {
-  font-size: 0.8rem;
+  font-size: 13px;
+  line-height: 1.35;
   color: var(--muted);
 }
 
-.review-moves {
-  width: 100%;
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
-}
-
-.review-moves th[scope='row'] {
-  width: 2rem;
-  text-align: right;
-  padding-right: 0.6rem;
+.review-legend {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+  padding: 0 20px 10px;
+  font-size: 13px;
+  line-height: 1.3;
   color: var(--muted);
-  font-weight: 400;
 }
 
-.review-moves td {
-  padding: 0.1rem 0.5rem;
-  font-family: var(--mono);
+.review-mark {
+  margin-left: 2px;
+  font-weight: 700;
 }
 
-.review-verdict {
-  font-size: 0.8rem;
-}
-
-.review-inaccuracy .review-verdict {
+.review-mark-inaccuracy {
   color: var(--warn);
 }
 
-.review-mistake .review-verdict {
+.review-mark-mistake {
   color: color-mix(in srgb, var(--warn), var(--danger));
 }
 
-.review-blunder .review-verdict {
+.review-mark-blunder {
   color: var(--danger);
+}
+
+.review-moves {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 20px calc(1rem + env(safe-area-inset-bottom));
+  list-style: none;
+  border-top: 1px solid rgba(199, 211, 228, 0.12);
+  font-variant-numeric: tabular-nums;
+}
+
+.review-row {
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(199, 211, 228, 0.08);
+}
+
+/* Only the flagged moves stand out: a faint tint across the sheet's full
+   width, and the engine's better move under them. */
+.review-row-flagged {
+  margin: 0 -20px;
+  padding: 9px 20px;
+  background: rgba(199, 211, 228, 0.04);
+}
+
+.review-row-moves {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) minmax(0, 1fr);
+  align-items: baseline;
+  font-size: 17px;
+  line-height: 1.4;
+}
+
+.review-number {
+  color: var(--muted);
+}
+
+.review-note {
+  margin: 2px 0 0;
+  padding-left: 40px;
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--muted);
 }
 
 .panel-empty {
@@ -284,145 +359,150 @@
   margin: 0;
 }
 
-/* Post-game screen: verdict + what comes next, above everything else. */
+/* Post-game sheet: verdict + what comes next, above everything else. */
 .postgame-backdrop {
-  position: fixed;
-  inset: 0;
   z-index: 30;
-  background: rgba(10, 12, 18, 0.6);
 }
 
-.postgame-modal {
-  position: fixed;
+.app .postgame-modal {
   z-index: 31;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: min(92vw, 420px);
-  max-height: 82vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1.25rem;
-  background: var(--surface);
-  border: 1px solid var(--silk-border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-glow);
+  gap: 0;
   text-align: center;
 }
 
 /* The verdict is a headline, not a card heading. */
-.postgame-modal .postgame-verdict {
-  font-size: 1.5rem;
+.app .postgame-verdict {
+  font-size: 30px;
   font-weight: 700;
+  line-height: 1.2;
   text-transform: none;
   letter-spacing: normal;
   color: var(--ink);
 }
 
 .postgame-detail {
-  margin: 0;
+  margin: 4px 0 22px;
+  font-size: 16px;
+  line-height: 1.3;
   color: var(--muted);
   text-transform: capitalize;
 }
 
-.postgame-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  margin-top: 0.25rem;
-}
-
-.postgame-actions button {
-  padding: 0.6rem 0.75rem;
-  background: var(--surface-veil);
-  color: var(--ink);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
-  font-size: 1rem;
+.postgame-primary,
+.postgame-secondary {
+  min-height: 52px;
+  border-radius: var(--radius);
+  font: 17px var(--sans);
   cursor: pointer;
-  transition: border-color 0.25s, box-shadow 0.25s;
 }
 
-.postgame-actions button:hover {
+/* The one filled button in the app: dark ink on the lit accent. */
+.postgame-primary {
+  border: none;
+  background: var(--glow);
+  color: #07080c;
+  font-weight: 600;
+}
+
+.postgame-secondary {
+  margin-top: 10px;
+  border: 1px solid var(--silk-border);
+  background: none;
+  color: var(--ink);
+}
+
+.postgame-secondary:hover {
   border-color: var(--glow);
-  box-shadow: 0 0 12px var(--glow-soft);
 }
 
-.postgame-actions .postgame-close {
+.postgame-links {
+  display: flex;
+  margin-top: 8px;
+}
+
+.postgame-link {
+  flex: 1;
+  min-height: 48px;
+  background: none;
+  border: none;
+  color: var(--glow);
+  font: 16px var(--sans);
+  cursor: pointer;
+}
+
+.postgame-link.postgame-close {
   color: var(--muted);
 }
 
-.postgame-modal .review-panel {
-  text-align: left;
-  border-top: 1px solid var(--silk-border);
-  padding-top: 0.75rem;
-}
-
-.review-panel button {
-  padding: 0.5rem 0.75rem;
-  background: var(--surface-veil);
-  color: var(--ink);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: border-color 0.25s, box-shadow 0.25s;
-}
-
-.review-panel button:hover:not(:disabled) {
-  border-color: var(--glow);
-  box-shadow: 0 0 12px var(--glow-soft);
-}
-
-/* Reopens the dismissed post-game screen from beside the turn chip. */
+/* Reopens the dismissed post-game sheet from the status row: a text link. */
 .status-results {
-  padding: 0.2rem 0.6rem;
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
-  font-size: 0.8rem;
+  min-height: 28px;
+  padding: 0 0.4rem;
+  background: none;
+  color: var(--glow);
+  border: none;
+  font: 600 15px/1.2 var(--sans);
   cursor: pointer;
 }
 
-/* Promotion picker: modal overlay covering the board. */
+/* Promotion picker: dims the board (coordinates included — they sit at z 3
+   inside it) and offers the four pieces in the board's own art. */
 .promotion-overlay {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: rgba(10, 12, 18, 0.65);
+  gap: 14px;
+  background: rgba(10, 12, 18, 0.72);
+  border-radius: 4px;
   z-index: 10;
+}
+
+.promotion-caption {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+  color: var(--muted);
+}
+
+.promotion-cancel {
+  font-size: 13px;
 }
 
 .promotion-picker {
   display: flex;
-  gap: 0.5rem;
-  padding: 0.75rem;
+  gap: 10px;
+  padding: 10px;
   background: var(--surface);
   border: 1px solid var(--silk-border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-glow);
 }
 
 .promotion-piece {
-  width: 3rem;
-  height: 3rem;
-  font-size: 2rem;
-  line-height: 1;
+  width: 68px;
+  height: 68px;
+  padding: 6px;
   cursor: pointer;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--silk-border);
+  background: none;
+  border: 1px solid transparent;
   border-radius: 8px;
-  transition: border-color 0.25s, box-shadow 0.25s;
+  transition: border-color 0.2s, background-color 0.2s;
 }
 
-.promotion-piece:hover {
+.promotion-piece:hover,
+.promotion-piece:focus-visible {
+  outline: none;
   border-color: var(--glow);
-  box-shadow: 0 0 12px var(--glow-soft);
+  background: rgba(155, 231, 255, 0.12);
+}
+
+.piece-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-size: cover;
 }
 
 /* The frame's content box is zero-height (the square is padding), so the
@@ -509,45 +589,34 @@
   letter-spacing: 0.02em;
 }
 
-/* Free-text command box for the agent + its commentary. */
+/* Free-text command row for the agent: no card, just one underlined field
+   with the mic at its right end. */
 .command-box {
   width: 100%;
   box-sizing: border-box;
-  background: var(--surface-veil);
-  border: 1px solid var(--silk-border);
-  border-radius: var(--radius);
-  padding: 0.6rem 0.75rem;
-  transition: border-color 0.25s, box-shadow 0.25s;
-}
-
-.command-box:focus-within {
-  border-color: var(--glow);
-  box-shadow: var(--shadow-glow);
 }
 
 .command-box form {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 10px;
+  min-height: 52px;
 }
 
-/* Everything in the row must be comfortably tappable on a phone. */
-.command-box .mic-button,
-.command-box .voice-toggle {
-  min-width: 48px;
-  min-height: 44px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-}
-
-/* The input owns the row's remaining width; the ↑ submit docks inside its
-   right edge (only rendered while there is text to send). */
+/* The input owns the row's remaining width; the ↑ submit (only while there
+   is text to send) and the mic sit inside the underline at its right. */
 .command-input {
-  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
+  align-items: center;
+  min-height: 44px;
+  border-bottom: 1px solid var(--silk-border);
+  transition: border-color 0.25s;
+}
+
+.command-input:focus-within {
+  border-color: var(--glow);
 }
 
 .command-box input {
@@ -555,26 +624,25 @@
   min-width: 0;
   min-height: 44px;
   box-sizing: border-box;
-  padding: 0.45rem 0.6rem;
-  font-size: 0.95rem;
+  padding: 0 4px;
+  font: 17px var(--sans);
   color: var(--ink);
-  background: var(--bg);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
+  background: transparent;
+  border: none;
 }
 
-/* Clear the docked ↑ so long commands never run under it. */
-.command-input-sendable input {
-  padding-right: 44px;
+.command-box input::placeholder {
+  color: var(--muted);
+}
+
+.command-box input:focus-visible {
+  outline: none;
 }
 
 .command-box .command-submit {
-  position: absolute;
-  right: 5px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 34px;
-  height: 34px;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
   padding: 0;
   display: grid;
   place-items: center;
@@ -587,31 +655,27 @@
   font-size: 1rem;
   font-weight: 700;
   line-height: 1;
-}
-
-.command-box input::placeholder {
-  color: var(--muted);
-}
-
-.command-box input:focus-visible {
-  outline: none;
-  border-color: var(--glow);
-}
-
-.command-box button {
-  padding: 0.45rem 1rem;
-  font-size: 0.95rem;
   cursor: pointer;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
-  transition: border-color 0.25s, box-shadow 0.25s;
 }
 
-.command-box button:hover:not(:disabled) {
-  border-color: var(--glow);
-  box-shadow: 0 0 12px var(--glow-soft);
+/* A borderless 44px icon: the mic's colour and pulse carry its state. */
+.command-box .mic-button {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: var(--glow);
+  cursor: pointer;
+}
+
+.command-box .mic-button .icon {
+  width: 22px;
+  height: 22px;
 }
 
 .command-box button:disabled,
@@ -623,12 +687,10 @@
 /* Hands-free mic: the button must read as "live" the whole session — a
    steady glow while waiting for speech, a faster pulse while capturing. */
 .mic-listening {
-  border-color: var(--glow);
   animation: mic-pulse 2s ease-in-out infinite;
 }
 
 .mic-capturing {
-  border-color: var(--glow);
   animation: mic-pulse 0.8s ease-in-out infinite;
 }
 
@@ -849,36 +911,22 @@
   width: 100%;
 }
 
+/* Borderless chevrons: 36px of layout, the full 44px of height to tap. */
 .move-strip button {
-  position: relative;
   flex: 0 0 auto;
-  /* 36px of *layout*, 44px of *touch* (the ::after below). The column has
-     4px of slack over the fixed bar on the reported phone, so spending 7px
-     of it to satisfy the tap-target minimum would put the strip back under
-     the bar — the very thing the frame fix moved it out from. */
-  min-width: 44px;
-  height: 36px;
+  width: 36px;
+  height: 44px;
   display: grid;
   place-items: center;
-  padding: 0 0.4rem;
-  background: var(--surface);
+  padding: 0;
+  background: none;
   color: var(--ink);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
+  border: none;
   cursor: pointer;
 }
 
-/* Extends the hit area to the 44px minimum without taking the height: a
-   pseudo-element inside the button still targets the button. The inset is
-   5px, not 4: an absolute child's containing block is the *padding* box, so
-   the 1px border leaves 34px to grow from (34 + 5 + 5 = 44). */
-.move-strip button::after {
-  content: '';
-  position: absolute;
-  inset: -5px 0;
-}
-
 .move-strip button:disabled {
+  color: var(--muted);
   opacity: 0.35;
   cursor: not-allowed;
 }
@@ -951,102 +999,245 @@
   cursor: not-allowed;
 }
 
-/* Options bottom sheet */
+.bottom-bar .bottom-bar-lit {
+  color: var(--glow);
+}
 
-.options-backdrop {
+/* Bottom sheets — the Game menu, the confirm question, the post-game and
+   review screens. Each covers the board and the fixed bar (z 10) under a
+   dimming backdrop; later sheets stack over earlier ones. */
+.sheet-backdrop {
   position: fixed;
   inset: 0;
   z-index: 20;
   background: rgba(10, 12, 18, 0.6);
 }
 
-.options-sheet {
+.sheet {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 21;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  /* Same cap as the bottom bar's cluster: a centered sheet, not a
-     viewport-wide slab, on desktop. */
-  max-width: 36rem;
+  /* Same cap as the column: a centered sheet, not a viewport-wide slab, on
+     desktop. */
+  max-width: 540px;
+  max-height: calc(100dvh - 44px);
+  overflow-y: auto;
   margin: 0 auto;
-  padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  padding: 10px 20px calc(30px + env(safe-area-inset-bottom));
   background: var(--surface);
   border-top: 1px solid var(--silk-border);
-  border-radius: var(--radius) var(--radius) 0 0;
-  box-shadow: var(--shadow-glow);
+  border-radius: 16px 16px 0 0;
+  text-align: left;
 }
 
-.options-sheet button,
-.options-sheet select {
-  padding: 0.6rem 0.75rem;
-  background: var(--surface-veil);
+.sheet-handle {
+  align-self: center;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 4px;
+  margin-bottom: 14px;
+  border-radius: 2px;
+  background: rgba(199, 211, 228, 0.35);
+}
+
+/* Game menu: two groups of flat rows, the value on the right. */
+.app .game-menu .menu-group {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+}
+
+.app .game-menu .menu-group ~ .menu-group {
+  margin-top: 18px;
+}
+
+.menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 54px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(199, 211, 228, 0.12);
   color: var(--ink);
-  border: 1px solid var(--silk-border);
-  border-radius: 8px;
-  font-size: 1rem;
+  font: 17px/1.3 var(--sans);
+  text-align: left;
   cursor: pointer;
 }
 
-.options-sheet .difficulty {
+/* The last row of each group closes it without a rule. */
+.menu-row:has(+ .menu-group),
+.menu-row:last-child {
+  border-bottom: none;
+}
+
+.menu-row:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.menu-row:focus-visible {
+  outline: 2px solid var(--glow);
+  outline-offset: -2px;
+}
+
+.menu-danger {
+  color: var(--danger);
+}
+
+.menu-row-text {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  text-align: left;
-  color: var(--muted);
-  font-size: 0.85rem;
+  gap: 2px;
+  padding: 6px 0;
 }
 
-/* The brain's speed hint and the Glitch tier's note, under their selects.
-   Line-height pinned: the inherited :root value resolves to 26px at any
-   size. */
-.options-sheet .brain-hint,
-.options-sheet .difficulty-hint {
-  margin: 0.35rem 0 0;
-  font-size: 0.8rem;
+.menu-row-hint {
+  font-size: 13px;
   line-height: 1.3;
   color: var(--muted);
-  text-align: center;
 }
 
-.options-sheet .voice-row {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
+/* A native select dressed as the row's right-hand value: the phone's own
+   picker still opens on a tap. */
+.menu-select select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 55%;
+  appearance: none;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: 17px var(--sans);
+  text-align: right;
+  text-align-last: right;
+  cursor: pointer;
 }
 
-.options-sheet .options-close {
+.menu-select select:focus-visible {
+  outline: none;
+  color: var(--glow);
+}
+
+.menu-select .icon {
+  width: 18px;
+  height: 18px;
   color: var(--muted);
 }
 
-/* Back-to-gateway button (GatewayLink.tsx) — the command row's leftmost
-   control (it used to float top-left, over the mic on phone widths). */
+.switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 46px;
+  height: 28px;
+  border-radius: 14px;
+  background: rgba(199, 211, 228, 0.18);
+  transition: background-color 0.2s;
+}
+
+.switch-thumb {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 0.2s;
+}
+
+.menu-switch[aria-checked='true'] .switch-track {
+  background: rgba(155, 231, 255, 0.4);
+}
+
+.menu-switch[aria-checked='true'] .switch-thumb {
+  transform: translateX(18px);
+}
+
+/* The confirm question: over every other sheet. */
+.confirm-backdrop {
+  z-index: 40;
+}
+
+.app .confirm-sheet {
+  z-index: 41;
+  gap: 6px;
+}
+
+.app .confirm-heading {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--ink);
+}
+
+.confirm-body {
+  margin: 0 0 14px;
+  font-size: 16px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.confirm-yes,
+.confirm-no {
+  min-height: 52px;
+  border-radius: var(--radius);
+  font: 17px var(--sans);
+  cursor: pointer;
+}
+
+.confirm-yes {
+  border: 1px solid rgba(155, 231, 255, 0.5);
+  background: rgba(155, 231, 255, 0.12);
+  color: var(--glow);
+  font-weight: 600;
+}
+
+.confirm-yes.confirm-danger {
+  border-color: rgba(242, 143, 164, 0.5);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.confirm-no {
+  border: none;
+  background: none;
+  color: var(--ink);
+}
+
+/* Back-to-gateway (GatewayLink.tsx) — the command row's leftmost control: a
+   plain 28px mark in a 36×44 hit area, no ring. */
 .gateway-link {
   flex: 0 0 auto;
-  box-sizing: border-box;
-  width: 44px;
+  width: 36px;
   height: 44px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: var(--surface);
-  border: 1px solid var(--silk-border);
-  transition: border-color 0.25s, box-shadow 0.25s;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  opacity: 0.85;
+  transition: opacity 0.2s;
 }
 
 .gateway-link:hover,
 .gateway-link:focus-visible {
-  border-color: var(--glow);
-  box-shadow: 0 0 12px var(--glow-soft);
+  opacity: 1;
 }
 
 .gateway-link img {
-  width: 31px;
-  height: 31px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   display: block;
 }

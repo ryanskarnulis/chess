@@ -123,14 +123,24 @@ export interface UseGame {
   /** Take back the player's last move. A refusal leaves the board and shows
    * the server's reason in `moveError`. */
   undo: () => Promise<void>
-  /** Resign the game (the side to move, unless the backend decides otherwise). */
-  resign: () => Promise<void>
+  /** Resign the game (the side to move, unless the backend decides otherwise).
+   * `confirmed` says the player already answered the resign question in the
+   * app's own sheet, so the gate's identical question is answered yes rather
+   * than asked a second time. */
+  resign: (options?: { confirmed?: boolean }) => Promise<void>
   /** Claim the draw `state.claimable_draws` advertises. Gated like `resign`. */
   claimDraw: () => Promise<void>
   /** Offer the engine a draw. Code decides the answer; it is shown as one
    * deterministic line in the commentary slot, and the game ends only when
    * the answer is yes. */
   offerDraw: () => Promise<void>
+  /**
+   * The question a gated op (new game, resign, claim draw) is waiting on, or
+   * null. The confirm sheet shows it; `answerQuestion` sends the answer.
+   */
+  question: ConfirmQuestion | null
+  /** Answer the open `question`: yes runs the armed op, no disarms it. */
+  answerQuestion: (yes: boolean) => void
   /** Set engine strength by named tier (beginner … maximum). */
   setDifficulty: (tier: string) => Promise<void>
   /** Server-confirmed difficulty tier; null until settings load (or when the
@@ -248,6 +258,10 @@ export function useGame(): UseGame {
   // a reconnect's snapshot re-sends a reply this tab may since have replaced
   // with a line of its own (a draw answer).
   const replySeqRef = useRef(0)
+  // The gate's open question and the answer it is awaiting. The resolver is a
+  // ref because the sheet answers from outside the call that asked.
+  const [question, setQuestion] = useState<ConfirmQuestion | null>(null)
+  const answerRef = useRef<((yes: boolean) => void) | null>(null)
 
   /** Show `text` as the reply to the game on the board now. */
   const setCommentary = useCallback((text: string) => {
@@ -532,16 +546,32 @@ export function useGame(): UseGame {
     setRevision((r) => r + 1)
   }, [armPromotion])
 
+  /** Answer the open question. A stray answer (none open) does nothing. */
+  const answerQuestion = useCallback((yes: boolean) => {
+    const resolve = answerRef.current
+    answerRef.current = null
+    setQuestion(null)
+    resolve?.(yes)
+  }, [])
+
   /**
-   * Settle a gated destructive op: put the gate's question to the player and
-   * send their answer back to the *same* armed op the spoken path uses. A
-   * cancel disarms it and leaves the board where it is; only a confirmed op
-   * moves anything. `window.confirm` because the app has no dialog primitive
-   * for a plain yes/no (the modals it does have are screens, not questions).
+   * Settle a gated destructive op: put the gate's question to the player in
+   * the confirm sheet and send their answer back to the *same* armed op the
+   * spoken path uses. A cancel disarms it and leaves the board where it is;
+   * only a confirmed op moves anything. `preAnswered` is an answer the player
+   * already gave to this exact question in the app, so it is not asked twice.
    */
   const answerGate = useCallback(
-    async (question: ConfirmQuestion) => {
-      const yes = window.confirm(question.detail)
+    async (question: ConfirmQuestion, preAnswered?: boolean) => {
+      const yes =
+        preAnswered ??
+        (await new Promise<boolean>((resolve) => {
+          // A question still open from an earlier op is superseded: its op
+          // was disarmed by the newer one, so it is answered no.
+          answerRef.current?.(false)
+          answerRef.current = resolve
+          setQuestion(question)
+        }))
       const outcome = await apiConfirmDestructive(yes, stateRef.current?.version)
       if (outcome && (yes || outcome.stale)) {
         setMoveError(null)
@@ -554,12 +584,12 @@ export function useGame(): UseGame {
   /** Apply a gated lifecycle outcome: the new state if the op ran, otherwise
    * the question it is waiting on. */
   const settle = useCallback(
-    async (outcome: LifecycleOutcome) => {
+    async (outcome: LifecycleOutcome, preAnswered?: boolean) => {
       if (outcome.state) {
         setMoveError(null)
         apply(outcome.state)
       } else if (outcome.question) {
-        await answerGate(outcome.question)
+        await answerGate(outcome.question, preAnswered)
       }
     },
     [apply, answerGate],
@@ -587,9 +617,13 @@ export function useGame(): UseGame {
     if (refusal) setMoveError(refusal)
   }, [apply])
 
-  const resign = useCallback(async () => {
-    await settle(await apiResign(undefined, stateRef.current?.version))
-  }, [settle])
+  const resign = useCallback(
+    async (options?: { confirmed?: boolean }) => {
+      const outcome = await apiResign(undefined, stateRef.current?.version)
+      await settle(outcome, options?.confirmed ? true : undefined)
+    },
+    [settle],
+  )
 
   const claimDraw = useCallback(async () => {
     await settle(await apiClaimDraw(stateRef.current?.version))
@@ -761,6 +795,8 @@ export function useGame(): UseGame {
     resign,
     claimDraw,
     offerDraw,
+    question,
+    answerQuestion,
     setDifficulty,
     tier,
     commentary: reply !== null && reply.gameId === state?.game_id ? reply.text : null,
