@@ -61,6 +61,13 @@ from chessapp.serving import (
     app_revision,
     probes_for,
 )
+from chessapp.speech_client import (
+    DEFAULT_STT_MODEL,
+    DEFAULT_TTS_MODEL,
+    DEFAULT_TTS_VOICE,
+    SpeechClient,
+    create_speech_client,
+)
 from chessapp.tools import (
     ToolContext,
     brain_tool_definitions,
@@ -68,13 +75,7 @@ from chessapp.tools import (
     restore_live_checkpoint,
 )
 from chessapp.trace import JsonlTracer, Tracer
-from chessapp.voice import (
-    DEFAULT_STT_MODEL,
-    DEFAULT_TTS_MODEL,
-    DEFAULT_TTS_VOICE,
-    SpeechClient,
-    create_speech_client,
-)
+from chessapp.voice import VOCABULARY
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +424,7 @@ def _speech_from_env() -> SpeechClient | None:
         return None
     return create_speech_client(
         base_url=url,
+        vocabulary=VOCABULARY,
         # TTS on its own server (the custom-voice Kokoro container); unset
         # means the Speaches backend serves both, exactly as before.
         tts_base_url=os.environ.get("TTS_BASE_URL"),
