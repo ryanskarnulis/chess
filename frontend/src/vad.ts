@@ -1,4 +1,4 @@
-// canonical voice module (chess) — other apps vendor verbatim copies; see agent-standard/voice.md
+// vendored voice module — canonical: speech/client/frontend/vad.ts (agent-standard/voice.md); re-copy, never edit
 // Voice activity detection for hands-free conversation mode: Silero VAD
 // running in an AudioWorklet + WASM, entirely on-device (the project's
 // local-only-voice decision bans cloud speech paths, not local models).
