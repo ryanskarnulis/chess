@@ -1,4 +1,4 @@
-// canonical voice module (chess) — other apps vendor verbatim copies; see agent-standard/voice.md
+// vendored voice module — canonical: speech/client/frontend/tts.ts (agent-standard/voice.md); re-copy, never edit
 // Voice out: fetch spoken audio for a piece of agent commentary and play it.
 // Best-effort by design — if voice is unavailable (503/502) or autoplay is
 // blocked, the commentary is still on screen, so failures are silent.

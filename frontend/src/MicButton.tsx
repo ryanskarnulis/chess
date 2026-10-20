@@ -1,4 +1,4 @@
-// canonical voice module (chess) — other apps vendor verbatim copies; see agent-standard/voice.md
+// vendored voice module — canonical: speech/client/frontend/MicButton.tsx (agent-standard/voice.md); re-copy, never edit
 import { useEffect, useRef, useState } from 'react'
 import { transcribe } from './api'
 import { audioIdle, unlockAudio } from './tts'
