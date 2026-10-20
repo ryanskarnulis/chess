@@ -18,9 +18,10 @@ from fastapi.testclient import TestClient
 from chessapp.api import create_app
 from chessapp.brain import AgentResponse
 from chessapp.game import GameSession
+from chessapp.speech_client import create_speech_client
 from chessapp.tools import ToolContext
 from chessapp.trace import JsonlTracer
-from chessapp.voice import create_speech_client
+from chessapp.voice import VOCABULARY
 from fakes import ScriptedBrain, scripted_app
 from test_voice import FakeSpeechServer
 
@@ -39,6 +40,7 @@ def trace_path(tmp_path):
 def speech_app(trace_path, server: FakeSpeechServer | None = None) -> TestClient:
     speech = create_speech_client(
         base_url="http://speaches:8000/v1",
+        vocabulary=VOCABULARY,
         client=(server or FakeSpeechServer()).client(),
     )
     ctx = ToolContext(session=GameSession())
@@ -145,7 +147,9 @@ def test_speech_works_untraced_and_with_a_tracer_that_raises():
             raise OSError("disk full")
 
     speech = create_speech_client(
-        base_url="http://speaches:8000/v1", client=FakeSpeechServer().client()
+        base_url="http://speaches:8000/v1",
+        vocabulary=VOCABULARY,
+        client=FakeSpeechServer().client(),
     )
     for tracer in (None, Broken()):
         ctx = ToolContext(session=GameSession())

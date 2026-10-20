@@ -139,6 +139,7 @@ from chessapp.move_source import SourcedMove, reply_attribution
 from chessapp.profiles import BRAIN_CHOICES
 from chessapp.progress import ProgressEvent, ProgressReporter
 from chessapp.provider import ProviderError
+from chessapp.speech_client import SpeechClient
 from chessapp.tools import (
     CONFIRM_QUESTIONS,
     GLITCH_NEEDS_MOVER,
@@ -170,7 +171,6 @@ from chessapp.trace import (
     new_correlation_id,
     turn_record,
 )
-from chessapp.voice import SpeechClient
 
 logger = logging.getLogger(__name__)
 
