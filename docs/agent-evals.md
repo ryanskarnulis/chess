@@ -172,6 +172,23 @@ floor to get quiet — power depends on it. Evals never enter CI (decided
 2026-07-26): the suite needs the GPU and its value is a human reading the
 numbers next to their own change.
 
+**Where the verdict lives** (#534). `tests/evalstats.py` and its spec
+`tests/test_evalstats.py` are agent-standard's canonical eval-gate module,
+vendored verbatim (`../agent-standard/STANDARD.md` §6): re-copy to fix drift,
+never edit, and ruff leaves both alone. Chess cut the canonical module from its
+own, and what it kept is `tests/evalstats_app.py`, on top of the vendored one:
+`VacuousRun` and the `INCONCLUSIVE` outcome (a sample that never reached what
+its check was about counts as a non-pass, reported as `inconclusive=`), the
+SAN-aware failure signature the failure modes and `DETERMINISTIC_SUSPECT` are
+read by, the per-phase latency and token attribution, and the route and stop
+constants. `tests/test_evalstats_app.py` is that module's spec and the drift
+guards tying canonical's literals to chess's loop and provider. What counts as
+infrastructure is canonical's: a `provider_error` stop (chess's brain answers a
+dead provider as a 200 carrying it), a 502, 504 or 429. Any other non-200 is a
+miss, though the eval seams cannot produce one. A provider death retries unless
+its kind is `rejected` or `malformed_response`, which fail the scenario on the
+first one.
+
 **An unbacked claim fails its sample** (#368). The live honesty guard is
 retired, so nothing stops a false claim reaching the player; the gate is
 where one still turns red. Every scenario that reads the reply's words runs

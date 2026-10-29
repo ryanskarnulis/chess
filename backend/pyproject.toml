@@ -52,13 +52,21 @@ packages = ["src/chessapp"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The developer scripts' pure parts are unit-tested (tests/test_probe_planner.py).
-pythonpath = ["scripts"]
+# "." is for the vendored `tests/test_evalstats.py`, which imports the module
+# under test as `tests.evalstats`, the way every fleet repo spells it; chess's
+# own code says `evalstats` (`tests/evalstats_app.py` says why).
+pythonpath = ["scripts", "."]
 addopts = "-q"
 asyncio_mode = "auto"
 
 [tool.ruff]
 target-version = "py312"
 src = ["src", "tests", "scripts"]
+# Vendored verbatim from agent-standard (formatted there at line-length 100):
+# re-formatting them here would be drift. `force-exclude` keeps an editor that
+# names the file explicitly from formatting it on save.
+extend-exclude = ["tests/evalstats.py", "tests/test_evalstats.py"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

@@ -13,7 +13,8 @@ So this file pins the seam `_measured` owns: the latency attribution and the
 per-call token counts reach the printed line, the `EvalRun`, and the sample
 record — with each half's readings and its attribution coming off the *same*
 seam, so they can never describe different turns. Nothing here calls the model,
-so it runs in ordinary `pytest` alongside `test_evalstats.py`.
+so it runs in ordinary `pytest` alongside `test_evalstats.py` and
+`test_evalstats_app.py`.
 
 It also pins the harness's **gates**, which is the same argument one step
 further in. The 2026-09-05 audit (`docs/agent-audit-2026-09-05.md`, findings 9
@@ -43,10 +44,10 @@ from chessapp.game import GameSession
 from chessapp.provider import ChatResult
 from chessapp.tools import DESTRUCTIVE_TOOLS, ToolContext, build_registry
 from chessapp.trace import ROUTE_BRAIN, ROUTE_FAST_PATH, ROUTE_RESIGN
-from evalstats import (
+from evalstats import Decision
+from evalstats_app import (
     STOP_PROVIDER_ERROR,
     Attribution,
-    Decision,
     Outcome,
     VacuousRun,
     classify,

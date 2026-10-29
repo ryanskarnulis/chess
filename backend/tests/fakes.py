@@ -409,7 +409,7 @@ class ModelCall:
     The token counts are `None` when the round trip did not report any — it
     raised, or the provider returned no usage — never 0. An unmeasured call is
     not a free one, the same rule the phase splits follow for an unmeasured
-    phase (`evalstats.TurnLatencies`).
+    phase (`evalstats_app.TurnLatencies`).
     """
 
     thinking: bool

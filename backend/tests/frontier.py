@@ -59,13 +59,8 @@ from chessapp.game import GameSession
 from chessapp.speech_accuracy import Tally, tally
 from chessapp.tools import GAME_SAVE_DIRNAME
 from chessapp.trace import ROUTE_BRAIN
-from evalstats import (
-    DETERMINISTIC_FAILURES,
-    STOP_PROVIDER_ERROR,
-    failure_signature,
-    sample_seed,
-    wilson_interval,
-)
+from evalstats import DETERMINISTIC_FAILURES, sample_seed, wilson_interval
+from evalstats_app import STOP_PROVIDER_ERROR, failure_signature
 from test_agent_evals import _REQUEST_TIMEOUT, EvalApp, _measured
 from trajectory import (
     INVARIANTS,
