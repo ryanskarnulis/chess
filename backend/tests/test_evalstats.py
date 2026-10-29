@@ -1,77 +1,52 @@
-"""The eval gate's verdict, unit-tested off the GPU (Sprint 5, slice 3 — audit 23).
+# vendored — canonical: agent-standard/test_evalstats.py; re-copy, never edit
+"""The eval gate's verdict, unit-tested off the GPU.
 
-`test_agent_evals.py` cannot be TDD'd: every one of its assertions needs a live
-12B behind llama-swap, which is exactly why its *verdict* was never tested at
-all. `assert result.rate >= 0.8` over 5 samples cannot resolve a 60–100% band,
-and the record shows it flapping on unchanged builds — `long_capture[poisoned]`
-3/5 then 4/5, `main` 5/5 then 3/5, `play_as_black` 5/5, 2/5, 0/5, 5/5 across
-four same-build runs (`docs/agent-evals.md`).
-
-So every decision the harness makes moved into `evalstats.py` — pure functions
-over counts and strings, no I/O, no model — and this file is their spec. It runs
-in ordinary `pytest` on every commit, which means the *gate itself* is now
-regression-tested even though what it gates is not.
-
-Three things are pinned here that the harness previously left to a literal:
-
-- **when a rate is evidence of regression** (a one-sided Wilson bound below the
-  floor) versus merely a bad sample (`decide`),
-- **what kind of sample it was** (`classify`) — a crashed llama-server is
-  infrastructure, not behavior, and the harness must retry it rather than score
-  it, while a request the server *rejects* is neither and must not be retried at
-  all,
-- **what the failures had in common** (`failure_signature`, `block_stability`,
-  `RateResult.deterministic_suspect`) — five identical failures are a bug and
-  five different ones are variance, and today's harness prints both as "2/5".
-
-A fourth joined them (2026-07-26): **which phase spent the turn's milliseconds**
-(`split_latencies`). The readings were always there per call; what was missing
-was the attribution, and attribution off a route and a stop reason is exactly the
-kind of decision that belongs here rather than in a file no test can run.
+``test_agent_evals.py`` needs the model on the GPU, so its *verdict* lives in
+``tests/evalstats.py`` and this file is its spec, run in every app's CI. Pure:
+nothing here imports the app. Each app's ``test_evalstats_app.py`` holds the
+drift guards tying evalstats' literals to its own loop and provider.
 """
 
+from __future__ import annotations
+
 import json
+from collections.abc import Callable
 
 import pytest
 
-from evalstats import (
-    BUDGET_STOPS,
+from tests.evalstats import (
+    DEFAULT_FLOOR,
     DETERMINISTIC_FAILURES,
-    NARRATE_ROUTES,
-    ROUTE_BRAIN,
-    ROUTE_CONFIRMATION,
+    INFRA_STATUSES,
+    INFRA_STOPS,
     Z_ONE_SIDED_95,
-    Attribution,
     Decision,
+    GateAborted,
+    InfraBudget,
     Outcome,
     RateResult,
     Stability,
-    VacuousRun,
     block_stability,
     classify,
     decide,
     failure_signature,
     format_paired,
-    generation_rate,
     mcnemar_exact,
     paired_counts,
+    provider_failure_kind,
     sample_seed,
+    Taken,
+    run_gate,
     scenario_record,
-    split_latencies,
-    split_tokens,
     wilson_interval,
 )
 
 # --- wilson_interval ----------------------------------------------------------
 #
-# The bound is one-sided by construction: the FAIL test uses one tail (is the
-# *upper* end below the floor?), so the z that makes it a 95% test is 1.645.
-# Calling a two-tailed 1.96 bound "95%" would overstate the evidence by a full
-# tail, which on a gate means calling a bad sample a regression.
+# One-sided by construction: the red test uses one tail (is the *upper* end
+# below the floor?), so the z that makes it a 95% test is 1.645.
 
-# Upper bounds at n=5 for 0..5 passes, at the module's own z. These six numbers
-# are the whole reason a 3/5 escalates instead of going red: see the decision
-# table below.
+# Upper bounds at n=5 for 0..5 passes: the reason 3/5 escalates instead of red.
 _N5_UPPERS = [0.351, 0.565, 0.728, 0.857, 0.954, 1.000]
 
 
@@ -80,52 +55,35 @@ def test_the_n5_upper_bound_table(passed: int, upper: float) -> None:
     assert wilson_interval(passed, 5)[1] == pytest.approx(upper, abs=0.001)
 
 
-def test_the_default_z_is_the_one_sided_95_percent_point() -> None:
-    # Pinned as a value, not just a name: the operating characteristics recorded
-    # in docs/agent-evals.md (and every floor set from them) are this z's.
+def test_the_default_z_and_floor_are_pinned_by_value() -> None:
+    # The decision tables below (and docs/agent-design.md) are this z's and
+    # this floor's; changing either is a gate change, not a refactor.
     assert Z_ONE_SIDED_95 == 1.645
+    assert DEFAULT_FLOOR == 0.8
 
 
 @pytest.mark.parametrize(
     ("passed", "upper"),
     [(0, 0.434), (1, 0.624), (2, 0.769), (3, 0.882), (4, 0.964), (5, 1.000)],
 )
-def test_z_is_a_parameter_and_a_two_tailed_bound_is_wider(
-    passed: int, upper: float
-) -> None:
-    """The same table at z=1.96, which is where the *plan's* printed n=5 numbers
-    (0.435/0.625/0.769/0.882/0.964/1.000) came from.
-
-    Kept as a test rather than a footnote because it is the one place a reader
-    can see that the choice of tail is worth ~8 points of upper bound at n=5 —
-    and because it proves the widening never flips a decision at floor 0.8 (2/5
-    is red and 3/5 escalates under both)."""
+def test_z_is_a_parameter_and_a_two_tailed_bound_is_wider(passed: int, upper: float) -> None:
     assert wilson_interval(passed, 5, 1.96)[1] == pytest.approx(upper, abs=0.001)
 
 
 def test_twenty_samples_narrow_the_interval() -> None:
-    # The two n=20 counts the escalation cap has to adjudicate: 17/20 is the
-    # healthy end of the band and 12/20 is a genuine regression.
     assert wilson_interval(17, 20) == pytest.approx((0.678, 0.938), abs=0.001)
     assert wilson_interval(12, 20) == pytest.approx((0.419, 0.758), abs=0.001)
 
 
 def test_no_samples_is_no_evidence() -> None:
-    """n=0 returns the whole unit interval rather than dividing by zero — a
-    scenario every sample of which was an infra death knows nothing, and the
-    interval has to say so."""
     assert wilson_interval(0, 0) == (0.0, 1.0)
 
 
 def test_the_interval_never_leaves_the_unit_range() -> None:
-    # A Wilson interval can overshoot at the extremes; a probability that reads
-    # as 1.04 in a report is a bug in the report, so both ends are clamped.
     low, high = wilson_interval(5, 5)
-    assert high == 1.0
-    assert 0.0 < low < 1.0
+    assert high == 1.0 and 0.0 < low < 1.0
     low, high = wilson_interval(0, 5)
-    assert low == 0.0
-    assert 0.0 < high < 1.0
+    assert low == 0.0 and 0.0 < high < 1.0
 
 
 # --- decide -------------------------------------------------------------------
@@ -143,40 +101,42 @@ def test_the_interval_never_leaves_the_unit_range() -> None:
     ],
 )
 def test_the_n5_decision_table(passed: int, expected: Decision) -> None:
-    """The whole cost argument for the slice lives in this table: a healthy
-    scenario (4/5 or 5/5) still costs exactly 5 samples, and a hopeless one
-    (0–2) still stops at 5. Only the genuinely ambiguous 3/5 — the count that
-    made the old gate a coin flip — pays for another block."""
+    """A healthy scenario (4/5, 5/5) costs exactly 5 samples and a hopeless one
+    (0–2) stops at 5; only the ambiguous 3/5 pays for another block."""
     assert decide(passed, 5, 0.8) == expected
 
 
 def test_twenty_samples_resolve_the_band() -> None:
-    # At the cap the interval is narrow enough to separate the two cases the
-    # 5-sample gate could not.
     assert decide(17, 20, 0.8) == Decision.ABOVE_FLOOR
     assert decide(12, 20, 0.8) == Decision.BELOW_FLOOR
 
 
+def test_the_escalation_path_from_three_of_five() -> None:
+    # 3/5 → another block: 7/10 still straddles, 8/10 is green, 5/10 is red.
+    assert decide(7, 10, 0.8) == Decision.UNDECIDED
+    assert decide(8, 10, 0.8) == Decision.ABOVE_FLOOR
+    assert decide(5, 10, 0.8) == Decision.BELOW_FLOOR
+
+
+def test_a_single_sample_decides_on_its_own() -> None:
+    # PCC_AGENT_EVALS_RUNS=1 keeps the pre-#403 one-run behavior: a pass is
+    # green, a miss is red (0/1's upper bound is 0.73).
+    assert decide(1, 1, 0.8) == Decision.ABOVE_FLOOR
+    assert decide(0, 1, 0.8) == Decision.BELOW_FLOOR
+
+
 def test_the_point_estimate_alone_decides_a_pass() -> None:
-    """ABOVE_FLOOR is the point estimate reaching the floor, not the interval's
-    lower end clearing it. A gate that demanded the lower bound would call every
-    5-sample scenario a regression — 5/5's lower bound is 0.65."""
     assert wilson_interval(5, 5)[0] < 0.8
     assert decide(5, 5, 0.8) == Decision.ABOVE_FLOOR
 
 
 def test_the_floor_is_a_parameter() -> None:
-    # Each scenario carries its own floor (`_FLOORS`), so nothing may bake 0.8
-    # in — and a lower floor buys quiet at the cost of power, which is a
-    # decision the docs record rather than a constant.
     assert decide(3, 5, 0.6) == Decision.ABOVE_FLOOR
     assert decide(2, 5, 0.5) == Decision.UNDECIDED
     assert decide(0, 5, 0.5) == Decision.BELOW_FLOOR
 
 
 def test_z_widens_the_undecided_band() -> None:
-    # Documented for the same reason as the interval test above: the z is the
-    # gate's one tuning knob, and it moves nothing at the counts that matter.
     assert decide(3, 5, 0.8, z=1.96) == Decision.UNDECIDED
     assert decide(2, 5, 0.8, z=1.96) == Decision.BELOW_FLOOR
 
@@ -185,237 +145,126 @@ def test_z_widens_the_undecided_band() -> None:
 
 
 def test_a_clean_sample_that_passed_its_check_is_a_pass() -> None:
-    assert (
-        classify(status_code=200, stop_reason="completed", error=None) == Outcome.PASS
+    assert classify(status_code=200, stop_reason="completed", error=None) == Outcome.PASS
+
+
+def test_a_failed_assertion_on_a_healthy_run_is_a_real_failure() -> None:
+    outcome = classify(
+        status_code=200, stop_reason="completed", error=AssertionError("no create_task")
     )
+    assert outcome == Outcome.FAIL
 
 
-def test_a_transport_failure_is_infrastructure() -> None:
-    """The old 502: llama-server crash-restarts every 3–8 minutes of sustained
-    generation, and the harness counted each one as a failed sample. That is
-    what made the 2026-07-25 baseline a hand-assembled composite of re-runs."""
-    assert classify(status_code=502, stop_reason=None, error=None) == Outcome.INFRA
+def test_a_limit_stop_is_behavior_not_infrastructure() -> None:
+    # max_iterations, no_progress, … are the model's doing: scored.
+    for stop in ("max_iterations", "correction_limit", "no_progress", "tool_call_limit"):
+        assert (
+            classify(status_code=200, stop_reason=stop, error=AssertionError(stop)) == Outcome.FAIL
+        )
 
 
-def test_a_provider_error_stop_is_infrastructure_too() -> None:
-    """Since audit item 20 the brain *catches* `ProviderError` and answers 200
-    with `stop_reason="provider_error"`, so a crash stopped looking like a 502
-    and started looking like a silent behavioral miss ("expected a resign call:
-    nothing"). It is the same dead socket."""
-    assert (
-        classify(status_code=200, stop_reason="provider_error", error=None)
-        == Outcome.INFRA
-    )
+@pytest.mark.parametrize("stop", sorted(INFRA_STOPS))
+def test_a_provider_death_or_timeout_is_infrastructure(stop: str) -> None:
+    status = {"provider_error": 502, "timed_out": 504}[stop]
+    assert classify(status_code=status, stop_reason=stop, error=None) == Outcome.INFRA
+
+
+def test_a_rate_limited_route_is_infrastructure() -> None:
+    """The agent route allows 10 messages a minute per client: a 429 is the
+    harness outrunning the limiter, never a miss."""
+    assert classify(status_code=429, stop_reason=None, error=None) == Outcome.INFRA
 
 
 def test_infrastructure_beats_a_failed_assertion() -> None:
-    """Precedence, and the reason `classify` exists at all: when the provider
-    died, the check failed *because* it died. Scoring that as behavior is how a
-    crash cadence gets written down as a pass rate."""
-    assert (
-        classify(
-            status_code=200,
-            stop_reason="provider_error",
-            error=AssertionError("expected a resign call: nothing"),
-        )
-        == Outcome.INFRA
+    outcome = classify(
+        status_code=502, stop_reason="provider_error", error=AssertionError("no reply")
     )
+    assert outcome == Outcome.INFRA
 
 
-def test_a_failed_assertion_on_a_healthy_turn_is_a_real_failure() -> None:
-    assert (
-        classify(
-            status_code=200,
-            stop_reason="completed",
-            error=AssertionError("expected Bxe6, board got None"),
-        )
-        == Outcome.FAIL
-    )
+def test_an_internal_error_is_scored_not_retried() -> None:
+    # A tool that raised (500, internal_error) is the app's doing, and a retry
+    # would only hide it.
+    assert classify(status_code=500, stop_reason="internal_error", error=None) == Outcome.FAIL
 
 
 def test_any_other_exception_is_a_harness_bug() -> None:
-    """A `KeyError` in a check is not data about the model. Today it kills the
-    scenario and silently discards the samples already taken; classified as
-    HARNESS it is never retried, never scored, and fails the item outright."""
-    assert (
-        classify(status_code=200, stop_reason="completed", error=KeyError("tool_calls"))
-        == Outcome.HARNESS
+    assert classify(status_code=200, stop_reason="completed", error=KeyError("x")) == (
+        Outcome.HARNESS
     )
 
 
 def test_a_harness_bug_outranks_a_dead_provider() -> None:
-    # A retry cannot fix a typo in the check, so HARNESS is checked first: the
-    # infra budget must not be burned on a bug in this repo.
-    assert (
-        classify(status_code=200, stop_reason="provider_error", error=TypeError("nope"))
-        == Outcome.HARNESS
+    outcome = classify(status_code=502, stop_reason="provider_error", error=KeyError("x"))
+    assert outcome == Outcome.HARNESS
+
+
+@pytest.mark.parametrize("kind", sorted(DETERMINISTIC_FAILURES))
+def test_a_rejected_request_is_not_retried(kind: str) -> None:
+    outcome = classify(
+        status_code=502, stop_reason="provider_error", error=None, provider_failure=kind
     )
+    assert outcome == Outcome.PROVIDER_REJECTED
 
 
-def test_a_budget_stop_on_a_commentary_check_is_inconclusive() -> None:
-    """The vacuous pass, from the record: three of four `hints_off_no_advice`
-    passes in one run were `max_iterations` stops. A budget stop reaches no
-    narrator, so there is no commentary to leak and a purely negative check
-    scores a pass for never having been tested."""
-    assert (
-        classify(
-            status_code=200,
-            stop_reason="max_iterations",
-            error=VacuousRun("stopped on max_iterations: no commentary to check"),
-        )
-        == Outcome.INCONCLUSIVE
+@pytest.mark.parametrize("kind", ["transport", "http_503", "http_429", None])
+def test_a_dead_or_busy_server_is_still_retried(kind: str | None) -> None:
+    outcome = classify(
+        status_code=502, stop_reason="provider_error", error=None, provider_failure=kind
     )
+    assert outcome == Outcome.INFRA
 
 
-def test_a_budget_stop_is_not_vacuous_by_itself() -> None:
-    """Only a check that *depends* on commentary can pass vacuously. A scenario
-    with a positive assertion (a tool ran, the board reads d4) is answered by
-    the tool results, whatever the loop stopped on — so a budget stop alone is
-    an ordinary pass and INCONCLUSIVE stays a claim the check has to make."""
-    assert (
-        classify(status_code=200, stop_reason="max_iterations", error=None)
-        == Outcome.PASS
-    )
+@pytest.mark.parametrize("status", sorted(INFRA_STATUSES))
+def test_an_error_response_without_a_stop_reason_classifies_on_its_status(status: int) -> None:
+    # A harness reading only the HTTP response: the delegate route's 502/504.
+    assert classify(status_code=status, stop_reason=None, error=None) == Outcome.INFRA
 
 
-def test_vacuous_still_fails_if_nobody_classifies_it() -> None:
-    # `VacuousRun` subclasses AssertionError deliberately: a caller that skips
-    # `classify` gets a failed sample rather than a silent pass.
-    assert issubclass(VacuousRun, AssertionError)
-
-
-# --- classify: a death the retry cannot fix -----------------------------------
-#
-# INFRA is "ask again" — the crash cadence llama-server has under sustained
-# load. But a `provider_error` can equally be a request the server refuses
-# identically every time (an HTTP 400: a context overrun on a long transcript),
-# and asking again just spends the infra budget to arrive at the same place five
-# samples later. The brain now names which one it was
-# (`AgentResponse.provider_failure`), so `classify` can stop guessing.
-
-
-def test_a_rejected_request_is_not_retried() -> None:
-    assert (
-        classify(
-            status_code=200,
-            stop_reason="provider_error",
-            error=None,
-            provider_failure="rejected",
-        )
-        == Outcome.PROVIDER_REJECTED
-    )
-
-
-def test_a_malformed_response_is_not_retried_either() -> None:
-    """A 200 whose body fails wire validation is a version skew between this
-    app and llama-server, not a crash — the next request gets the same body."""
-    assert (
-        classify(
-            status_code=200,
-            stop_reason="provider_error",
-            error=None,
-            provider_failure="malformed_response",
-        )
-        == Outcome.PROVIDER_REJECTED
-    )
-
-
-def test_a_dead_server_is_still_retried() -> None:
-    for failure in ("unreachable", "server_error"):
-        assert (
-            classify(
-                status_code=200,
-                stop_reason="provider_error",
-                error=None,
-                provider_failure=failure,
-            )
-            == Outcome.INFRA
-        ), failure
-
-
-def test_an_unnamed_provider_death_is_retried() -> None:
-    """The pre-existing shape, and every non-200 (which carries no failure kind
-    at all — the app answered, not the provider). Unknown means retry: the
-    expensive mistake is aborting a suite on a server that was merely
-    restarting."""
-    assert (
-        classify(status_code=200, stop_reason="provider_error", error=None)
-        == Outcome.INFRA
-    )
-    assert classify(status_code=502, stop_reason=None, error=None) == Outcome.INFRA
-
-
-def test_a_harness_bug_still_outranks_a_rejected_request() -> None:
-    # Same precedence as INFRA: a KeyError in a check is not evidence about
-    # anything the provider did.
-    assert (
-        classify(
-            status_code=200,
-            stop_reason="provider_error",
-            error=TypeError("nope"),
-            provider_failure="rejected",
-        )
-        == Outcome.HARNESS
-    )
-
-
-def test_the_two_failure_vocabularies_agree() -> None:
-    """`evalstats` names the non-transient kinds itself rather than importing
-    them — it must stay importable with nothing installed, the same reason
-    `STOP_PROVIDER_ERROR` is a literal here. That buys a drift risk, so this
-    test is the thing that pays for it: the set this module refuses to retry is
-    exactly the set `provider.py` calls non-transient, by construction."""
-    from chessapp.provider import ProviderFailure
-
-    assert DETERMINISTIC_FAILURES == {
-        str(failure) for failure in ProviderFailure if not failure.transient
-    }
+@pytest.mark.parametrize(
+    ("message", "kind"),
+    [
+        ("llama-server returned 400: ctx overrun", "rejected"),
+        ("agent run failed: llama-server returned 400: ctx overrun", "rejected"),
+        ("llama-server returned 503: ", "http_503"),
+        ("llama-server returned 429: ", "http_429"),
+        ("llama-server request failed: timed out", "transport"),
+        ("llama-server response failed wire validation: 1 error", "malformed_response"),
+    ],
+)
+def test_provider_failure_kind_reads_the_reference_providers_messages(
+    message: str, kind: str
+) -> None:
+    assert provider_failure_kind(message) == kind
 
 
 # --- failure_signature --------------------------------------------------------
 
 
-def test_failures_differing_only_in_moves_share_a_signature() -> None:
-    """Five failures with five different SANs are one failure mode, and the
-    harness must be able to say so — "2/5, both the same mode" and "2/5, two
-    unrelated modes" are different findings printed identically today."""
-    first = failure_signature("expected Bxe6, board got 'Bxh6'")
-    second = failure_signature("expected Bxe4, board got 'Nf3'")
-    assert first == second
-
-
-def test_squares_and_counts_collapse_too() -> None:
-    assert failure_signature("run 1: analyzed c3 after 12 plies") == failure_signature(
-        "run 4: analyzed d4 after 8 plies"
+def test_failures_differing_only_in_numbers_share_a_signature() -> None:
+    assert failure_signature("over-searched: 9 iterations (ceiling 7)") == failure_signature(
+        "over-searched: 11 iterations (ceiling 7)"
     )
 
 
 def test_genuinely_different_failures_stay_apart() -> None:
-    assert failure_signature("expected a resign call: nothing") != failure_signature(
-        "expected Bxe6, board got None"
+    assert failure_signature("expected a successful create_task") != failure_signature(
+        "wrong count: 'four'"
     )
 
 
-def test_a_signature_is_stable_and_readable() -> None:
-    # It goes in the report and the printed summary, so it has to stay something
-    # a human recognises — normalised, not hashed.
-    assert "resign" in failure_signature("expected a resign call: nothing")
+def test_a_signature_is_readable() -> None:
+    assert failure_signature("wrong count:  '13'\n") == "wrong count: '<n>'"
 
 
 # --- block_stability ----------------------------------------------------------
 
 
 def test_a_five_five_then_zero_five_pair_is_unstable() -> None:
-    """The clustering confound, made visible. `play_as_black` measured 5/5 in
-    isolation and 0/5 mid-suite on one build: 20 consecutive samples of one
-    utterance is a cluster of size 1, so the Wilson width understates the truth.
-    The slice does not fix that — it flags it."""
     assert block_stability([(5, 5), (0, 5)]) == Stability.UNSTABLE
 
 
 def test_ordinary_sampling_spread_is_stable() -> None:
-    # 5/5 vs 3/5 is what a true rate near the floor looks like
-    # (`long_capture[poisoned]`), and flagging that would flag everything.
     assert block_stability([(5, 5), (3, 5)]) == Stability.STABLE
 
 
@@ -425,8 +274,6 @@ def test_one_block_cannot_be_unstable() -> None:
 
 
 def test_empty_blocks_do_not_count_as_zero_rates() -> None:
-    # A block every sample of which was retried for infra has no rate; treating
-    # it as 0/5 would invent an instability that never happened.
     assert block_stability([(5, 5), (0, 0)]) == Stability.STABLE
 
 
@@ -434,17 +281,10 @@ def test_empty_blocks_do_not_count_as_zero_rates() -> None:
 
 
 def test_rate_result_derives_its_own_verdict() -> None:
-    """The derived fields are built, never passed: the same rule `turn_record`
-    follows for `model_ms`. A report whose interval disagrees with its counts is
-    worse than no report."""
     result = RateResult.from_blocks(
-        blocks=[(5, 5), (3, 5)],
-        failures=["run 7: expected Bxe6, board got None"],
-        floor=0.8,
+        blocks=[(5, 5), (3, 5)], failures=["run 7: wrong count: '4'"], floor=0.8
     )
-    assert result.passed == 8
-    assert result.runs == 10
-    assert result.rate == 0.8
+    assert (result.passed, result.runs, result.rate) == (8, 10, 0.8)
     assert result.blocks == ((5, 5), (3, 5))
     assert result.decision == Decision.ABOVE_FLOOR
     assert result.stability == Stability.STABLE
@@ -452,545 +292,72 @@ def test_rate_result_derives_its_own_verdict() -> None:
 
 
 def test_a_scenario_below_the_floor_reads_as_a_regression() -> None:
-    result = RateResult.from_blocks(
-        blocks=[(1, 5)],
-        failures=[f"run {i}: expected Bxe6, board got None" for i in range(1, 5)],
-        floor=0.8,
-    )
+    result = RateResult.from_blocks(blocks=[(1, 5)], failures=["no create_task"] * 4, floor=0.8)
     assert result.decision == Decision.BELOW_FLOOR
     assert result.rate == 0.2
 
 
-def test_failure_modes_are_a_histogram_on_every_scenario() -> None:
+def test_failure_modes_are_a_histogram() -> None:
     result = RateResult.from_blocks(
         blocks=[(1, 5)],
-        failures=[
-            "expected Bxe6, board got 'Bxh6'",
-            "expected Bxe6, board got 'Nf3'",
-            "expected a resign call: nothing",
-            "expected a resign call: nothing",
-        ],
+        failures=["run 1: wrong count: '4'", "run 2: wrong count: '2'", "run 3: x", "run 4: x"],
         floor=0.8,
     )
     assert sorted(result.failure_modes.values()) == [2, 2]
-    assert len(result.failure_modes) == 2
 
 
 def test_a_uniform_total_failure_is_a_deterministic_suspect() -> None:
-    """0/5 with one signature is not sampling noise — it is a broken build, a
-    changed tool offer, or a deterministic `provider_error` (a context overrun,
-    a malformed request). Naming it is what stops the next reader arguing about
-    variance for an afternoon."""
-    result = RateResult.from_blocks(
-        blocks=[(0, 5)],
-        failures=["expected Bxe6, board got 'Bxh6'"] * 5,
-        floor=0.8,
-    )
+    result = RateResult.from_blocks(blocks=[(0, 5)], failures=["no create_task"] * 5, floor=0.8)
     assert result.deterministic_suspect is True
 
 
-def test_mixed_failures_are_not_a_deterministic_suspect() -> None:
-    result = RateResult.from_blocks(
-        blocks=[(0, 5)],
-        failures=["expected Bxe6, board got None", "expected a resign call: nothing"],
-        floor=0.8,
-    )
-    assert result.deterministic_suspect is False
-
-
-def test_a_partial_pass_is_not_a_deterministic_suspect() -> None:
-    result = RateResult.from_blocks(
-        blocks=[(2, 5)],
-        failures=["expected Bxe6, board got None"] * 3,
-        floor=0.8,
-    )
-    assert result.deterministic_suspect is False
+def test_mixed_or_partial_failures_are_not_deterministic_suspects() -> None:
+    mixed = RateResult.from_blocks(blocks=[(0, 5)], failures=["a", "b"], floor=0.8)
+    partial = RateResult.from_blocks(blocks=[(2, 5)], failures=["a"] * 3, floor=0.8)
+    assert not mixed.deterministic_suspect and not partial.deterministic_suspect
 
 
 def test_the_summary_line_carries_the_verdict_and_its_cost() -> None:
-    """The `[eval]` line a human reads off the terminal. It has to carry the
-    interval (the point of the slice) and the infra retries (a rate taken over a
-    crashing server is worth less than the same rate taken clean) — printed even
-    at 1, because that is the number the baseline's re-run procedure used to
-    hide."""
-    result = RateResult.from_blocks(
-        blocks=[(4, 5)], failures=["expected Bxe6, board got None"], floor=0.8, infra=1
-    )
+    result = RateResult.from_blocks(blocks=[(4, 5)], failures=["x"], floor=0.8, infra=1)
     summary = result.summary()
     assert "4/5" in summary
-    assert "0.44" in summary and "0.95" in summary  # the interval, both ends
+    assert "0.44" in summary and "0.95" in summary
     assert "infra=1" in summary
     assert str(Decision.ABOVE_FLOOR) in summary
 
 
 def test_zero_runs_has_a_rate_of_zero_rather_than_an_exception() -> None:
-    # An all-infra scenario is reported, not crashed on: the harness fails the
-    # item loudly and the report still has to serialise.
     result = RateResult.from_blocks(blocks=[], failures=[], floor=0.8, infra=5)
-    assert result.rate == 0.0
-    assert result.runs == 0
-    assert result.interval == (0.0, 1.0)
-
-
-# --- scenario_record ----------------------------------------------------------
+    assert (result.rate, result.runs, result.interval) == (0.0, 0, (0.0, 1.0))
 
 
 def test_a_scenario_record_is_json_and_carries_the_whole_verdict() -> None:
-    """One JSONL line per scenario is what stops the baseline tables in
-    docs/agent-evals.md being hand-transcribed from terminal scrollback."""
     result = RateResult.from_blocks(
-        blocks=[(5, 5), (2, 5)],
-        failures=["run 8: expected Bxe6, board got None"],
-        floor=0.8,
-        infra=2,
-        inconclusive=1,
+        blocks=[(5, 5), (2, 5)], failures=["run 8: no create_task"], floor=0.8, infra=2
     )
-    record = scenario_record("long_capture[poisoned]", result, 0.8, blocking=True)
-
-    decoded = json.loads(json.dumps(record))  # must survive the wire unchanged
-    assert decoded["scenario"] == "long_capture[poisoned]"
-    assert decoded["floor"] == 0.8
-    assert decoded["passed"] == 7
-    assert decoded["runs"] == 10
-    assert decoded["blocks"] == [[5, 5], [2, 5]]
-    assert decoded["decision"] == "UNDECIDED"
-    assert decoded["stability"] == "UNSTABLE"
-    assert decoded["interval"] == [pytest.approx(x) for x in result.interval]
-    assert decoded["infra"] == 2
-    assert decoded["inconclusive"] == 1
-    assert decoded["failure_modes"] == {"run <n>: expected <san>, board got None": 1}
-    assert decoded["blocking"] is True  # arbitrary metadata rides along
-
-
-def test_metadata_can_annotate_but_the_counts_come_from_the_result() -> None:
-    result = RateResult.from_blocks(blocks=[(5, 5)], failures=[], floor=0.8)
-    record = scenario_record("play_as_black", result, 0.8, samples=[{"model_ms": 940}])
-    assert record["samples"] == [{"model_ms": 940}]
-    assert record["rate"] == 1.0
-
-
-# --- split_latencies ----------------------------------------------------------
-#
-# `model_ms` is a per-turn *sum*, and the question it cannot answer is the one
-# Sprint 5 is asking: a `no_progress` turn was measured narrating 2–3× slower
-# than an ordinary one at the same model-call count, and a turn total cannot
-# tell a slow planner from a slow narrator. The readings themselves already
-# exist per call, in call order, on `AgentResponse.model_latencies_ms` and in
-# the trace — so the only thing missing was the attribution, which is what these
-# tests pin. It is derived from the route and the stop reason, and it refuses to
-# guess: a turn whose phase boundary is not knowable says so.
-
-
-def test_a_brain_turn_splits_into_the_planner_and_the_narrator() -> None:
-    """The narrator is the *last* call on a brain-routed turn that reached one —
-    that is the phase order, not a heuristic (`docs/planner-narrator.md`): the
-    planner loops, then exactly one tool-free call speaks."""
-    latencies = split_latencies(
-        (1200, 900, 39100), route="brain", stop_reason="completed"
+    record = json.loads(
+        json.dumps(scenario_record("delegate_actor", result, 0.8, samples=[{"seed": 1}]))
     )
-    assert latencies.attribution is Attribution.SPLIT
-    assert latencies.planner_ms == 2100
-    assert latencies.narrator_ms == 39100
-    assert latencies.total_ms == 41200  # and the parts still sum to the whole
+    assert record["scenario"] == "delegate_actor"
+    assert (record["passed"], record["runs"], record["floor"]) == (7, 10, 0.8)
+    assert record["blocks"] == [[5, 5], [2, 5]]
+    assert record["decision"] == "UNDECIDED"
+    assert record["stability"] == "UNSTABLE"
+    assert record["infra"] == 2
+    assert record["failure_modes"] == {"run <n>: no create_task": 1}
+    assert record["samples"] == [{"seed": 1}]
 
 
-def test_more_narrator_calls_than_calls_is_unknown_not_a_guess() -> None:
-    latencies = split_latencies((3000,), route="brain", stop_reason="completed")
-    assert latencies.attribution is Attribution.UNKNOWN
+# --- paired arms --------------------------------------------------------------
 
 
-def test_a_repeat_stop_still_reached_its_narrator() -> None:
-    """The case this function was written for. `no_progress` ends the *planning*
-    phase, and the narrator still runs (CLAUDE.md), so the split is knowable —
-    which is what turns "a repeat-stop turn narrates slower" from a hypothesis
-    into a measurement."""
-    latencies = split_latencies((1100, 1000), route="brain", stop_reason="no_progress")
-    assert latencies.attribution is Attribution.SPLIT
-    assert latencies.planner_ms == 1100
-    assert latencies.narrator_ms == 1000
-
-
-def test_a_budget_stop_spent_every_millisecond_in_the_planner() -> None:
-    """A budget stop reaches no narrator by construction, so attributing its last
-    call to one would invent narrator time that was never spent."""
-    for stop in sorted(BUDGET_STOPS):
-        latencies = split_latencies(
-            (900, 800, 850, 870), route="brain", stop_reason=stop
-        )
-        assert latencies.attribution is Attribution.NO_NARRATOR, stop
-        assert latencies.planner_ms == 3420, stop
-        assert latencies.narrator_ms is None, stop
-
-
-def test_a_provider_death_leaves_the_phase_boundary_unknown() -> None:
-    """The call that died could have been either phase — a planner round trip or
-    the narrator's — and the trace does not say which. Unknown is reported as
-    unknown: a median computed over guesses is worse than one computed over
-    fewer samples."""
-    latencies = split_latencies(
-        (1200, 30000), route="brain", stop_reason="provider_error"
-    )
-    assert latencies.attribution is Attribution.UNKNOWN
-    assert latencies.planner_ms is None
-    assert latencies.narrator_ms is None
-    assert latencies.total_ms == 31200  # the total is still a fact
-
-
-def test_a_narrate_route_has_no_planner_phase_at_all() -> None:
-    """The fast path, a drag, a resignation and a confirmation reach the model
-    only through `Brain.narrate` — one narrator call, no planner loop — so all of
-    the time is the narrator's and the planner's zero is real, not unknown."""
-    for route in sorted(NARRATE_ROUTES):
-        latencies = split_latencies((3400,), route=route, stop_reason="completed")
-        assert latencies.attribution is Attribution.SPLIT, route
-        assert latencies.planner_ms == 0, route
-        assert latencies.narrator_ms == 3400, route
-
-
-def test_one_confirmation_call_is_still_the_whole_turn() -> None:
-    """A confirmation turn that spent exactly one round trip is attributed the
-    way every other narrate route is — because at one call it does not matter
-    which phase made it. That is the common shape: a cancel, or a confirm at
-    verbosity `low`, is the reader alone; a literal "yes" at normal verbosity is
-    the narrator alone. Either way the turn's whole model time is that call's
-    and the planner's zero is real."""
-    latencies = split_latencies(
-        (900,), route=ROUTE_CONFIRMATION, stop_reason="completed"
-    )
-    assert latencies.attribution is Attribution.SPLIT
-    assert latencies.planner_ms == 0
-    assert latencies.narrator_ms == 900
-
-
-def test_a_two_call_confirmation_cannot_say_which_call_narrated() -> None:
-    """The honest correction (audit 2026-09-05, "Statistical interpretation").
-    Since the free-text reader landed, a confirmation turn can be reader-only,
-    reader-plus-narrator, or narrator-only, and the trace record carries nothing
-    that tells them apart. This branch used to call all of it narrator time, so
-    every narrator median including a confirmation counted the reader's round
-    trip as narration.
-
-    UNKNOWN rather than a reader phase: naming a third phase would need
-    production to record which calls were the reader's, and inventing it here
-    would be the same guess wearing a label."""
-    latencies = split_latencies(
-        (300, 2400), route=ROUTE_CONFIRMATION, stop_reason="completed"
-    )
-    assert latencies.attribution is Attribution.UNKNOWN
-    assert latencies.planner_ms is None
-    assert latencies.narrator_ms is None
-    assert latencies.total_ms == 2700  # the total is still a fact
-
-    tokens = split_tokens(
-        ((180, 1), (2600, 90)), route=ROUTE_CONFIRMATION, stop_reason="completed"
-    )
-    assert tokens.attribution is Attribution.UNKNOWN
-    assert tokens.planner_out is None
-    assert tokens.narrator_in is None and tokens.narrator_out is None
-    assert tokens.completion_tokens == 91
-
-
-def test_the_other_narrate_routes_keep_their_split_at_any_call_count() -> None:
-    """The confirmation carve-out is exactly one route wide. Nothing else in
-    `NARRATE_ROUTES` has a second kind of model call in front of the narrator,
-    so a multi-call turn on one of them is still all narrator time."""
-    for route in sorted(NARRATE_ROUTES - {ROUTE_CONFIRMATION}):
-        latencies = split_latencies((300, 2400), route=route, stop_reason="completed")
-        assert latencies.attribution is Attribution.SPLIT, route
-        assert latencies.planner_ms == 0, route
-        assert latencies.narrator_ms == 2700, route
-
-
-def test_a_zero_llm_turn_reports_no_readings_rather_than_zeros() -> None:
-    """A canned confirmation at verbosity=low never called the model. An
-    unmeasured phase is not a fast one — the same rule `AgentResponse` follows
-    for an unmeasured brain."""
-    latencies = split_latencies((), route="fast_path", stop_reason="completed")
-    assert latencies.attribution is Attribution.NONE
-    assert latencies.planner_ms is None
-    assert latencies.narrator_ms is None
-    assert latencies.total_ms == 0
-
-
-def test_an_empty_trace_record_is_no_readings_not_a_bad_route() -> None:
-    # A request that failed before the pipeline reached its trace point leaves
-    # `_CollectingTracer.last` empty, so route and stop reason are both None.
-    latencies = split_latencies((), route=None, stop_reason=None)
-    assert latencies.attribution is Attribution.NONE
-
-
-def test_a_route_this_module_does_not_know_is_unknown_not_assumed() -> None:
-    """New route, new phase shape — and guessing it would silently mis-attribute
-    every sample on it. `test_the_route_vocabularies_agree` is what makes this
-    branch reachable only by a *new* route rather than by drift."""
-    latencies = split_latencies((500,), route="telepathy", stop_reason="completed")
-    assert latencies.attribution is Attribution.UNKNOWN
-
-
-def test_the_route_vocabularies_agree() -> None:
-    """Same drift payment as `test_the_two_failure_vocabularies_agree`: this
-    module names the routes itself so it stays importable with nothing
-    installed, and this test is what keeps that copy honest. Every route the
-    tracer can record is classified — a route in neither set would attribute
-    to UNKNOWN forever without anyone noticing."""
-    from chessapp import trace
-
-    recorded = {
-        value
-        for name, value in vars(trace).items()
-        if name.startswith("ROUTE_") and isinstance(value, str)
-    }
-    assert recorded == NARRATE_ROUTES | {ROUTE_BRAIN}
-    assert not NARRATE_ROUTES & {ROUTE_BRAIN}
-
-
-def test_the_summary_names_the_phases_and_the_unknowns() -> None:
-    """The `[eval]` line clause a human reads. An unknown prints as `?` rather
-    than as a number, because the whole point is that it is not one."""
-    split = split_latencies((1200, 900, 39100), route="brain", stop_reason="completed")
-    assert split.summary() == (
-        "call_ms=[1200,900,39100] planner_ms=2100 narrator_ms=39100 phases=SPLIT"
-    )
-    stuck = split_latencies((900, 800), route="brain", stop_reason="max_iterations")
-    assert stuck.summary() == (
-        "call_ms=[900,800] planner_ms=1700 narrator_ms=? phases=NO_NARRATOR"
-    )
-    silent = split_latencies((), route="fast_path", stop_reason="completed")
-    assert silent.summary() == "call_ms=[] planner_ms=? narrator_ms=? phases=NONE"
-
-
-def test_the_record_is_json_and_carries_the_total_beside_the_parts() -> None:
-    """The per-sample half: `docs/agent-evals.md` has claimed per-sample
-    `model_ms` since the statistics slice and the report never carried one, so a
-    campaign's medians came out of terminal scrollback. The total ships beside
-    the parts, derived here for the same reason `turn_record` derives it — a
-    record whose total disagrees with its parts is worse than no record."""
-    latencies = split_latencies(
-        (1200, 900, 39100), route="brain", stop_reason="completed"
-    )
-    decoded = json.loads(json.dumps(latencies.as_record()))
-    assert decoded == {
-        "model_ms": 41200,
-        "call_ms": [1200, 900, 39100],
-        "planner_ms": 2100,
-        "narrator_ms": 39100,
-        "phases": "SPLIT",
-    }
-    unknown = split_latencies((1200,), route="brain", stop_reason="provider_error")
-    assert json.loads(json.dumps(unknown.as_record()))["narrator_ms"] is None
-
-
-# --- split_tokens / generation_rate -------------------------------------------
-#
-# The half `split_latencies` cannot answer. It settled *where* the repeat-stop
-# turn's extra 30 s is spent — the narrator's own round trip, p = 0.00088 — and
-# left the mechanism open, because "the narrator emitted more tokens" and
-# "generation was slower" are the same number of milliseconds. Usage per call
-# separates them: tokens say how much was written, the pair says how fast. The
-# phase boundary is the *same* rule the latencies use (one derivation, applied
-# to whichever readings are being attributed), so the two clauses on a line can
-# never disagree about which call was the narrator.
-
-
-def test_a_brain_turn_attributes_its_tokens_the_way_it_attributes_its_time() -> None:
-    tokens = split_tokens(
-        ((2100, 8), (2400, 12), (2900, 940)), route="brain", stop_reason="completed"
-    )
-    assert tokens.attribution is Attribution.SPLIT
-    assert tokens.planner_out == 20
-    assert tokens.narrator_out == 940
-    # The narrator's *prompt* is a candidate mechanism in its own right: a
-    # repeat-stop turn dispatched the duplicate, so its narrator reads one more
-    # tool result than a completed turn's does.
-    assert tokens.narrator_in == 2900
-    assert tokens.completion_tokens == 960
-
-
-def test_a_budget_stop_spent_every_token_in_the_planner() -> None:
-    for stop in sorted(BUDGET_STOPS):
-        tokens = split_tokens(
-            ((2000, 30), (2200, 25), (2400, 28), (2600, 31)),
-            route="brain",
-            stop_reason=stop,
-        )
-        assert tokens.attribution is Attribution.NO_NARRATOR, stop
-        assert tokens.planner_out == 114, stop
-        assert tokens.narrator_out is None, stop
-        assert tokens.narrator_in is None, stop
-
-
-def test_a_narrate_route_spent_every_token_in_the_narrator() -> None:
-    for route in sorted(NARRATE_ROUTES):
-        tokens = split_tokens(((1800, 240),), route=route, stop_reason="completed")
-        assert tokens.attribution is Attribution.SPLIT, route
-        assert tokens.planner_out == 0, route
-        assert tokens.narrator_out == 240, route
-
-
-def test_a_provider_death_leaves_the_token_boundary_unknown_too() -> None:
-    tokens = split_tokens(
-        ((2100, 8), (2400, None)), route="brain", stop_reason="provider_error"
-    )
-    assert tokens.attribution is Attribution.UNKNOWN
-    assert tokens.planner_out is None
-    assert tokens.narrator_out is None
-
-
-def test_a_zero_llm_turn_reports_no_token_readings() -> None:
-    tokens = split_tokens((), route="fast_path", stop_reason="completed")
-    assert tokens.attribution is Attribution.NONE
-    assert tokens.narrator_out is None
-    assert tokens.completion_tokens is None
-
-
-def test_one_unmeasured_call_makes_its_phase_unknown_not_smaller() -> None:
-    """A round trip that raised has no usage — the result never came back. Its
-    phase total is therefore unknown, and summing the rest would report a
-    *smaller* number as if it were the whole: exactly the silent lie the
-    instrument exists to avoid."""
-    tokens = split_tokens(
-        ((2100, 8), (2400, None), (2900, 940)), route="brain", stop_reason="completed"
-    )
-    assert tokens.planner_out is None  # the raising call was the planner's
-    assert tokens.narrator_out == 940  # but the narrator's own reading survives
-    assert tokens.completion_tokens is None
-
-
-def test_the_token_summary_names_the_unknowns_the_same_way() -> None:
-    tokens = split_tokens(
-        ((2100, 8), (2400, 12), (2900, 940)), route="brain", stop_reason="completed"
-    )
-    assert tokens.summary() == (
-        "call_in=[2100,2400,2900] call_out=[8,12,940] "
-        "planner_out=20 narrator_in=2900 narrator_out=940"
-    )
-    stuck = split_tokens(
-        ((2000, 30), (2200, None)), route="brain", stop_reason="max_iterations"
-    )
-    assert stuck.summary() == (
-        "call_in=[2000,2200] call_out=[30,?] planner_out=? narrator_in=? narrator_out=?"
-    )
-    silent = split_tokens((), route="fast_path", stop_reason="completed")
-    assert silent.summary() == (
-        "call_in=[] call_out=[] planner_out=? narrator_in=? narrator_out=?"
-    )
-
-
-def test_the_token_record_is_json_and_carries_the_totals() -> None:
-    tokens = split_tokens(
-        ((2100, 8), (2400, 12), (2900, 940)), route="brain", stop_reason="completed"
-    )
-    decoded = json.loads(json.dumps(tokens.as_record()))
-    assert decoded == {
-        "prompt_tokens": 7400,
-        "completion_tokens": 960,
-        "call_in": [2100, 2400, 2900],
-        "call_out": [8, 12, 940],
-        "planner_out": 20,
-        "narrator_in": 2900,
-        "narrator_out": 940,
-    }
-
-
-def test_generation_rate_is_tokens_per_second_of_the_call_that_wrote_them() -> None:
-    """The discriminator itself. A narrator that emitted 3× the tokens at the
-    same rate is a *thinking* problem (bound the budget); one that emitted the
-    same tokens at a third of the rate is a *serving* problem (and a token cap
-    would not touch it). One number tells them apart."""
-    assert generation_rate(940, 39100) == pytest.approx(24.04, abs=0.01)
-
-
-def test_generation_rate_refuses_to_divide_by_an_unknown() -> None:
-    assert generation_rate(None, 39100) is None
-    assert generation_rate(940, None) is None
-    # A 0 ms reading is a clock that did not run, not an infinitely fast model.
-    assert generation_rate(940, 0) is None
-
-
-# --- a schema-2 record's phase tags decide the split (#317) ------------------
-
-
-def test_tagged_calls_split_a_provider_death_the_positions_could_not():
-    """The positional rule has to call a brain turn that died UNKNOWN: the dead
-    call could have been either phase. The tags say which it was."""
-    untagged = split_latencies((400, 900), route="brain", stop_reason="provider_error")
-    assert untagged.attribution == Attribution.UNKNOWN
-
-    tagged = split_latencies(
-        (400, 900),
-        route="brain",
-        stop_reason="provider_error",
-        phases=("planner", "closer"),
-    )
-    assert tagged.attribution == Attribution.SPLIT
-    assert (tagged.planner_ms, tagged.narrator_ms) == (400, 900)
-
-
-def test_tagged_calls_place_the_reader_in_neither_phase():
-    """A confirmation that read the answer and then narrated: positions cannot
-    tell the two apart, the tags can — and the reader is neither phase."""
-    latencies = split_latencies(
-        (150, 800),
-        route="confirmation",
-        stop_reason="completed",
-        phases=("answer", "reaction"),
-    )
-    assert latencies.attribution == Attribution.SPLIT
-    assert (latencies.planner_ms, latencies.narrator_ms) == (0, 800)
-    assert latencies.total_ms == 950
-
-
-def test_a_rewrite_is_narrator_time_by_its_tag():
-    latencies = split_latencies(
-        (300, 700, 500),
-        route="brain",
-        stop_reason="completed",
-        phases=("planner", "closer", "rewrite"),
-    )
-    assert (latencies.planner_ms, latencies.narrator_ms) == (300, 1200)
-
-
-def test_no_narrator_tag_is_no_narrator():
-    latencies = split_latencies(
-        (300, 700), route="brain", stop_reason="budget", phases=("planner", "planner")
-    )
-    assert latencies.attribution == Attribution.NO_NARRATOR
-    assert latencies.narrator_ms is None
-
-
-def test_an_untagged_or_mismatched_record_falls_back_to_the_positions():
-    fallback = split_latencies((300, 700), route="brain", stop_reason="completed")
-    for phases in (("unknown", "unknown"), ("planner",), None):
-        assert (
-            split_latencies(
-                (300, 700), route="brain", stop_reason="completed", phases=phases
-            )
-            == fallback
-        )
-
-
-def test_tokens_split_by_the_same_tags():
-    tokens = split_tokens(
-        [(900, 12), (None, None), (1200, 80)],
-        route="confirmation",
-        stop_reason="completed",
-        phases=("answer", "planner", "closer"),
-    )
-    assert tokens.attribution == Attribution.SPLIT
-    assert tokens.planner_out is None  # the planner's one call reported nothing
-    assert (tokens.narrator_in, tokens.narrator_out) == (1200, 80)
-
-
-# --- paired arms (#363) -----------------------------------------------------
-
-
-def test_paired_counts_split_aligned_samples_into_the_four_cells():
+def test_paired_counts_split_aligned_samples_into_the_four_cells() -> None:
     a = [True, True, False, False, True]
     b = [True, False, True, False, True]
     assert paired_counts(a, b) == (2, 1, 1, 1)
 
 
-def test_paired_counts_refuse_unaligned_arms():
+def test_paired_counts_refuse_unaligned_arms() -> None:
     with pytest.raises(ValueError, match="unaligned"):
         paired_counts([True], [True, False])
 
@@ -1005,12 +372,122 @@ def test_mcnemar_exact_is_the_two_sided_binomial_on_discordant_pairs(
     assert mcnemar_exact(a_only, b_only) == pytest.approx(p)
 
 
-def test_concordant_pairs_do_not_move_the_verdict():
-    # 18 shared passes and one flip each way is no evidence: the p reads the
-    # discordant pairs alone, which is what makes the paired test sharp.
+def test_concordant_pairs_do_not_move_the_verdict() -> None:
     assert format_paired(1, 1, 20) == "pairs 20 · A-only 1 · B-only 1 · p=1"
 
 
-def test_sample_seed_is_keyed_on_the_scored_position():
+def test_sample_seed_is_keyed_on_the_scored_position() -> None:
     assert sample_seed(None, 3) is None
     assert [sample_seed(5000, j) for j in range(3)] == [5000, 5001, 5002]
+
+
+# --- InfraBudget --------------------------------------------------------------
+
+
+def test_budget_caps_retries_per_scenario() -> None:
+    budget = InfraBudget(retries=2, budget=10)
+    assert budget.spend("a")
+    assert budget.spend("a")
+    assert not budget.spend("a")
+    assert budget.spend("b")
+
+
+def test_budget_caps_retries_across_the_suite() -> None:
+    budget = InfraBudget(retries=5, budget=2)
+    assert budget.spend("a")
+    assert budget.spend("b")
+    assert not budget.spend("c")
+
+
+def test_summary_says_where_the_budget_went() -> None:
+    budget = InfraBudget(retries=5, budget=9)
+    budget.spend("a")
+    budget.spend("a")
+    assert budget.summary() == "infra_spent=2/9 (a=2)"
+    assert InfraBudget(retries=1, budget=1).summary() == "infra_spent=0/1"
+
+
+# --- run_gate -----------------------------------------------------------------
+
+
+def _scripted(
+    *outcomes: Outcome, seeds: list[int | None] | None = None
+) -> Callable[[int | None], Taken]:
+    queue = list(outcomes)
+
+    def take(seed: int | None) -> Taken:
+        if seeds is not None:
+            seeds.append(seed)
+        outcome = queue.pop(0)
+        return Taken(outcome, failure="missed" if outcome is Outcome.FAIL else None)
+
+    return take
+
+
+def test_a_healthy_scenario_costs_one_block() -> None:
+    result = run_gate("s", _scripted(*[Outcome.PASS] * 5), budget=InfraBudget(retries=5, budget=25))
+    assert (result.passed, result.runs, result.decision) == (5, 5, Decision.ABOVE_FLOOR)
+
+
+def test_three_of_five_buys_another_block() -> None:
+    p, f = Outcome.PASS, Outcome.FAIL
+    result = run_gate(
+        "s", _scripted(p, p, p, f, f, *[p] * 5), budget=InfraBudget(retries=5, budget=25)
+    )
+    assert result.blocks == ((3, 5), (5, 5))
+    assert result.decision is Decision.ABOVE_FLOOR
+    assert result.failures == ("run 4: missed", "run 5: missed")
+
+
+def test_a_red_block_stops_early() -> None:
+    result = run_gate("s", _scripted(*[Outcome.FAIL] * 5), budget=InfraBudget(retries=5, budget=25))
+    assert result.decision is Decision.BELOW_FLOOR
+    assert result.deterministic_suspect
+
+
+def test_undecided_at_the_cap_returns_flagged() -> None:
+    p, f = Outcome.PASS, Outcome.FAIL
+    result = run_gate(
+        "s",
+        _scripted(p, p, p, f, f),
+        budget=InfraBudget(retries=5, budget=25),
+        max_runs=5,
+    )
+    assert result.decision is Decision.UNDECIDED
+
+
+def test_an_infra_death_is_retaken_with_the_same_seed_and_not_scored() -> None:
+    seeds: list[int | None] = []
+    budget = InfraBudget(retries=5, budget=25)
+    deaths: list[int] = []
+    result = run_gate(
+        "s",
+        _scripted(Outcome.PASS, Outcome.INFRA, *[Outcome.PASS] * 4, seeds=seeds),
+        budget=budget,
+        seed_base=100,
+        on_infra=lambda n, _sample: deaths.append(n),
+    )
+    assert seeds == [100, 101, 101, 102, 103, 104]
+    assert (result.runs, result.infra, budget.spent, deaths) == (5, 1, 1, [1])
+
+
+def test_running_out_of_infra_budget_aborts_without_a_rate() -> None:
+    with pytest.raises(GateAborted) as caught:
+        run_gate("s", _scripted(*[Outcome.INFRA] * 3), budget=InfraBudget(retries=2, budget=25))
+    assert (caught.value.decision, caught.value.infra) == ("INFRA_ABORTED", 3)
+
+
+def test_a_rejected_request_aborts_on_the_first_one() -> None:
+    with pytest.raises(GateAborted) as caught:
+        run_gate(
+            "s", _scripted(Outcome.PROVIDER_REJECTED), budget=InfraBudget(retries=5, budget=25)
+        )
+    assert caught.value.decision == "PROVIDER_REJECTED"
+
+
+def test_a_harness_bug_reraises_its_own_error() -> None:
+    def take(_seed: int | None) -> Taken:
+        return Taken(Outcome.HARNESS, error=KeyError("typo"))
+
+    with pytest.raises(KeyError):
+        run_gate("s", take, budget=InfraBudget(retries=5, budget=25))

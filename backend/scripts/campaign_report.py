@@ -18,7 +18,7 @@ paired p resolves what the raw counts cannot. A gate sample pairs on passing
 `whole`. Unseeded reports print no paired column. The block number comes from
 the report's name (`block-<n>-<arm>.jsonl`).
 
-Pure aggregation over `scenario` records (`evalstats.scenario_record`); header
+Pure aggregation over `scenario` records (`evalstats_app.scenario_record`); header
 and suite lines are skipped. Tested off the GPU in `tests/test_probe_planner.py`.
 """
 
@@ -34,7 +34,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 from evalstats import format_paired, paired_counts  # noqa: E402
 
-# The gate's scored outcomes (`evalstats.Outcome`); anything else was not a
+# The gate's scored outcomes (`evalstats_app.Outcome`); anything else was not a
 # sample — a re-taken infra death, a harness bug — and pairs with nothing.
 _SCORED = {"PASS": True, "FAIL": False, "INCONCLUSIVE": False}
 _BLOCK = re.compile(r"block-(\d+)-")

@@ -73,8 +73,10 @@ run it before merging one; the baseline must not regress.
 slice 3; audit item 23). `assert result.rate >= 0.8` over five samples is a coin
 flip at the floor — the record has the same build measuring 3/5 then 4/5, and
 `play_as_black` measuring 5/5, 2/5, 0/5, 5/5 — so every decision this file makes
-about a count now lives in `evalstats.py`, which is pure, GPU-free and
-unit-tested on every commit (`test_evalstats.py`). Three consequences here:
+about a count now lives in `evalstats.py` (agent-standard's, vendored verbatim)
+and `evalstats_app.py` (chess's half on top of it), which are pure, GPU-free and
+unit-tested on every commit (`test_evalstats.py`, `test_evalstats_app.py`).
+Three consequences here:
 
 - **Sampling is block-sequential.** A block of `_BLOCK_RUNS` is taken, and only
   a genuinely ambiguous count (the interval straddles the floor) buys another,
@@ -108,7 +110,7 @@ lines printed at the end. Reported, never asserted (`docs/speech-accuracy.md`).
 `[eval]` line and the report's per-sample records carry `call_ms` (one reading
 per round trip, in call order, off the trace), `planner_ms`, `narrator_ms` and
 the `phases` attribution that says how confidently those two were separated —
-`evalstats.split_latencies`, which derives it from the route and the stop reason
+`evalstats_app.split_latencies`, which derives it from the route and the stop reason
 and answers UNKNOWN rather than guessing when the provider died mid-turn. The
 turn total alone could not resolve the finding it was asked about: `no_progress`
 turns narrate 2–3× slower than `completed` ones at the *same* model-call count,
@@ -188,10 +190,10 @@ from chessapp.trace import (
     ROUTE_FAST_PATH,
     ROUTE_RESIGN,
 )
-from evalstats import (
+from evalstats import Decision, sample_seed
+from evalstats_app import (
     BUDGET_STOPS,
     STOP_PROVIDER_ERROR,
-    Decision,
     Outcome,
     RateResult,
     TurnLatencies,
@@ -199,7 +201,6 @@ from evalstats import (
     VacuousRun,
     classify,
     generation_rate,
-    sample_seed,
     scenario_record,
     split_latencies,
     split_tokens,
@@ -378,7 +379,7 @@ _FLOORS: dict[str, float] = {
     "judgment_as_black": 0.8,
 }
 
-# The loop's budget stops live in `evalstats.BUDGET_STOPS`, next to the other
+# The loop's budget stops live in `evalstats_app.BUDGET_STOPS`, next to the other
 # decision it drives: a turn that ended on one reached no narrator, so it both
 # tested nothing under a commentary check *and* has no narrator round trip to
 # attribute latency to. One set, so the two readings cannot disagree.
@@ -895,7 +896,7 @@ class EvalRun(NamedTuple):
     times only spends the infra budget to arrive where it started.
 
     `latencies` is the turn's per-call wall clock with each reading attributed to
-    the phase that spent it (`evalstats.split_latencies`). `duration` is the
+    the phase that spent it (`evalstats_app.split_latencies`). `duration` is the
     request's whole wall clock and `model_ms` was the turn's model total, and
     neither can answer the question Sprint 5 is asking — whether a `no_progress`
     turn's extra 30 s is the narrator's own round trip or a hard sample that made
@@ -989,7 +990,7 @@ def _measured(
     tell a slow planner from a slow narrator. `model_latencies_ms` was already
     on the trace record, one reading per round trip in call order — the harness
     just never printed it. `split_latencies` attributes each reading off the
-    route and the stop reason (`evalstats`, unit-tested off the GPU) rather than
+    route and the stop reason (`evalstats_app`, unit-tested off the GPU) rather than
     assuming the last call is always the narrator, which on a budget stop or a
     provider death it is not.
     """
@@ -1690,7 +1691,7 @@ def test_eval_resign_literal_is_settled_without_the_model(eval_app: EvalApp) -> 
 # matter. The verdict is now a one-sided Wilson bound with block-sequential
 # sampling (`evalstats.decide`), and `RateResult` — which used to be three
 # fields here — moved to `evalstats.py` where it can be unit-tested without a
-# GPU.
+# GPU (chess's, with its `inconclusive` count, is `evalstats_app.RateResult`).
 
 
 def _run_panel(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
@@ -1784,7 +1785,7 @@ def _step(record: dict[str, Any], index: int) -> dict[str, Any]:
     """Step `index` (1-based) out of a multi-step probe's record.
 
     Raises `LookupError` rather than asserting, so a step the runner never got
-    to reads as a HARNESS bug (`evalstats.classify`) instead of as the model
+    to reads as a HARNESS bug (`evalstats_app.classify`) instead of as the model
     missing — the same reason PR 1 put an exception filter on the two-undo
     xfail. In practice it is unreachable: a dead step short-circuits the runner
     and `_sample` skips the check entirely.
@@ -3689,7 +3690,7 @@ def _reloaded(path: Path) -> GameSession:
     """The saved game as the app itself would read it back.
 
     Wrapped so a corrupt or unreadable save fails the *sample* rather than the
-    scenario: `GameSession.load` raises `ValueError`, which `evalstats.classify`
+    scenario: `GameSession.load` raises `ValueError`, which `evalstats_app.classify`
     reads as a HARNESS bug and never retries or scores, and a save the model's
     turn wrote badly is data about the turn.
     """
@@ -4816,7 +4817,7 @@ def test_eval_late_game_tool_composition(
     were recorded, not capped, until a baseline existed to set a ceiling
     against — a ceiling before that is a guess with a number on it — and the
     #288 gate supplied it. They are also on the per-sample report line and in
-    the JSONL record (`call_in`, `prompt_tokens` — `evalstats.split_tokens`).
+    the JSONL record (`call_in`, `prompt_tokens` — `evalstats_app.split_tokens`).
 
     A lock: there is no evidence yet of a late-game miss. What it buys is a
     condition nothing else in the suite can reach.
