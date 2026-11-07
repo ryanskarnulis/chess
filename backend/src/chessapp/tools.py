@@ -47,7 +47,7 @@ import jsonschema
 from mcp.server.fastmcp.utilities.func_metadata import func_metadata
 from pydantic import Field
 
-from chessapp import knowledge
+from chessapp import knowledge, openings
 from chessapp.analysis import analyze_last_move as _analyze_last_move
 from chessapp.analysis import critical_moves as _critical_moves
 from chessapp.analysis import review_game as _review_game
@@ -670,6 +670,11 @@ class ToolContext:
                         if self.session.game_id == event.game_id
                         else None
                     )
+                    line = (
+                        openings.opening_of(self.session)
+                        if self.session.game_id == event.game_id
+                        else None
+                    )
                     self.results.record(
                         event.game_id,
                         player_color=str(
@@ -680,6 +685,7 @@ class ToolContext:
                         winner=event.details.get("winner"),
                         termination=str(event.details.get("termination")),
                         from_setup="root_fen" in start,
+                        opening=line["name"] if line else None,
                     )
                 elif event.kind == TAKEBACK:
                     self.results.withdraw(event.game_id)

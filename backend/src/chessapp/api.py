@@ -134,6 +134,7 @@ from chessapp.facts import (
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
 from chessapp.gather import Gathered, Searcher
+from chessapp.glance import build_glance
 from chessapp.ledger import render_record
 from chessapp.move_source import SourcedMove, reply_attribution
 from chessapp.profiles import BRAIN_CHOICES
@@ -3541,6 +3542,7 @@ def create_app(
         build_agent_router(
             store=store,
             run_command=_run_command if brain is not None else None,
+            glance=lambda: build_glance(ctx),
         )
     )
 

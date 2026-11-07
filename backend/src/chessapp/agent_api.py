@@ -635,15 +635,37 @@ class RunCommand(Protocol):
 
 
 def build_agent_router(
-    *, store: ConversationStore, run_command: RunCommand | None
+    *,
+    store: ConversationStore,
+    run_command: RunCommand | None,
+    glance: Callable[[], dict[str, Any]] | None = None,
 ) -> APIRouter:
     """The delegate router, mounted at ``/api/agent``.
 
     ``run_command`` is the shared command pipeline (from ``chessapp.api``);
     it is ``None`` when the app has no brain, in which case the one
-    model-calling endpoint answers 503 (CRUD still works).
+    model-calling endpoint answers 503 (CRUD still works). ``glance`` builds
+    the read-only summary behind ``GET /api/agent/glance`` (`chessapp.glance`,
+    #536); without one the route does not exist.
     """
     router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+    if glance is not None:
+
+        @router.get("/glance")
+        def get_glance() -> dict[str, Any]:
+            """The glance contract (`../agent-standard/app-yaml-glance-block.md`):
+            no arguments, no model call, no side effects. Any failure to read
+            the app's own state is a 503, which conductor treats as "couldn't
+            look"."""
+            try:
+                return glance()
+            except Exception as exc:
+                logger.warning("glance_failed", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="glance unavailable",
+                ) from exc
 
     # One lock per conversation id. A message is an *exchange* — read the
     # history, commit the question, run the pipeline, commit the answer — and
