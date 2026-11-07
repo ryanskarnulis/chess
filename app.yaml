@@ -34,3 +34,8 @@ open:
     - "move my knight to f3"
     - "how am I doing in this game?"
     - "resign the game"
+# One read-only summary for conductor's look(chess) (../agent-standard/
+# app-yaml-glance-block.md): no model call, no engine search.
+glance:
+  holds: "The chess game in progress (whose move, how far, the material balance) and the last finished game (result, opening, date). No engine evaluation."
+  path: /api/agent/glance

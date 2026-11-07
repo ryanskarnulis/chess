@@ -95,6 +95,7 @@ class ResultsLog:
         winner: str | None,
         termination: str,
         from_setup: bool,
+        opening: str | None = None,
     ) -> None:
         """A game ended: its result stands until a later line says otherwise."""
         self._append(
@@ -107,6 +108,9 @@ class ResultsLog:
                 "winner": winner,
                 "termination": termination,
                 "from_setup": from_setup,
+                # The book name the line had reached when it ended, for the
+                # glance (#536). Absent from lines written before it.
+                **({"opening": opening} if opening else {}),
             }
         )
 
@@ -138,6 +142,20 @@ class ResultsLog:
 
     def standing(self, game_id: str) -> dict[str, Any] | None:
         return self._standing.get(game_id)
+
+    def latest(self) -> dict[str, Any] | None:
+        """The standing result that ended most recently, or None when no game
+        has ended (the glance's "last finished game", #536). Ties, which
+        timestamps to the second allow, go to the later line."""
+        with self._lock:
+            standing = list(self._standing.values())
+        best: dict[str, Any] | None = None
+        for entry in standing:
+            if best is None or str(entry.get("ended_at", "")) >= str(
+                best.get("ended_at", "")
+            ):
+                best = entry
+        return best
 
     def tally(self) -> dict[str, Any]:
         """Wins, losses and draws, from the player's side, overall and per
