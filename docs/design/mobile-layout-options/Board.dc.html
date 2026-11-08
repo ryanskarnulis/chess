@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chess board</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0a0c12}
+</style>
+</helmet>
+<div style="{{rootStyle}}" role="img" aria-label="Chess board, middlegame position">
+<sc-for list="{{squares}}" as="sq" hint-placeholder-count="64">
+<div style="{{sq.style}}"><sc-if value="{{sq.src}}" hint-placeholder-val="{{false}}"><img src="{{sq.src}}" alt="" style="{{sq.pieceStyle}}"></sc-if><sc-if value="{{sq.file}}" hint-placeholder-val="{{false}}"><span style="{{sq.fileStyle}}">{{sq.file}}</span></sc-if><sc-if value="{{sq.rank}}" hint-placeholder-val="{{false}}"><span style="{{sq.rankStyle}}">{{sq.rank}}</span></sc-if></div>
+</sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"size":{"editor":"int","default":390,"min":120,"max":600,"unit":"px"},"last":{"editor":null,"default":"e8,g8"},"hint":{"editor":null,"default":""},"fen":{"editor":null,"default":""},"check":{"editor":null,"default":""},"coords":{"editor":"boolean","default":true},"$preview":{"width":390,"height":390}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var size = this.props.size ?? 390;
+    var last = (this.props.last ?? 'e8,g8').split(',');
+    var hint = (this.props.hint ?? '').split(',');
+    var fen = this.props.fen || 'r1bq1rk1/pp2bppp/2nppn2/8/3NP3/2N1B3/PPPQBPPP/R3K2R';
+    var check = this.props.check || '';
+    var art = {
+      P: '/_blob/ab87f9c98d49c43259da402cf1a2fb77', N: '/_blob/3725bad8f53a90408dd28faadc20fde5',
+      B: '/_blob/1b66b2e5012bb6c08d97452ac6b96dfe', R: '/_blob/38a269fc45deb0bc34168ff7785cd05f',
+      Q: '/_blob/f4dbc1aba7651190535c67ed32a42c78', K: '/_blob/3252917ea067f2aeecf0b1a7c556e7bc',
+      p: '/_blob/7b7f6eafe818fa2f458b57a774816f47', n: '/_blob/9b18bf6a4cbd57a454c9400ce4009d29',
+      b: '/_blob/9af76f79d5a53bfe3677883865c85901', r: '/_blob/2d25c644694b1f4edd5504f19f131da5',
+      q: '/_blob/1b117b6fc0b0746aa1bce963f5fcdf86', k: '/_blob/b8a8d81517be0d46cc657210ff21bba2'
+    };
+    var files = 'abcdefgh';
+    var small = size < 200;
+    var showCoords = !small && this.props.coords !== false;
+    var squares = [];
+    fen.split('/').forEach(function (row, r) {
+      var c = 0;
+      row.split('').forEach(function (ch) {
+        if (/\d/.test(ch)) {
+          for (var i = 0; i < Number(ch); i++) { squares.push({ r: r, c: c, p: '' }); c++; }
+        } else { squares.push({ r: r, c: c, p: ch }); c++; }
+      });
+    });
+    var coordFont = 'font:700 ' + (small ? 8 : 12) + 'px/1 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8edf5;text-shadow:0 1px 2px rgba(7,8,12,0.8);text-transform:uppercase;pointer-events:none;';
+    var out = squares.map(function (s) {
+      var name = files[s.c] + (8 - s.r);
+      var light = (s.r + s.c) % 2 === 0;
+      var base = light ? '#505b78' : '#171b28';
+      var bg = base;
+      if (last.indexOf(name) >= 0) bg = 'linear-gradient(rgba(155,231,255,0.15),rgba(155,231,255,0.15)),' + base;
+      if (check === name) bg = 'radial-gradient(ellipse at center, rgba(242,143,164,0.95) 0%, rgba(242,143,164,0.6) 26%, rgba(242,143,164,0) 78%),' + base;
+      if (hint.indexOf(name) >= 0) bg = 'linear-gradient(rgba(238,201,138,0.3),rgba(238,201,138,0.3)),' + base;
+      var white = s.p && s.p === s.p.toUpperCase();
+      var fileLabel = showCoords && s.r === 7 ? files[s.c] : '';
+      var rankLabel = showCoords && s.c === 0 ? String(8 - s.r) : '';
+      return {
+        src: s.p ? art[s.p] : '',
+        style: 'position:relative;background:' + bg,
+        pieceStyle: 'position:absolute;inset:0;width:100%;height:100%;' + (white
+          ? 'filter:drop-shadow(0 1px 2px rgba(7,8,12,0.55))'
+          : 'filter:drop-shadow(0 0 1px rgba(199,211,228,0.85)) drop-shadow(0 0 2.5px rgba(199,211,228,0.35))'),
+        file: fileLabel,
+        rank: rankLabel,
+        fileStyle: 'position:absolute;right:4px;bottom:2px;z-index:3;' + coordFont,
+        rankStyle: 'position:absolute;left:3px;top:2px;z-index:3;' + coordFont
+      };
+    });
+    return {
+      squares: out,
+      rootStyle: 'isolation:isolate;width:' + size + 'px;height:' + size + 'px;display:grid;grid-template-columns:repeat(8, minmax(0, 1fr));grid-template-rows:repeat(8, minmax(0, 1fr))'
+    };
+  }
+}
+</script>
+</body>
+</html>

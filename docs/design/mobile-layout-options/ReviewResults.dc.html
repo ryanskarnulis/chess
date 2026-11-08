@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Post-game review</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0a0c12}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; color: #e8edf5; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <dc-import name="Shell" fen="3R2k1/5ppp/8/8/8/8/5PPP/6K1" last="d1,d8" check="g8" bubble="Finished — the win is yours." status="Game over — 1-0" results-chip="{{yes}}" hint-off="{{yes}}" draw-off="{{yes}}" hint-size="390px,844px"></dc-import>
+  <div aria-hidden="true" style="position: absolute; inset: 0; background: rgba(10,12,18,0.55)"></div>
+  <section role="dialog" aria-modal="true" aria-label="Game review" style="position: absolute; left: 0; right: 0; bottom: 0; top: 44px; box-sizing: border-box; background: #0f131d; border-top: 1px solid rgba(199,211,228,0.22); border-radius: 16px 16px 0 0; display: flex; flex-direction: column">
+    <div style="display: flex; align-items: center; height: 56px; padding: 0 8px 0 20px; border-bottom: 1px solid rgba(199,211,228,0.12)">
+      <h2 style="flex: 1; margin: 0; font-size: 20px; font-weight: 600">Review</h2>
+      <button type="button" style="height: 44px; padding: 0 12px; background: none; border: none; color: #9be7ff; font: 600 16px Inter, system-ui, sans-serif">Done</button>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 16px 20px">
+      <div aria-label="Your review summary" style="padding: 12px 14px; border-radius: 12px; background: rgba(155,231,255,0.08); border: 1px solid rgba(155,231,255,0.25)">
+        <div style="font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #939db0">You · White</div>
+        <div style="font-size: 30px; font-weight: 700; line-height: 1.2; margin-top: 4px">86%</div>
+        <div style="font-size: 13px; color: #939db0; line-height: 1.35; margin-top: 4px">1 inaccuracy, 1 mistake</div>
+      </div>
+      <div aria-label="Glitch's review summary" style="padding: 12px 14px; border-radius: 12px; background: rgba(199,211,228,0.05); border: 1px solid rgba(199,211,228,0.18)">
+        <div style="font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #939db0">Glitch · Black</div>
+        <div style="font-size: 30px; font-weight: 700; line-height: 1.2; margin-top: 4px">71%</div>
+        <div style="font-size: 13px; color: #939db0; line-height: 1.35; margin-top: 4px">1 mistake, 1 blunder</div>
+      </div>
+    </div>
+    <div style="display: flex; gap: 16px; padding: 0 20px 10px; font-size: 13px; color: #939db0">
+      <span><span style="color: #eec98a; font-weight: 700">?!</span> inaccuracy</span>
+      <span><span style="color: #f2b48f; font-weight: 700">?</span> mistake</span>
+      <span><span style="color: #f28fa4; font-weight: 700">??</span> blunder</span>
+    </div>
+    <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 20px; border-top: 1px solid rgba(199,211,228,0.12)">
+      <sc-for list="{{rows}}" as="row" hint-placeholder-count="14">
+        <div style="{{row.rowStyle}}">
+          <div style="display: grid; grid-template-columns: 40px minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; font-size: 17px">
+            <span style="color: #939db0">{{row.num}}</span>
+            <span>{{row.white}}<span style="{{row.wMarkStyle}}">{{row.wMark}}</span></span>
+            <span>{{row.black}}<span style="{{row.bMarkStyle}}">{{row.bMark}}</span></span>
+          </div>
+          <sc-if value="{{row.note}}" hint-placeholder-val="{{false}}"><div style="padding-left: 40px; font-size: 14px; color: #939db0; margin-top: 2px">{{row.note}}</div></sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var colors = { '?!': '#eec98a', '?': '#f2b48f', '??': '#f28fa4' };
+    var raw = [
+      ['1.', 'e4', 'c5'], ['2.', 'Nf3', 'd6'], ['3.', 'd4', 'cxd4'], ['4.', 'Nxd4', 'Nf6'],
+      ['5.', 'Nc3', 'Nc6'], ['6.', 'Be3', 'e6'], ['7.', 'Be2', 'Be7'], ['8.', 'Qd2', 'O-O'],
+      ['9.', 'f4', 'a6', '?!', '', 'Your 9. f4 — best was O-O-O'],
+      ['10.', 'O-O-O', 'Nxd4'], ['11.', 'Bxd4', 'b5'],
+      ['12.', 'e5', 'Nd7', '', '?', 'Glitch’s 12… Nd7 — best was dxe5'],
+      ['13.', 'Bd3', 'Qa5'],
+      ['14.', 'Kb1', 'b4', '', '??', 'Glitch’s 14… b4 — best was Rb8']
+    ];
+    var rows = raw.map(function (r) {
+      var flagged = !!(r[3] || r[4]);
+      return {
+        num: r[0], white: r[1], black: r[2],
+        wMark: r[3] || '', bMark: r[4] || '',
+        wMarkStyle: 'margin-left:2px;font-weight:700;color:' + (colors[r[3]] || 'inherit'),
+        bMarkStyle: 'margin-left:2px;font-weight:700;color:' + (colors[r[4]] || 'inherit'),
+        note: r[5] || '',
+        rowStyle: 'padding:7px 0;border-bottom:1px solid rgba(199,211,228,0.08)' + (flagged ? ';background:rgba(199,211,228,0.04);margin:0 -20px;padding:9px 20px' : '')
+      };
+    });
+    return { yes: true, rows: rows };
+  }
+}
+</script>
+</body>
+</html>

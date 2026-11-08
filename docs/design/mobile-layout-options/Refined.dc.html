@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Today, refined</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0a0c12}
+a{color:#9be7ff}a:hover{color:#c7f3ff}
+.night{background:url('/_blob/35d2afed168cd32f6b13a06fa78c5efd') top right / 343px auto no-repeat,radial-gradient(1100px 750px at 50% 38%, #131726 0%, #0a0c12 62%)}
+.night input::placeholder{color:#939db0}
+.night input:focus{outline:none}
+</style>
+</helmet>
+<div class="night" style="width: 390px; height: 844px; box-sizing: border-box; position: relative; overflow: hidden; color: #e8edf5; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 18px; line-height: 26.1px">
+  <main style="display: flex; flex-direction: column; gap: 7.2px; padding: 6px 18px 0">
+    <form aria-label="Talk to Glitch" style="display: flex; align-items: center; gap: 10px; height: 52px">
+      <a href="#" aria-label="Back to The Web" style="flex: 0 0 auto; width: 36px; height: 44px; display: flex; align-items: center; justify-content: flex-start"><img src="/_blob/694e669a9ee1111111eb2a0f72a89c1a" alt="" style="width: 28px; height: 28px; border-radius: 50%; display: block; opacity: 0.85"></a>
+      <label style="flex: 1 1 auto; min-width: 0; display: flex; align-items: center; height: 44px; border-bottom: 1px solid rgba(199,211,228,0.22)">
+        <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Command</span>
+        <input type="text" placeholder="Talk to Glitch…" style="flex: 1 1 auto; min-width: 0; height: 44px; box-sizing: border-box; padding: 0 4px; font: 17px Inter, system-ui, sans-serif; color: #e8edf5; background: transparent; border: none">
+        <button type="button" aria-label="Start hands-free" style="flex: 0 0 auto; width: 44px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; color: #9be7ff; background: none; border: none"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg></button>
+      </label>
+    </form>
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; align-items: flex-start; gap: 9px; min-height: 100px">
+        <img src="/_blob/14e94373b1fa663fce5992bf00929da6" alt="" style="width: 72px; height: 72px; border-radius: 50%; flex: 0 0 auto">
+        <div style="flex: 1; min-width: 0">
+          <p role="status" style="position: relative; margin: 4.5px 0 0; padding: 9px 13.5px; background: rgba(15,19,29,0.9); border: 1px solid rgba(199,211,228,0.22); border-radius: 12px; line-height: 1.3"><span aria-hidden="true" style="position: absolute; left: -7px; top: 16px; width: 0; height: 0; border-top: 7px solid transparent; border-bottom: 7px solid transparent; border-right: 7px solid rgba(199,211,228,0.22)"></span><span style="display: block">Castled. That knight on d4 is looking awfully lonely.</span><span style="display: block; margin-top: 5.4px">O-O.</span></p>
+        </div>
+      </div>
+      <div aria-label="Captured by Glitch: 1 pawn" style="display: flex; align-items: center; gap: 5px; min-height: 22px">
+        <span aria-hidden="true" style="font-size: 20px; line-height: 1">♟︎</span>
+      </div>
+    </div>
+    <div style="box-sizing: border-box; width: 356px; height: 356px; border: 1px solid rgba(199,211,228,0.22); border-radius: 4px; overflow: hidden">
+      <dc-import name="Board" size="{{boardSize}}" last="e8,g8" hint-size="354px,354px"></dc-import>
+    </div>
+    <div aria-label="Captured by you: 1 pawn" style="display: flex; align-items: center; gap: 5px; min-height: 22px">
+      <span aria-hidden="true" style="font-size: 20px; line-height: 1">♙︎</span>
+    </div>
+    <div style="display: flex; align-items: center; width: 354px; height: 44px">
+      <button type="button" aria-label="Previous move" style="flex: 0 0 auto; width: 36px; height: 44px; display: flex; align-items: center; justify-content: flex-start; padding: 0; background: none; color: #939db0; border: none"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14.5 6-5.5 6 5.5 6"></path></svg></button>
+      <div style="flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; display: flex; justify-content: flex-end">
+        <span style="margin-right: 8.1px"><span style="color: #939db0; margin-right: 3.6px">6.</span>Be3</span>
+        <span style="margin-right: 8.1px">e6</span>
+        <span style="margin-right: 8.1px"><span style="color: #939db0; margin-right: 3.6px">7.</span>Be2</span>
+        <span style="margin-right: 8.1px">Be7</span>
+        <span style="margin-right: 8.1px"><span style="color: #939db0; margin-right: 3.6px">8.</span>Qd2</span>
+        <span style="color: #9be7ff; font-weight: 600">O-O</span>
+      </div>
+      <button type="button" aria-label="Next move" disabled style="flex: 0 0 auto; width: 36px; height: 44px; display: flex; align-items: center; justify-content: flex-end; padding: 0; background: none; color: #939db0; border: none; opacity: 0.35"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9.5 6 5.5 6-5.5 6"></path></svg></button>
+    </div>
+  </main>
+  <sc-if value="{{menuOpen}}" hint-placeholder-val="{{false}}">
+    <div style="position: absolute; inset: 0; background: rgba(10,12,18,0.6)">
+      <button type="button" aria-label="Close menu" onClick="{{closeMenu}}" style="position: absolute; inset: 0; width: 100%; height: 100%; background: none; border: none"></button>
+      <section aria-label="Game menu" style="position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 18px 86px; background: #0f131d; border-top: 1px solid rgba(199,211,228,0.22); border-radius: 16px 16px 0 0; display: flex; flex-direction: column">
+        <span aria-hidden="true" style="align-self: center; width: 40px; height: 4px; border-radius: 2px; background: rgba(199,211,228,0.35); margin-bottom: 8px"></span>
+        <button type="button" style="height: 52px; display: flex; align-items: center; gap: 14px; padding: 0; background: none; border: none; border-bottom: 1px solid rgba(199,211,228,0.12); color: #e8edf5; font: 17px Inter, system-ui, sans-serif; text-align: left">New game</button>
+        <div style="height: 52px; display: flex; align-items: center; border-bottom: 1px solid rgba(199,211,228,0.12); font-size: 17px"><span style="flex: 1">Difficulty</span><span style="color: #939db0">Intermediate</span></div>
+        <div style="height: 52px; display: flex; align-items: center; border-bottom: 1px solid rgba(199,211,228,0.12); font-size: 17px"><span style="flex: 1">Brain</span><span style="color: #939db0">Balanced</span></div>
+        <div style="height: 52px; display: flex; align-items: center; border-bottom: 1px solid rgba(199,211,228,0.12); font-size: 17px"><span style="flex: 1">Speak replies aloud</span><span style="width: 44px; height: 26px; border-radius: 13px; background: rgba(155,231,255,0.35); position: relative"><span style="position: absolute; right: 3px; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: #e8edf5"></span></span></div>
+        <button type="button" style="height: 52px; display: flex; align-items: center; padding: 0; background: none; border: none; border-bottom: 1px solid rgba(199,211,228,0.12); color: #e8edf5; font: 17px Inter, system-ui, sans-serif; text-align: left">Copy PGN</button>
+        <button type="button" style="height: 52px; display: flex; align-items: center; padding: 0; background: none; border: none; border-bottom: 1px solid rgba(199,211,228,0.12); color: #e8edf5; font: 17px Inter, system-ui, sans-serif; text-align: left">Offer draw</button>
+        <button type="button" style="height: 52px; display: flex; align-items: center; padding: 0; background: none; border: none; color: #f28fa4; font: 17px Inter, system-ui, sans-serif; text-align: left">Resign…</button>
+      </section>
+    </div>
+  </sc-if>
+  <nav aria-label="Game controls" style="position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: center; background: rgba(15,19,29,0.9); border-top: 1px solid rgba(199,211,228,0.22)">
+    <button type="button" style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2.7px; padding: 9px 0 10.8px; background: none; border: none; color: #e8edf5; font: 13.5px/normal Inter, system-ui, sans-serif"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h11a5 5 0 0 1 0 10h-6"></path><path d="m8 5-4 4 4 4"></path></svg>Undo</button>
+    <button type="button" style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2.7px; padding: 9px 0 10.8px; background: none; border: none; color: #e8edf5; font: 13.5px/normal Inter, system-ui, sans-serif"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 17h5"></path><path d="M10 20h4"></path><path d="M12 3a6 6 0 0 0-3.5 10.9c.4.3.5.7.5 1.1h6c0-.4.1-.8.5-1.1A6 6 0 0 0 12 3Z"></path></svg>Hint</button>
+    <button type="button" aria-expanded="{{menuOpen}}" onClick="{{toggleMenu}}" style="{{menuBtnStyle}}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>Game</button>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { menuOpen: false };
+  }
+  renderVals() {
+    var self = this;
+    var open = this.state.menuOpen;
+    return {
+      boardSize: 354,
+      menuOpen: open,
+      menuBtnStyle: 'flex:1;display:flex;flex-direction:column;align-items:center;gap:2.7px;padding:9px 0 10.8px;background:none;border:none;cursor:pointer;font:13.5px/normal Inter,system-ui,sans-serif;color:' + (open ? '#9be7ff' : '#e8edf5'),
+      toggleMenu: function () { self.setState({ menuOpen: !open }); },
+      closeMenu: function () { self.setState({ menuOpen: false }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

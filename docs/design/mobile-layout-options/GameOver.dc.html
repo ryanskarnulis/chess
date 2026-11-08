@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Game over</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0a0c12}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; color: #e8edf5; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <dc-import name="Shell" fen="3R2k1/5ppp/8/8/8/8/5PPP/6K1" last="d1,d8" check="g8" bubble="Finished — the win is yours." glitch-caps="♟︎ ♘︎ ♗︎ ♖︎" you-caps="♙︎ ♞︎ ♝︎ ♜︎ ♛︎" you-adv="+9" status="Game over — 1-0" results-chip="{{yes}}" moves="{{moves}}" hint-off="{{yes}}" draw-off="{{yes}}" hint-size="390px,844px"></dc-import>
+  <div aria-hidden="true" style="position: absolute; inset: 0; background: rgba(10,12,18,0.55)"></div>
+  <section role="dialog" aria-modal="true" aria-label="Game over" style="position: absolute; left: 0; right: 0; bottom: 0; box-sizing: border-box; padding: 10px 20px 30px; background: #0f131d; border-top: 1px solid rgba(199,211,228,0.22); border-radius: 16px 16px 0 0; display: flex; flex-direction: column">
+    <span aria-hidden="true" style="align-self: center; width: 40px; height: 4px; border-radius: 2px; background: rgba(199,211,228,0.35); margin-bottom: 18px"></span>
+    <h2 style="margin: 0; font-size: 30px; font-weight: 700; text-align: center">You won</h2>
+    <p style="margin: 4px 0 22px; font-size: 16px; color: #939db0; text-align: center">Checkmate · 1-0</p>
+    <button type="button" style="height: 52px; border-radius: 12px; border: none; background: #9be7ff; color: #07080c; font: 600 17px Inter, system-ui, sans-serif">New game</button>
+    <button type="button" style="height: 52px; margin-top: 10px; border-radius: 12px; border: 1px solid rgba(199,211,228,0.22); background: none; color: #e8edf5; font: 17px Inter, system-ui, sans-serif">Review the game</button>
+    <div style="display: flex; margin-top: 8px">
+      <button type="button" style="flex: 1; height: 48px; background: none; border: none; color: #9be7ff; font: 16px Inter, system-ui, sans-serif">Copy PGN</button>
+      <button type="button" style="flex: 1; height: 48px; background: none; border: none; color: #939db0; font: 16px Inter, system-ui, sans-serif">Look at the board</button>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      yes: true,
+      moves: [
+        { num: '30.', san: 'Rd1' }, { san: 'Kg8' }, { num: '31.', san: 'Rd8#', current: true }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

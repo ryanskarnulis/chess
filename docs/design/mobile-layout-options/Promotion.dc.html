@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Promotion</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0a0c12}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; color: #e8edf5; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <dc-import name="Shell" fen="r5k1/1P3pp1/7p/8/8/8/5PPP/6K1" last="h7,h6" bubble="That pawn has been walking for ages. Go on, then." glitch-caps="♟︎ ♘︎ ♗︎" you-caps="♙︎ ♞︎ ♝︎ ♛︎" you-adv="+3" moves="{{moves}}" hint-size="390px,844px"></dc-import>
+  <div role="dialog" aria-label="Choose promotion piece" style="position: absolute; left: 18px; top: 200px; width: 356px; height: 356px; border-radius: 4px; background: rgba(10,12,18,0.72); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px">
+    <p style="margin: 0; font-size: 15px; color: #939db0">Promote to</p>
+    <div style="display: flex; gap: 10px; padding: 10px; background: #0f131d; border: 1px solid rgba(199,211,228,0.22); border-radius: 12px">
+      <button type="button" aria-label="Queen" style="width: 68px; height: 68px; padding: 6px; border-radius: 8px; border: 1px solid #9be7ff; background: rgba(155,231,255,0.12)"><img src="/_blob/f4dbc1aba7651190535c67ed32a42c78" alt="" style="width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 2px rgba(7,8,12,0.55))"></button>
+      <button type="button" aria-label="Rook" style="width: 68px; height: 68px; padding: 6px; border-radius: 8px; border: 1px solid transparent; background: none"><img src="/_blob/38a269fc45deb0bc34168ff7785cd05f" alt="" style="width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 2px rgba(7,8,12,0.55))"></button>
+      <button type="button" aria-label="Bishop" style="width: 68px; height: 68px; padding: 6px; border-radius: 8px; border: 1px solid transparent; background: none"><img src="/_blob/1b66b2e5012bb6c08d97452ac6b96dfe" alt="" style="width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 2px rgba(7,8,12,0.55))"></button>
+      <button type="button" aria-label="Knight" style="width: 68px; height: 68px; padding: 6px; border-radius: 8px; border: 1px solid transparent; background: none"><img src="/_blob/3725bad8f53a90408dd28faadc20fde5" alt="" style="width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 2px rgba(7,8,12,0.55))"></button>
+    </div>
+    <p style="margin: 0; font-size: 13px; color: #939db0">Tap outside to cancel</p>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      moves: [
+        { num: '34.', san: 'b6' }, { san: 'Ra8' }, { num: '35.', san: 'b7' }, { san: 'h6', current: true }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

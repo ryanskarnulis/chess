@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stepping back through moves</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0a0c12}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden">
+  <dc-import name="Shell" fen="r1bqkb1r/pp3ppp/2nppn2/8/3NP3/2N1B3/PPP2PPP/R2QKB1R" last="e7,e6" status="Viewing move 6 — tap › to return" moves="{{moves}}" can-forward="{{yes}}" undo-off="{{yes}}" hint-off="{{yes}}" hint-size="390px,844px"></dc-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      yes: true,
+      moves: [
+        { num: '4.', san: 'Nxd4' }, { san: 'Nf6' }, { num: '5.', san: 'Nc3' }, { san: 'Nc6' },
+        { num: '6.', san: 'Be3' }, { san: 'e6', current: true }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

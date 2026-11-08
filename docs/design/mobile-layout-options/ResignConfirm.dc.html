@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Resign — confirm</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0a0c12}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; color: #e8edf5; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <dc-import name="Shell" game-active="{{yes}}" hint-size="390px,844px"></dc-import>
+  <div aria-hidden="true" style="position: absolute; inset: 0; background: rgba(10,12,18,0.6)"></div>
+  <section role="alertdialog" aria-label="Resign this game?" style="position: absolute; left: 0; right: 0; bottom: 0; box-sizing: border-box; padding: 10px 20px 30px; background: #0f131d; border-top: 1px solid rgba(199,211,228,0.22); border-radius: 16px 16px 0 0; display: flex; flex-direction: column; gap: 6px">
+    <span aria-hidden="true" style="align-self: center; width: 40px; height: 4px; border-radius: 2px; background: rgba(199,211,228,0.35); margin-bottom: 12px"></span>
+    <h2 style="margin: 0; font-size: 22px; font-weight: 600">Resign this game?</h2>
+    <p style="margin: 0 0 14px; font-size: 16px; line-height: 1.4; color: #939db0">Glitch takes the win. You can't take a resignation back.</p>
+    <button type="button" style="height: 52px; border-radius: 12px; border: 1px solid rgba(242,143,164,0.5); background: rgba(242,143,164,0.14); color: #f28fa4; font: 600 17px Inter, system-ui, sans-serif">Resign</button>
+    <button type="button" style="height: 52px; border-radius: 12px; border: none; background: none; color: #e8edf5; font: 17px Inter, system-ui, sans-serif">Keep playing</button>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { yes: true };
+  }
+}
+</script>
+</body>
+</html>
