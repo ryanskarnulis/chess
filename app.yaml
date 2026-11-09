@@ -23,7 +23,7 @@ tags: [game, ai]
 # code — this app just stops advertising them, which is what retires the
 # delegate tool.
 open:
-  description: "Opens the chess board in the browser and starts a session with the chess agent. Use this for anything to do with playing, watching, or changing a chess game — you do not play chess yourself, you hand the user to the board."
+  description: "Opens the chess board in the browser and starts a session with the chess agent. Use this for anything to do with playing, watching, resetting, resigning or otherwise changing a chess game ('the game' always means this one) — you do not play chess yourself, you hand the user to the board."
   path: /
   # The user's own words ride along as this query param; chess runs them
   # through its agent on load. Omit the key to hand off with no intent.
