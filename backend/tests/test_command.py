@@ -1517,6 +1517,7 @@ def test_a_provider_death_is_not_remembered_as_something_glitch_said():
     body = client.post("/api/command", json={"text": "push the king pawn"}).json()
 
     assert body["commentary"] == f"{PROVIDER_LOST_TURN_STANDS}\n\ne5."
+    assert body["retryable"] is False, "it ran; saying it again would replay it"
     assert assistant_turns(ctx) == ["e4. e5."]
 
 
@@ -2211,6 +2212,17 @@ def test_a_provider_failure_before_anything_ran_invites_a_retry():
 
     assert ctx.session.fen() == fen_before
     assert body["commentary"] == PROVIDER_LOST_RETRY, "nothing ran, so retry is safe"
+    # The same fact as data (#546): a client holding the request (the conductor
+    # handoff) keeps it, rather than reading a 200 as "done".
+    assert body["retryable"] is True
+
+
+def test_an_ordinary_turn_is_not_retryable():
+    client, _ = make_client(AgentResponse(text="Looks fine."))
+
+    body = client.post("/api/command", json={"text": "how does it look?"}).json()
+
+    assert body["retryable"] is False
 
 
 def test_a_narrator_failure_after_a_confirmed_reset_degrades_to_the_canned_line():

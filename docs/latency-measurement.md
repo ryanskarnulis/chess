@@ -19,6 +19,13 @@ Every record carries `schema` (currently 2) and `kind`:
 | `speech` | server | Once per STT or TTS round trip | `op` (`stt` or `tts`), `interaction_id`, `ms`, `status`, and the byte and character counts |
 | `voice` | browser, via `POST /api/telemetry/voice` | Once the interaction settles, or is abandoned after 180 s | `interaction_id`, `correlation_id`, `origin`, `start`, `marks`, `outcome`, `censored` |
 
+A `turn` record's `origin` says which surface spoke: `panel`, `handoff` (the
+conductor's `open`, sent by the page as `origin: "handoff"` on `/api/command`,
+#546), `delegate:<id>` or `mcp`. It is a label for counting and timing; a
+handoff turn is the panel's in every other respect. Count handoffs with
+`origin == "handoff"`; one the page never got an answer to ends its `voice`
+record as `no_command`.
+
 `speech` records never store audio or text. `voice` records carry the
 browser's timing marks and nothing the player said.
 

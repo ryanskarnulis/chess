@@ -809,6 +809,38 @@ def test_the_players_own_surfaces_record_one_origin(trace_path):
     assert clicked["origin"] == "panel"
 
 
+def test_a_handoff_command_is_traced_as_one(trace_path):
+    """The conductor's `open` arrives as an ordinary panel command the UI labels
+    (#546): the record says `handoff`, so handoffs can be counted and timed,
+    and the turn itself is otherwise the panel's."""
+    client, _ = make_client(
+        trace_path, AgentResponse(text="fine"), AgentResponse(text="fine")
+    )
+    typed = client.post("/api/command", json={"text": "how does it look?"})
+    handed = client.post(
+        "/api/command", json={"text": "let's play as black", "origin": "handoff"}
+    )
+    assert typed.status_code == handed.status_code == 200
+    first, second = read_records(trace_path)
+    assert first["origin"] == "panel", "no origin sent is today's value"
+    assert second["origin"] == "handoff"
+    assert second["utterance"] == "let's play as black"
+    assert second["route"] == first["route"]
+
+
+def test_a_command_origin_outside_the_fixed_set_is_refused(trace_path):
+    """Refused before any turn opens: a file readers group by takes no new
+    labels from the wire. The delegate's own origin is not one to claim here."""
+    client, ctx = make_client(trace_path, AgentResponse(text="fine"))
+    for san in ("e4", "e5"):
+        ctx.session.submit_move(san)
+    for origin in ("delegate:1", "mcp", "", "HANDOFF"):
+        response = client.post("/api/command", json={"text": "Nf3", "origin": origin})
+        assert response.status_code == 422, origin
+    assert ctx.session.move_history() == ["e4", "e5"]
+    assert not trace_path.exists(), "no turn opened, so none was recorded"
+
+
 def test_a_control_record_carries_the_turn_it_answered_in(trace_path):
     client, _ = _in_progress(trace_path, engine=FakeEngine("e7e5"))
     client.post("/api/command", json={"text": "Nf3"})  # turn 1, then turn 2 opens

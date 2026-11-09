@@ -701,6 +701,22 @@
   letter-spacing: 0.02em;
 }
 
+/* A handed-off request that failed (#546): one quiet line and its two taps,
+   in the review sheet's retry style. */
+.handoff-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0 0.5rem;
+}
+
+.handoff-failed p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 /* Free-text command row for the agent: no card, just one underlined field
    with the mic at its right end. */
 .command-box {
