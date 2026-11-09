@@ -52,7 +52,13 @@ max_tokens = 4096
 
 # One word, plus whatever punctuation a 12B wraps it in. This call sits in
 # front of a destructive op and must not be a place a thought loop can live.
+# The verdict can end a game, so it is read greedily (#544): a reply is a
+# parse, not a draw. On gemma-4-12b, 21 paraphrases x 10 paired seeds
+# (tests/test_answer_reader_live.py, 2026-11-09): 210/210 agreed at 0 and
+# 210/210 at the inherited 1.0, no false confirm either way. A tie, shipped
+# for the floor on the tail, not for a measured gain.
 [phases.answer]
+temperature = 0
 max_tokens = 16
 
 # Glitch's own move in the tier where the model picks it (#472,

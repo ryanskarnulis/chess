@@ -303,6 +303,23 @@ def test_a_mover_thinking_budget_is_kept_and_described():
 
 
 @pytest.mark.parametrize("model", ["gemma-4-12b", "gemma-4-26b-a4b", "qwen38-27b"])
+def test_every_brain_reads_a_confirmation_greedily(model):
+    # #544: the answer reader's verdict can end a game, so it samples at 0
+    # rather than inheriting the profile's temperature.
+    profile = load_profile(model)
+    assert profile.phase(ANSWER).temperature == 0
+    assert profile.temperature_for(ANSWER) == 0
+    brain = create_llama_brain(
+        base_url="http://llm.test/v1",
+        model=model,
+        dispatcher=build_registry(ToolContext(session=GameSession())),
+        tool_definitions=[],
+        provider=LlamaCppProvider("http://llm.test/v1", model, profile=profile),
+    )
+    assert brain.answer_temperature == 0
+
+
+@pytest.mark.parametrize("model", ["gemma-4-12b", "gemma-4-26b-a4b", "qwen38-27b"])
 def test_every_brain_bounds_the_movers_thinking(model):
     # #476: past the cap a think ends with no move; the budget ends it first.
     settings = load_profile(model).phase(MOVER)

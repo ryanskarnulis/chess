@@ -9,10 +9,11 @@ answer reader) through a real `LlamaCppProvider` over a faked llama-server and
 compares the exact bodies it sent with the ones recorded from `main` before
 the change (`fixtures/gemma_4_12b_requests.json`).
 
-The default brain moved to gemma-4-26b-a4b (#433), so each pinned model has
-its own recording (`fixtures/<model>_requests.json`, dashes as underscores):
-the default's are the default config's bytes, and the 12B's stay pinned
-because it is still a brain the app can run.
+Each pinned model has its own recording (`fixtures/<model>_requests.json`,
+dashes as underscores): the default brain's are the default config's bytes
+(gemma-4-12b since #542; it was gemma-4-26b-a4b from #433), and the others stay
+pinned because they are brains the app can run. The answer reader's request
+carries `temperature: 0` since #544.
 
 Re-record only for a change that is *meant* to move the bytes, and say so in
 its PR: `CHESSAPP_RECORD_GOLDEN=1 pytest tests/test_profile_bytes.py`.
@@ -30,6 +31,7 @@ from chessapp.app import DEFAULT_MODEL
 from chessapp.game import GameSession
 from chessapp.llama_brain import create_llama_brain
 from chessapp.profiles import (
+    ANSWER,
     NARRATOR,
     PLANNER,
     ModelProfile,
@@ -165,6 +167,11 @@ def test_the_golden_covers_every_phase_and_its_thinking_settings(model):
     }
     assert {r["max_tokens"] for r in planner} == {planning.max_tokens}
     assert {r["max_tokens"] for r in words} == {4096, 16}
+    # The answer reader is the one 16-token call, and reads greedily (#544).
+    reader = [r for r in words if r["max_tokens"] == 16]
+    assert reader
+    assert {r["temperature"] for r in reader} == {profile.phase(ANSWER).temperature}
+    assert profile.phase(ANSWER).temperature == 0
     assert {r["temperature"] for r in planner} == {planning.temperature}
     # The planner's thinking level rides its calls and no others (#490).
     key = profile.effort_kwarg
