@@ -420,6 +420,11 @@ export interface CommandResponse {
   /** The turn's trace id, so this interaction's client milestones can name
    * the turn record they belong to (#317). Optional for older backends. */
   correlation_id?: string
+  /** The provider died before anything ran, so the board is untouched and
+   * saying it again is safe (#546). It arrives as a 200 with words, which is why
+   * it is a field: a client holding a request until it has run must not count
+   * it as done. Optional for older backends, which never say. */
+  retryable?: boolean
 }
 
 /**
@@ -437,22 +442,54 @@ export async function sendCommand(
   text: string,
   version?: number,
   interactionId?: string,
+  options: CommandOptions = {},
 ): Promise<CommandResponse | StaleStateResponse | null> {
   // The interaction id joins this turn's trace record to the transcription
-  // before it and the speech after it (#317); omitted when there is none.
-  const body = interactionId ? { text, interaction_id: interactionId } : { text }
-  let res: Response
-  try {
-    res = await fetch('/api/command', {
-      ...JSON_POST,
-      body: JSON.stringify(versioned(body, version)),
-    })
-  } catch {
-    return null
+  // before it and the speech after it (#317); omitted when there is none. The
+  // origin is the trace's label for where the words came from (#546); omitted
+  // for an ordinary command, which the backend records as the panel's.
+  const body = {
+    text,
+    ...(interactionId ? { interaction_id: interactionId } : {}),
+    ...(options.origin ? { origin: options.origin } : {}),
   }
-  const data = (await res.json().catch(() => ({}))) as unknown
-  if (!res.ok) return isStaleStateResponse(data) ? data : null
-  return data as CommandResponse
+  // No ceiling unless asked for: a turn is allowed to take as long as the model
+  // does. A caller that cannot wait forever (the handoff, which holds a request
+  // the person made) names one, and a miss is null like any other turn that
+  // never came back. The timer covers reading the body too, so a reply that
+  // stalls half-way is the same miss rather than an empty "success".
+  const controller = new AbortController()
+  const timer =
+    options.timeoutMs === undefined ? null : setTimeout(() => controller.abort(), options.timeoutMs)
+  try {
+    let res: Response
+    try {
+      res = await fetch('/api/command', {
+        ...JSON_POST,
+        body: JSON.stringify(versioned(body, version)),
+        signal: controller.signal,
+      })
+    } catch {
+      return null
+    }
+    const data = (await res.json().catch(() => ({}))) as unknown
+    if (controller.signal.aborted) return null
+    if (!res.ok) return isStaleStateResponse(data) ? data : null
+    return data as CommandResponse
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+  }
+}
+
+/** Where a command's words came from, for the trace alone (#546). `handoff`
+ * is the conductor's `open`; it is a label, never a permission — the backend
+ * runs the turn as the panel's either way. */
+export type CommandOrigin = 'panel' | 'handoff'
+
+export interface CommandOptions {
+  origin?: CommandOrigin
+  /** Give up on the turn after this long (ms). Absent: wait as long as it takes. */
+  timeoutMs?: number
 }
 
 export interface Settings {

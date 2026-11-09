@@ -1307,6 +1307,129 @@ describe('useGame', () => {
     expect(result.current.agentThinking).toBe(false)
   })
 
+  // --- the conductor's handoff (#546) ----------------------------------------
+  //
+  // Same road as a typed command, labelled and bounded, and it reports whether
+  // the backend ran the turn so the page knows whether the request is spent.
+
+  describe('sendHandoff', () => {
+    const commandBody = () => {
+      const sent = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/command'))
+      return JSON.parse(String(sent?.[1]?.body))
+    }
+
+    it('sends the words labelled as a handoff and resolves true once the turn ran', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.state).not.toBeNull())
+      let ran = false
+      await act(async () => {
+        ran = await result.current.sendHandoff('play as black')
+      })
+      expect(ran).toBe(true)
+      expect(commandBody()).toMatchObject({ text: 'play as black', origin: 'handoff' })
+      // An ordinary command carries no label, so the backend keeps it the panel's.
+      fetchMock.mockClear()
+      await act(async () => {
+        await result.current.sendCommand('play e4')
+      })
+      expect(commandBody()).not.toHaveProperty('origin')
+    })
+
+    it('resolves false, and says so, when the agent is unavailable', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.state).not.toBeNull())
+      fetchMock.mockImplementation((url: string) =>
+        String(url).includes('/api/command')
+          ? Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) })
+          : jsonResponse(state()),
+      )
+      let ran = true
+      await act(async () => {
+        ran = await result.current.sendHandoff('play as black')
+      })
+      expect(ran).toBe(false)
+      expect(result.current.commentary).toBe('The agent is unavailable.')
+      expect(result.current.agentThinking).toBe(false)
+    })
+
+    it('resolves false when the model was down: a 200 in words, but nothing ran', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.state).not.toBeNull())
+      fetchMock.mockImplementation((url: string) =>
+        String(url).includes('/api/command')
+          ? jsonResponse({
+              commentary: 'My brain cut out before anything happened. Say it again.',
+              tool_results: [],
+              state: state(),
+              speak: false,
+              retryable: true,
+            })
+          : jsonResponse(state()),
+      )
+      let ran = true
+      await act(async () => {
+        ran = await result.current.sendHandoff('play as black')
+      })
+      expect(ran).toBe(false)
+      // The words still reach the player.
+      expect(result.current.commentary).toMatch(/say it again/i)
+    })
+
+    it('resolves false when the command was refused as stale: it did not run', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.state?.version).toBe(1))
+      fetchMock.mockImplementation((url: string) =>
+        String(url).includes('/api/command')
+          ? Promise.resolve({
+              ok: false,
+              status: 409,
+              json: () =>
+                Promise.resolve({
+                  detail: 'the board changed',
+                  stale: true,
+                  version: 4,
+                  state: state({ version: 4, fen: AFTER_E4_E5_FEN }),
+                }),
+            })
+          : jsonResponse(state()),
+      )
+      let ran = true
+      await act(async () => {
+        ran = await result.current.sendHandoff('play as black')
+      })
+      expect(ran).toBe(false)
+      expect(result.current.state?.version).toBe(4)
+    })
+
+    it('resolves false after 30 s without an answer, and not before', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.state).not.toBeNull())
+      vi.useFakeTimers()
+      fetchMock.mockImplementation((url: string, init?: { signal?: AbortSignal }) =>
+        String(url).includes('/api/command')
+          ? new Promise((_resolve, reject) =>
+              init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+            )
+          : jsonResponse(state()),
+      )
+      let settled: boolean | null = null
+      act(() => {
+        void result.current.sendHandoff('play as black').then((ran) => (settled = ran))
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(29_999)
+      })
+      expect(settled).toBeNull()
+      expect(result.current.agentThinking).toBe(true)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(settled).toBe(false)
+      expect(result.current.agentThinking).toBe(false)
+      expect(result.current.commentary).toBe('The agent is unavailable.')
+    })
+  })
+
   // --- the PGN a reply exported ------------------------------------------
   //
   // The notation is no longer in the words: `export_pgn`'s description tells
