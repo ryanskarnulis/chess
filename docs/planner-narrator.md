@@ -446,7 +446,11 @@ Until #368 a guarded turn paid one more for the rewrite (6 of 150 deployed
 turns were guarded when the rewrite landed, four of them false positives).
 Ceilings (the model profile's; gemma-4-12b's): planner 2048 / narrator 4096
 `max_tokens`; a truncated call is a
-failed turn, never a truncated reply that travels — and the reader in front of
+failed turn, never a truncated reply that travels. A truncated planner turn
+with no tool calls where nothing has run ends silent under `truncated`, like a
+budget stop with nothing done (#545; the pipeline's stuck reply covers it, and
+no narrator describes work that never ran); after real work it still ends
+`no_progress` and the narrator closes from the record. And the reader in front of
 the destructive gate fails the same way, to the `unrelated` that changes
 nothing. A truncated planner response that nevertheless *carries tool calls*
 runs them and the loop goes on (decided 2026-09-05): the provider parses each

@@ -363,11 +363,13 @@ def test_a_rejected_move_leaves_the_board_alone():
     assert body["state"]["history"] == []
 
 
-def test_a_budget_stop_still_says_something():
-    """When the loop runs out of iterations or corrections it has no closing
-    turn, so the pipeline supplies a line rather than an empty bubble."""
+@pytest.mark.parametrize("stop", ["max_iterations", "truncated"])
+def test_a_budget_stop_still_says_something(stop):
+    """When the loop runs out of iterations or corrections, or a planner call
+    is cut off with nothing run (#545), it has no closing turn, so the pipeline
+    supplies a line rather than an empty bubble."""
     client, _ = make_client(
-        AgentResponse(text="", stop_reason="max_iterations"),
+        AgentResponse(text="", stop_reason=stop),
     )
     body = client.post("/api/command", json={"text": "play the best move"}).json()
     assert body["commentary"]
