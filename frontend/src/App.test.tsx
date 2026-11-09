@@ -122,22 +122,63 @@ async function openGameMenu() {
 
 // The conductor hands a user off to chess by navigating here with the thing
 // they actually said (`/?intent=…`); we run it through the agent so Glitch
-// opens the session already acting on it.
+// opens the session already acting on it. The words stay in the URL until the
+// agent has run them (#546), so a model that is down loses nothing.
 describe('conductor handoff (?intent=)', () => {
   const commandCalls = () =>
     fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/command'))
+  const commandBody = (index: number) => JSON.parse(String(commandCalls()[index][1].body))
 
-  it('runs the intent through the agent and scrubs it from the URL', async () => {
+  const commandOk = () => ({ commentary: 'Playing black.', tool_results: [], state: served })
+  const answerOk = () =>
+    Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(commandOk()) })
+  const answer503 = () =>
+    Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) })
+
+  /** Route `/api/command` through `onCommand`, leaving every other path as the
+   * default mock answers it. */
+  function commandsAnswer(onCommand: (init: { signal?: AbortSignal }) => Promise<unknown>) {
+    const respond = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string, init: { signal?: AbortSignal }) =>
+      String(url).includes('/api/command') ? onCommand(init) : respond(url),
+    )
+  }
+
+  it('runs the intent through the agent, labelled as a handoff', async () => {
     window.history.replaceState({}, '', '/?intent=play%20e4')
     render(<App />)
     await waitFor(() => expect(commandCalls()).toHaveLength(1))
     expect(commandCalls()[0][1]).toMatchObject({ method: 'POST' })
-    expect(JSON.parse(String(commandCalls()[0][1].body))).toMatchObject({
+    expect(commandBody(0)).toMatchObject({
       text: 'play e4',
+      origin: 'handoff',
       interaction_id: expect.stringMatching(/^[0-9a-f]{12}$/),
     })
-    // Scrubbed, so a reload doesn't replay the command.
-    expect(window.location.search).toBe('')
+  })
+
+  it('keeps the intent in the URL while the command is in flight, and drops it on success', async () => {
+    window.history.replaceState({}, '', '/?intent=play%20e4')
+    let answer: () => void = () => {}
+    commandsAnswer(
+      () =>
+        new Promise((resolve) => {
+          answer = () => resolve({ ok: true, status: 200, json: () => Promise.resolve(commandOk()) })
+        }),
+    )
+    render(<App />)
+    await waitFor(() => expect(commandCalls()).toHaveLength(1))
+    // A reload here would retry it: the words are still there.
+    expect(window.location.search).toBe('?intent=play%20e4')
+    await act(async () => answer())
+    await waitFor(() => expect(window.location.search).toBe(''))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('leaves other query parameters alone when it drops the intent', async () => {
+    window.history.replaceState({}, '', '/?a=1&intent=play%20e4#top')
+    render(<App />)
+    await waitFor(() => expect(window.location.search).toBe('?a=1'))
+    expect(window.location.hash).toBe('#top')
   })
 
   it('fires exactly once under StrictMode double-mount', async () => {
@@ -165,6 +206,151 @@ describe('conductor handoff (?intent=)', () => {
     await waitFor(() => expect(document.querySelector('.move-strip')).toBeInTheDocument())
     expect(commandCalls()).toHaveLength(0)
     expect(window.location.search).toBe('')
+  })
+
+  describe('when the agent does not answer', () => {
+    it('keeps the intent, says so, and offers a retry that runs it again and then clears it', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      let outcomes = [answer503, answerOk]
+      commandsAnswer(() => outcomes.shift()!())
+      render(<App />)
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(/didn.t go through/i)
+      expect(window.location.search).toBe('?intent=play%20as%20black')
+      expect(commandCalls()).toHaveLength(1)
+
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await waitFor(() => expect(commandCalls()).toHaveLength(2))
+      // The same words, the same label.
+      expect(commandBody(1)).toMatchObject({ text: 'play as black', origin: 'handoff' })
+      await waitFor(() => expect(window.location.search).toBe(''))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      outcomes = []
+    })
+
+    it('counts a model that is down as a failure although the backend answered 200', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      const down = () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ ...commandOk(), commentary: 'Say it again.', retryable: true }),
+        })
+      const outcomes = [down, answerOk]
+      commandsAnswer(() => outcomes.shift()!())
+      render(<App />)
+
+      const alert = await screen.findByRole('alert')
+      expect(window.location.search).toBe('?intent=play%20as%20black')
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+      await waitFor(() => expect(window.location.search).toBe(''))
+      expect(commandCalls()).toHaveLength(2)
+    })
+
+    it('offers the retry again when the retry fails too, still holding the intent', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      commandsAnswer(answer503)
+      render(<App />)
+      fireEvent.click(
+        within(await screen.findByRole('alert')).getByRole('button', { name: 'Retry' }),
+      )
+      await waitFor(() => expect(commandCalls()).toHaveLength(2))
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      expect(window.location.search).toBe('?intent=play%20as%20black')
+    })
+
+    it('never has two in flight: a second tap while one is running sends nothing', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      let outcomes: (() => Promise<unknown>)[] = [answer503]
+      let release: () => void = () => {}
+      commandsAnswer(() => {
+        const next = outcomes.shift()
+        if (next) return next()
+        return new Promise((resolve) => {
+          release = () => resolve({ ok: true, status: 200, json: () => Promise.resolve(commandOk()) })
+        })
+      })
+      render(<App />)
+      const retry = within(await screen.findByRole('alert')).getByRole('button', { name: 'Retry' })
+      // Two taps in the same tick, before the page has re-rendered.
+      act(() => {
+        retry.click()
+        retry.click()
+      })
+      await waitFor(() => expect(commandCalls()).toHaveLength(2))
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(commandCalls()).toHaveLength(2)
+      await act(async () => release())
+      await waitFor(() => expect(window.location.search).toBe(''))
+      outcomes = []
+    })
+
+    it('treats a command that never answers as the same failure after 30 s', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      commandsAnswer(
+        (init) =>
+          new Promise((_resolve, reject) =>
+            init.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+          ),
+      )
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        render(<App />)
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(29_999)
+        })
+        expect(commandCalls()).toHaveLength(1)
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1)
+        })
+        expect(screen.getByRole('alert')).toHaveTextContent(/didn.t go through/i)
+        expect(window.location.search).toBe('?intent=play%20as%20black')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('tries again on a reload, because the intent is still in the URL', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      const outcomes = [answer503, answerOk]
+      commandsAnswer(() => outcomes.shift()!())
+      const first = render(<App />)
+      await screen.findByRole('alert')
+      first.unmount()
+      render(<App />)
+      await waitFor(() => expect(window.location.search).toBe(''))
+      expect(commandCalls()).toHaveLength(2)
+    })
+
+    it('lets the person give the request up, which drops it from the URL', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      commandsAnswer(answer503)
+      render(<App />)
+      fireEvent.click(
+        within(await screen.findByRole('alert')).getByRole('button', { name: 'Dismiss' }),
+      )
+      expect(window.location.search).toBe('')
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(commandCalls()).toHaveLength(1)
+    })
+  })
+
+  it('does not send it again once it has succeeded: re-render, back navigation, remount', async () => {
+    window.history.replaceState({}, '', '/?intent=play%20e4')
+    const view = render(<App />)
+    await waitFor(() => expect(window.location.search).toBe(''))
+    view.rerender(<App />)
+    act(() => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    view.unmount()
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.move-strip')).toBeInTheDocument())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(commandCalls()).toHaveLength(1)
   })
 })
 

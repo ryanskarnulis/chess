@@ -19,6 +19,7 @@ import {
   submitMove,
   undo as apiUndo,
   type BrainSettings,
+  type CommandOptions,
   type CommandResponse,
   type ConfirmQuestion,
   type GameState,
@@ -44,6 +45,9 @@ import {
 // A brief outage should heal quickly without hammering a restarting backend.
 // Successful opens reset the sequence; repeated connection failures climb to
 // a fixed ceiling: 1s, 2s, 4s, 8s, 10s, 10s …
+// A handed-off request is given this long to land before it is called failed
+// and offered again (#546); an ordinary command waits as long as the model does.
+export const HANDOFF_TIMEOUT_MS = 30_000
 const SOCKET_RETRY_BASE_MS = 1_000
 const SOCKET_RETRY_MAX_MS = 10_000
 
@@ -170,6 +174,14 @@ export interface UseGame {
   /** Send a free-form command to the agent. `interactionId` is the
    * utterance's, for a spoken command (#317); a typed one opens its own. */
   sendCommand: (text: string, interactionId?: string) => Promise<void>
+  /**
+   * Send what the conductor handed this page off with (#546): an ordinary
+   * command, labelled `handoff` in the trace and bounded in time. Resolves
+   * true only once the backend ran the turn; false when it did not (agent
+   * unavailable, model down, timed out, refused as stale) — the caller keeps
+   * the request and offers a retry.
+   */
+  sendHandoff: (text: string) => Promise<boolean>
   /**
    * The PGN the latest reply exported, or null when it exported none. It
    * belongs to the reply it arrived with: the next command (or a new game)
@@ -653,8 +665,12 @@ export function useGame(): UseGame {
     if (confirmed !== null) setTierState(confirmed.tier)
   }, [])
 
-  const sendCommand = useCallback(
-    async (text: string, interactionId?: string) => {
+  const runCommand = useCallback(
+    async (text: string, interactionId?: string, options?: CommandOptions): Promise<boolean> => {
+      // Whether the backend ran the turn: the one thing a caller that keeps the
+      // request until it lands needs to know. A turn that ran but whose board
+      // was superseded on screen still ran.
+      let ran = false
       // A spoken command arrives with the interaction its utterance opened; a
       // typed one opens its own, starting now (#317).
       const interaction = interactionId ?? beginInteraction('typed')
@@ -671,17 +687,25 @@ export function useGame(): UseGame {
       try {
         watchBoard(interaction, stateRef.current)
         mark(interaction, 'command_sent')
-        const response = await apiSendCommand(text, stateRef.current?.version, interaction)
+        const response = await apiSendCommand(
+          text,
+          stateRef.current?.version,
+          interaction,
+          options,
+        )
         if (response) {
           if (isStaleStateResponse(response)) {
             apply(response.state)
-            return
+            return false
           }
+          // A 200 is not always a turn that ran: a dead provider answers in
+          // words, and says so in `retryable`.
+          ran = response.retryable !== true
           correlate(interaction, response.correlation_id)
           // A state frame may have won the race while the agent was thinking.
           // If so, none of this older response (including commentary/settings)
           // belongs to the board now being rendered.
-          if (!apply(response.state)) return
+          if (!apply(response.state)) return true
           mark(interaction, 'command_done')
           unwatchBoard(interaction)
           unvoiced = 'silent'
@@ -721,8 +745,22 @@ export function useGame(): UseGame {
         // all (unavailable, stale, superseded by a newer board).
         if (unvoiced !== null) finishInteraction(interaction, unvoiced)
       }
+      return ran
     },
     [apply, refreshColdBrain, setCommentary],
+  )
+
+  const sendCommand = useCallback(
+    async (text: string, interactionId?: string) => {
+      await runCommand(text, interactionId)
+    },
+    [runCommand],
+  )
+
+  const sendHandoff = useCallback(
+    (text: string) =>
+      runCommand(text, undefined, { origin: 'handoff', timeoutMs: HANDOFF_TIMEOUT_MS }),
+    [runCommand],
   )
 
   const stepBack = useCallback(() => {
@@ -809,6 +847,7 @@ export function useGame(): UseGame {
       brain?.cold ?? false,
     ),
     sendCommand,
+    sendHandoff,
     pgn,
     voiceOutput,
     setVoiceOutput,

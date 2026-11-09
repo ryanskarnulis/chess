@@ -257,6 +257,13 @@ class CommandRequest(VersionedRequest):
     interaction_id: str | None = Field(
         default=None, max_length=_ID_MAX, pattern=_ID_PATTERN
     )
+    # Where the words came from, for the trace alone (#546): the web panel
+    # (the default, and what every older client sends by omission) or the
+    # conductor's `open` handoff, which the UI sends as an ordinary command.
+    # A closed set, so a typo or a probe is a 422 rather than a new label in a
+    # file readers group by. It is a measurement label and nothing more: the
+    # turn runs as the panel's, with the panel's conversation and no extra say.
+    origin: Literal["panel", "handoff"] = "panel"
 
 
 class SpeakRequest(BaseModel):
@@ -1420,6 +1427,11 @@ class CommandOutcome:
     # This interaction's trace id (`trace.new_correlation_id`), handed back so
     # the browser can name the turn its own milestones belong to (#317).
     correlation_id: str = ""
+    # The provider died and the board is exactly as the turn found it, so
+    # saying it again is safe: the same fact `PROVIDER_LOST_RETRY` tells the
+    # player, as data for a client that holds a request until it has run (#546).
+    # False on every turn that ran, including one the provider died on halfway.
+    retryable: bool = False
 
 
 class StateBroadcaster:
@@ -2827,6 +2839,7 @@ def create_app(
         *,
         origin: str,
         interaction_id: str = "",
+        trace_origin: str | None = None,
     ) -> CommandOutcome:
         """The single pipeline: user string → brain's tool loop → new state.
         Shared by `/api/command` and the delegate messages endpoint against the
@@ -2945,6 +2958,8 @@ def create_app(
             # route leaves it empty, which is the record's way of saying "did not
             # die" rather than "not recorded".
             provider_failure = ""
+            # Whether the provider's death left the board untouched (#546).
+            lost_untouched = False
             # The same, for the engine dying on the reply this turn's move had
             # already earned (#284). Not a stop reason: the loop stopped however
             # it stopped, and what changed is that the turn is one move short
@@ -2985,7 +3000,10 @@ def create_app(
                 # Cheap, and it is the field this whole class of bug is read
                 # off: a turn that answered a question asked somewhere else
                 # (#281) is invisible in a record that names no origin.
-                "origin": origin,
+                # `trace_origin` relabels the record alone (#546, a handoff is
+                # still the panel's conversation to everything that reads
+                # `origin` as a key).
+                "origin": trace_origin or origin,
                 # What was said, and what it was about: filled in by the happy
                 # path alone, because a turn that died said nothing to anybody.
                 "commentary": "",
@@ -3379,10 +3397,11 @@ def create_app(
                     # settled — whatever ran stands, the reply was collected above —
                     # so the only thing left to own is what the player is told. The
                     # line the code picks is the one the board supports.
+                    lost_untouched = _agent_state_dict(ctx) == before
                     lost = (
-                        PROVIDER_LOST_TURN_STANDS
-                        if _agent_state_dict(ctx) != before
-                        else PROVIDER_LOST_RETRY
+                        PROVIDER_LOST_RETRY
+                        if lost_untouched
+                        else PROVIDER_LOST_TURN_STANDS
                     )
                     commentary = f"{lost}\n\n{commentary}" if commentary else lost
                 if engine_failure:
@@ -3439,6 +3458,7 @@ def create_app(
                     or _remembered_facts(tool_results, engine_reply, ctx.session),
                     engine_failure=engine_failure,
                     correlation_id=correlation_id,
+                    retryable=lost_untouched,
                 )
             except BaseException as exc:
                 # Nothing is handled here — the caller still gets its exception,
@@ -3512,6 +3532,7 @@ def create_app(
                 ctx.transcript.to_dict(),
                 origin=PANEL_ORIGIN,
                 interaction_id=request.interaction_id or "",
+                trace_origin=request.origin,
             )
             # Record on the context, not a captured reference: resume_game may
             # have just swapped in the saved game's transcript, and this turn
@@ -3536,6 +3557,10 @@ def create_app(
             # The turn's trace id, so the browser's milestones for this
             # interaction can name the turn record they belong to (#317).
             "correlation_id": outcome.correlation_id,
+            # Whether the provider died before anything ran (#546): the one
+            # failure that comes back as a 200 with words, and the one a client
+            # holding the player's request must not count as done.
+            "retryable": outcome.retryable,
         }
 
     app.include_router(
