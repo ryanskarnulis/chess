@@ -55,8 +55,12 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   *meant* is the model's job, and so is *saying* what happened: code never
   cuts, rewrites or scripts Glitch's words. When he gets something wrong, fix
   what he was shown (context, history, tool results, prompts) and measure it
-  as speech accuracy, offline. So no regex fast paths or literal parsers for
-  language, and no speech guards. Glitch should feel alive, not canned.
+  as speech accuracy, offline. The fast path (`fastparse.py`) may parse only
+  an utterance that is *entirely* one of three things: a single legal move,
+  a bare yes or no while a confirmation is armed, or a bare resignation (which
+  still goes through the confirmation gate). Anything else, or anything with
+  further intent in it, reaches the model. No other regex or literal parsers
+  for language, and no speech guards. Glitch should feel alive, not canned.
 - **Model knowledge lives in profiles.** Sampling, the thinking toggle,
   per-phase temperature and caps, and the 12B's crutches live in
   `backend/src/chessapp/data/profiles/<model>.toml`, never in code. Each phase
