@@ -615,30 +615,37 @@ class GameSession:
     def load(cls, path: str | Path) -> "GameSession":
         return cls.from_dict(json.loads(Path(path).read_text()))
 
+    def undo_refusal(self, plies: int) -> str | None:
+        """Why `undo(plies)` would be refused, or None when it would run.
+
+        Asked on its own by the deep-undo gate (#543), which must not arm a
+        question whose yes would then fail on the board.
+        """
+        if self._resigned is not None:
+            return "cannot undo: game ended by resignation"
+        if self._draw_claimed:
+            # Same rule, same reason: the claim was about *this* position, and
+            # popping plies out from under it would leave a game over by a claim
+            # the board no longer supports.
+            return "cannot undo: game ended by a claimed draw"
+        if self._draw_agreed:
+            return "cannot undo: game ended by agreement"
+        available = len(self._board.move_stack)
+        if plies < 1:
+            return "plies must be at least 1"
+        if plies > available:
+            return f"cannot undo {plies} plies: only {available} played"
+        return None
+
     def undo(self, plies: int = 1) -> UndoResult:
         """Take back the last `plies` half-moves.
 
         The core pops exactly what it's asked to; pairing policy for
         vs-engine takebacks (plies=2) belongs to the caller.
         """
-        if self._resigned is not None:
-            return UndoResult(ok=False, reason="cannot undo: game ended by resignation")
-        if self._draw_claimed:
-            # Same rule, same reason: the claim was about *this* position, and
-            # popping plies out from under it would leave a game over by a claim
-            # the board no longer supports.
-            return UndoResult(
-                ok=False, reason="cannot undo: game ended by a claimed draw"
-            )
-        if self._draw_agreed:
-            return UndoResult(ok=False, reason="cannot undo: game ended by agreement")
-        available = len(self._board.move_stack)
-        if plies < 1:
-            return UndoResult(ok=False, reason="plies must be at least 1")
-        if plies > available:
-            return UndoResult(
-                ok=False, reason=f"cannot undo {plies} plies: only {available} played"
-            )
+        reason = self.undo_refusal(plies)
+        if reason is not None:
+            return UndoResult(ok=False, reason=reason)
         undone = tuple(reversed(self.move_history()[-plies:]))
         for _ in range(plies):
             self._board.pop()

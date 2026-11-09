@@ -337,6 +337,49 @@ async def test_resume_and_overwrite_ask_the_human_the_apps_own_question(op, tmp_
         assert reloaded == ["e4", "e5"], "the save now holds the live game"
 
 
+async def test_a_deep_undo_asks_the_human_how_many_moves_it_takes_back():
+    """The deep-undo gate (#543) reaches the MCP human like every other: the
+    app's question, counted off the board, and a ticked yes runs it. Past two
+    full moves only; MCP callers count plies on purpose, and a short takeback
+    still runs without a form."""
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"):
+        assert ctx.session.submit_move(san).legal
+    human = _Human("accept", {"confirm": True})
+
+    async with mcp_client(ctx, elicitation_callback=human) as client:
+        short = await _call(client, "undo", {"plies": 2})
+        assert human.asked == []
+        assert short["ok"] is True
+        assert ctx.session.submit_move("Bc4").legal
+        assert ctx.session.submit_move("Bc5").legal
+        result = await _call(client, "undo", {"plies": 6})
+
+    [asked] = human.asked
+    assert asked.message == (
+        "That takes back 3 of your moves, back to move 1. Go back that far?"
+    )
+    assert result["ok"] is True
+    assert result["confirmed"] is True
+    assert ctx.session.move_history() == []
+    assert ctx.pending is None
+
+
+async def test_a_client_that_cannot_ask_hears_what_the_undo_would_cost():
+    ctx = ToolContext(session=GameSession(), engine=FakeEngine())
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"):
+        assert ctx.session.submit_move(san).legal
+
+    async with mcp_client(ctx) as client:
+        result = await _call(client, "undo", {"before_move": 1})
+
+    assert result["confirmation_unavailable"] is True
+    assert "undo would take back 3 of the player's moves" in result["error"]
+    assert "end the current game" not in result["error"]
+    assert len(ctx.session.move_history()) == 6
+    assert ctx.pending is None
+
+
 async def test_this_server_asks_and_answers_its_own_question():
     """The origin half of the gate, on this surface (#281): a gated call here
     arms the op for *MCP*, and the human's yes is answered as MCP. The whole

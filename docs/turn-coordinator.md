@@ -202,11 +202,12 @@ calls act and no thread holding them may outlive the turn.
   material, never the model's (`docs/draw-offer.md`). Not gated, because a
   decline changes nothing and an acceptance ends a position the rule has
   already judged drawn; the UI shows a deterministic line from the result's
-  `accepted` and `reason`. Undo is not destructive and stays direct.
+  `accepted` and `reason`. The undo button is a deliberate press and stays
+  direct; only the agent's `undo` tool asks, past two full moves (#543).
 - **MCP calls** (the standalone `chessapp.mcp_server`, a game of its own)
   dispatch through the same registry and gate, and the gate's question is
   answered on a third surface: the call wrapper puts
-  `tools.CONFIRM_QUESTIONS[op]` to the client's *human* by MCP form-mode
+  `tools.confirm_question(op)` to the client's *human* by MCP form-mode
   elicitation and calls `confirm_pending` on an accepted, ticked form. The
   client's model neither emits the request nor answers it, and the advertised
   schema does not change. A no, a dismissed form, or a client that declared
@@ -223,11 +224,14 @@ calls act and no thread holding them may outlive the turn.
 - **What the gate guards** (`tools.GATED_TOOLS`, #291): the three ops that end
   or reset a game (`DESTRUCTIVE_TOOLS`), plus `resume_game` — which throws the
   game on the board away as surely as a reset — and `save_game` over an
-  existing name, which throws an earlier save away. The first four ask only
-  when a game is at stake (the player has moved and it is not over); an
-  overwrite asks whenever the name exists, except `autosave` and a name the
-  same command already wrote. Save and resume have no button, so they are
-  answered on the spoken, delegate and MCP roads. Semantics and rationale:
+  existing name, which throws an earlier save away, and an `undo` deeper
+  than two full moves (`UNDO_FREE_PLIES`, counted over the command), since
+  no redo brings the moves back. The first four ask only when a game is at
+  stake (the player has moved and it is not over); an overwrite asks
+  whenever the name exists, except `autosave` and a name the same command
+  already wrote; a deep undo asks finished game or not. Save, resume and the
+  agent's undo have no button that asks, so they are answered on the
+  spoken, delegate and MCP roads. Semantics and rationale:
   `docs/persistence-and-identity.md`.
 - **One destructive op per command** — `begin_command`/`end_command` bracket
   an interaction; the budget is command-scoped because destructive ops

@@ -211,6 +211,8 @@ class TurnCoordinator:
         self._destructive_spent = False
         # The save names this command has written itself (`record_save`).
         self._saved_this_command: set[str] = set()
+        # The plies this command's takebacks have popped (`record_undo`).
+        self._undone_this_command = 0
         # The reply `settle_owed_reply` last settled, until someone takes it
         # (`take_settlement`) or a new command begins (#365).
         self._settlement: ReplySettlement | None = None
@@ -511,6 +513,7 @@ class TurnCoordinator:
         self._command_open = True
         self._destructive_spent = False
         self._saved_this_command = set()
+        self._undone_this_command = 0
         self._settlement = None
 
     def end_command(self) -> None:
@@ -577,6 +580,22 @@ class TurnCoordinator:
     def saved_this_command(self, name: str) -> bool:
         """Whether this command already wrote save `name` (`record_save`)."""
         return self._command_open and name in self._saved_this_command
+
+    def record_undo(self, plies: int) -> None:
+        """Count plies this command took back. A no-op with no window.
+
+        The deep-undo gate (#543) measures a takeback from where the command
+        found the board, so "undo, undo, undo" asks on the third call exactly
+        as one call three moves deep does. Outside a window there is only ever
+        one call per interaction, so there is nothing to add up.
+        """
+        if self._command_open:
+            self._undone_this_command += plies
+
+    @property
+    def undone_this_command(self) -> int:
+        """Plies this command's takebacks have popped so far (`record_undo`)."""
+        return self._undone_this_command if self._command_open else 0
 
     def settle_owed_reply(self) -> ReplySettlement | None:
         """Collect the reply a landed player move is owed, and close the turn.

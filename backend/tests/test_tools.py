@@ -1426,13 +1426,28 @@ def test_undo_rejects_bad_plies(registry):
     assert registry.dispatch("undo", {"plies": "two"})["ok"] is False
 
 
-def _vs_engine_game(session, sans):
+def _vs_engine_ctx(session, sans):
     """`sans` already on the board, with the engine to reply to whatever the
     player plays next (it never gets to here: every test only takes back)."""
     for san in sans:
         assert session.submit_move(san).legal
     ctx = ToolContext(session=session, engine=FakeEngine(reply_uci="e7e5"))
-    return build_registry(ctx)
+    return build_registry(ctx), ctx
+
+
+def _vs_engine_game(session, sans):
+    return _vs_engine_ctx(session, sans)[0]
+
+
+def _confirmed_undo(registry, ctx, args):
+    """A takeback past two full moves asks first (#543,
+    `test_deep_undo_gate.py`); these tests are about where the yes lands."""
+    refused = registry.dispatch("undo", args)
+    assert refused["ok"] is False
+    assert refused["error"].startswith("confirmation required")
+    confirmed = confirm_pending(registry, ctx, PANEL_ORIGIN)
+    assert confirmed is not None
+    return confirmed[1]
 
 
 _SIX_EXCHANGES = (
@@ -1454,8 +1469,8 @@ def test_three_takebacks_are_three_calls(session):
 def test_undo_goes_back_to_before_a_move_number(session):
     """A move `review_game` named, by its number: back to just before the
     player's move with that number, the player to move again."""
-    registry = _vs_engine_game(session, _SIX_EXCHANGES)
-    result = registry.dispatch("undo", {"before_move": 2})
+    registry, ctx = _vs_engine_ctx(session, _SIX_EXCHANGES)
+    result = _confirmed_undo(registry, ctx, {"before_move": 2})
     assert result["ok"] is True
     assert session.move_history() == ["e4", "e5"]
     assert session.turn == session.player_color
@@ -1473,8 +1488,8 @@ def test_undo_before_a_move_reaches_past_any_count_cap(session):
     for move in game.mainline_moves():
         sans.append(board.san(move))
         board.push(move)
-    registry = _vs_engine_game(session, sans)
-    result = registry.dispatch("undo", {"before_move": 2})
+    registry, ctx = _vs_engine_ctx(session, sans)
+    result = _confirmed_undo(registry, ctx, {"before_move": 2})
     assert result["ok"] is True
     assert len(result["undone"]) == len(sans) - 2 > 100
     assert session.move_history() == sans[:2]
