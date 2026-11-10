@@ -28,6 +28,7 @@ CHESSAPP_TRACE_PATH=/tmp/turns.jsonl chessapp        # trace every agent turn
 CHESSAPP_CONTEXT_PATH=/tmp/ctx.jsonl chessapp         # exact bytes of every model call
 python scripts/watch_context.py /tmp/ctx.jsonl --trace /tmp/turns.jsonl   # watch them live
 CHESSAPP_AGENT_EVALS=1 pytest tests/test_agent_evals.py -v -s   # live-model evals (needs GPU)
+CHESSAPP_ANSWER_EVALS=1 pytest tests/test_answer_reader_live.py -v -s   # confirmation reader: verdict agreement on yes/no/neither paraphrases (needs GPU)
 CHESSAPP_AGENT_FRONTIER=1 pytest tests/test_agent_frontier.py -v -s   # frontier: held-out, one sample per wording; scored, never gated (docs/agent-frontier.md)
 python scripts/frontier_report.py trend                  # frontier history, per split
 python scripts/speech_report.py /tmp/turns.jsonl          # speech accuracy of a trace (docs/speech-accuracy.md)

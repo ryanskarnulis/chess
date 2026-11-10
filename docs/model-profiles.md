@@ -175,15 +175,19 @@ existed:
   the sibling repo is present.
 - The planner runs at 0.3 (#286).
 - The token caps are those of #191.
+- The answer reader (the yes/no read of a free-text reply to an armed
+  confirmation) samples at 0, as every profile's does (#544): its verdict can
+  end a game.
 
 The file's comments hold the measurement behind every number.
 `tests/test_profile_bytes.py` pins that the default config sends exactly the
 bytes recorded from `main` before #375: every phase, with thinking both off
-and on. Since #433 the default brain is gemma-4-26b-a4b (`DEFAULT_MODEL` in
-`app.py`, `LLAMACPP_MODEL` in `docker-compose.yml`), and the test pins each
-model it lists with its own fixture (`fixtures/<model>_requests.json`): the
-26B's are the default config's bytes, and the 12B's stay pinned because it
-is still a brain the app can run. The default must be one of the pinned
+and on. Since #542 the default brain is gemma-4-12b again (`DEFAULT_MODEL` in
+`app.py`, `LLAMACPP_MODEL` in `docker-compose.yml`; the fleet's main brain,
+decided 2026-11-09; #433 had made it the 26B). The test pins each model it
+lists with its own fixture (`fixtures/<model>_requests.json`): the 12B's are
+the default config's bytes, and the 26B's and qwen's stay pinned because they
+are brains the app can run. The default must be one of the pinned
 models. Re-record a fixture only for a change that is meant to move the
 bytes, and say so in its PR.
 
