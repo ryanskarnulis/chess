@@ -1928,38 +1928,55 @@ def test_the_caps_are_generous_enough_for_measured_real_turns():
     assert brain.planner_max_tokens >= 1024
 
 
-def test_a_truncated_planner_turn_is_a_failed_turn_not_a_handoff():
-    # `finish_reason == "length"`: the cap cut the model off, so whatever
-    # content survived is a fragment (or nothing at all — a thought loop can
-    # spend the whole budget in reasoning). It must never travel onward as the
-    # note; the loop ends the phase itself, exactly as a repeat-stop does.
+def test_a_truncated_planner_turn_where_nothing_ran_never_reaches_the_narrator():
+    # `finish_reason == "length"` with no tool calls (#545): the cap cut the
+    # model off, so whatever content survived is a fragment, and no tool ran.
+    # With nothing verified to speak from, a narrator would be describing work
+    # that never happened (the traced turn that described an undo limit with no
+    # tool call). It ends exactly like a budget stop where nothing ran: silent,
+    # the pipeline's stuck reply covers it, and the stop says `truncated`.
     brain, provider = make_brain(
         text_turn("okay so first I should probably", finish_reason="length"),
         text_turn("reply"),
     )
     resp = brain.get_agent_response(board_state={}, command="hi")
-    assert resp.stop_reason == "no_progress"
-    assert resp.text == "reply"
-    brief = provider.calls[-1]["messages"][-1]["content"]
-    assert "okay so first" not in brief
-    assert _NO_PROGRESS_NOTE in brief
+    assert resp.stop_reason == "truncated"
+    assert resp.text == ""
+    assert not resp.tool_calls
+    assert system_prompts(provider) == [PLANNER]  # never the persona
+    assert len(provider.calls) == 1
 
 
 def test_a_truncated_planner_turn_with_no_content_at_all():
     # The observed live shape: the whole budget went to reasoning_content
     # (which the provider drops) and `content` came back empty.
-    brain, _ = make_brain(
+    brain, provider = make_brain(
         text_turn(None, finish_reason="length"),
         text_turn("reply"),
     )
     resp = brain.get_agent_response(board_state={}, command="hi")
-    assert resp.stop_reason == "no_progress"
-    assert resp.text == "reply"
+    assert resp.stop_reason == "truncated"
+    assert resp.text == ""
+    assert system_prompts(provider) == [PLANNER]
+
+
+def test_a_truncated_planner_turn_still_costs_its_tokens():
+    brain, _ = make_brain(
+        text_turn(
+            "okay so",
+            finish_reason="length",
+            usage=Usage(prompt_tokens=9, completion_tokens=1024),
+        ),
+    )
+    resp = brain.get_agent_response(board_state={}, command="hi")
+    assert resp.completion_tokens == 1024
+    assert resp.model_calls == 1
 
 
 def test_a_truncated_planner_turn_keeps_what_the_turn_verified():
     # A move that landed before the truncation is real board history; the
-    # narrator still closes the turn from it, like any no-progress stop.
+    # narrator still closes the turn from it, like any no-progress stop. (Only
+    # a truncation where nothing ran is silent and `truncated`, #545.)
     brain, _ = make_brain(
         tool_calls_turn(("make_move", {"move": "e4"})),
         text_turn("and now I will", finish_reason="length"),

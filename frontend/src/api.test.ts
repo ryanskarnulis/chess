@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchPgn, fetchReview, fetchSettings, fetchState, setBrain } from './api'
+import { fetchPgn, fetchReview, fetchSettings, fetchState, sendCommand, setBrain } from './api'
 
 // Direct coverage for the client's never-rejects contract on the helpers whose
 // callers can't exercise the fetch layer: ReviewPanel and PostGameModal mock
@@ -12,6 +12,7 @@ import { fetchPgn, fetchReview, fetchSettings, fetchState, setBrain } from './ap
 // where the null-handling they feed is also under test.
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -103,4 +104,92 @@ describe('setBrain', () => {
       await expect(setBrain('gemma-4-12b')).resolves.toBeNull()
     })
   }
+})
+
+// A fetch that answers only when told, and fails the way the browser's does
+// when the request is aborted.
+function hangingFetch() {
+  return vi.fn(
+    (_url: string, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('The operation was aborted.', 'AbortError')),
+        )
+      }),
+  )
+}
+
+describe('sendCommand (#546)', () => {
+  const sentBody = (fetchMock: ReturnType<typeof vi.fn>, call = 0) =>
+    JSON.parse(String(fetchMock.mock.calls[call][1].body))
+
+  it('sends no origin unless one is named, so an ordinary command stays the panel’s', async () => {
+    const fetchMock = vi.fn((_url: string, _init: RequestInit) =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ commentary: '' }) }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await sendCommand('play e4', 3, 'abc123abc123')
+    expect(sentBody(fetchMock)).toEqual({ text: 'play e4', interaction_id: 'abc123abc123', version: 3 })
+    await sendCommand('let us play', undefined, undefined, { origin: 'handoff' })
+    expect(sentBody(fetchMock, 1)).toEqual({
+      text: 'let us play',
+      origin: 'handoff',
+    })
+  })
+
+  it('gives up with null when the turn outlasts the timeout, and aborts the request', async () => {
+    vi.useFakeTimers()
+    const fetchMock = hangingFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = sendCommand('hi', undefined, undefined, { timeoutMs: 30_000 })
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(pending).resolves.toBeNull()
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true)
+  })
+
+  it('counts a reply that stalls while its body is read as a miss, not a success', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init: { signal: AbortSignal }) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          // Headers arrived; the body never does, and the abort ends it.
+          json: () =>
+            new Promise((_resolve, reject) =>
+              init.signal.addEventListener('abort', () => reject(new Error('aborted'))),
+            ),
+        }),
+      ),
+    )
+    const pending = sendCommand('hi', undefined, undefined, { timeoutMs: 30_000 })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await expect(pending).resolves.toBeNull()
+  })
+
+  it('does not abort a turn that answers in time, and sets no timer without a timeout', async () => {
+    vi.useFakeTimers()
+    const answer = { commentary: 'ok', tool_results: [], state: {}, speak: false }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(answer) })),
+    )
+    await expect(
+      sendCommand('hi', undefined, undefined, { timeoutMs: 30_000 }),
+    ).resolves.toEqual(answer)
+    await expect(sendCommand('hi')).resolves.toEqual(answer)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('never times out a command that named no ceiling', async () => {
+    vi.useFakeTimers()
+    const fetchMock = hangingFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    void sendCommand('hi')
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(false)
+  })
 })

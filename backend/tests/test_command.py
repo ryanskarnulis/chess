@@ -363,11 +363,13 @@ def test_a_rejected_move_leaves_the_board_alone():
     assert body["state"]["history"] == []
 
 
-def test_a_budget_stop_still_says_something():
-    """When the loop runs out of iterations or corrections it has no closing
-    turn, so the pipeline supplies a line rather than an empty bubble."""
+@pytest.mark.parametrize("stop", ["max_iterations", "truncated"])
+def test_a_budget_stop_still_says_something(stop):
+    """When the loop runs out of iterations or corrections, or a planner call
+    is cut off with nothing run (#545), it has no closing turn, so the pipeline
+    supplies a line rather than an empty bubble."""
     client, _ = make_client(
-        AgentResponse(text="", stop_reason="max_iterations"),
+        AgentResponse(text="", stop_reason=stop),
     )
     body = client.post("/api/command", json={"text": "play the best move"}).json()
     assert body["commentary"]
@@ -1517,6 +1519,7 @@ def test_a_provider_death_is_not_remembered_as_something_glitch_said():
     body = client.post("/api/command", json={"text": "push the king pawn"}).json()
 
     assert body["commentary"] == f"{PROVIDER_LOST_TURN_STANDS}\n\ne5."
+    assert body["retryable"] is False, "it ran; saying it again would replay it"
     assert assistant_turns(ctx) == ["e4. e5."]
 
 
@@ -2211,6 +2214,17 @@ def test_a_provider_failure_before_anything_ran_invites_a_retry():
 
     assert ctx.session.fen() == fen_before
     assert body["commentary"] == PROVIDER_LOST_RETRY, "nothing ran, so retry is safe"
+    # The same fact as data (#546): a client holding the request (the conductor
+    # handoff) keeps it, rather than reading a 200 as "done".
+    assert body["retryable"] is True
+
+
+def test_an_ordinary_turn_is_not_retryable():
+    client, _ = make_client(AgentResponse(text="Looks fine."))
+
+    body = client.post("/api/command", json={"text": "how does it look?"}).json()
+
+    assert body["retryable"] is False
 
 
 def test_a_narrator_failure_after_a_confirmed_reset_degrades_to_the_canned_line():

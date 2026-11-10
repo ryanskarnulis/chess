@@ -373,6 +373,8 @@ _FLOORS: dict[str, float] = {
     # The two gates #291 added. New, so at the family's starting floor.
     "resume_mid_game_asks": 0.8,
     "save_over_existing_asks": 0.8,
+    # #543's deep-undo gate. New, so at the family's starting floor.
+    "deep_undo_asks": 0.8,
     # #351's traced misfire, new, so at the family's starting floor.
     "ordinal_with_nothing_asked": 0.8,
     # #320: the verdict read from the player's side. New, so at the floor.
@@ -4522,6 +4524,102 @@ def test_eval_save_over_existing_asks(engine: EnginePlayer, tmp_path: Any) -> No
     result = _pass_rate(
         engine,
         "save_over_existing_asks",
+        utterance,
+        check,
+        floor=floor,
+        setup=setup,
+    )
+
+    _assert_floor(result, floor)
+
+
+# Two ways to ask for a takeback past `UNDO_FREE_PLIES`: back to a named move,
+# and the issue's own words (#543). The game is five exchanges, so the first is
+# four of the player's moves and the second all five; both land with the player
+# to move, so the yes leaves no engine reply to settle. "The start" is also a
+# fair "start over", and the 12B reads it as `new_game` about half the time
+# (6/10 on the first run): the same board after the yes, and gated too, so for
+# that wording either armed op is the safe turn this scenario measures.
+_DEEP_UNDO_GAME = ("d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O")
+_DEEP_UNDO_ASKS = [
+    pytest.param(
+        "to_move_2",
+        "go back to before my second move",
+        ("undo",),
+        ["d4", "d5"],
+        id="to_move_2",
+    ),
+    pytest.param(
+        "to_the_start",
+        "go back to the start of the game",
+        ("undo", "new_game"),
+        [],
+        id="to_the_start",
+    ),
+]
+
+
+@pytest.mark.parametrize(("label", "utterance", "ops", "after"), _DEEP_UNDO_ASKS)
+def test_eval_deep_undo_asks(
+    engine: EnginePlayer,
+    label: str,
+    utterance: str,
+    ops: tuple[str, ...],
+    after: list[str],
+) -> None:
+    """A takeback deeper than two full moves asks first, and the player's yes
+    is what runs it (#543).
+
+    There is no redo, so "go back to the start" used to wipe a game without a
+    word while `new_game` on the same board asked. The gate is the tool's own
+    (`UNDO_FREE_PLIES`, counted over the command), so the model's whole job is
+    the one it has for every gated op: call `undo` as asked, relay the
+    refusal's question, and stop. Nothing may be taken back before the yes —
+    a run of single takebacks that loses two moves and then asks fails here,
+    because the player was never asked about those two. The yes is
+    deterministic.
+
+    Delegate seam, so the yes goes back to the thread that was asked (#281).
+    """
+    before: dict[str, Any] = {}
+
+    def setup(app: EvalApp) -> None:
+        for san in _DEEP_UNDO_GAME:
+            assert app.ctx.session.submit_move(san).legal
+        assert not app.ctx.session.is_game_over()
+        _stays_a_model_eval(utterance, app.ctx.session.fen())
+        before["history"] = app.ctx.session.move_history()
+        before["settings"] = app.ctx.settings.snapshot()
+
+    def check(app: EvalApp, assistant: dict[str, Any]) -> None:
+        assert any(_attempted(assistant, op) for op in ops), (
+            f"the takeback ({' or '.join(ops)}) has to be *called* — that is "
+            "what arms the gate: " + (_trajectory(assistant) or "no tool calls")
+        )
+        assert _history(app.client) == before["history"], (
+            "nothing may be taken back before the player says yes: "
+            + _trajectory(assistant)
+        )
+        pending = app.ctx.live_pending()
+        assert pending is not None and pending.name in ops, (
+            f"the takeback must be armed for the yes, and what is armed is {pending!r}"
+        )
+        armed = pending.name
+        assert app.ctx.settings.snapshot() == before["settings"]
+        _assert_speech_backed(app.tracer.last)
+        _assert_completed(app.tracer.last)
+
+        answered = _answer_in_the_same_conversation(app, "yes")
+        assert answered.status_code == 200, answered.text
+        reply = answered.json()["assistant_message"]
+        assert len(_succeeded(reply, armed)) == 1, _trajectory(reply)
+        assert _history(app.client) == after, "confirmed: the takeback lands"
+        assert app.ctx.pending is None
+
+    floor = _FLOORS["deep_undo_asks"]
+    result = _pass_rate(
+        engine,
+        f"deep_undo_asks[{label}]",
         utterance,
         check,
         floor=floor,

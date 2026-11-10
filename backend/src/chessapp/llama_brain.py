@@ -108,8 +108,10 @@ Model-specific quirks, split across the two layers:
   `profiles.py`; gemma-4-12b's file has the sizing), because a degenerate
   thought loop with no cap generates until the read timeout (300 s) instead
   of for seconds. A cut-off call's *words* never travel: the planner's
-  fragment is dropped and the phase ends under `no_progress` with the loop's
-  own note, a cut-off narration
+  fragment is dropped and, where nothing ran, the phase ends silent under
+  `truncated` (#545: like a budget stop with nothing done, the pipeline's
+  stuck reply covers it; where earlier iterations did real work it ends under
+  `no_progress` with the loop's own note). A cut-off narration
   becomes the empty reply the pipeline already knows how to stand in for, and a
   cut-off confirmation reading is `unrelated` — the answer that changes
   nothing. Its *tool calls* are a different matter and do run: the provider
@@ -657,10 +659,17 @@ class LlamaBrain:
                     # "thinking" ending in a dead socket). Whatever content
                     # survived is a fragment — or nothing, when the whole
                     # budget went to reasoning — never a handoff note, so it
-                    # must not travel. The turn brought nothing usable back,
-                    # which is the no-progress stop's exact contract: end the
-                    # phase, let the narrator close from what the turn
-                    # verified, under the loop's own note.
+                    # must not travel. Where nothing ran there is nothing
+                    # verified to speak from, and a narrator would describe
+                    # work that never happened (#545): the turn ends silent
+                    # like any budget stop with nothing done, under its own
+                    # `truncated` stop. Where earlier iterations did real work
+                    # the turn brought nothing new back, which is the
+                    # no-progress stop's exact contract: end the phase, let the
+                    # narrator close from what the turn verified, under the
+                    # loop's own note.
+                    if not dispatched:
+                        return run.response("", "truncated")
                     return self._close(
                         run, command, _NO_PROGRESS_NOTE, told, "no_progress"
                     )
