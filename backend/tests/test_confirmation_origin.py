@@ -244,6 +244,30 @@ def test_the_button_still_confirms_a_panel_armed_op():
     assert ctx.session.is_game_over()
 
 
+def test_a_handoff_label_changes_nothing_about_who_may_answer(tmp_path):
+    """`origin: handoff` on `/api/command` is a trace label (#546), not a fourth
+    conversation: the turn is the panel's, so it answers what the panel was asked
+    and can neither answer nor disarm a delegate's question any differently."""
+    path = tmp_path / "turns.jsonl"
+    client, brain, ctx = make_client(tracer=JsonlTracer(path))
+    client.post("/api/command", json={"text": RESIGN})
+    assert ctx.pending is not None and ctx.pending.name == "resign"
+
+    client.post("/api/command", json={"text": "yes", "origin": "handoff"})
+    assert ctx.session.is_game_over(), "the panel's own question, answered"
+
+    client2, brain2, ctx2 = make_client(AgentResponse(text="yes to what?"))
+    a = new_conversation(client2)
+    arm_in(client2, a, ctx2)
+    answered = client2.post("/api/command", json={"text": "yes", "origin": "handoff"})
+    assert answered.status_code == 200, answered.text
+    assert not ctx2.session.is_game_over(), "a handoff answered a delegate's question"
+    assert answered.json()["commentary"] == "yes to what?"
+
+    asked, confirmed = [json.loads(line) for line in path.read_text().splitlines()]
+    assert (asked["origin"], confirmed["origin"]) == ("panel", "handoff")
+
+
 def test_the_trace_names_the_conversation_a_turn_came_from(tmp_path):
     """One line in the record, and it is the one a bug of this shape is read
     off: two turns that both said "yes" are told apart by nothing else."""

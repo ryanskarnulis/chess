@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AgentBubble } from './AgentBubble'
 import { Board } from './Board'
 import { BottomBar } from './BottomBar'
@@ -17,6 +17,13 @@ import './App.css'
 // A handed-off intent is one utterance, not an essay — anything longer is
 // junk (or someone poking at the URL), so it gets cut rather than sent.
 const MAX_INTENT_LENGTH = 500
+
+// The request is answered (or given up on), so the URL stops carrying it.
+function dropIntentParam() {
+  const url = new URL(window.location.href)
+  url.searchParams.delete('intent')
+  window.history.replaceState({}, '', url.pathname + url.search + url.hash)
+}
 
 // What the status row shows before the first state document arrives.
 const NO_CAPTURES = { white: [], black: [] }
@@ -58,6 +65,7 @@ function App() {
     agentThinking,
     agentProgress,
     sendCommand,
+    sendHandoff,
     pgn,
     voiceOutput,
     setVoiceOutput,
@@ -78,18 +86,53 @@ function App() {
   const [resignAsk, setResignAsk] = useState(false)
   // The conductor hands off to chess by navigating here with what the user
   // actually said (`/?intent=let's play chess as black`). Run it through the
-  // agent so the session opens already acting on it. Scrub the param first —
-  // a reload must not replay the command — and latch so StrictMode's second
-  // mount doesn't send it twice.
-  const intentSent = useRef(false)
+  // agent so the session opens already acting on it (#546).
+  //
+  // The words stay in the URL until the agent has run them: if the model is
+  // down or slow the request must survive, and a reload is then the retry. On
+  // failure the page says so and offers one. Three latches keep it from being
+  // sent twice — `intentStarted` (StrictMode's second mount, and any re-render),
+  // `intentBusy` (a retry tapped while one is in flight) and `intentOwed`,
+  // cleared the moment it succeeds (nothing left to send, nothing to re-send).
+  const intentStarted = useRef(false)
+  const intentBusy = useRef(false)
+  const intentOwed = useRef<string | null>(null)
+  const [intentFailed, setIntentFailed] = useState(false)
+  const runIntent = useCallback(async () => {
+    const text = intentOwed.current
+    if (text === null || intentBusy.current) return
+    intentBusy.current = true
+    setIntentFailed(false)
+    let ran = false
+    try {
+      ran = await sendHandoff(text)
+    } finally {
+      intentBusy.current = false
+    }
+    if (ran) {
+      intentOwed.current = null
+      dropIntentParam()
+    } else {
+      setIntentFailed(true)
+    }
+  }, [sendHandoff])
+  const dismissIntent = () => {
+    intentOwed.current = null
+    dropIntentParam()
+    setIntentFailed(false)
+  }
   useEffect(() => {
-    if (intentSent.current) return
+    if (intentStarted.current) return
+    intentStarted.current = true
     const intent = new URLSearchParams(window.location.search).get('intent')?.trim() ?? ''
-    if (window.location.search) window.history.replaceState({}, '', window.location.pathname)
-    if (!intent) return
-    intentSent.current = true
-    void sendCommand(intent.slice(0, MAX_INTENT_LENGTH))
-  }, [sendCommand])
+    if (!intent) {
+      // Nothing to send: scrub whatever else rode in on the query.
+      if (window.location.search) window.history.replaceState({}, '', window.location.pathname)
+      return
+    }
+    intentOwed.current = intent.slice(0, MAX_INTENT_LENGTH)
+    void runIntent()
+  }, [runIntent])
   // The post-game screen shows whenever the game is over and the player
   // hasn't waved it away; a new game (game_over back to false) re-arms it.
   const [resultsDismissed, setResultsDismissed] = useState(false)
@@ -216,6 +259,20 @@ function App() {
         <p className="direct-mode" role="status">
           Direct mode — Stockfish only, no agent
         </p>
+      )}
+      {/* A handed-off request that did not land (#546): said out loud, with the
+          one way forward. It stays in the URL meanwhile, so a reload tries it
+          again too. */}
+      {intentFailed && (
+        <div className="handoff-failed" role="alert">
+          <p>Your request to Glitch didn’t go through.</p>
+          <button type="button" className="review-retry" onClick={() => void runIntent()}>
+            Retry
+          </button>
+          <button type="button" className="review-retry" onClick={dismissIntent}>
+            Dismiss
+          </button>
+        </div>
       )}
       {/* Each side's captures sit with their owner rather than sharing one
           row: Glitch's ride under the agent bubble, the player's under the
