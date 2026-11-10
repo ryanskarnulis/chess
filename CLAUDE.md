@@ -28,6 +28,7 @@ CHESSAPP_TRACE_PATH=/tmp/turns.jsonl chessapp        # trace every agent turn
 CHESSAPP_CONTEXT_PATH=/tmp/ctx.jsonl chessapp         # exact bytes of every model call
 python scripts/watch_context.py /tmp/ctx.jsonl --trace /tmp/turns.jsonl   # watch them live
 CHESSAPP_AGENT_EVALS=1 pytest tests/test_agent_evals.py -v -s   # live-model evals (needs GPU)
+CHESSAPP_ANSWER_EVALS=1 pytest tests/test_answer_reader_live.py -v -s   # confirmation reader: verdict agreement on yes/no/neither paraphrases (needs GPU)
 CHESSAPP_AGENT_FRONTIER=1 pytest tests/test_agent_frontier.py -v -s   # frontier: held-out, one sample per wording; scored, never gated (docs/agent-frontier.md)
 python scripts/frontier_report.py trend                  # frontier history, per split
 python scripts/speech_report.py /tmp/turns.jsonl          # speech accuracy of a trace (docs/speech-accuracy.md)
@@ -55,8 +56,12 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   *meant* is the model's job, and so is *saying* what happened: code never
   cuts, rewrites or scripts Glitch's words. When he gets something wrong, fix
   what he was shown (context, history, tool results, prompts) and measure it
-  as speech accuracy, offline. So no regex fast paths or literal parsers for
-  language, and no speech guards. Glitch should feel alive, not canned.
+  as speech accuracy, offline. The fast path (`fastparse.py`) may parse only
+  an utterance that is *entirely* one of three things: a single legal move,
+  a bare yes or no while a confirmation is armed, or a bare resignation (which
+  still goes through the confirmation gate). Anything else, or anything with
+  further intent in it, reaches the model. No other regex or literal parsers
+  for language, and no speech guards. Glitch should feel alive, not canned.
 - **Model knowledge lives in profiles.** Sampling, the thinking toggle,
   per-phase temperature and caps, and the 12B's crutches live in
   `backend/src/chessapp/data/profiles/<model>.toml`, never in code. Each phase

@@ -71,7 +71,11 @@ effort = "low"
 max_tokens = 4096
 analysis_thinking = false
 
+# The verdict can end a game, so it is read greedily (#544): a reply is a
+# parse, not a draw. Measured on gemma-4-12b only (a tie, 210/210 either way,
+# tests/test_answer_reader_live.py); carried here, not re-measured.
 [phases.answer]
+temperature = 0
 max_tokens = 16
 
 # Glitch's own move in the tier where the model picks it (#472,

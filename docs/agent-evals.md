@@ -368,6 +368,52 @@ evidence of a present live failure — and all nine came in 5/5 on both builds.
 
 ## Current baseline
 
+**Gate run 2026-11-09 on gemma-4-12b as shipped (#542).** The 12B is the
+fleet's main brain (decided 2026-11-09) and the default again: `DEFAULT_MODEL`
+in `app.py` and `LLAMACPP_MODEL` in `docker-compose.yml` name it, so a bare gate
+run (`LLAMACPP_MODEL` unset) measures it. The deployed app had run it on every
+turn since 2026-10-13 with no full gate since about 2026-10-01, before the
+gather step and the `lookup` withdrawal. Full gate on the branch after
+`a6d391b` (`[phases.answer] temperature = 0` in every profile, #544; the
+default switch itself was the only other change under test), bare command
+below, all five crutches (the 12B's profile), planner at 0.3: **58 of 58
+passed** (the 8 hard scenarios and 50 sampled conditions) in 19 m 43 s, no
+escalation, no infra deaths (0 of 25 budget), none inconclusive. Nothing tuned:
+no prompt, profile crutch or scenario changed to get these.
+
+- **Every sampled condition was at or above its 0.8 floor.** 49 of 50 were
+  5/5 (100%, interval [0.65, 1.00]), `long_capture` in all three conditions
+  (`fresh`, `live_like`, `poisoned`) among them. The one 4/5:
+  `glitch_reply_with_intent` (80%, [0.44, 0.95], exactly at the floor): in one
+  sample Glitch said "going with the Sicilian" and never named his reply `c5`.
+- **Speech** was 138/138 claims backed over 314 turns; the reply was said
+  96/97 (that one miss is the `glitch_reply_with_intent` sample above).
+- **Latency, for the record:** the 12B's `long_capture` turns took 1.4-3.6 s
+  (3 model calls, thinking off throughout, prompts ~3.0-3.5k tokens).
+- **#544 (confirmation reader at temperature 0)** moved no gate number:
+  `freeform_confirmation_answers` was 5/5 in all three conditions. The
+  reader's own measurement is `tests/test_answer_reader_live.py`: 21
+  paraphrases of yes, no and neither x 10 paired seeds, 210/210 agreed at 0
+  and 210/210 at the inherited 1.0, no false confirm in either arm. A tie on
+  this set, shipped for the tail.
+- **Re-run as shipped, after #543, #545 and #546 merged** (same bare command,
+  the suite now 60 with `deep_undo_asks`): **60 of 60 passed** in 23 m 5 s, no
+  infra deaths. 50 of 52 sampled conditions were 5/5, `long_capture` in all
+  three conditions and both `deep_undo_asks` wordings among them. Two were
+  4/5, exactly at the floor: `consecutive_move_reactions` and
+  `best_move_then_play`; `glitch_reply_with_intent` was 5/5 this time. Speech
+  123/123 backed over 334 turns; the reply was said 94/96.
+
+```bash
+cd backend
+CHESSAPP_AGENT_EVALS=1 CHESSAPP_EVAL_REPORT=/tmp/gate-12b.jsonl \
+    .venv/bin/pytest tests/test_agent_evals.py -v -s
+CHESSAPP_ANSWER_EVALS=1 .venv/bin/pytest tests/test_answer_reader_live.py -v -s
+```
+
+The 26B baselines below are history: the 26B and qwen stay in the brain
+picker. To gate one, set `LLAMACPP_MODEL`.
+
 **Gate run 2026-10-11 on the `glitch` tier (#473).** In the default tiers
 the only change the planner sees is `set_difficulty`'s tier list, which
 gained `glitch`. In the `glitch` tier the reply beat runs the mover in place
@@ -459,14 +505,15 @@ unreported `judgment_question_routes_through_analysis` and
 the narrator profile. Replays of the live game's slow turns: "castle instead"
 went from 64–92 s to 10–36 s, and analysis turns from 16–61 s to 5–11 s.
 
-**gemma-4-26b-a4b is the default brain (#433, #298 step 3).** The deployed
+**gemma-4-26b-a4b is the default brain (#433, #298 step 3).** (Superseded
+2026-11-09: the 12B is the default again, #542, and the baseline above is its
+gate.) The deployed
 container and `DEFAULT_MODEL` both name it now, for all three phases, so a
 bare gate run (`LLAMACPP_MODEL` unset) measures the 26B. The full gate it
 holds is the #431 run below (51/56, `long_capture` 5/5 ×3). That run used
 all five crutches. #432 then dropped `undo_call_again` and
 `pick_resubmit_script`, and a targeted 12-scenario check on the shipped
-profile came back 5/5 on every scenario (`docs/model-profiles.md`). To gate
-the 12B now, set `LLAMACPP_MODEL=gemma-4-12b`.
+profile came back 5/5 on every scenario (`docs/model-profiles.md`).
 
 **Gate run 2026-10-08 on gemma-4-26b-a4b (#431, #298 step 1).** The brain
 Ryan chose, with its thinking planner, after #429 and #430. Full gate on
