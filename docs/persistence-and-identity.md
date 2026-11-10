@@ -87,7 +87,8 @@ is ordinary result data (`ok: false`, `retry: never`, "confirmation required:
 …"); the model relays the question and stops, and only the player's yes —
 read deterministically, or by the answer reader and then run through
 `tools.confirm_pending` — opens the gate. The question is the app's own
-(`tools.CONFIRM_QUESTIONS`), the same on every surface.
+(`tools.confirm_question`, from `tools.CONFIRM_QUESTIONS`), the same on every
+surface.
 
 | Tool | Asks when | Budget | Ends a game? |
 |---|---|---|---|
@@ -96,6 +97,7 @@ read deterministically, or by the answer reader and then run through
 | `claim_draw` | a game is at stake (and a claim exists) | spends | yes |
 | `resume_game` | a game is at stake (and the save loads) | spends | no |
 | `save_game` | the name already exists, unless it is `autosave` or this command wrote it | never | no |
+| `undo` | it would take back more than two full moves (`UNDO_FREE_PLIES`, 4 plies), counted over the command | never | no |
 
 "A game is at stake" means the player has moved and the game is not over:
 nothing on a fresh board, or on one holding only the engine's opening move,
@@ -122,9 +124,25 @@ current game". Two exemptions, each because nothing the player owned is lost:
 
 A successful save reports `replaced: true|false`.
 
+**Deep undo** (#543). There is no redo, so a takeback past two full moves
+asks first; two full moves or fewer, the ordinary "undo that", runs free. The
+depth counts from where the command found the board, so three one-move
+takebacks in one command ask on the third, as one call three moves deep
+does. It asks whether or not the game is over (the stake is the moves, and a
+finished game is lost to a deep takeback too), and only for a takeback that
+would run: one past the start of the game, or on a resigned or drawn game,
+is refused without arming. The question counts the player's moves and names
+where it lands ("That takes back 4 of your moves, back to move 2. Go back
+that far?"), and the op is armed with the caller's own arguments, so the yes
+re-resolves them on the board the player was asked about. Only the tool is
+gated: the board's undo button (`POST /api/game/undo`) never asks, because a
+person pressing it is deliberate. No other tool reaches a takeback;
+`new_game` and `resume_game`, the other ways back to an earlier board, are
+gated on their own.
+
 `DESTRUCTIVE_TOOLS` stays the three game-ending ops: it is what the ending
-claim class reads as "the game ended or restarted", and a confirmed resume or
-save must never read as "game over".
+claim class reads as "the game ended or restarted", and a confirmed resume,
+save or undo must never read as "game over".
 
 ## Who may answer
 

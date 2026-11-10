@@ -151,6 +151,7 @@ from chessapp.tools import (
     build_registry,
     chooser_fields,
     confirm_pending,
+    confirm_question,
     current_difficulty,
     live_checkpoint,
     pgn_headers,
@@ -843,8 +844,8 @@ def _destructive_confirmation(
     at verbosity=low — the twin of `_move_confirmation`, keeping a confirmed
     destructive op a zero-LLM turn like a plain move is.
 
-    `new_game`, `resume_game` and `save_game` leave a game to play and are
-    reported by what they did; every other op here ended one, and an ending is
+    `new_game`, `resume_game`, `save_game` and `undo` leave a game to play and
+    are reported by what they did; every other op here ended one, and an ending is
     reported by its outcome (a resignation's result, or the half point a claimed
     draw produces) rather than by name.
 
@@ -864,6 +865,9 @@ def _destructive_confirmation(
         return f"Loaded {result.get('name', 'the saved game')}."
     if name == "save_game":
         return f"Saved over {result.get('name', 'the old save')}."
+    # A confirmed deep takeback (#543) ends nothing either.
+    if name == "undo":
+        return f"Took back {len(result.get('undone', ()))} half-moves."
     outcome = result.get("outcome") or _outcome_dict(session)
     if outcome:
         return f"Game over: {outcome['result']} ({outcome['termination']})."
@@ -3058,7 +3062,7 @@ def create_app(
                     # not place — leaves the op disarmed and the turn falls
                     # through, exactly as it did before.
                     read = await _offloop(
-                        brain.read_answer, _confirm_question(armed.name), text
+                        brain.read_answer, confirm_question(armed, ctx), text
                     )
                     # Summed, never assigned: an `unrelated` reading goes on
                     # down another road, which adds its own calls to this one

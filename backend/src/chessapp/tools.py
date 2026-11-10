@@ -101,6 +101,11 @@ logger = logging.getLogger(__name__)
 
 GET_BEST_MOVES_MAX = 10
 UNDO_PLIES_MAX = 100
+# The deepest takeback the agent's `undo` runs without asking (#543): two full
+# moves, the player's and the reply each time. Past it the gate asks, because
+# there is no redo — "go back to the start" used to wipe a game unasked. Counted
+# over the whole command, so three separate one-move takebacks ask on the third.
+UNDO_FREE_PLIES = 4
 # A lookup is a few words naming a topic, not a paragraph.
 LOOKUP_QUERY_MAX = 200
 # Save names become filenames: one path segment, no traversal.
@@ -819,7 +824,8 @@ DESTRUCTIVE_TOOLS = ("new_game", "resign", "claim_draw")
 # as a reset makes it — and `save_game` over an existing name replaces a save
 # the player made earlier. Neither ends a game, which is why neither is in
 # `DESTRUCTIVE_TOOLS`: a confirmed resume must never read as "game over".
-GATED_TOOLS = (*DESTRUCTIVE_TOOLS, "resume_game", "save_game")
+# `undo` past `UNDO_FREE_PLIES` is the third (#543): no redo brings the moves back.
+GATED_TOOLS = (*DESTRUCTIVE_TOOLS, "resume_game", "save_game", "undo")
 
 # The question every answering surface puts to the player for an armed op, in
 # the app's own words: the board dialog shows it, the free-text reader judges a
@@ -833,18 +839,61 @@ CONFIRM_QUESTIONS = {
     "claim_draw": "That ends the game in a draw. Claim it?",
     "resume_game": "That ends the game in progress. Load the saved game?",
     "save_game": "There's already a save with that name. Replace it?",
+    # Only the fallback: the question asked is `confirm_question`'s, which
+    # counts the moves off the board the yes would answer.
+    "undo": "That takes back several of your moves. Go back that far?",
 }
 
 
-def _cost(op: PendingOp) -> str:
+def _undo_span(ctx: ToolContext, args: dict[str, Any]) -> tuple[int, int]:
+    """What `undo(**args)` would take back on the board now: how many of the
+    player's own moves, and the move number it goes back to. Raises
+    `ToolError` when there is nothing it could take back."""
+    plies = args.get("plies") or _takeback_plies(ctx, args.get("before_move"))
+    labels = ctx.session.ply_labels()
+    start = max(len(labels) - plies, 0)
+    if start >= len(labels):
+        raise ToolError("cannot undo: nothing to take back")
+    mine = sum(1 for index in _player_plies(ctx) if index >= start)
+    return mine, labels[start][0]
+
+
+def confirm_question(op: PendingOp, ctx: ToolContext) -> str:
+    """The question every answering surface puts to the player for `op`, in the
+    app's own words (`CONFIRM_QUESTIONS`). An undo's question counts what it
+    would take back, off the board on screen — the one board a yes can answer,
+    since `live_pending` drops the op once it moves."""
+    if op.name == "undo":
+        try:
+            mine, number = _undo_span(ctx, op.args)
+        except ToolError:
+            return CONFIRM_QUESTIONS["undo"]
+        return (
+            f"That takes back {mine} of your moves, back to move {number}. "
+            "Go back that far?"
+        )
+    return CONFIRM_QUESTIONS[op.name]
+
+
+def gate_cost(op: PendingOp, ctx: ToolContext) -> str:
     """What an armed op would cost the player, in the gate's refusal text.
 
-    Every op but one throws the game on the board away; `save_game` throws an
-    earlier save away instead, and a refusal that said "would end the current
-    game" about a save would be a lie the model then relays.
+    Most ops throw the game on the board away; `save_game` throws an earlier
+    save away instead and `undo` some of the game's moves, and a refusal that
+    said "would end the current game" about either would be a lie the model
+    then relays.
     """
     if op.name == "save_game":
         return f"save_game would replace the existing save {op.args.get('name')!r}"
+    if op.name == "undo":
+        try:
+            mine, number = _undo_span(ctx, op.args)
+        except ToolError:
+            return "undo would take back several of the player's moves"
+        return (
+            f"undo would take back {mine} of the player's moves, back to move "
+            f"{number}, and nothing can bring them back"
+        )
     return f"{op.name} would end the current game"
 
 
@@ -2434,8 +2483,28 @@ def build_registry(
             raise ToolError(
                 "pass before_move or plies, not both", retry=RETRY_DIFFERENT_ARGS
             )
+        asked = {
+            key: value
+            for key, value in (("before_move", before_move), ("plies", plies))
+            if value is not None
+        }
         if plies is None:
             plies = _takeback_plies(ctx, before_move)
+        # The deep-undo gate (#543): there is no redo, so a takeback that
+        # reaches past `UNDO_FREE_PLIES` — counted from where this command
+        # found the board, so repeated calls add up — asks first, in code and
+        # never as a prompt rule. Whatever the board, finished game included:
+        # the stake is the moves themselves. Only a takeback that would run can
+        # arm (the `claim_draw` rule): a yes must never land on a refusal. The
+        # op is armed with the caller's own arguments, so a yes re-resolves
+        # them on the board the player was asked about (`restamp_pending`).
+        if (
+            plies + coordinator.undone_this_command > UNDO_FREE_PLIES
+            and ctx.session.undo_refusal(plies) is None
+        ):
+            refusal = _gate("undo", asked, at_stake=True)
+            if refusal is not None:
+                return refusal
         # Attempt first, abandon second — and only if the takeback happened.
         # A takeback replaces the position the open turn is about, so the turn
         # goes with it (and any reply being computed for it); a *refused* one
@@ -2452,6 +2521,7 @@ def build_registry(
             # with a different count does not conjure plies that were never
             # played, so this one is for the player to hear, not to retry.
             return registry.refusal(result.reason or "cannot undo", RETRY_NEVER)
+        coordinator.record_undo(len(result.undone))
         coordinator.abandon_turn()
         # An odd count pops the engine's reply and hands the board back with the
         # engine to move — a settled, legal position with nobody scheduled to
@@ -2531,7 +2601,7 @@ def build_registry(
             # make it stale — `restamp_pending` points it at the board the
             # player will actually be asked about when the command closes.
             return registry.refusal(
-                f"a confirmation is already pending: {_cost(armed)} and runs "
+                f"a confirmation is already pending: {gate_cost(armed, ctx)} and runs "
                 "when the player says yes. This call was "
                 f"not armed and will not run on that yes — {name} is not what "
                 "the player is being asked about. Relay the pending question "
@@ -2554,7 +2624,7 @@ def build_registry(
         # and calling again is the exact wrong move — the docstrings say "do not
         # call again" and the model obeyed that about half the time.
         return registry.refusal(
-            f"confirmation required: {_cost(ctx.pending)}. "
+            f"confirmation required: {gate_cost(ctx.pending, ctx)}. "
             "Ask the player to confirm; it runs when they say yes.",
             RETRY_NEVER,
         )

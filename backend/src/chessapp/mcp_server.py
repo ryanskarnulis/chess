@@ -57,13 +57,14 @@ from chessapp.mover import Mover
 from chessapp.profiles import load_profile
 from chessapp.provider import LlamaCppProvider
 from chessapp.tools import (
-    CONFIRM_QUESTIONS,
     MCP_ORIGIN,
     PendingOp,
     ToolContext,
     ToolRegistry,
     build_registry,
     confirm_pending,
+    confirm_question,
+    gate_cost,
 )
 
 INSTRUCTIONS = (
@@ -165,7 +166,7 @@ async def _confirm(
     The sequence of `docs/mcp-confirmation-surface.md` ("The design"). The lock
     was released with the dispatch and stays released across the question — a
     human waits on this step, and a concurrent call must be answered while the
-    question is open. The question is the app's own (`CONFIRM_QUESTIONS`), the
+    question is open. The question is the app's own (`confirm_question`), the
     same words the board dialog shows and the free-text reader judges against,
     never a paraphrase. On a yes the lock is taken again around
     `confirm_pending` — the existing sole key, unchanged — which re-reads the op
@@ -185,16 +186,16 @@ async def _confirm(
             return {
                 **refusal,
                 "error": (
-                    f"confirmation required: {armed.name} would end the current "
-                    "game, and this client cannot ask the player to confirm, so "
-                    "nothing was armed and nothing ran."
+                    f"confirmation required: {gate_cost(armed, ctx)}, and this "
+                    "client cannot ask the player to confirm, so nothing was "
+                    "armed and nothing ran."
                 ),
                 "confirmation_unavailable": True,
             }
         assert mcp is not None  # a client with capabilities came through a request
         try:
             answer = await mcp.session.elicit_form(
-                CONFIRM_QUESTIONS[armed.name],
+                confirm_question(armed, ctx),
                 _CONFIRM_SCHEMA,
                 related_request_id=mcp.request_context.request_id,
             )
