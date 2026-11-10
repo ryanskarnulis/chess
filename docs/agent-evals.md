@@ -396,6 +396,13 @@ no prompt, profile crutch or scenario changed to get these.
   paraphrases of yes, no and neither x 10 paired seeds, 210/210 agreed at 0
   and 210/210 at the inherited 1.0, no false confirm in either arm. A tie on
   this set, shipped for the tail.
+- **Re-run as shipped, after #543, #545 and #546 merged** (same bare command,
+  the suite now 60 with `deep_undo_asks`): **60 of 60 passed** in 23 m 5 s, no
+  infra deaths. 50 of 52 sampled conditions were 5/5, `long_capture` in all
+  three conditions and both `deep_undo_asks` wordings among them. Two were
+  4/5, exactly at the floor: `consecutive_move_reactions` and
+  `best_move_then_play`; `glitch_reply_with_intent` was 5/5 this time. Speech
+  123/123 backed over 334 turns; the reply was said 94/96.
 
 ```bash
 cd backend
