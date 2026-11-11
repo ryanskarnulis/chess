@@ -429,6 +429,17 @@ CHESSAPP_AGENT_EVALS=1 CHESSAPP_EVAL_REPORT=/tmp/gate-12b.jsonl \
 CHESSAPP_ANSWER_EVALS=1 .venv/bin/pytest tests/test_answer_reader_live.py -v -s
 ```
 
+**Reader fix 2026-11-11 on `fac3b57` (#561).** The claim reader took the
+head "bishop's" after an article ("that bishop's stuck") as the Bishop's
+Opening. It is now a common head, read only in full ("Bishop's Opening"),
+like "king's" and "queen's". Nothing else changed: scenario, floor and
+prompt as before. Full gate, gemma-4-12b: **60 of 60 passed** in 22 m 43 s,
+infra 0 and none inconclusive in all 52 conditions.
+`impossible_move_is_refused_not_asked` **5/5** ([0.65, 1.00], above floor);
+speech **131/131 claims backed** over 334 turns, `unbacked=[]`, reply said
+94/97. The 5/5 turns made no scored claim at all, so the reader unit tests
+(`tests/test_honesty.py`) are what pin the fix, not this run.
+
 The 26B baselines below are history: the 26B and qwen stay in the brain
 picker. To gate one, set `LLAMACPP_MODEL`.
 
