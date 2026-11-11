@@ -3,7 +3,7 @@
 Everything here is pure python-chess — no engine, no LLM.
 """
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -803,3 +803,78 @@ def test_legal_captures_are_empty_once_the_game_is_over():
     assert session.legal_captures()  # the mating move is a capture
     assert session.submit_move("Qxf7#").legal
     assert session.legal_captures() == {}
+
+
+# --- when the last move was played (#547) ------------------------------------
+
+
+class _Clock:
+    """`game._utcnow`, stood still and moved by hand."""
+
+    def __init__(self) -> None:
+        self.now = datetime(2026, 10, 25, 18, 30, 5, 123456, tzinfo=UTC)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    stood = _Clock()
+    monkeypatch.setattr("chessapp.game._utcnow", stood)
+    return stood
+
+
+def test_no_move_has_no_last_move_time(clock):
+    assert GameSession().last_move_at is None
+
+
+def test_each_move_stamps_the_time_in_utc_to_the_second(clock):
+    session = GameSession()
+    session.submit_move("e4")
+    assert session.last_move_at == "2026-10-25T18:30:05+00:00"
+    clock.now += timedelta(minutes=3)
+    session.submit_move("e5")  # either side's move counts
+    assert session.last_move_at == "2026-10-25T18:33:05+00:00"
+    assert datetime.fromisoformat(session.last_move_at).tzinfo is not None
+
+
+def test_an_illegal_move_stamps_nothing(clock):
+    session = GameSession()
+    assert not session.submit_move("e5").legal
+    assert session.last_move_at is None
+
+
+def test_a_takeback_leaves_it_and_a_new_game_clears_it(clock):
+    session = GameSession()
+    session.submit_move("e4")
+    session.submit_move("e5")
+    clock.now += timedelta(hours=1)
+    session.undo(1)
+    assert session.last_move_at == "2026-10-25T18:30:05+00:00"
+    session.new_game()
+    assert session.last_move_at is None
+
+
+def test_a_saved_game_keeps_when_it_was_played_not_when_it_was_reloaded(clock):
+    session = GameSession()
+    session.submit_move("e4")
+    clock.now += timedelta(days=15)
+    restored = GameSession.from_dict(session.to_dict())
+    assert restored.last_move_at == "2026-10-25T18:30:05+00:00"
+
+
+def test_a_save_from_before_moves_were_timed_has_none(clock):
+    session = GameSession()
+    session.submit_move("e4")
+    data = session.to_dict()
+    del data["last_move_at"]
+    assert GameSession.from_dict(data).last_move_at is None
+
+
+@pytest.mark.parametrize("value", ["yesterday", "2026-10-25T18:30:05", 1761417005])
+def test_a_save_with_a_bad_last_move_time_is_refused(value):
+    data = GameSession().to_dict()
+    data["last_move_at"] = value
+    with pytest.raises(ValueError, match="last_move_at"):
+        GameSession.from_dict(data)

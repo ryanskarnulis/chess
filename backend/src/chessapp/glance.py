@@ -5,11 +5,12 @@ game go?") without opening the board, per the workspace contract
 (`../agent-standard/app-yaml-glance-block.md`): no arguments, no model call,
 no engine search, no side effect, about 600 characters.
 
-Everything here is read off state the app already holds: the board, the
-ledger-fed results log (`results.py`). **No evaluation is computed.** Chess
-stores none for a live game (the engine is asked on demand, and a search
-cannot promise the 200 ms budget), so the glance says what the board itself
-shows, the material, and leaves an evaluation to an `open`.
+Everything here is read off state the app already holds: the board (and when
+its last move was played), the ledger-fed results log (`results.py`). **No
+evaluation is computed.** Chess stores none for a live game (the engine is
+asked on demand, and a search cannot promise the 200 ms budget), so the glance
+says what the board itself shows, the material, and leaves an evaluation to an
+`open`.
 """
 
 from datetime import UTC, datetime
@@ -47,6 +48,10 @@ def _current(ctx: ToolContext) -> dict[str, Any] | None:
         "to_move": "you" if session.turn == session.player_color else "Glitch",
         "moves": session.fullmove_number,
         "material": _material_words(session.material_balance()),
+        # When the last move was played (#547), so a reader can say how old
+        # the game is: UTC ISO 8601, or null for a game saved before moves
+        # were timed. Never a guess such as the start date.
+        "last_move_at": session.last_move_at,
     }
     if line:
         ref["opening"] = line["name"]

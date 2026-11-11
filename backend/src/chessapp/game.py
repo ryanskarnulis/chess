@@ -8,7 +8,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -154,6 +154,26 @@ _GAME_ID = re.compile(r"[0-9a-f]{32}")
 _DIFFICULTY_FIELDS = {"tier": str, "skill_level": int, "elo": int}
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _validate_last_move_at(value: Any) -> str | None:
+    """When the last move was played, off a save file: an ISO 8601 time with a
+    zone, or None for a save written before games recorded it."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"invalid last_move_at: {value!r}")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid last_move_at: {value!r}") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"last_move_at has no time zone: {value!r}")
+    return value
+
+
 def _validate_notes(value: Any, plies: int) -> dict[int, str]:
     """The move notes off a save file: `{ply index: text}`, each index a move
     the save holds. Absent (a save from before notes) is none."""
@@ -214,6 +234,10 @@ class GameSession:
         # a board holds moves, never why one was played (#473: a fallback
         # move Glitch did not choose).
         self._notes: dict[int, str] = {}
+        # When the last move was played, UTC ISO 8601 (#547): how old a game
+        # left on the board is. None until a move is played, and for a game
+        # saved before games recorded it.
+        self._last_move_at: str | None = None
 
     @property
     def started(self) -> str | None:
@@ -228,6 +252,13 @@ class GameSession:
         overnight.
         """
         return self._started
+
+    @property
+    def last_move_at(self) -> str | None:
+        """When the last move on the board was played (either side), as UTC ISO
+        8601 to the second, or None: no move yet, or a game saved before games
+        recorded it. A takeback leaves it alone; a new game clears it."""
+        return self._last_move_at
 
     @property
     def game_id(self) -> str:
@@ -366,6 +397,7 @@ class GameSession:
         self._game_id = _new_game_id()
         self._difficulty = None
         self._notes = {}
+        self._last_move_at = None
         self._revision += 1
 
     def resign(self, color: str | None = None) -> Outcome:
@@ -454,6 +486,7 @@ class GameSession:
         san = self._board.san(move)
         capture = self._captured_symbol(move)
         self._board.push(move)
+        self._last_move_at = _utcnow().isoformat(timespec="seconds")
         self._revision += 1
         return MoveResult(
             legal=True,
@@ -529,6 +562,7 @@ class GameSession:
             "difficulty": self._difficulty,
             # JSON keys are strings; ply indexes read back as ints.
             "notes": {str(ply): text for ply, text in sorted(self._notes.items())},
+            "last_move_at": self._last_move_at,
         }
 
     @classmethod
@@ -568,6 +602,7 @@ class GameSession:
         started = _validate_started(data.get("started"))
         difficulty = _validate_difficulty(data.get("difficulty"))
         notes = _validate_notes(data.get("notes"), len(moves))
+        last_move_at = _validate_last_move_at(data.get("last_move_at"))
         game_id = data.get("game_id")
         if game_id is not None and not (
             isinstance(game_id, str) and _GAME_ID.fullmatch(game_id)
@@ -606,6 +641,8 @@ class GameSession:
         # engine's next move records the strength it plays at.
         session._difficulty = difficulty
         session._notes = notes
+        # When the game was last played, not when it was replayed just now.
+        session._last_move_at = last_move_at
         return session
 
     def save(self, path: str | Path) -> None:
