@@ -18,11 +18,40 @@ import './App.css'
 // junk (or someone poking at the URL), so it gets cut rather than sent.
 const MAX_INTENT_LENGTH = 500
 
+// The intent's idempotency key (#553) rides in the URL beside it, so a retry
+// after a timeout, a Retry tap or a reload all send the same key, and the
+// backend answers a repeat from the first run instead of running it twice. The
+// conductor's link carries no key, so each handoff it makes gets a new one.
+const INTENT_KEY_PARAM = 'intent_key'
+// What the backend accepts as a key, and short enough to be inert in a URL; a
+// hand-edited one that is anything else is replaced, not sent.
+const INTENT_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+function replaceUrl(url: URL) {
+  window.history.replaceState({}, '', url.pathname + url.search + url.hash)
+}
+
+/** The key already beside the intent in the URL, or a new one written there.
+ * `getRandomValues` rather than `randomUUID`, which a page served over plain
+ * http on the home network does not have. */
+function intentKey(): string {
+  const url = new URL(window.location.href)
+  const existing = url.searchParams.get(INTENT_KEY_PARAM)
+  if (existing !== null && INTENT_KEY_PATTERN.test(existing)) return existing
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  const key = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  url.searchParams.set(INTENT_KEY_PARAM, key)
+  replaceUrl(url)
+  return key
+}
+
 // The request is answered (or given up on), so the URL stops carrying it.
 function dropIntentParam() {
   const url = new URL(window.location.href)
   url.searchParams.delete('intent')
-  window.history.replaceState({}, '', url.pathname + url.search + url.hash)
+  url.searchParams.delete(INTENT_KEY_PARAM)
+  replaceUrl(url)
 }
 
 // What the status row shows before the first state document arrives.
@@ -94,18 +123,20 @@ function App() {
   // sent twice — `intentStarted` (StrictMode's second mount, and any re-render),
   // `intentBusy` (a retry tapped while one is in flight) and `intentOwed`,
   // cleared the moment it succeeds (nothing left to send, nothing to re-send).
+  // Those guard this page; the key it sends with every attempt (#553) guards
+  // the backend, where a timed-out attempt may still have run.
   const intentStarted = useRef(false)
   const intentBusy = useRef(false)
-  const intentOwed = useRef<string | null>(null)
+  const intentOwed = useRef<{ text: string; key: string } | null>(null)
   const [intentFailed, setIntentFailed] = useState(false)
   const runIntent = useCallback(async () => {
-    const text = intentOwed.current
-    if (text === null || intentBusy.current) return
+    const owed = intentOwed.current
+    if (owed === null || intentBusy.current) return
     intentBusy.current = true
     setIntentFailed(false)
     let ran = false
     try {
-      ran = await sendHandoff(text)
+      ran = await sendHandoff(owed.text, owed.key)
     } finally {
       intentBusy.current = false
     }
@@ -130,7 +161,7 @@ function App() {
       if (window.location.search) window.history.replaceState({}, '', window.location.pathname)
       return
     }
-    intentOwed.current = intent.slice(0, MAX_INTENT_LENGTH)
+    intentOwed.current = { text: intent.slice(0, MAX_INTENT_LENGTH), key: intentKey() }
     void runIntent()
   }, [runIntent])
   // The post-game screen shows whenever the game is over and the player

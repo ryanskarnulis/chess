@@ -128,6 +128,10 @@ describe('conductor handoff (?intent=)', () => {
   const commandCalls = () =>
     fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/command'))
   const commandBody = (index: number) => JSON.parse(String(commandCalls()[index][1].body))
+  const commandKey = (index: number) =>
+    (commandCalls()[index][1].headers as Record<string, string>)['Idempotency-Key']
+  const intentParam = () => new URLSearchParams(window.location.search).get('intent')
+  const keyParam = () => new URLSearchParams(window.location.search).get('intent_key')
 
   const commandOk = () => ({ commentary: 'Playing black.', tool_results: [], state: served })
   const answerOk = () =>
@@ -168,7 +172,7 @@ describe('conductor handoff (?intent=)', () => {
     render(<App />)
     await waitFor(() => expect(commandCalls()).toHaveLength(1))
     // A reload here would retry it: the words are still there.
-    expect(window.location.search).toBe('?intent=play%20e4')
+    expect(intentParam()).toBe('play e4')
     await act(async () => answer())
     await waitFor(() => expect(window.location.search).toBe(''))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -217,7 +221,7 @@ describe('conductor handoff (?intent=)', () => {
 
       const alert = await screen.findByRole('alert')
       expect(alert).toHaveTextContent(/didn.t go through/i)
-      expect(window.location.search).toBe('?intent=play%20as%20black')
+      expect(intentParam()).toBe('play as black')
       expect(commandCalls()).toHaveLength(1)
 
       fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
@@ -243,7 +247,7 @@ describe('conductor handoff (?intent=)', () => {
       render(<App />)
 
       const alert = await screen.findByRole('alert')
-      expect(window.location.search).toBe('?intent=play%20as%20black')
+      expect(intentParam()).toBe('play as black')
       fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
       await waitFor(() => expect(window.location.search).toBe(''))
       expect(commandCalls()).toHaveLength(2)
@@ -258,7 +262,7 @@ describe('conductor handoff (?intent=)', () => {
       )
       await waitFor(() => expect(commandCalls()).toHaveLength(2))
       expect(await screen.findByRole('alert')).toBeInTheDocument()
-      expect(window.location.search).toBe('?intent=play%20as%20black')
+      expect(intentParam()).toBe('play as black')
     })
 
     it('never has two in flight: a second tap while one is running sends nothing', async () => {
@@ -307,7 +311,7 @@ describe('conductor handoff (?intent=)', () => {
           await vi.advanceTimersByTimeAsync(1)
         })
         expect(screen.getByRole('alert')).toHaveTextContent(/didn.t go through/i)
-        expect(window.location.search).toBe('?intent=play%20as%20black')
+        expect(intentParam()).toBe('play as black')
       } finally {
         vi.useRealTimers()
       }
@@ -334,6 +338,97 @@ describe('conductor handoff (?intent=)', () => {
       )
       expect(window.location.search).toBe('')
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(commandCalls()).toHaveLength(1)
+    })
+  })
+
+  // One idempotency key per intent (#553): the backend answers a repeat of a
+  // key from its first run, so a retry of a turn that did run never runs twice.
+  describe('idempotency key', () => {
+    it('sends one, and keeps it in the URL beside the intent until it is spent', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20e4')
+      let answer: () => void = () => {}
+      commandsAnswer(
+        () =>
+          new Promise((resolve) => {
+            answer = () => resolve({ ok: true, status: 200, json: () => Promise.resolve(commandOk()) })
+          }),
+      )
+      render(<App />)
+      await waitFor(() => expect(commandCalls()).toHaveLength(1))
+      expect(commandKey(0)).toMatch(/^[0-9a-f]{32}$/)
+      expect(keyParam()).toBe(commandKey(0))
+      await act(async () => answer())
+      await waitFor(() => expect(window.location.search).toBe(''))
+    })
+
+    it('sends the same key on a Retry', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      const outcomes = [answer503, answerOk]
+      commandsAnswer(() => outcomes.shift()!())
+      render(<App />)
+      fireEvent.click(
+        within(await screen.findByRole('alert')).getByRole('button', { name: 'Retry' }),
+      )
+      await waitFor(() => expect(commandCalls()).toHaveLength(2))
+      expect(commandKey(1)).toBe(commandKey(0))
+    })
+
+    it('sends the same key after a reload, because it rides in the URL', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      const outcomes = [answer503, answerOk]
+      commandsAnswer(() => outcomes.shift()!())
+      const first = render(<App />)
+      await screen.findByRole('alert')
+      first.unmount()
+      render(<App />)
+      await waitFor(() => expect(commandCalls()).toHaveLength(2))
+      expect(commandKey(1)).toBe(commandKey(0))
+    })
+
+    it('uses the key already in the URL, and replaces one the backend would refuse', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20e4&intent_key=abc-123')
+      const view = render(<App />)
+      await waitFor(() => expect(commandCalls()).toHaveLength(1))
+      expect(commandKey(0)).toBe('abc-123')
+      await waitFor(() => expect(window.location.search).toBe(''))
+      view.unmount()
+
+      window.history.replaceState({}, '', `/?intent=play%20e4&intent_key=${'x'.repeat(65)}`)
+      render(<App />)
+      await waitFor(() => expect(commandCalls()).toHaveLength(2))
+      expect(commandKey(1)).toMatch(/^[0-9a-f]{32}$/)
+    })
+
+    it('gives a new handoff a new key', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20e4')
+      const view = render(<App />)
+      await waitFor(() => expect(window.location.search).toBe(''))
+      view.unmount()
+      window.history.replaceState({}, '', '/?intent=play%20e4')
+      render(<App />)
+      await waitFor(() => expect(commandCalls()).toHaveLength(2))
+      expect(commandKey(1)).not.toBe(commandKey(0))
+    })
+
+    it('drops the intent without resending when the first attempt never finished', async () => {
+      window.history.replaceState({}, '', '/?intent=play%20as%20black')
+      commandsAnswer(() =>
+        Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () =>
+            Promise.resolve({
+              detail: 'that command did not complete',
+              incomplete: true,
+              state: served,
+            }),
+        }),
+      )
+      render(<App />)
+      await waitFor(() => expect(window.location.search).toBe(''))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      await new Promise((resolve) => setTimeout(resolve, 20))
       expect(commandCalls()).toHaveLength(1)
     })
   })

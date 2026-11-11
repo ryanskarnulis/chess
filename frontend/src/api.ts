@@ -100,6 +100,23 @@ function versioned(body: Record<string, unknown>, version?: number): Record<stri
   return version === undefined ? body : { ...body, version }
 }
 
+/** A keyed command's first run started and never finished (#553): the backend
+ * answers its retry with this 409 and the current state instead of running it
+ * again. Whatever it did is on the board, so the request is spent. */
+export interface IncompleteCommandResponse {
+  incomplete: true
+  detail: string
+  state: GameState
+}
+
+export function isIncompleteCommandResponse(data: unknown): data is IncompleteCommandResponse {
+  if (typeof data !== 'object' || data === null) return false
+  const candidate = data as Partial<IncompleteCommandResponse>
+  return (
+    candidate.incomplete === true && typeof candidate.state === 'object' && candidate.state !== null
+  )
+}
+
 export function isStaleStateResponse(data: unknown): data is StaleStateResponse {
   if (typeof data !== 'object' || data === null) return false
   const candidate = data as Partial<StaleStateResponse>
@@ -425,11 +442,15 @@ export interface CommandResponse {
    * it is a field: a client holding a request until it has run must not count
    * it as done. Optional for older backends, which never say. */
   retryable?: boolean
+  /** Answered from the first run of a repeated `Idempotency-Key` (#553):
+   * nothing ran this time. Optional for older backends. */
+  replayed?: boolean
 }
 
 /**
  * Send a free-form command to the agent. Never throws: returns its commentary
- * and state, the catch-up state from a stale 409, or null when no turn came
+ * and state, the catch-up state from a stale 409, the current state when a
+ * keyed command's first run never finished, or null when no turn came
  * back at all — the agent is unavailable (no brain → 503) or the request never
  * reached it. A transport failure is null for the same reason a 503 is: both
  * mean nothing happened, and the callers already say so (#232). It must not be
@@ -443,7 +464,7 @@ export async function sendCommand(
   version?: number,
   interactionId?: string,
   options: CommandOptions = {},
-): Promise<CommandResponse | StaleStateResponse | null> {
+): Promise<CommandResponse | StaleStateResponse | IncompleteCommandResponse | null> {
   // The interaction id joins this turn's trace record to the transcription
   // before it and the speech after it (#317); omitted when there is none. The
   // origin is the trace's label for where the words came from (#546); omitted
@@ -466,6 +487,11 @@ export async function sendCommand(
     try {
       res = await fetch('/api/command', {
         ...JSON_POST,
+        // One key per request the caller may send more than once (#553): the
+        // backend answers a repeat from the first run instead of running it.
+        ...(options.idempotencyKey
+          ? { headers: { ...JSON_POST.headers, 'Idempotency-Key': options.idempotencyKey } }
+          : {}),
         body: JSON.stringify(versioned(body, version)),
         signal: controller.signal,
       })
@@ -474,7 +500,10 @@ export async function sendCommand(
     }
     const data = (await res.json().catch(() => ({}))) as unknown
     if (controller.signal.aborted) return null
-    if (!res.ok) return isStaleStateResponse(data) ? data : null
+    if (!res.ok) {
+      if (isStaleStateResponse(data) || isIncompleteCommandResponse(data)) return data
+      return null
+    }
     return data as CommandResponse
   } finally {
     if (timer !== null) clearTimeout(timer)
@@ -490,6 +519,9 @@ export interface CommandOptions {
   origin?: CommandOrigin
   /** Give up on the turn after this long (ms). Absent: wait as long as it takes. */
   timeoutMs?: number
+  /** Sent as `Idempotency-Key`: the same key on every retry of one request,
+   * so a retry after a timeout or reload never runs it twice (#553). */
+  idempotencyKey?: string
 }
 
 export interface Settings {

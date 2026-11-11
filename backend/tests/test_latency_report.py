@@ -175,6 +175,16 @@ def test_a_censored_interaction_is_counted_not_ranked():
     assert (row["censored"], row["ok"], row["p50"]) == (1, 0, None)
 
 
+def test_handoff_milestones_are_their_own_rows():
+    """#554: a handoff's browser report says `handoff`, and the report keeps
+    it apart from typed commands rather than pooling them."""
+    typed = {**voice("t1", command_sent=5, command_done=900), "origin": "typed"}
+    handed = {**voice("h1", command_sent=5, command_done=4005), "origin": "handoff"}
+    report = summarize([typed, handed])
+    assert report.client[("typed", "command→response")].values == [895]
+    assert report.client[("handoff", "command→response")].values == [4000]
+
+
 def test_speech_failures_are_counted():
     report = summarize(
         [
