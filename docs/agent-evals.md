@@ -404,6 +404,24 @@ no prompt, profile crutch or scenario changed to get these.
   `best_move_then_play`; `glitch_reply_with_intent` was 5/5 this time. Speech
   123/123 backed over 334 turns; the reply was said 94/96.
 
+**Batch run 2026-11-11 on `063f9b8`, gemma-4-12b, bare command (#556).** First
+gate since the `truncated` stop (a planner cut off after tool work ends
+`truncated`, counted unfinished and inconclusive). Nothing tuned. **59 of 60
+passed, 1 failed** in 23 m 43 s, infra 0 in every scenario, none inconclusive.
+Against the 2026-11-09 re-run (60 of 60):
+
+- **`truncated=0/270`** over the 52 sampled conditions: no sample ended
+  truncated.
+- **`impossible_move_is_refused_not_asked` 9/15** (60%, [0.39, 0.78],
+  `BELOW_FLOOR`, stable; 3/5 in each of three blocks), red. It was 5/5 before.
+  The six misses are all unbacked speech, `opening`: Glitch says "that
+  bishop's stuck" and the claim reader scores "that bishop's" as an opening
+  name. Upper bound 0.78 is not under 0.65 (the lower bound of 5/5), so it
+  is red against the floor, not significantly below the baseline.
+- The other 51 conditions were 5/5; the 8 hard scenarios passed.
+- Speech: **146/152 claims backed** over 344 turns (was 123/123 over 334);
+  the six unbacked are those `opening` claims; reply said 97/97 (was 94/96).
+
 ```bash
 cd backend
 CHESSAPP_AGENT_EVALS=1 CHESSAPP_EVAL_REPORT=/tmp/gate-12b.jsonl \
