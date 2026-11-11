@@ -228,6 +228,22 @@ def test_the_browsers_milestones_are_written_as_reported(trace_path):
     assert client.get("/api/state").json() == before
 
 
+def test_a_handoff_report_is_recorded_as_a_handoff(trace_path):
+    """The conductor's `open` reaches the page as a command nobody typed
+    (#554): its milestones say `handoff`, so they can be told from typed ones,
+    and start at submit like a typed command's."""
+    client = speech_app(trace_path)
+    marks = {"command_sent": 5, "command_done": 2100}
+    for origin in ("typed", "handoff"):
+        client.post(
+            "/api/telemetry/voice",
+            json=report(origin=origin, start="submit", marks=marks, outcome="silent"),
+        )
+    typed, handed = records(trace_path)
+    assert (typed["origin"], handed["origin"]) == ("typed", "handoff")
+    assert handed["start"] == "submit"
+
+
 def test_a_censored_report_says_so(trace_path):
     client = speech_app(trace_path)
     client.post(

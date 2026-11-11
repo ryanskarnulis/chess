@@ -23,8 +23,11 @@ A `turn` record's `origin` says which surface spoke: `panel`, `handoff` (the
 conductor's `open`, sent by the page as `origin: "handoff"` on `/api/command`,
 #546), `delegate:<id>` or `mcp`. It is a label for counting and timing; a
 handoff turn is the panel's in every other respect. Count handoffs with
-`origin == "handoff"`; one the page never got an answer to ends its `voice`
-record as `no_command`.
+`origin == "handoff"`. A `voice` record's `origin` is `voice`, `typed` or
+`handoff` (#554), so `latency_report.py` gives handoffs their own rows; one
+the page never got an answer to ends as `no_command`. A handoff retried under
+its idempotency key and answered from the first run (`replayed`, #553) writes
+no second `turn` record.
 
 `speech` records never store audio or text. `voice` records carry the
 browser's timing marks and nothing the player said.
@@ -37,7 +40,7 @@ player's wait starts:
   after the last word (`END_OF_SPEECH_MS`), so every voice mark includes that
   second.
 - **Push-to-talk:** at the stop tap.
-- **Typed:** at submit.
+- **Typed** and **handoff:** at submit.
 
 The same id is sent on the transcription (`X-Interaction-Id`), in the
 command body (`interaction_id`), and on the speech request. `/api/command`
