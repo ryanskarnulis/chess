@@ -200,6 +200,7 @@ from evalstats_app import (
     TurnTokens,
     VacuousRun,
     classify,
+    count_stop,
     generation_rate,
     scenario_record,
     split_latencies,
@@ -2178,11 +2179,15 @@ def _pass_rate(
         f"\n[eval] scenario={scenario} PASS_RATE={result.summary()} floor={floor:.0%}"
     )
     print(f"[eval] scenario={scenario} {_SPEECH.scenario.summary()}")
+    # Cut-offs are inconclusive, not failures, so they would vanish into the
+    # inconclusive count; their own line keeps a rising rate visible (#556).
+    truncated = count_stop(samples, "truncated")
+    print(f"[eval] scenario={scenario} truncated={truncated}/{len(samples)}")
     for failure in result.failures:
         print(f"[eval]   ✗ {failure}")
     for mode, count in sorted(result.failure_modes.items(), key=lambda item: -item[1]):
         print(f"[eval]   ×{count} {mode}")
-    _report(record(**scenario_record(scenario, result, floor)))
+    _report(record(**scenario_record(scenario, result, floor, truncated=truncated)))
     return result
 
 

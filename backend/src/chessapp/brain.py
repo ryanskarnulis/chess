@@ -17,9 +17,10 @@ exception after the board changed, and `provider_failure` names *which*
 death it was so a caller can tell one worth retrying from one that is not),
 `no_progress` when the loop ended a planning phase that had started
 repeating itself, `truncated` when a planner call cut off at its token cap
-with no tool calls and nothing run (silent, like a budget stop with nothing
-done; #545), and `budget` when a per-turn tool-work or wall-time budget
-ended it (#288; `budget` on the response names which). What the player gets
+with no tool calls (silent where nothing ran, like a budget stop with nothing
+done, #545; narrated from the record where earlier work did, #556), and
+`budget` when a per-turn tool-work or wall-time budget ended it (#288;
+`budget` on the response names which). What the player gets
 is decided by what ran, not by the stop: a dead provider produces no
 commentary, and a stop on any budget produces none when no tool did any work;
 otherwise the narrator closes the turn like `completed` does — results came

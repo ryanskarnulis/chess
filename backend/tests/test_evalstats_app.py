@@ -58,6 +58,7 @@ from evalstats_app import (
     RateResult,
     VacuousRun,
     classify,
+    count_stop,
     failure_signature,
     generation_rate,
     scenario_record,
@@ -125,6 +126,33 @@ def test_a_budget_stop_on_a_commentary_check_is_inconclusive() -> None:
         )
         is Outcome.INCONCLUSIVE
     )
+
+
+def test_a_cut_off_planner_is_inconclusive_like_a_budget_stop() -> None:
+    """#556: `truncated` reaches no narrator where nothing ran, and where it
+    did the turn still ends on the cap, not on an answer. Either way a purely
+    negative commentary check has not been tested."""
+    assert "truncated" in BUDGET_STOPS
+    assert (
+        classify(
+            status_code=200,
+            stop_reason="truncated",
+            error=VacuousRun("stopped on truncated: no narrator ran"),
+        )
+        is Outcome.INCONCLUSIVE
+    )
+
+
+def test_count_stop_counts_the_samples_that_ended_on_one_stop() -> None:
+    samples = [
+        {"stop_reason": "truncated"},
+        {"stop_reason": "completed"},
+        {"stop_reason": "truncated"},
+        {"stop_reason": None},
+    ]
+    assert count_stop(samples, "truncated") == 2
+    assert count_stop(samples, "max_iterations") == 0
+    assert count_stop([], "truncated") == 0
 
 
 def test_a_budget_stop_is_not_vacuous_by_itself() -> None:
