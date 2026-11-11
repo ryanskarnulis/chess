@@ -42,7 +42,11 @@ SET = {"name": "set_verbosity", "result": {"ok": True, "verbosity": "high"}}
         ([MOVED, REFUSED], "completed", "partial"),
         ([MOVED, ILLEGAL], "completed", "partial"),
         ([MOVED], "no_progress", "partial"),
-        ([MOVED], "length", "partial"),
+        # #556: a planner cut off after earlier work is unfinished too.
+        ([MOVED], "truncated", "partial"),
+        ([LOOKED], "truncated", "completed"),
+        # Silent truncation (#545) has no results to sort: still a reply.
+        ([], "truncated", "reply"),
         # #288: a budget ends the phase before the planner said it was done.
         ([MOVED], "budget", "partial"),
         ([MOVED], "max_iterations", "partial"),

@@ -62,7 +62,16 @@ STOP_PROVIDER_ERROR = "provider_error"
 # under a commentary-only check (`Outcome.INCONCLUSIVE`) and a turn with no
 # narrator round trip to attribute time to (`Attribution.NO_NARRATOR`). One set,
 # because those two readings must never disagree about what a stop means.
-BUDGET_STOPS = frozenset({"max_iterations", "correction_limit"})
+# `truncated` (a planner call cut off at its token cap, #545/#556) is read the
+# same way: the cap, not an answer, ended the turn. `count_stop` keeps it
+# visible, since an inconclusive sample is otherwise easy to stop seeing.
+BUDGET_STOPS = frozenset({"max_iterations", "correction_limit", "truncated"})
+
+
+def count_stop(samples: Sequence[dict[str, Any]], stop: str) -> int:
+    """How many of a scenario's recorded samples ended on `stop`."""
+    return sum(1 for sample in samples if sample.get("stop_reason") == stop)
+
 
 # The trace's route vocabulary, split by the only thing this module needs from
 # it: how many model *phases* the route can have spent time in. The brain route

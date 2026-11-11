@@ -1975,17 +1975,19 @@ def test_a_truncated_planner_turn_still_costs_its_tokens():
 
 def test_a_truncated_planner_turn_keeps_what_the_turn_verified():
     # A move that landed before the truncation is real board history; the
-    # narrator still closes the turn from it, like any no-progress stop. (Only
-    # a truncation where nothing ran is silent and `truncated`, #545.)
-    brain, _ = make_brain(
+    # narrator still closes the turn from it, and the stop is `truncated`
+    # either way (#556) — what differs from a truncation where nothing ran
+    # (#545) is only that there is a record to narrate from.
+    brain, provider = make_brain(
         tool_calls_turn(("make_move", {"move": "e4"})),
         text_turn("and now I will", finish_reason="length"),
         text_turn("e4, done."),
     )
     resp = brain.get_agent_response(board_state={}, command="play e4")
-    assert resp.stop_reason == "no_progress"
+    assert resp.stop_reason == "truncated"
     assert [call.name for call in resp.tool_calls] == ["make_move"]
     assert resp.text == "e4, done."
+    assert len(provider.calls) == 3  # planner, cut-off planner, narrator
 
 
 def test_a_truncated_turn_that_still_carries_tool_calls_runs_them():

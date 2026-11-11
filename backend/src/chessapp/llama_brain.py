@@ -111,8 +111,9 @@ Model-specific quirks, split across the two layers:
   fragment is dropped and, where nothing ran, the phase ends silent under
   `truncated` (#545: like a budget stop with nothing done, the pipeline's
   stuck reply covers it; where earlier iterations did real work it ends under
-  `no_progress` with the loop's own note). A cut-off narration
-  becomes the empty reply the pipeline already knows how to stand in for, and a
+  `truncated` too (#556), narrated from the record with the loop's own note).
+  A cut-off narration becomes the empty reply the pipeline already knows how
+  to stand in for, and a
   cut-off confirmation reading is `unrelated` — the answer that changes
   nothing. Its *tool calls* are a different matter and do run: the provider
   parses each call's arguments whole before the result exists, so a call that
@@ -667,11 +668,13 @@ class LlamaBrain:
                     # the turn brought nothing new back, which is the
                     # no-progress stop's exact contract: end the phase, let the
                     # narrator close from what the turn verified, under the
-                    # loop's own note.
+                    # loop's own note. The stop is `truncated` either way
+                    # (#556): the cap cut it off, and that is what a reader of
+                    # the trace needs to see, not a stall.
                     if not dispatched:
                         return run.response("", "truncated")
                     return self._close(
-                        run, command, _NO_PROGRESS_NOTE, told, "no_progress"
+                        run, command, _NO_PROGRESS_NOTE, told, "truncated"
                     )
                 # The planner is done. Its text is a handoff note, never the
                 # reply — the narrator turns the turn's verified results into
@@ -975,7 +978,8 @@ class LlamaBrain:
 
         `stop_reason` is how the planning phase ended: `completed` when the
         planner declared itself done, `no_progress` when it repeated itself to
-        no effect and the loop ended the phase for it. Both reach the narrator —
+        no effect and the loop ended the phase for it, `truncated` when a
+        token cap cut it off after earlier work. All reach the narrator —
         the distinction is what the trace and the eval report read.
         """
         self._settle_reply()

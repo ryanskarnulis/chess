@@ -82,11 +82,12 @@ READ_TOOLS = frozenset(
 # past move, and that verdict does not age, so it is not dated in the brief.
 _DATED = frozenset({"evaluate_position", "get_best_moves"})
 
-# How the loop ending on its own reads here — a stall (`no_progress`) or a
-# budget (#288): the planner never declared itself done, so a turn that also
-# changed something is `partial`.
+# How the loop ending on its own reads here — a stall (`no_progress`), a
+# budget (#288) or a cut-off planner call (`truncated`, #556): the planner never
+# declared itself done, so a turn that also changed something is `partial`. A
+# truncation where nothing ran is silent and builds no handoff at all.
 _UNFINISHED_STOPS = frozenset(
-    {"no_progress", "length", "budget", "max_iterations", "correction_limit"}
+    {"no_progress", "truncated", "budget", "max_iterations", "correction_limit"}
 )
 
 Kind = Literal["completed", "partial", "declined", "reply", "clarify"]
