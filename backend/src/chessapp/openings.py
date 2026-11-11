@@ -104,11 +104,13 @@ _GENERIC = frozenset(
 # Heads that are ordinary words, or chess words, before they are openings.
 # "The English" or "the modern" is table talk, and "your king's knight" or
 # "the four knights" is pieces, so a head like these is only ever read in its
-# full family name ("English Opening").
+# full family name ("English Opening"). "That bishop's stuck" is the piece
+# plus a contraction, not the Bishop's Opening (#561).
 _COMMON_HEADS = frozenset(
     {
         "amazon",
         "bird",
+        "bishop's",
         "center",
         "elephant",
         "english",

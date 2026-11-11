@@ -1524,6 +1524,10 @@ def test_an_opening_the_line_passed_through_is_backed(text):
         "Textbook Italian Game.",
         "We're in the Grünfeld Defence.",
         "Ah, the Caro Kann.",
+        # The possessive openings in full are still read (#561).
+        "This is the Bishop's Opening.",
+        "King's Gambit, how bold.",
+        "Queen’s Gambit Declined.",
     ],
 )
 def test_an_opening_the_line_never_reached_is_unbacked(text):
@@ -1537,6 +1541,12 @@ def test_an_opening_the_line_never_reached_is_unbacked(text):
         "Your king's knight is loose.",
         "The four knights on the board are staring at each other.",
         "Say it in English.",
+        # A possessive or contraction on a piece is not an opening (#561).
+        "That bishop's stuck behind your pawn.",
+        "That bishop's blocked, so I can't move it.",
+        "The king's in check.",
+        "Your queen’s hanging.",
+        "The bishop’s on the long diagonal.",
         # A head with no article is not read.
         "Italian food after this?",
         # Questions, conditions and plans stay talk.
