@@ -16,6 +16,7 @@ Under `CHESSAPP_SAVE_DIR` (the `/data/saves` volume in the container):
 | `games/<name>.json` | a named save: the game plus the panel transcript | by `save_game`, atomically |
 | `live.json` | the live game: board, panel transcript, `game_id`, board version, the game's ledger (#372), and move notes (a `glitch`-tier fallback's PGN comment, #473) | on every change, atomically, best-effort |
 | `conversations.json` | every delegate thread: turns, soft deletes, id counters, idempotency keys | on every change, atomically, best-effort |
+| `command_keys.json` | the panel route's idempotency keys (#553): each key's words, origin, status and stored reply; at most 64, none older than 24 h | on every keyed command, atomically, best-effort |
 | `results.jsonl` | every game that ended: its result, or its withdrawal (#373) | appended when a game ends or an ending is taken back, best-effort |
 
 **Restart** (#291). `live.json` is written whenever the board version or the
@@ -192,6 +193,26 @@ With a key and `game_id` (below) a conductor gets the acceptance #291 asked
 for: a retry recovers a known outcome without acting twice, and never lands
 on a game it was not playing. Without a key, a retry is a new exchange, as
 before.
+
+`POST /api/command` takes the same optional header (#553). The page sends one
+key per conductor handoff, kept in the URL beside the intent
+(`intent_key`), so a retry after the 30 s timeout, a Retry tap or a reload
+sends the same one. The key is checked before the mutation lock and bound to
+the words and `origin` it first came with:
+
+| The first attempt… | A retry gets |
+|---|---|
+| is still running | waits for it, then the row below that applies |
+| finished | 200, its `commentary`, `tool_results` and `correlation_id`, the board as it is now, `replayed: true`; nothing runs |
+| ran nothing (a stale 409, a dead provider: `retryable`) | runs, as the first attempt |
+| started and never finished (it raised, or a restart cut it off) | 409 `incomplete: true` with the current state; the page drops the intent |
+| used the key for different words or origin | 422 |
+
+Keys live in `command_keys.json` when there is a save dir, so a restart keeps
+them; a run the restart cut off reads back as incomplete. Without a save dir
+they last the process, and a retry after a restart runs again. Past 24 hours,
+or 64 newer keys, a key is forgotten and its words run as new. No key is the
+old behaviour.
 
 ## Game identity
 

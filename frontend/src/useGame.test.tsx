@@ -1323,7 +1323,7 @@ describe('useGame', () => {
       await waitFor(() => expect(result.current.state).not.toBeNull())
       let ran = false
       await act(async () => {
-        ran = await result.current.sendHandoff('play as black')
+        ran = await result.current.sendHandoff('play as black', 'k1')
       })
       expect(ran).toBe(true)
       expect(commandBody()).toMatchObject({ text: 'play as black', origin: 'handoff' })
@@ -1345,7 +1345,7 @@ describe('useGame', () => {
       )
       let ran = true
       await act(async () => {
-        ran = await result.current.sendHandoff('play as black')
+        ran = await result.current.sendHandoff('play as black', 'k1')
       })
       expect(ran).toBe(false)
       expect(result.current.commentary).toBe('The agent is unavailable.')
@@ -1368,7 +1368,7 @@ describe('useGame', () => {
       )
       let ran = true
       await act(async () => {
-        ran = await result.current.sendHandoff('play as black')
+        ran = await result.current.sendHandoff('play as black', 'k1')
       })
       expect(ran).toBe(false)
       // The words still reach the player.
@@ -1395,10 +1395,71 @@ describe('useGame', () => {
       )
       let ran = true
       await act(async () => {
-        ran = await result.current.sendHandoff('play as black')
+        ran = await result.current.sendHandoff('play as black', 'k1')
       })
       expect(ran).toBe(false)
       expect(result.current.state?.version).toBe(4)
+    })
+
+    it('sends its key on the request, and an ordinary command sends none (#553)', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.state).not.toBeNull())
+      const sentHeaders = () =>
+        fetchMock.mock.calls.find(([url]) => String(url).includes('/api/command'))?.[1]
+          ?.headers as Record<string, string>
+      await act(async () => {
+        await result.current.sendHandoff('play as black', 'intent-key-1')
+      })
+      expect(sentHeaders()['Idempotency-Key']).toBe('intent-key-1')
+      fetchMock.mockClear()
+      await act(async () => {
+        await result.current.sendCommand('play e4')
+      })
+      expect(sentHeaders()).not.toHaveProperty('Idempotency-Key')
+    })
+
+    it('resolves true when its first attempt started and never finished: the request is spent', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.state?.version).toBe(1))
+      fetchMock.mockImplementation((url: string) =>
+        String(url).includes('/api/command')
+          ? Promise.resolve({
+              ok: false,
+              status: 409,
+              json: () =>
+                Promise.resolve({
+                  detail: 'that command did not complete',
+                  incomplete: true,
+                  state: state({ version: 3, fen: AFTER_E4_E5_FEN }),
+                }),
+            })
+          : jsonResponse(state()),
+      )
+      let ran = false
+      await act(async () => {
+        ran = await result.current.sendHandoff('play as black', 'k1')
+      })
+      expect(ran).toBe(true)
+      expect(result.current.state?.version).toBe(3)
+      expect(result.current.commentary).toMatch(/cut off/i)
+      expect(result.current.agentThinking).toBe(false)
+    })
+
+    it('reports its milestones as a handoff, not as typed (#554)', async () => {
+      const { result } = renderHook(() => useGame())
+      await waitFor(() => expect(result.current.state).not.toBeNull())
+      const reportOrigins = () =>
+        fetchMock.mock.calls
+          .filter(([url]) => String(url).includes('/api/telemetry/voice'))
+          .map(([, init]) => JSON.parse(String(init.body)).origin)
+      await act(async () => {
+        await result.current.sendHandoff('play as black', 'k1')
+      })
+      await waitFor(() => expect(reportOrigins()).toEqual(['handoff']))
+      await act(async () => {
+        await result.current.sendCommand('play e4')
+      })
+      await waitFor(() => expect(reportOrigins()).toEqual(['handoff', 'typed']))
     })
 
     it('resolves false after 30 s without an answer, and not before', async () => {
@@ -1414,7 +1475,7 @@ describe('useGame', () => {
       )
       let settled: boolean | null = null
       act(() => {
-        void result.current.sendHandoff('play as black').then((ran) => (settled = ran))
+        void result.current.sendHandoff('play as black', 'k1').then((ran) => (settled = ran))
       })
       await act(async () => {
         await vi.advanceTimersByTimeAsync(29_999)

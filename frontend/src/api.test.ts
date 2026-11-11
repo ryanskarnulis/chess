@@ -137,6 +137,29 @@ describe('sendCommand (#546)', () => {
     })
   })
 
+  it('sends an Idempotency-Key only when given one (#553)', async () => {
+    const fetchMock = vi.fn((_url: string, _init: RequestInit) =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ commentary: '' }) }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await sendCommand('play e4', undefined, undefined, { idempotencyKey: 'k-1' })
+    await sendCommand('play e4')
+    const headers = (call: number) => fetchMock.mock.calls[call][1].headers as Record<string, string>
+    expect(headers(0)).toEqual({ 'Content-Type': 'application/json', 'Idempotency-Key': 'k-1' })
+    expect(headers(1)).toEqual({ 'Content-Type': 'application/json' })
+  })
+
+  it('hands back the state of a keyed command whose first run never finished', async () => {
+    const body = { detail: 'that command did not complete', incomplete: true, state: { version: 2 } }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve({ ok: false, status: 409, json: () => Promise.resolve(body) })),
+    )
+    await expect(sendCommand('hi', undefined, undefined, { idempotencyKey: 'k' })).resolves.toEqual(
+      body,
+    )
+  })
+
   it('gives up with null when the turn outlasts the timeout, and aborts the request', async () => {
     vi.useFakeTimers()
     const fetchMock = hangingFetch()

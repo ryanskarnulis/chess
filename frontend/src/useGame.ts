@@ -6,6 +6,7 @@ import {
   fetchHint,
   fetchSettings,
   fetchState,
+  isIncompleteCommandResponse,
   isMoveFailure,
   isStaleStateResponse,
   newGame as apiNewGame,
@@ -177,11 +178,13 @@ export interface UseGame {
   /**
    * Send what the conductor handed this page off with (#546): an ordinary
    * command, labelled `handoff` in the trace and bounded in time. Resolves
-   * true only once the backend ran the turn; false when it did not (agent
-   * unavailable, model down, timed out, refused as stale) — the caller keeps
-   * the request and offers a retry.
+   * true once the backend ran the turn (or its first attempt did); false when
+   * it did not (agent unavailable, model down, timed out, refused as stale) —
+   * the caller keeps the request and offers a retry. `key` is the request's
+   * idempotency key, the same on every retry, so a retry of a turn that did
+   * run is answered from it rather than run twice (#553).
    */
-  sendHandoff: (text: string) => Promise<boolean>
+  sendHandoff: (text: string, key: string) => Promise<boolean>
   /**
    * The PGN the latest reply exported, or null when it exported none. It
    * belongs to the reply it arrived with: the next command (or a new game)
@@ -672,8 +675,10 @@ export function useGame(): UseGame {
       // was superseded on screen still ran.
       let ran = false
       // A spoken command arrives with the interaction its utterance opened; a
-      // typed one opens its own, starting now (#317).
-      const interaction = interactionId ?? beginInteraction('typed')
+      // typed one opens its own, starting now (#317), and so does a handoff,
+      // under its own label (#554).
+      const interaction =
+        interactionId ?? beginInteraction(options?.origin === 'handoff' ? 'handoff' : 'typed')
       setAgentThinking(true)
       // Dropped before the turn, not after it: the chip belongs to the reply
       // it came with, and it must not sit under the *next* answer while that
@@ -697,6 +702,14 @@ export function useGame(): UseGame {
           if (isStaleStateResponse(response)) {
             apply(response.state)
             return false
+          }
+          if (isIncompleteCommandResponse(response)) {
+            // An earlier attempt under this key started and never finished
+            // (#553). Whatever it did is on the board, so the request is spent:
+            // sending it again could do it twice.
+            apply(response.state)
+            setCommentary('That request was cut off. The board shows what it did.')
+            return true
           }
           // A 200 is not always a turn that ran: a dead provider answers in
           // words, and says so in `retryable`.
@@ -758,8 +771,12 @@ export function useGame(): UseGame {
   )
 
   const sendHandoff = useCallback(
-    (text: string) =>
-      runCommand(text, undefined, { origin: 'handoff', timeoutMs: HANDOFF_TIMEOUT_MS }),
+    (text: string, key: string) =>
+      runCommand(text, undefined, {
+        origin: 'handoff',
+        timeoutMs: HANDOFF_TIMEOUT_MS,
+        idempotencyKey: key,
+      }),
     [runCommand],
   )
 

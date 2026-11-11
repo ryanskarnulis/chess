@@ -25,7 +25,8 @@ export type Mark =
   | 'playback_started'
   | 'playback_ended'
 
-export type Origin = 'voice' | 'typed'
+/** `handoff` is the conductor's `open`: a command nobody typed (#554). */
+export type Origin = 'voice' | 'typed' | 'handoff'
 
 /** How an interaction ended, as far as the player could hear. The playback
  * outcomes are `tts.ts`'s; `silent` is a reply that was not voiced (voice off,
@@ -72,7 +73,7 @@ export function newInteractionId(): string {
 }
 
 /** Open an interaction, starting its clock now. Voice starts at the VAD's
- * end-of-speech (or the push-to-talk stop); typed at submit. */
+ * end-of-speech (or the push-to-talk stop); typed and handoff at submit. */
 export function beginInteraction(origin: Origin): string {
   const id = newInteractionId()
   live.set(id, {

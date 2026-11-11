@@ -92,6 +92,7 @@ from chessapp import clarification, openings
 from chessapp.agent_api import (
     CONVERSATIONS_FILENAME,
     MAX_AGENT_MESSAGE_LENGTH,
+    MAX_IDEMPOTENCY_KEY_LENGTH,
     ConversationStore,
     build_agent_router,
 )
@@ -110,6 +111,7 @@ from chessapp.brain import (
     Narration,
 )
 from chessapp.brain_switch import BrainSwitch
+from chessapp.command_keys import COMMAND_KEYS_FILENAME, CommandKeys
 from chessapp.conversation import Recall
 from chessapp.coordinator import (
     ReplySettlement,
@@ -303,7 +305,9 @@ class VoiceTelemetry(BaseModel):
     correlation_id: str | None = Field(
         default=None, max_length=_ID_MAX, pattern=_ID_PATTERN
     )
-    origin: Literal["voice", "typed"]
+    # `handoff` is the conductor's `open`, which the page sends as a command
+    # with `origin: "handoff"` (#554): typed by nobody, so not `typed`.
+    origin: Literal["voice", "typed", "handoff"]
     clock: Literal["client_monotonic_ms"]
     start: Literal["speech_end", "submit"]
     marks: dict[VoiceMark, Annotated[float, Field(ge=0, le=_MARK_CEILING_MS)]]
@@ -1781,6 +1785,11 @@ def create_app(
     # keeps the board.
     store = ConversationStore(
         ctx.save_dir / CONVERSATIONS_FILENAME if ctx.save_dir is not None else None
+    )
+    # The panel route's idempotency keys (#553), on disk beside them for the
+    # same reason: a handoff retried after a restart is still recognised.
+    command_keys = CommandKeys(
+        ctx.save_dir / COMMAND_KEYS_FILENAME if ctx.save_dir is not None else None
     )
 
     @asynccontextmanager
@@ -3502,8 +3511,16 @@ def create_app(
                 traced["tool_results"] = tool_results[:pairs]
                 _trace_turn(**traced)
 
+    # Reachable for tests that need to watch a key mid-run.
+    app.state.command_keys = command_keys
+
     @app.post("/api/command")
-    async def command(request: CommandRequest) -> dict[str, Any]:
+    async def command(
+        request: CommandRequest,
+        idempotency_key: Annotated[
+            str | None, Header(min_length=1, max_length=MAX_IDEMPOTENCY_KEY_LENGTH)
+        ] = None,
+    ) -> Any:
         """User string → brain → tool call(s) → new state, for the web panel.
 
         Supplies the panel's own conversation memory and records the settled
@@ -3527,10 +3544,143 @@ def create_app(
         nothing else. The version precondition still refuses a stale request
         before anything runs — `_mutation` checks it on the inside of the
         acquire — so a 409 turn reads no memory and records nothing.
+
+        **A retry is not a second run** (#553). With an ``Idempotency-Key`` (the
+        page sends one per conductor handoff, and every retry of it carries the
+        same one) the key is checked before the mutation lock, so a retry
+        neither queues behind the first run nor trips over the version it
+        bumped (`command_keys`):
+
+        - the first run is still going → wait for it, then as below;
+        - it finished → 200 with its words and tool results, the board as it
+          is now, and `replayed: true`; nothing runs;
+        - it ran nothing (stale 409, a dead provider) → the key is free and this
+          request runs as the first attempt;
+        - it started and never finished (it raised, or a restart cut it off) →
+          409 `incomplete: true` with the current state: whatever it did is on
+          the board;
+        - the key came with different words or origin → 422.
+
+        No key is the old behaviour, exactly.
         """
         if brain is None:
             raise HTTPException(status_code=503, detail="agent unavailable: no brain")
+        if idempotency_key is None:
+            return await _panel_command(request)
+        key = idempotency_key
+        while True:
+            seen = command_keys.get(key)
+            if seen is None:
+                break
+            if (seen.text, seen.origin) != (request.text, request.origin):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "that Idempotency-Key was already used for a different command"
+                    ),
+                )
+            if seen.status == "running":
+                # The run this key started is still going: its answer is this
+                # request's answer. Settled as forgotten, the key is free again
+                # and the loop claims it.
+                await seen.settled.wait()
+                continue
+            if seen.status == "incomplete":
+                logger.info("panel_command_retry_incomplete")
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "detail": (
+                            "that command did not complete; whatever it did is on "
+                            "the board"
+                        ),
+                        "incomplete": True,
+                        "state": _published_state(),
+                    },
+                )
+            logger.info("panel_command_replayed")
+            return _command_response(
+                seen.reply["commentary"],
+                seen.reply["tool_results"],
+                _published_state(),
+                seen.reply["correlation_id"],
+                retryable=False,
+                replayed=True,
+            )
+        # No await between the lookup above and this claim, so no second
+        # request can claim the same key in between.
+        entry = command_keys.start(key, request.text, request.origin)
+        started = False
+
+        def _started() -> None:
+            nonlocal started
+            started = True
+
+        try:
+            response = await _panel_command(request, on_start=_started)
+        except BaseException:
+            # Refused before the turn opened (stale, wrong game): nothing ran,
+            # so a retry may run it. Past that, it may have touched the board.
+            if started:
+                command_keys.abandon(key, entry)
+            else:
+                command_keys.forget(key, entry)
+            raise
+        if response["retryable"]:
+            command_keys.forget(key, entry)
+        else:
+            command_keys.finish(
+                key,
+                entry,
+                {
+                    "commentary": response["commentary"],
+                    "tool_results": response["tool_results"],
+                    "correlation_id": response["correlation_id"],
+                },
+            )
+        return response
+
+    def _command_response(
+        commentary: str,
+        tool_results: list[dict[str, Any]],
+        state: dict[str, Any],
+        correlation_id: str,
+        *,
+        retryable: bool,
+        replayed: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "commentary": commentary,
+            "tool_results": tool_results,
+            "state": state,
+            # Whether the client should voice the commentary (the user's
+            # voice_output setting, agent-togglable via set_voice_output).
+            # The server owns the decision; the client owns the playback.
+            "speak": ctx.settings.voice_output,
+            # The difficulty tier after the turn, for the same reason as
+            # `speak`: the UI selector reflects only what the server confirms,
+            # and an agent-side set_difficulty otherwise stays invisible until
+            # a reload. Null when strength was set outside the tiers.
+            "tier": ctx.settings.tier,
+            # The turn's trace id, so the browser's milestones for this
+            # interaction can name the turn record they belong to (#317).
+            "correlation_id": correlation_id,
+            # Whether the provider died before anything ran (#546): the one
+            # failure that comes back as a 200 with words, and the one a client
+            # holding the player's request must not count as done.
+            "retryable": retryable,
+            # A repeated Idempotency-Key answered from the first run (#553).
+            "replayed": replayed,
+        }
+
+    async def _panel_command(
+        request: CommandRequest, on_start: Callable[[], None] | None = None
+    ) -> dict[str, Any]:
+        """One panel command, run. `on_start` fires once the mutation guard
+        has accepted it, the line before which nothing can have run."""
         async with _mutation(request.version, request.game_id):
+            if on_start is not None:
+                on_start()
             outcome = await _command_turn(
                 request.text,
                 ctx.transcript.to_dict(),
@@ -3545,27 +3695,13 @@ def create_app(
             if outcome.commentary:
                 _publish_reply(outcome.commentary)
         _publish_settings()
-        return {
-            "commentary": outcome.commentary,
-            "tool_results": outcome.tool_results,
-            "state": outcome.state,
-            # Whether the client should voice the commentary (the user's
-            # voice_output setting, agent-togglable via set_voice_output).
-            # The server owns the decision; the client owns the playback.
-            "speak": ctx.settings.voice_output,
-            # The difficulty tier after the turn, for the same reason as
-            # `speak`: the UI selector reflects only what the server confirms,
-            # and an agent-side set_difficulty otherwise stays invisible until
-            # a reload. Null when strength was set outside the tiers.
-            "tier": ctx.settings.tier,
-            # The turn's trace id, so the browser's milestones for this
-            # interaction can name the turn record they belong to (#317).
-            "correlation_id": outcome.correlation_id,
-            # Whether the provider died before anything ran (#546): the one
-            # failure that comes back as a 200 with words, and the one a client
-            # holding the player's request must not count as done.
-            "retryable": outcome.retryable,
-        }
+        return _command_response(
+            outcome.commentary,
+            outcome.tool_results,
+            outcome.state,
+            outcome.correlation_id,
+            retryable=outcome.retryable,
+        )
 
     app.include_router(
         build_agent_router(
