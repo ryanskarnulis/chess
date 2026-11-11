@@ -7,7 +7,9 @@ fails the test if anything asks it to search.
 """
 
 import json
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 
 from chessapp.api import create_app
@@ -136,3 +138,40 @@ def test_it_is_small_read_only_and_argument_free():
     assert len(ctx.ledger.since(0)) == seq
     assert client.post("/api/agent/glance").status_code == 405
     json.loads(first.text)
+
+
+def test_the_game_in_progress_says_when_its_last_move_was_played(monkeypatch):
+    """#547: a game untouched for two weeks must not read as current. The time
+    is UTC ISO 8601 with its zone, so a reader can say how old the game is."""
+    played = datetime(2026, 10, 25, 18, 30, 5, tzinfo=UTC)
+    monkeypatch.setattr("chessapp.game._utcnow", lambda: played)
+    client, ctx = _client()
+    _play(ctx, "e4", "e5")
+    monkeypatch.setattr("chessapp.game._utcnow", lambda: played + timedelta(days=15))
+    current = _glance(client)["current"]
+    assert current["last_move_at"] == "2026-10-25T18:30:05+00:00"
+    assert datetime.fromisoformat(current["last_move_at"]) == played
+
+
+def test_a_game_restored_from_before_moves_were_timed_says_null():
+    """Unknown, not guessed: no start date or restore time stands in for it."""
+    data = GameSession().to_dict()
+    data["moves"] = ["e2e4", "e7e5"]
+    del data["last_move_at"]
+    restored = GameSession.from_dict(data)
+    ctx = ToolContext(session=restored, engine=NoSearchEngine())
+    current = _glance(TestClient(create_app(ctx)))["current"]
+    assert current is not None
+    assert current["last_move_at"] is None
+
+
+@pytest.mark.parametrize("opening", [RUY_LOPEZ, ("e4", "d5", "exd5", "Qxd5")])
+def test_a_game_in_progress_beside_a_finished_one_is_still_small(tmp_path, opening):
+    client, ctx = _client(tmp_path)
+    _play(ctx, *FOOLS_MATE)
+    ctx.session.new_game()
+    _play(ctx, *opening)
+    body = client.get("/api/agent/glance")
+    assert body.json()["current"]["last_move_at"]
+    assert body.json()["last_finished"] is not None
+    assert len(body.text) <= 600, len(body.text)
