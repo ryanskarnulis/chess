@@ -1,7 +1,11 @@
 """Delegate REST API: conversation persistence + the messages round trip.
 
-Implements the workspace delegate contract (`../agent-standard/delegate-api.md`)
-so a conductor agent can drive chess over HTTP, mounted under `/api/agent/*`.
+Mounted under `/api/agent/*`. It hosts the glance conductor reads (`look`), and
+its conversation endpoints are the wire the eval, frontier and trajectory
+harnesses drive. Conductor does not call them: chess has no `agent:` block in
+`app.yaml`, so it is not advertised as a delegate.
+
+Implements the workspace delegate contract (`../agent-standard/delegate-api.md`).
 The wire models mirror PCC's `app/schemas/conversations.py` field-for-field so
 the two apps speak one byte-compatible contract; the router mirrors PCC's
 `app/api/routes_agent.py`. The one model-calling endpoint
@@ -640,7 +644,9 @@ def build_agent_router(
     run_command: RunCommand | None,
     glance: Callable[[], dict[str, Any]] | None = None,
 ) -> APIRouter:
-    """The delegate router, mounted at ``/api/agent``.
+    """The router mounted at ``/api/agent``: the glance host, plus the
+    conversation endpoints the eval, frontier and trajectory harnesses drive.
+    Not a delegate surface conductor calls (`app.yaml` has no `agent:` block).
 
     ``run_command`` is the shared command pipeline (from ``chessapp.api``);
     it is ``None`` when the app has no brain, in which case the one
