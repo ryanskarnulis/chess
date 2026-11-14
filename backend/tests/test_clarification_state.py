@@ -3,7 +3,7 @@
 A question the planner asked with `ask_player` is kept as a record bound to
 the conversation it was asked in, the game and the board — and these tests
 drive it through every road that can open, keep, answer or end it: the panel
-and delegate command pipelines, the fast path, a board drag, the buttons, a
+command pipeline, the fast path, a board drag, the buttons, a
 resume. The brain is a real `LlamaBrain` over a scripted provider
 (`test_closing_pass.make_client`), so the handoff that opens a question is the
 one the shipped loop builds; nothing here reads the model's words.
@@ -11,9 +11,6 @@ one the shipped loop builds; nothing here reads the model's words.
 
 import json
 
-import pytest
-
-from chessapp.agent_api import reset_rate_limit
 from chessapp.clarification import (
     ANSWERED,
     ASKED_AGAIN,
@@ -26,22 +23,13 @@ from chessapp.clarification import (
 from chessapp.conversation import Transcript
 from chessapp.engine import CandidateMove
 from chessapp.game import GameSession
-from chessapp.tools import PANEL_ORIGIN, ToolContext, delegate_origin
+from chessapp.tools import PANEL_ORIGIN, ToolContext
 from fakes import FakeEngine, text_turn, tool_calls_turn
 from test_closing_pass import CollectedTurns, make_client
 
 KNIGHT_ASK = "move my kings knight"
 ASK = tool_calls_turn(("ask_player", {"piece": "knight", "which": "kings"}))
 QUESTION = text_turn("Nf3 or Nh3?")
-
-
-@pytest.fixture(autouse=True)
-def _reset_rate_limit():
-    """The delegate limiter is module-global; one test's posts must not count
-    against another's."""
-    reset_rate_limit()
-    yield
-    reset_rate_limit()
 
 
 def _asked(ctx: ToolContext | None = None):
@@ -179,13 +167,7 @@ def test_a_move_from_another_conversation_invalidates_it():
     client, provider, ctx, turns = _asked()
     question = ctx.clarifications[PANEL_ORIGIN]
     ctx.settings.verbosity = "low"
-    thread = client.post("/api/agent/conversations", json={}).json()["id"]
-
-    client.post(f"/api/agent/conversations/{thread}/messages", json={"content": "e4"})
-    # The delegate's own turn left the panel's question where it was: it is
-    # not that thread's to read, answer or drop.
-    assert turns.records[-1]["clarification"]["open"] is None
-    assert turns.records[-1]["clarification"]["closed"] is None
+    assert ctx.session.submit_move("e4").legal  # another client plays
     assert ctx.clarifications[PANEL_ORIGIN] is question
 
     _quiet(provider)
@@ -227,30 +209,6 @@ def test_a_resumed_game_invalidates_it():
 
     expired = turns.records[-1]["clarification"]["expired"]
     assert expired["reason"] == GAME_CHANGED
-
-
-def test_one_thread_never_reads_anothers_question():
-    """Two delegate conversations with the same ask: each question is its
-    own thread's, and a turn in one neither sees nor closes the other's."""
-    turns = CollectedTurns()
-    client, provider, ctx = make_client(ASK, QUESTION, tracer=turns)
-    first = client.post("/api/agent/conversations", json={}).json()["id"]
-    second = client.post("/api/agent/conversations", json={}).json()["id"]
-
-    client.post(
-        f"/api/agent/conversations/{first}/messages", json={"content": KNIGHT_ASK}
-    )
-    asked = ctx.clarifications[delegate_origin(first)]
-    _quiet(provider)
-    client.post(
-        f"/api/agent/conversations/{second}/messages",
-        json={"content": "the one to f3"},
-    )
-
-    assert set(ctx.clarifications) == {delegate_origin(first)}
-    assert ctx.clarifications[delegate_origin(first)] is asked
-    record = turns.records[-1]["clarification"]
-    assert record == {"open": None, "expired": None, "created": None, "closed": None}
 
 
 def test_a_yes_after_a_question_confirms_nothing():
@@ -337,8 +295,7 @@ def test_no_question_no_key():
 def test_a_stale_question_is_named_closed_once_then_forgotten():
     client, provider, ctx, _ = _asked()
     ctx.settings.verbosity = "low"
-    thread = client.post("/api/agent/conversations", json={}).json()["id"]
-    client.post(f"/api/agent/conversations/{thread}/messages", json={"content": "e4"})
+    assert ctx.session.submit_move("e4").legal  # another client plays
 
     _quiet(provider)
     client.post("/api/command", json={"text": "the first one"})
@@ -364,25 +321,6 @@ def test_a_different_game_is_said_as_one():
 
     (state,) = _opening_states(provider)
     assert state["closed_question"]["why"] == "a different game is on the board now"
-
-
-def test_another_threads_question_is_never_shown():
-    turns = CollectedTurns()
-    client, provider, _ = make_client(ASK, QUESTION, tracer=turns)
-    first = client.post("/api/agent/conversations", json={}).json()["id"]
-    second = client.post("/api/agent/conversations", json={}).json()["id"]
-    client.post(
-        f"/api/agent/conversations/{first}/messages", json={"content": KNIGHT_ASK}
-    )
-
-    _quiet(provider)
-    client.post(
-        f"/api/agent/conversations/{second}/messages",
-        json={"content": "the one to f3"},
-    )
-
-    (state,) = _opening_states(provider)
-    assert "open_question" not in state and "closed_question" not in state
 
 
 def test_the_question_survives_a_long_conversation():
@@ -496,8 +434,7 @@ def test_a_pick_by_position_on_a_stale_question_moves_nothing():
     the transcript's "Nf3 or Nh3?" is not something to pick from."""
     client, provider, ctx, _ = _asked()
     ctx.settings.verbosity = "low"
-    thread = client.post("/api/agent/conversations", json={}).json()["id"]
-    client.post(f"/api/agent/conversations/{thread}/messages", json={"content": "d4"})
+    assert ctx.session.submit_move("d4").legal  # another client plays
     before = ctx.session.move_history()
 
     _pick(provider, "Nf3")
@@ -570,48 +507,11 @@ def test_a_pick_by_position_off_the_hint_is_corrected_not_played():
 def test_a_hint_about_a_board_that_changed_is_nothing_to_pick_from():
     client, provider, ctx = _hinted()
     ctx.settings.verbosity = "low"
-    thread = client.post("/api/agent/conversations", json={}).json()["id"]
-    client.post(f"/api/agent/conversations/{thread}/messages", json={"content": "e4"})
+    assert ctx.session.submit_move("e4").legal  # another client plays
     before = ctx.session.move_history()
 
     _pick(provider, "d4")
     client.post("/api/command", json={"text": "go with your first choice"})
 
     assert ctx.session.move_history() == before
-    assert "no question or offer stands" in _last_tool_result(provider)["error"]
-
-
-def test_another_threads_hint_is_nothing_to_pick_from():
-    ctx = ToolContext(session=GameSession(), engine=FakeEngine(best_moves=HINT))
-    client, provider, ctx = make_client(
-        tool_calls_turn(("get_best_moves", {"n": 2})),
-        text_turn("note"),
-        text_turn("d4 or c4."),
-        ctx=ctx,
-    )[:3]
-    thread = client.post("/api/agent/conversations", json={}).json()["id"]
-    client.post(
-        f"/api/agent/conversations/{thread}/messages",
-        json={"content": "any suggestion for me here?"},
-    )
-
-    _pick(provider, "d4")
-    client.post("/api/command", json={"text": "go with your first choice"})
-
-    assert ctx.session.move_history() == []
-    assert "no question or offer stands" in _last_tool_result(provider)["error"]
-
-
-def test_another_threads_question_is_nothing_to_pick_from():
-    client, provider, ctx = make_client(ASK, QUESTION, ctx=None)[:3]
-    first = client.post("/api/agent/conversations", json={}).json()["id"]
-    client.post(
-        f"/api/agent/conversations/{first}/messages", json={"content": KNIGHT_ASK}
-    )
-    assert ctx.clarifications[delegate_origin(first)].candidates == ("Nf3", "Nh3")
-
-    _pick(provider, "Nf3")
-    client.post("/api/command", json={"text": "the first one"})
-
-    assert ctx.session.move_history() == []
     assert "no question or offer stands" in _last_tool_result(provider)["error"]

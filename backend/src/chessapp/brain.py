@@ -193,7 +193,7 @@ class AgentResponse:
     substitutes its stuck reply). Every call the loop made and ran is in
     `tool_calls`, with `tool_results` holding each one's `{"name", "result"}`
     in the *same order*: the two are parallel by construction, and the
-    delegate wire zips them strictly.
+    trace record zips them strictly.
     """
 
     text: str

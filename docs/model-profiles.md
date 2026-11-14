@@ -305,8 +305,7 @@ brain's copy of the offer: the description text goes, and `make_move`'s
 `source` stays labelled but optional. The pick refusal drops its resubmit
 script too.
 
-The registry keeps every word, so the MCP server and the delegate wire see
-no change. A bare `ToolContext` carries all five. The text crutches are
+The registry keeps every word, so the MCP server sees no change. A bare `ToolContext` carries all five. The text crutches are
 matched by exact wording (`tools._TEXT_CRUTCHES`), and `tests/test_crutches.py`
 fails if a docstring is reworded so that one no longer matches. With the
 gemma profile, the offer is pinned to the one recorded before the switch

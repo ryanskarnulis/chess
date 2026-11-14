@@ -15,7 +15,6 @@ Under `CHESSAPP_SAVE_DIR` (the `/data/saves` volume in the container):
 | `settings.json` | difficulty, verbosity, voice, brain (#434) | on every settings change, best-effort |
 | `games/<name>.json` | a named save: the game plus the panel transcript | by `save_game`, atomically |
 | `live.json` | the live game: board, panel transcript, `game_id`, board version, the game's ledger (#372), move notes (a `glitch`-tier fallback's PGN comment, #473), and `last_move_at`, when the last move was played (#547, also in named saves; the glance reads it) | on every change, atomically, best-effort |
-| `conversations.json` | every delegate thread: turns, soft deletes, id counters, idempotency keys | on every change, atomically, best-effort |
 | `command_keys.json` | the panel route's idempotency keys (#553): each key's words, origin, status and stored reply; at most 64, none older than 24 h | on every keyed command, atomically, best-effort |
 | `results.jsonl` | every game that ended: its result, or its withdrawal (#373) | appended when a game ends or an ending is taken back, best-effort |
 
@@ -148,15 +147,15 @@ save or undo must never read as "game over".
 ## Who may answer
 
 A question is stamped with the board it is about (`board_version`) and the
-conversation it was asked in (`origin`): the panel, one delegate thread
-(`delegate:<id>`), or the standalone MCP server (`mcp`). Only that origin
-can answer it, and only while that board is still on screen (#281,
-`ToolContext.live_pending`). A delegate therefore cannot confirm a question
-it did not ask.
+surface it was asked on (`origin`): the panel or the standalone MCP server
+(`mcp`). Only that origin can answer it, and only while that board is still
+on screen (#281, `ToolContext.live_pending`). The rule dates from delegate
+threads, each its own origin, that could confirm a question they never
+asked; those threads were retired in #565.
 
 An open clarification (#319) is bound the same two ways and kept one per
-origin: a delegate thread never reads another's "which knight?", and a
-command from elsewhere that moves nothing leaves it standing. It is not a
+origin: one surface never reads another's "which knight?", and a command
+from elsewhere that moves nothing leaves it standing. It is not a
 permission: it never reaches the gate, so a "yes" after one confirms nothing.
 
 ## Board versions are opt-in
@@ -167,34 +166,18 @@ back one version past the one it was taken at, so a number held across a
 restart is stale rather than silently meaning a different position. It is optional by design
 (audit item 7): the web UI sends it, but a caller that omits it acts on
 whatever board is live when its request lands. A client that wants "act on
-the board I saw, or not at all" must send it. A delegate message
-(`MessageCreate.version`) may carry it too.
+the board I saw, or not at all" must send it.
 
-**Delegate threads** (#291). `agent_api.ConversationStore` rewrites
-`conversations.json` after every change and reloads it at startup, so a
-conductor's thread — and its replayed history — survives a restart like the
-board does. Stored roles are validated on load (only `user` and
-`assistant`), so a tampered file cannot inject a system turn into the
-model's context; an unreadable file is an empty store and a warning.
+**Delegate threads are gone** (#565). The `/api/agent/conversations` endpoints
+and `conversations.json` were retired: conductor hands the player to the board
+rather than delegating, and the eval harnesses that drove them moved to
+`/api/command`. A `conversations.json` left in an old save directory is
+ignored.
 
 ## Retries: `Idempotency-Key`
 
-`POST /api/agent/conversations/{id}/messages` takes an optional
-`Idempotency-Key` header (1–128 characters), stored on the user turn and
-scoped to the thread. A retry under the same key never runs the pipeline:
-
-| The first attempt… | A retry gets |
-|---|---|
-| finished (its answer is stored) | 200, the stored exchange, byte for byte — after a timeout or a restart alike |
-| never finished (502, a stale 409, a crash mid-run) | 409 "did not complete": whatever it did is on the board, so read the state and send a **new** key |
-| used the key for different words | 422 |
-
-With a key and `game_id` (below) a conductor gets the acceptance #291 asked
-for: a retry recovers a known outcome without acting twice, and never lands
-on a game it was not playing. Without a key, a retry is a new exchange, as
-before.
-
-`POST /api/command` takes the same optional header (#553). The page sends one
+`POST /api/command` takes an optional `Idempotency-Key` header (1–128
+characters, #553). The page sends one
 key per conductor handoff, kept in the URL beside the intent
 (`intent_key`), so a retry after the 30 s timeout, a Retry tap or a reload
 sends the same one. The key is checked before the mutation lock and bound to
@@ -219,20 +202,11 @@ old behaviour.
 `state.game_id` names the game on the board (`GameSession.game_id`, 32 hex
 characters). It changes on a new game and on a resume — resuming one save
 twice gives two games — and survives a move, a takeback and a restart.
-Every mutating request, and a delegate message, may carry `game_id` as a
-precondition beside `version`: a mismatch is the same 409 (`stale: true`,
-with the current `game_id` and state), so a delegate that sends it can never
-silently act on a game other than the one it was playing. Trace records
+Every mutating request may carry `game_id` as a precondition beside
+`version`: a mismatch is the same 409 (`stale: true`, with the current
+`game_id` and state), so a client that sends it can never silently act on a
+game other than the one it was playing. Trace records
 carry it too, which is what ties turns to one game across restarts.
-
-## `X-Agent-Actor` is a label
-
-`agent_api.resolve_actor` stamps a recognised delegate actor into the audit
-log and falls back to the loop's identity otherwise. It is **not**
-authentication: any caller that reaches the port can send the header, the
-app trusts its network, and any access claim beyond "someone on the home
-network" needs the external gateway verified first — that it authenticates
-callers and strips a forged header on the way in.
 
 ## The standalone MCP server is its own game
 

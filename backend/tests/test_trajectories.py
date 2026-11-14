@@ -32,7 +32,6 @@ from pathlib import Path
 import pytest
 
 from trajectory import (
-    DELEGATES,
     INVARIANTS,
     LATE_WORDS,
     PANEL,
@@ -71,8 +70,6 @@ def command(*rounds: tuple[tuple[str, dict], ...], **fields) -> Step:
     return Step(kind="command", text="do the thing", rounds=tuple(rounds), **fields)
 
 
-D0, D1 = DELEGATES
-
 REGRESSIONS: dict[str, tuple[str, tuple[Step, ...]]] = {
     # An ask and a move in one response: the move used to run under a
     # `clarify` handoff, choosing for the player (#314).
@@ -105,23 +102,23 @@ REGRESSIONS: dict[str, tuple[str, tuple[Step, ...]]] = {
         "reproduces:#316",
         (command((("make_move", {"move": "e4"}),), stall=True),),
     ),
-    # A reset armed by the panel's button, answered "yes" in a delegate thread
-    # that was never asked: it used to run (#281).
-    "a_thread_answers_the_panels_question": (
-        "reproduces:#281",
+    # A reset armed by the panel's button, answered by a typed "yes": one
+    # person at one screen, so it runs (#281's other half).
+    "the_panel_answers_its_buttons_question": (
+        "prevents",
         (
             Step(kind="literal", text="e4"),
             Step(kind="control", endpoint="/api/game/new", body={"color": "white"}),
-            Step(kind="literal", text="yes", origin=D0),
+            Step(kind="literal", text="yes"),
         ),
     ),
-    # A keyed delegate move, sent again: the retry must be the stored answer,
-    # never a second move (#291).
+    # A keyed move, sent again: the retry must be the stored answer, never a
+    # second move (#553, the panel's version of #291).
     "a_keyed_move_retried": (
-        "reproduces:#291",
+        "reproduces:#553",
         (
-            Step(kind="literal", text="e4", origin=D1, key="k1"),
-            Step(kind="retry", text="e4", origin=D1, key="k1"),
+            Step(kind="literal", text="e4", key="k1"),
+            Step(kind="retry", text="e4", key="k1"),
         ),
     ),
     # A takeback of one ply leaves the engine to move; the step must still end
@@ -155,19 +152,18 @@ REGRESSIONS: dict[str, tuple[str, tuple[Step, ...]]] = {
             command((("describe_position", {}),)),
         ),
     ),
-    # llama-server dies after the planner's move landed: the move stands and
-    # its reply is collected; the delegate says 502, a retry says 409.
+    # llama-server dies after the planner's move landed: the move stands, its
+    # reply is collected, and a retry is the stored answer, never a second run.
     "provider_dies_after_a_move": (
         "prevents",
         (
             command(
                 (("make_move", {"move": "e4"}),),
                 (("describe_position", {}),),
-                origin=D0,
                 key="k1",
                 provider_dies=1,
             ),
-            Step(kind="retry", text="do the thing", origin=D0, key="k1"),
+            Step(kind="retry", text="do the thing", key="k1"),
         ),
     ),
     # A batch past the per-turn cap on a real 84-ply game.
@@ -315,7 +311,7 @@ def test_the_settle_check_fires_on_a_reply_played_twice() -> None:
 
 def test_the_confirmation_check_fires_on_a_yes_from_elsewhere() -> None:
     observed = _observed(
-        Step(kind="literal", text="yes", origin=DELEGATES[0]),
+        Step(kind="literal", text="yes", origin="elsewhere"),
         status_code=200,
         results=[{"name": "new_game", "result": {"ok": True}}],
         pending_before=Pending("new_game", PANEL, 0),
@@ -337,14 +333,14 @@ def test_the_confirmation_check_fires_on_an_ignored_yes() -> None:
 
 def test_the_retry_check_fires_on_a_second_run() -> None:
     first = _observed(
-        Step(kind="literal", text="e4", origin=DELEGATES[0], key="k"),
+        Step(kind="literal", text="e4", key="k"),
         status_code=200,
-        response={"a": 1},
+        response={"commentary": "e4.", "tool_results": []},
     )
     retry = _observed(
-        Step(kind="retry", text="e4", origin=DELEGATES[0], key="k"),
+        Step(kind="retry", text="e4", key="k"),
         status_code=200,
-        response={"a": 1},
+        response={"commentary": "e4.", "tool_results": [], "replayed": True},
         provider_calls=[{"tools": None, "messages": []}],
         original=first,
     )

@@ -9,10 +9,13 @@ narratives (2026-07 through 2026-08) are in this file's git history.
 
 ## What it is
 
-Each scenario drives one utterance through the same seam a conductor's
-delegate call uses — `POST /api/agent/conversations/{id}/messages` — against a
-freshly assembled app (real `LlamaBrain`, real engine, fresh game), then
-asserts on the returned wire:
+Each scenario drives one utterance through the seam players use —
+`POST /api/command`, the web panel's, reading and recording `ctx.transcript` —
+against a freshly assembled app (real `LlamaBrain`, real engine, fresh game).
+Each call's arguments and errors are rebuilt from the turn's trace record
+(`_wire_calls`). Until #565 the scenarios drove a delegate conversation
+endpoint whose history was built differently from the panel's, so the gate
+measured a memory players did not get. It asserts:
 
 - **trajectory shape** — the right tool family ran; read-only asks mutate
   nothing (a rejected move is a `legal: false` *result*, never an `error`)
@@ -403,6 +406,30 @@ no prompt, profile crutch or scenario changed to get these.
   4/5, exactly at the floor: `consecutive_move_reactions` and
   `best_move_then_play`; `glitch_reply_with_intent` was 5/5 this time. Speech
   123/123 backed over 334 turns; the reply was said 94/96.
+
+**Gate run 2026-11-13 on the panel seam (#565), gemma-4-12b, bare command.**
+The first gate with every scenario on `POST /api/command`. Until #565 most
+scenarios drove the delegate conversation endpoint, whose history
+(`ConversationStore.history_for_loop`) was not the panel's (`ctx.transcript`),
+so the gate measured a memory no player had. Nothing tuned. **59 of 60
+passed, 1 failed** in 23 m 44 s, infra 0, none inconclusive, `truncated=0`.
+Against the 2026-11-11 run:
+
+- **`long_capture` 5/5 in all three conditions**, as before.
+- **`impossible_move_is_refused_not_asked` 5/5** (red at 9/15 on 11-11).
+- **`glitch_reply_with_intent` 9/15** (60%, [0.39, 0.78], `BELOW_FLOOR`,
+  stable; blocks 3/5, 4/5, 2/5), red. Every miss is the one recorded on
+  2026-11-09: Glitch names the Sicilian and never says `c5`. **Not the seam:**
+  the scenario is one fast-path "e4" on a fresh game, and the narrator's
+  request was byte-identical on both seams in a context capture (5 samples
+  each, timestamps and ids normalized; `main` 4/5, the branch 5/5 on that
+  run). It was at the floor before (4/5 on 11-09) and is the scenario to
+  watch.
+- **Two at the floor:** `consecutive_move_reactions` and
+  `fallback_reply_not_claimed`, 4/5 each. The other 49 sampled conditions
+  were 5/5.
+- **Speech** 136/136 claims backed over 344 turns; the reply was said 97/107
+  (the `glitch_reply_with_intent` misses among the ten).
 
 **Batch run 2026-11-11 on `063f9b8`, gemma-4-12b, bare command (#556).** First
 gate since the `truncated` stop (a planner cut off after tool work ends

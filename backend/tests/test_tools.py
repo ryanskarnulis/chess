@@ -28,10 +28,16 @@ from chessapp.tools import (
     brain_tool_exclusions,
     build_registry,
     confirm_pending,
-    delegate_origin,
     saved_game_names,
 )
 from fakes import FakeEngine
+
+
+def _origin(n: int) -> str:
+    """Some other surface's origin: the gate treats any string it was not
+    asked under as foreign, whatever the surface is."""
+    return f"other:{n}"
+
 
 requires_stockfish = pytest.mark.skipif(
     shutil.which("stockfish") is None, reason="stockfish binary not installed"
@@ -2692,7 +2698,7 @@ def test_restamping_nothing_is_a_no_op(session):
 
 # A question is asked *in a conversation* as well as about a position (#281).
 # The board version could never catch a foreign answer — nothing has to move
-# between "I resign" in one delegate thread and a "yes" said in another — so the
+# between "I resign" in one conversation and a "yes" said in another — so the
 # op carries the origin the gate armed it for, and only that one can answer it.
 # The pipeline's half of this is `test_confirmation_origin.py`.
 
@@ -2701,13 +2707,13 @@ def test_an_armed_op_records_the_origin_that_was_asked(session):
     """Whatever the surface declared on the context is what the gate stamps:
     the op belongs to the interaction that raised it."""
     ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
-    ctx.origin = delegate_origin(7)
+    ctx.origin = _origin(7)
     registry = build_registry(ctx)
 
     registry.dispatch("resign", {"color": "white"})
 
     assert ctx.pending is not None
-    assert ctx.pending.origin == "delegate:7"
+    assert ctx.pending.origin == "other:7"
 
 
 def test_a_bare_context_arms_for_the_panel(session):
@@ -2726,22 +2732,22 @@ def test_live_pending_answers_only_the_origin_that_was_asked(session):
     a foreign origin gets nothing, and the question it was not asked is still
     standing for the origin that was."""
     ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
-    ctx.origin = delegate_origin(1)
+    ctx.origin = _origin(1)
     registry = build_registry(ctx)
     registry.dispatch("resign", {"color": "white"})
 
     assert ctx.live_pending(PANEL_ORIGIN) is None
-    assert ctx.live_pending(delegate_origin(2)) is None
+    assert ctx.live_pending(_origin(2)) is None
     assert ctx.live_pending(MCP_ORIGIN) is None
     assert ctx.pending is not None, "a foreign read answers nothing and drops nothing"
-    assert ctx.live_pending(delegate_origin(1)) is not None
+    assert ctx.live_pending(_origin(1)) is not None
 
 
 def test_live_pending_without_an_origin_reads_without_answering(session):
     """The inspection read — what is armed at all, stale ones aside. It cannot
     run anything: `confirm_pending` takes an origin of its own."""
     ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
-    ctx.origin = delegate_origin(1)
+    ctx.origin = _origin(1)
     registry = build_registry(ctx)
     registry.dispatch("resign", {"color": "white"})
 
@@ -2752,16 +2758,16 @@ def test_confirm_pending_will_not_run_another_origins_op(session):
     """The last gate before a game is thrown away checks both halves of the
     question itself, exactly as it checks the board."""
     ctx = ToolContext(session=played(GameSession(), "e4", "e5"))
-    ctx.origin = delegate_origin(1)
+    ctx.origin = _origin(1)
     registry = build_registry(ctx)
     registry.dispatch("resign", {"color": "white"})
 
     assert confirm_pending(registry, ctx, PANEL_ORIGIN) is None
-    assert confirm_pending(registry, ctx, delegate_origin(2)) is None
+    assert confirm_pending(registry, ctx, _origin(2)) is None
     assert not ctx.session.is_game_over()
     assert ctx.pending is not None, "still the question conversation 1 was asked"
 
-    name, result = confirm_pending(registry, ctx, delegate_origin(1))
+    name, result = confirm_pending(registry, ctx, _origin(1))
 
     assert name == "resign" and result["ok"] is True
     assert ctx.session.is_game_over()

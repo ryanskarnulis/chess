@@ -39,7 +39,16 @@ import chess.pgn
 from chessapp.game import GameSession
 from chessapp.results import RESULTS_FILENAME, ResultsLog
 from chessapp.speech_accuracy import score_record
-from frontier import VERDICT_TOOLS, Checkpoint, Episode, Say, Scenario, Turn, Variant
+from frontier import (
+    BOARD,
+    VERDICT_TOOLS,
+    Checkpoint,
+    Episode,
+    Say,
+    Scenario,
+    Turn,
+    Variant,
+)
 from test_agent_evals import _TIER_STRENGTH, EvalApp
 
 _FIXTURES = Path(__file__).parent
@@ -1814,34 +1823,35 @@ KNIGHT_ASK_THEN_BOARD_CHANGES = Scenario(
     tier=2,
     why=(
         "Another client changes the board between the question and its "
-        "answer. The answer refers only to the old question ('the first one'), "
-        "so no candidate may be played from it: ask again or say so."
+        "answer: a drag or the Undo button (a delegate thread did it before "
+        "#565). The answer refers only to the old question ('the first "
+        "one'), so no candidate may be played from it: ask again or say so."
     ),
     dev=wordings(
         AFTER_E4_E5,
         other_client_moves=(
             "move my kings knight",
-            Say("d4", origin="d0", model=False),
+            Say("d4", origin=BOARD, model=False),
             "the first one",
         ),
         other_client_undoes=(
             "develop my king side knight",
-            Say("take back the last move", origin="d0"),
+            Say("take back the last move", origin=BOARD, model=False),
             "the second one",
         ),
         other_client_h3=(
             "move my kingside knight",
-            Say("h3", origin="d0", model=False),
+            Say("h3", origin=BOARD, model=False),
             "let's go with the first one",
         ),
         other_client_c3=(
             "I'd like to move my king's knight",
-            Say("c3", origin="d0", model=False),
+            Say("c3", origin=BOARD, model=False),
             "the first of those",
         ),
         other_client_bc4=(
             "move my king's knight",
-            Say("Bc4", origin="d0", model=False),
+            Say("Bc4", origin=BOARD, model=False),
             "first one",
         ),
     ),
@@ -1849,27 +1859,27 @@ KNIGHT_ASK_THEN_BOARD_CHANGES = Scenario(
         AFTER_E4_E5,
         other_client_develops=(
             "bring the king's knight out",
-            Say("Nc3", origin="d0", model=False),
+            Say("Nc3", origin=BOARD, model=False),
             "go with the first option",
         ),
         other_client_undoes_again=(
             "bring my g1 knight out",
-            Say("undo the last move", origin="d0"),
+            Say("undo the last move", origin=BOARD, model=False),
             "the first option",
         ),
         other_client_d3=(
             "move the g1 knight",
-            Say("d3", origin="d0", model=False),
+            Say("d3", origin=BOARD, model=False),
             "go with the second one",
         ),
         other_client_takes_back=(
             "knight from g1, please",
-            Say("take my last move back", origin="d0"),
+            Say("take my last move back", origin=BOARD, model=False),
             "the second of those",
         ),
         other_client_nc3=(
             "develop the kingside knight",
-            Say("Nc3", origin="d0", model=False),
+            Say("Nc3", origin=BOARD, model=False),
             "the second option",
         ),
     ),
@@ -1877,80 +1887,6 @@ KNIGHT_ASK_THEN_BOARD_CHANGES = Scenario(
         asked(1),
         Checkpoint("board_changed", lambda e: e.turn(2).moved),
         still(3),
-    ),
-)
-
-TWO_THREADS_SIMILAR_ASKS = Scenario(
-    name="two_threads_similar_asks",
-    tier=2,
-    why=(
-        "Two delegate threads each have a question open on one board — a "
-        "knight in one, the e-pawn in the other. The second thread's 'the "
-        "first one' must pick from its own question, never the first thread's."
-    ),
-    # The dev pawn ask was "push my e pawn", which the planner plays (e3)
-    # rather than asks, so the scenario missed at asked_2 on every arm and never
-    # reached the ordinal it is here to measure (#352; the ask miss is #357).
-    dev=wordings(
-        FRESH,
-        knight_then_pawn=(
-            Say("move my kings knight", origin="d0"),
-            Say("move my e-file pawn", origin="d1"),
-            Say("the first one", origin="d1"),
-        ),
-        g1_knight_advance_e_pawn=(
-            Say("develop the g1 knight", origin="d0"),
-            Say("advance my e-pawn", origin="d1"),
-            Say("the first option", origin="d1"),
-        ),
-        g_knight_pawn_on_e2=(
-            Say("I want to move my g-knight", origin="d0"),
-            Say("move my pawn on e2", origin="d1"),
-            Say("the first of those", origin="d1"),
-        ),
-        into_play_e_file=(
-            Say("bring my kingside knight into play", origin="d0"),
-            Say("move the pawn on the e-file", origin="d1"),
-            Say("first option please", origin="d1"),
-        ),
-        knight_on_g1_front_of_king=(
-            Say("move the knight on g1", origin="d0"),
-            Say("advance the pawn in front of my king", origin="d1"),
-            Say("let's do the first", origin="d1"),
-        ),
-    ),
-    heldout=wordings(
-        FRESH,
-        knight_then_pawn=(
-            Say("bring the king's knight out", origin="d0"),
-            Say("move the pawn in front of my king", origin="d1"),
-            Say("go with the first option", origin="d1"),
-        ),
-        play_knight_push_e_pawn=(
-            Say("play my king's knight", origin="d0"),
-            Say("push the e-pawn", origin="d1"),
-            Say("go with the first one", origin="d1"),
-        ),
-        kingside_knight_e2_pawn=(
-            Say("get my kingside knight out", origin="d0"),
-            Say("move the e2 pawn", origin="d1"),
-            Say("I'll take the first", origin="d1"),
-        ),
-        kings_knight_kings_pawn=(
-            Say("move my king's knight", origin="d0"),
-            Say("move my king's pawn", origin="d1"),
-            Say("first one", origin="d1"),
-        ),
-        kings_side_knight_e_pawn=(
-            Say("knight on the king's side — move it", origin="d0"),
-            Say("I want to move my e-pawn", origin="d1"),
-            Say("the first you offered", origin="d1"),
-        ),
-    ),
-    checkpoints=(
-        asked(1),
-        asked(2),
-        first_offered(2, 3),
     ),
 )
 
@@ -3466,7 +3402,6 @@ SCENARIOS: tuple[Scenario, ...] = (
     KNIGHT_ASK_ASIDE_THEN_PICK,
     KNIGHT_ASK_LONG_CHAT_THEN_PICK,
     KNIGHT_ASK_THEN_BOARD_CHANGES,
-    TWO_THREADS_SIMILAR_ASKS,
     QUEEN_ASK_ASIDE_THEN_FIRST,
     ASK_ASIDE_THEN_SECOND,
     QUEEN_ASK_LONG_CHAT_THEN_FIRST,

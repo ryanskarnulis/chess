@@ -129,16 +129,6 @@ def test_a_dragged_moves_reaction_is_the_panels_reply():
     assert restored["text"] == body["commentary"]
 
 
-def test_a_delegate_threads_words_are_not_the_panels():
-    with make_client(AgentResponse(text="Hello, delegate.")) as (client, _):
-        conversation = client.post("/api/agent/conversations", json={}).json()
-        client.post(
-            f"/api/agent/conversations/{conversation['id']}/messages",
-            json={"content": "hi"},
-        )
-        assert restored_reply(client) is None
-
-
 def test_a_new_game_leaves_the_old_games_reply_unsaid():
     with make_client(AgentResponse(text="Ask me anything.")) as (client, _):
         client.post("/api/command", json={"text": "hello"})

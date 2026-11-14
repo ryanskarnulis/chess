@@ -80,9 +80,10 @@ you offered" reaches for after the question has closed.
 
 The command pipeline (`api._command_turn`) builds the `Recall` as the turn
 opens (`api._earlier`), from the conversation its caller hands it whole:
-`ctx.transcript.to_dict()` for the panel, `agent_api.history_for_loop` for a
-delegate thread (every text turn, `memory` over `content`). A board drag
-builds the same for its narrator. One memory policy, every entry point, in one
-place. `Transcript.window()` stays the raw record. The refresh block the loop
+`ctx.transcript.to_dict()`, the panel's (every text turn, `memory` over
+`content`). A board drag builds the same for its narrator. One memory policy,
+every entry point, in one place. (A delegate thread used to build its history
+its own way; it was retired in #565, so the eval gate now measures the memory
+players get.) `Transcript.window()` stays the raw record. The refresh block the loop
 appends mid-command stays the menu alone (`api._REFRESH_KEYS`): no `history`,
 no record (`docs/planner-narrator.md`).
