@@ -492,23 +492,6 @@ def test_the_late_closers_words_land_nowhere(blocked):
     assert LATE_WORDS not in json.dumps([call["messages"] for call in provider.calls])
 
 
-def test_a_delegate_turn_is_bounded_the_same_way(blocked):
-    """The conductor's route runs the same pipeline (`_run_command`), so the
-    bound lives in the brain and reaches it without a second fix."""
-    provider = blocked()
-    client, ctx, _ = build_brain_route(provider)
-    conversation = client.post("/api/agent/conversations", json={}).json()["id"]
-
-    exchange = client.post(
-        f"/api/agent/conversations/{conversation}/messages",
-        json={"content": "push the king pawn"},
-    ).json()
-
-    assert closer_still_writing(provider)
-    assert ctx.session.move_history() == ["e4", "e5"]
-    assert exchange["assistant_message"]["content"] == "e4. e5."
-
-
 def test_the_trace_records_one_late_brain_turn(tmp_path, blocked):
     path = tmp_path / "turns.jsonl"
     provider = blocked()

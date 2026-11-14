@@ -13,11 +13,17 @@ says what the board itself shows, the material, and leaves an evaluation to an
 `open`.
 """
 
+import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from fastapi import APIRouter, HTTPException, status
+
 from chessapp import openings
 from chessapp.tools import ToolContext
+
+logger = logging.getLogger(__name__)
 
 APP = "chess"
 KIND = "game"
@@ -84,3 +90,25 @@ def build_glance(ctx: ToolContext) -> dict[str, Any]:
         "current": _current(ctx),
         "last_finished": _last_finished(ctx),
     }
+
+
+def build_glance_router(glance: Callable[[], dict[str, Any]]) -> APIRouter:
+    """`GET /api/agent/glance`, the one route left under `/api/agent` (#565).
+
+    The glance contract (`../agent-standard/app-yaml-glance-block.md`): no
+    arguments, no model call, no side effects. Any failure to read the app's
+    own state is a 503, which conductor treats as "couldn't look"."""
+    router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+    @router.get("/glance")
+    def get_glance() -> dict[str, Any]:
+        try:
+            return glance()
+        except Exception as exc:
+            logger.warning("glance_failed", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="glance unavailable",
+            ) from exc
+
+    return router

@@ -6,8 +6,8 @@ batched with a move (#314), an undo refreshing the board while the offer stayed
 on the old one (#315), a closer outliving its budget (#316) — and each of them
 passed a suite in which every feature, alone, was green.
 
-So this drives *sequences*: a seeded random walk over what a player, a
-conductor and a planner can do to one game, through the real app
+So this drives *sequences*: a seeded random walk over what a player and a
+planner can do to one game, through the real app
 (`app.build_app`, the same assembly that ships, with a `ScriptedProvider`
 standing in for llama-server and a deterministic engine for Stockfish), and
 after every step checks invariants that must hold however the steps were
@@ -15,9 +15,9 @@ combined. The model is scripted, so a walk is fully determined by its seed: a
 failure is a seed, and the seed is the reproduction.
 
 The walk reaches every surface that can move the board or answer a question:
-the web panel, two delegate conversations (with and without an
-`Idempotency-Key`, and retries of a keyed exchange), the board endpoints, and
-a restart over the same save directory. It also injects the failures a real
+the web panel's commands (with and without an `Idempotency-Key`, and retries
+of a keyed command), the board endpoints, and a restart over the same save
+directory. It also injects the failures a real
 evening produces — llama-server dying mid-command, Stockfish dying
 mid-exchange, a narrator that stalls past its budget — and can start from the
 84-ply fixture rather than the opening.
@@ -49,7 +49,6 @@ import chess.pgn
 from fastapi.testclient import TestClient
 
 from chessapp import app as app_module
-from chessapp.agent_api import reset_rate_limit
 from chessapp.api import create_app
 from chessapp.app import build_app
 from chessapp.engine import CandidateMove, Evaluation
@@ -107,12 +106,11 @@ _ARMED = "confirmation required"
 _NEVER_LEGAL = "Qz9"
 _ASK_PIECES = ("king", "queen", "rook", "bishop", "knight", "pawn")
 
-# Where the conversation endpoints live, and the surfaces a walk speaks from:
-# the web panel and two delegate threads, so a question asked in one can be
-# answered — wrongly — from another (#281).
+# The one conversation a walk speaks from: the web panel. (Two delegate
+# threads used to speak beside it, so a question asked in one could be
+# answered, wrongly, from another (#281); the delegate wire was retired in
+# #565, and the origin rule is pinned in `test_confirmation_origin.py`.)
 PANEL = "panel"
-DELEGATES = ("d0", "d1")
-_MESSAGES = "/api/agent/conversations/{id}/messages"
 
 _LATE_GAME = Path(__file__).with_name("late_game_84_plies.pgn")
 
@@ -222,10 +220,10 @@ class Step:
 
     `kind` is the seam: `command` (a conversation, through the planner),
     `literal` (a conversation, a text the fast paths settle — a SAN move,
-    "yes", "no"), `control` (a board endpoint), `retry` (a keyed delegate
-    exchange sent again), or `restart` (a new process over the same save
-    directory). `origin` is which conversation speaks: the panel or one of the
-    delegate threads. `rounds` is the scripted planner: one tuple of calls per
+    "yes", "no"), `control` (a board endpoint), `retry` (a keyed command sent
+    again), or `restart` (a new process over the same save directory).
+    `origin` is which conversation speaks: the panel, the only one there is
+    since #565. `rounds` is the scripted planner: one tuple of calls per
     planner round trip, several calls in one round being one model response.
 
     The injected failures: `provider_dies` is the planner round at which
@@ -332,10 +330,6 @@ class Harness:
         self.engine = LegalEngine()
         self.tracer = TurnRecords()
         self.client = self._build()
-        self.conversations = {
-            origin: self.client.post("/api/agent/conversations", json={}).json()["id"]
-            for origin in DELEGATES
-        }
 
     def _build(self) -> TestClient:
         """`build_app`, with only the two narrator budgets cut down."""
@@ -364,7 +358,7 @@ class Harness:
 
     def restart(self) -> None:
         """A new process on the same disk: the old client is closed and the app
-        is assembled again, restoring `live.json` and `conversations.json`."""
+        is assembled again, restoring `live.json` and `command_keys.json`."""
         self.client.close()
         self.client = self._build()
 
@@ -484,8 +478,8 @@ def _planner_call(
 
 @dataclass
 class Memory:
-    """What the walk remembers between steps: the last keyed delegate
-    exchange (so it can be retried) and a counter for fresh keys."""
+    """What the walk remembers between steps: the last keyed command (so it
+    can be retried) and a counter for fresh keys."""
 
     last_keyed: Step | None = None
     keys: int = 0
@@ -499,8 +493,8 @@ def next_step(rng: random.Random, state: dict[str, Any], memory: Memory) -> Step
     """The walk's next step, drawn from the live state."""
     legal: list[str] = list(state["legal_moves"]) if not state["game_over"] else []
     kind = _pick(rng, _KINDS)
-    origin = PANEL if rng.random() < 0.5 else rng.choice(DELEGATES)
-    key = memory.fresh_key() if origin != PANEL and rng.random() < 0.6 else None
+    origin = PANEL
+    key = memory.fresh_key() if rng.random() < 0.3 else None
     failure = rng.random() < _FAILURE_RATE
     if kind == "command":
         rounds = []
@@ -599,8 +593,7 @@ class Question:
     game_id: str
 
 
-# The walk cannot see what a step that died half-way armed: a delegate turn
-# whose provider failed answers 502 with no results. Until the next turn
+# The walk cannot see what a step that died half-way armed. Until the next turn
 # clears the slot, the confirmation checks stand down rather than guess.
 UNKNOWN = Pending(name="?", origin="?", version=-1)
 
@@ -632,22 +625,6 @@ class Observed:
     results_log: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _delegate_results(response: dict[str, Any]) -> list[dict[str, Any]]:
-    """A delegate exchange's tool calls in the panel's shape."""
-    calls = (response.get("assistant_message") or {}).get("tool_calls") or []
-    return [
-        {
-            "name": call["tool"],
-            "result": (
-                json.loads(call["result"])
-                if call["result"] is not None
-                else {"ok": False, "error": call["error"]}
-            ),
-        }
-        for call in calls
-    ]
-
-
 def _script(step: Step) -> list[ChatResult | Exception]:
     turns: list[ChatResult | Exception] = [
         tool_calls_turn(*batch) for batch in step.rounds
@@ -664,7 +641,6 @@ def run_step(
     pending: Pending | None = None,
     questions: dict[str, Question] | None = None,
 ) -> Observed:
-    reset_rate_limit()
     before = harness.state()
     observed = Observed(
         step=step,
@@ -682,27 +658,17 @@ def run_step(
         # planner call on a retry is a breach whatever it returns.
         harness.provider.rescript(*_script(step))
         with harness.failures(step):
-            if step.origin == PANEL:
-                response = harness.client.post("/api/command", json={"text": step.text})
-            else:
-                conversation = harness.conversations[step.origin]
-                headers = {"Idempotency-Key": step.key} if step.key else {}
-                response = harness.client.post(
-                    _MESSAGES.format(id=conversation),
-                    json={"content": step.text},
-                    headers=headers,
-                )
+            headers = {"Idempotency-Key": step.key} if step.key else {}
+            response = harness.client.post(
+                "/api/command", json={"text": step.text}, headers=headers
+            )
             observed.seconds = time.monotonic() - started
         observed.status_code = response.status_code
         observed.response = response.json()
         observed.provider_calls = list(harness.provider.calls)
         if response.status_code == 200:
-            if step.origin == PANEL:
-                observed.results = list(observed.response.get("tool_results") or [])
-                observed.commentary = observed.response.get("commentary")
-            else:
-                observed.results = _delegate_results(observed.response)
-                observed.commentary = observed.response["assistant_message"]["content"]
+            observed.results = list(observed.response.get("tool_results") or [])
+            observed.commentary = observed.response.get("commentary")
     else:
         with harness.failures(step):
             response = harness.client.post(step.endpoint, json=step.body)
@@ -745,6 +711,18 @@ def next_questions(
     return questions
 
 
+def _retry_ran(observed: Observed) -> bool:
+    """A retry whose key had been freed, so it ran as a first attempt (#553):
+    the first try ran nothing (a provider dead before any tool), and the key
+    does not hold a run back from being made at all."""
+    response = observed.response or {}
+    return (
+        observed.step.kind == "retry"
+        and observed.status_code == 200
+        and response.get("replayed") is not True
+    )
+
+
 def next_pending(observed: Observed, pending: Pending | None) -> Pending | None:
     """The armed confirmation after a step, as the app keeps it: every turn
     from any surface disarms on its way in and may arm one of its own; a
@@ -753,11 +731,9 @@ def next_pending(observed: Observed, pending: Pending | None) -> Pending | None:
     step = observed.step
     if step.kind == "restart":
         return None
-    if step.kind in ("command", "literal"):
-        if observed.status_code not in (200, 502):
+    if step.kind in ("command", "literal") or _retry_ran(observed):
+        if observed.status_code != 200:
             return pending
-        if observed.status_code == 502:
-            return UNKNOWN
         armed = None
         for entry in observed.results:
             error = (entry.get("result") or {}).get("error") or ""
@@ -798,13 +774,10 @@ def _owed(state: dict[str, Any]) -> bool:
 
 def check_status(observed: Observed) -> None:
     """No step may be a server error. A refusal (4xx) is an answer; a 5xx is a
-    crash in whatever the combination reached — except the delegate wire's
-    documented 502 for a provider that died under it."""
+    crash in whatever the combination reached. (A provider that dies under a
+    command is a 200 that says so, never a 5xx.)"""
     code = observed.status_code
     if code is None or code < 500:
-        return
-    step = observed.step
-    if code == 502 and step.provider_dies is not None and step.origin != PANEL:
         return
     raise InvariantBreach(f"server error {code}: {observed.response}")
 
@@ -1107,12 +1080,18 @@ def check_confirmation_is_answered_by_its_asker(observed: Observed) -> None:
 
 
 def check_retry_never_acts_twice(observed: Observed) -> None:
-    """#291: a keyed exchange sent again is answered from the store — the same
-    answer for a finished one, 409 for one that never finished — and runs
-    nothing either way."""
+    """#553: a keyed command sent again is answered from its first run — the
+    same words and tool results, marked `replayed` — and runs nothing. The one
+    exception is a first run that ran nothing (`retryable`: the provider died
+    before any tool): its key is freed, and the retry is the first attempt."""
     if observed.step.kind != "retry":
         return
     original = observed.original
+    first = (original.response or {}) if original is not None else {}
+    if original is not None and (
+        original.status_code != 200 or first.get("retryable") is True
+    ):
+        return
     if observed.provider_calls:
         raise InvariantBreach(
             f"a retry reached the model {len(observed.provider_calls)}x"
@@ -1124,17 +1103,17 @@ def check_retry_never_acts_twice(observed: Observed) -> None:
         )
     if original is None:
         return
-    if original.status_code == 200:
-        if observed.status_code != 200 or observed.response != original.response:
-            raise InvariantBreach(
-                f"a finished exchange replayed as {observed.status_code}, not as "
-                "its first answer"
-            )
-    elif observed.status_code != 409:
+    again = observed.response or {}
+    if observed.status_code != 200 or again.get("replayed") is not True:
         raise InvariantBreach(
-            f"an unfinished exchange ({original.status_code}) replayed as "
-            f"{observed.status_code}, not 409"
+            f"a finished command replayed as {observed.status_code} {again}, not "
+            "as its first answer"
         )
+    if (again.get("commentary"), again.get("tool_results")) != (
+        first.get("commentary"),
+        first.get("tool_results"),
+    ):
+        raise InvariantBreach("a replayed command answered differently the second time")
 
 
 def check_late_words_land_nowhere(observed: Observed) -> None:

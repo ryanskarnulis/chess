@@ -4,7 +4,7 @@ import { MicButton } from './MicButton'
 import { unlockAudio } from './tts'
 import { beginInteraction } from './voiceTiming'
 
-/** The backend's cap on one command (`agent_api.MAX_AGENT_MESSAGE_LENGTH`):
+/** The backend's cap on one command (`api.MAX_COMMAND_LENGTH`):
  * longer is refused 422, so the box never lets one be typed. */
 export const MAX_COMMAND_LENGTH = 8_000
 

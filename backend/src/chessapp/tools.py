@@ -469,21 +469,10 @@ def _narrow_integral_floats(args: Any, schema: dict[str, Any]) -> Any:
 # answered from (#281). The player's own surfaces are deliberately **one**
 # origin: the panel's free text, the three board buttons and the confirm dialog
 # are one person at one screen, so an op armed by a button is answered by a
-# typed "yes" and the reverse, exactly as before. Every delegate conversation is
-# its own origin, and the standalone MCP server's context is its own.
+# typed "yes" and the reverse, exactly as before. The standalone MCP server's
+# context is its own.
 PANEL_ORIGIN = "panel"
 MCP_ORIGIN = "mcp"
-
-
-def delegate_origin(conversation_id: int) -> str:
-    """The origin of one delegate conversation.
-
-    Per conversation and not per wire: two threads on the delegate API are two
-    conversations with the player, and a question asked in one is not standing
-    in the other — which is the whole of #281, where a "yes" posted to a thread
-    that had never been asked ended the game.
-    """
-    return f"delegate:{conversation_id}"
 
 
 @dataclass(frozen=True)
@@ -528,15 +517,15 @@ class ToolContext:
     can emit opens the gate.
 
     `origin` is **whose interaction is running right now**, and the one
-    invariant it rests on: every surface that can reach the gate declares itself
-    here on the way in, while it holds `mutation_lock` — the panel pipeline and
-    the buttons set `PANEL_ORIGIN`, a delegate turn sets `delegate_origin(id)`,
-    the MCP call wrapper sets `MCP_ORIGIN`. Commands are serialized under that
-    lock, so a single "current origin" is never two things at once, and the gate
-    stamps it onto the op it arms (#281). It defaults to the panel because that
-    is the surface a bare `ToolContext` belongs to; an op is *answered* through
-    an origin passed explicitly rather than read from here, so a surface that
-    forgot to declare itself can still never answer another's question.
+    invariant it rests on: every surface that can reach the gate declares
+    itself here on the way in, while it holds `mutation_lock` — the panel
+    pipeline and the buttons set `PANEL_ORIGIN`, the MCP call wrapper sets
+    `MCP_ORIGIN`. Commands are serialized under that lock, so a single "current
+    origin" is never two things at once, and the gate stamps it onto the op it
+    arms (#281). It defaults to the panel because that is the surface a bare
+    `ToolContext` belongs to; an op is *answered* through an origin passed
+    explicitly rather than read from here, so a surface that forgot to declare
+    itself can still never answer another's question.
 
     `board_version` and `mutation_lock` are the concurrency pair (audit item 7):
     the version says *which* board a client is acting on, the lock is what makes
@@ -569,7 +558,7 @@ class ToolContext:
     origin: str = PANEL_ORIGIN
     # The planner model's crutches (#375, `profiles.KNOWN_CRUTCHES`): which
     # 12B-only guidance the brain's offer and refusals carry. Every crutch by
-    # default, so the MCP server and the delegate wire keep today's words;
+    # default, so the MCP server keeps today's words;
     # app assembly sets it from the planner's profile.
     crutches: frozenset[str] = KNOWN_CRUTCHES
     # The mover that picks Glitch's moves in the `glitch` tier (#473), asked
@@ -729,15 +718,15 @@ class ToolContext:
         Live, this was reachable in three keystrokes: "I resign" (the gate asks),
         a dragged move, then "yes" — and a game two plies further on ended.
 
-        It is equally a question *asked in a conversation* (#281), and that half
-        no board version can catch: nothing has to move between "I resign" in one
-        delegate thread and a "yes" posted to another, or typed into the web
-        panel, and all three used to run it. So an op armed for another origin is
-        not this caller's to answer — and not this caller's to *drop* either: it
-        reads as None with `pending` untouched, because a click on a button with
-        nothing of its own to confirm is not a new command and must leave another
-        surface's standing question alone. (What does drop it is the next command
-        from any origin, which disarms on its way in exactly as it always has.)
+        It is equally a question *asked in a conversation* (#281), and that
+        half no board version can catch: nothing has to move between "I resign"
+        in one conversation and a "yes" said in another, and the gate used to
+        run it. So an op armed for another origin is not this caller's to
+        answer — and not this caller's to *drop* either: it reads as None with
+        `pending` untouched, because a click on a button with nothing of its
+        own to confirm is not a new command and must leave another surface's
+        standing question alone. (What does drop it is the next command from
+        any origin, which disarms on its way in exactly as it always has.)
 
         `origin=None` reads without answering — "what is armed at all, stale ones
         aside" — which is what the tests and the eval harness want. It cannot run
@@ -763,9 +752,9 @@ class ToolContext:
         origin that was asked — what became of it when it does not.
 
         `live_pending`'s two bindings, kept per origin rather than in one slot:
-        a question asked in one delegate thread is never another's to read,
+        a question asked on one surface is never another's to read,
         and a command elsewhere that moves nothing leaves it standing. Anything
-        that *does* move the board — a drag, a button, another thread, a
+        that *does* move the board — a drag, a button, another surface, a
         resume — is found here, at the next read, rather than by asking every
         surface that can move a board to remember to clear it. The expired
         record is dropped as it is returned, so it is reported exactly once.
@@ -899,7 +888,7 @@ def gate_cost(op: PendingOp, ctx: ToolContext) -> str:
 
 # Reads whose answers are strict subsets of the board state the brain is handed
 # in its prompt every single turn (`_agent_state_dict`). They stay registered —
-# callers with no such injection (the MCP server, the delegate wire) need them,
+# callers with no such injection (the MCP server) need them,
 # and `dispatch` runs them for anyone who asks — but app assembly does not
 # *offer* them to the brain: it cannot learn anything from a call it already has
 # the answer to, and the round trip costs a quarter of its iteration budget.
@@ -935,7 +924,7 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     own words before the planner runs and puts what it found in the planner's
     message, so a lookup call is the same search a round trip later. It was
     the last tool before `ask_player`, so withholding it moves no schema before
-    it. The MCP surface keeps it: a delegate has no gather step.
+    it. The MCP surface keeps it: an MCP caller has no gather step.
 
     `claim_draw` used to be the second, withheld while no draw was claimable.
     It is offered on every turn now and refuses in its handler (`retry:
@@ -952,9 +941,9 @@ def brain_tool_exclusions(ctx: ToolContext) -> list[str]:
     the tool that answers the ask is in the offer on every turn, and whether a
     hint ask reaches it is the planner's routing, which the eval gate measures.
 
-    Callers with no state injection (the MCP server, the delegate wire,
-    `/api/game/hint`) still get the full registry; a withheld tool stays
-    registered and dispatchable, and refuses on its own terms when it cannot run.
+    Callers with no state injection (the MCP server, `/api/game/hint`) still
+    get the full registry; a withheld tool stays registered and dispatchable,
+    and refuses on its own terms when it cannot run.
     """
     return [*BOARD_STATE_TOOLS, LOOKUP]
 
@@ -1032,7 +1021,7 @@ UNDO_PLIES = "plies"
 # because gemma-4-12b needed it, cut from the brain's copy of the offer when
 # the planner's profile does not list it. Each is (tool, the text as the
 # registry words it, what stands in its place); the registry keeps every word,
-# so the MCP server and the delegate wire see no change. Matched with any run
+# so the MCP server sees no change. Matched with any run
 # of whitespace standing for a space, because a docstring's line breaks are
 # not the wording, and `test_crutches.py` pins that every one is still found.
 _TEXT_CRUTCHES: dict[str, tuple[str, str, str]] = {
@@ -1146,9 +1135,9 @@ def confirm_pending(
     or one another origin was asked about, is dropped rather than run: this is
     the last gate before a game is thrown away, and it owes its callers both
     checks rather than trusting each of them to have made them. `origin` is the
-    answering surface's own (`PANEL_ORIGIN`, `delegate_origin(id)`,
-    `MCP_ORIGIN`) and is required for that reason — the key is never handed to a
-    caller that did not say who it is.
+    answering surface's own (`PANEL_ORIGIN`, `MCP_ORIGIN`) and is required for
+    that reason — the key is never handed to a caller that did not say who it
+    is.
     """
     pending = ctx.live_pending(origin)
     if pending is None:
@@ -1235,8 +1224,7 @@ class ToolRegistry:
         Excluding narrows only what a caller is *offered*; `dispatch` still runs
         every registered tool. That split is the point: the brain is handed the
         board state each turn and so is not offered `BOARD_STATE_TOOLS`, while
-        the MCP server and the delegate wire — which inject nothing — still get
-        the full list.
+        the MCP server — which injects nothing — still gets the full list.
         """
         excluded = set(exclude)
         return [
@@ -2396,7 +2384,7 @@ def build_registry(
     else:
         # The app's flavour carries `source` (#351): how the player's words
         # chose the move. `brain_tool_definitions` makes it required for the
-        # planner; it is optional here so the delegate wire and every caller
+        # planner; it is optional here so MCP and every caller
         # that names a move outright need not say so.
         def make_move(
             move: Annotated[str, Field(description="SAN or UCI move.")],
@@ -2440,8 +2428,8 @@ def build_registry(
     # already gone — 0/10 on both wordings, against 10/10 with no count at all,
     # where "three moves" is three calls (probe, 2026-09-28). What is left is a
     # target, `before_move`: the move number `review_game` reports, which a
-    # count cannot reach once it is past the cap. `plies` stays for the MCP
-    # and delegate callers, who count plies on purpose.
+    # count cannot reach once it is past the cap. `plies` stays for MCP
+    # callers, who count plies on purpose.
     # "Pops the whole exchange" was read by gemma-4-26b-a4b as one half-move
     # per call: "take that bishop move back and play d4" became undo, undo,
     # d4 in one batch, a whole extra exchange gone (#298, 2026-10-07, from

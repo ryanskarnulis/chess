@@ -139,7 +139,12 @@ model shows it holds that line.
 `tests/frontier_corpus.py`. A `Scenario` has a tier, a `why`, `dev` and
 `heldout` variants (each a sequence of `Say`s plus an optional setup), and
 `Checkpoint`s — named predicates over the `Episode` (the board before and
-after each turn, the tool results, the route and stop reason). The rules:
+after each turn, the tool results, the route and stop reason). Every `Say`
+goes to `/api/command` unless its origin is `BOARD`: another client acting on
+the board, a drag or the Undo button. (Until #565 a `Say` could speak from a
+delegate thread; `knight_ask_then_board_changes` moved its board change to
+`BOARD`, and `two_threads_similar_asks`, whose premise was two delegate
+threads, was retired. Its rows below are history.) The rules:
 
 - **Grade on the board and the tools, never on wording.** No checkpoint reads
   the commentary.

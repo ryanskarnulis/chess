@@ -31,6 +31,7 @@ suite nobody runs on a laptop.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -73,15 +74,13 @@ from test_agent_evals import (
     _measured,
     _pass_rate,
     _replay_late_game,
-    _run,
-    _run_panel,
     _run_steps,
-    _seam_name,
     _SpeechTotals,
     _stays_a_model_eval,
     _step,
     _trajectory,
     _unbidden,
+    _wire_calls,
 )
 
 
@@ -344,9 +343,9 @@ def test_the_sample_record_pairs_the_tokens_with_the_milliseconds() -> None:
 # `set_hints_mode` call turns up on 9/65 turns where the player only asked "what
 # should I play here?". Whether it turned hints **on** — a setting the
 # player owns, changed by an agent that was asked a question — is unknowable from
-# `trajectory=[get_best_moves → set_hints_mode]`. The arguments are already on
-# the wire (`agent_api._tool_call_read` puts them there); only the reporting
-# path was dropping them, so this is a harness change with no `src/` in it.
+# `trajectory=[get_best_moves → set_hints_mode]`. The arguments are on the
+# turn's trace record (`_wire_calls` reads them there); only the reporting path
+# was dropping them, so this is a harness change with no `src/` in it.
 
 
 def _call(
@@ -356,7 +355,7 @@ def _call(
     result: str | None = "{}",
     error: str | None = None,
 ) -> dict[str, Any]:
-    """One dispatched call, shaped like the `/api/agent` wire's."""
+    """One dispatched call, shaped as `_wire_calls` builds it."""
     return {
         "tool": tool,
         "arguments": arguments or {},
@@ -367,6 +366,67 @@ def _call(
 
 def _assistant(*calls: dict[str, Any]) -> dict[str, Any]:
     return {"content": "Bishop takes. Rude.", "tool_calls": list(calls)}
+
+
+class _Traced:
+    """Just the tracer `_wire_calls` reads: the turn's record."""
+
+    def __init__(self, record: dict[str, Any]) -> None:
+        self.last = record
+
+
+def _panel(**record: Any) -> Any:
+    return type("App", (), {"tracer": _Traced(record)})()
+
+
+def test_the_wire_calls_take_their_arguments_from_the_trace() -> None:
+    body = {"tool_results": [{"name": "make_move", "result": {"legal": True}}]}
+    app = _panel(tools=[{"name": "make_move", "args": {"move": "e4"}, "result": {}}])
+
+    [call] = _wire_calls(app, body)
+
+    assert call == {
+        "tool": "make_move",
+        "arguments": {"move": "e4"},
+        "result": '{"legal":true}',
+        "error": None,
+    }
+
+
+def test_a_refusal_rides_the_error_channel_and_a_rejection_does_not() -> None:
+    body = {
+        "tool_results": [
+            {"name": "resign", "result": {"ok": False, "error": "confirm first"}},
+            {"name": "make_move", "result": {"ok": True, "legal": False}},
+        ]
+    }
+    app = _panel(
+        tools=[
+            {"name": "resign", "args": {}, "result": {}},
+            {"name": "make_move", "args": {"move": "Qz9"}, "result": {}},
+        ]
+    )
+
+    refused, rejected = _wire_calls(app, body)
+
+    assert (refused["result"], refused["error"]) == (None, "confirm first")
+    assert rejected["error"] is None
+    assert json.loads(rejected["result"]) == {"ok": True, "legal": False}
+
+
+def test_arguments_the_trace_cannot_pair_are_left_empty() -> None:
+    """A turn that died between a dispatch and its arguments records the
+    complete pairs only; guessing which call an argument belongs to would be
+    worse than saying nothing."""
+    body = {
+        "tool_results": [
+            {"name": "undo", "result": {"ok": True}},
+            {"name": "make_move", "result": {"legal": True}},
+        ]
+    }
+    app = _panel(tools=[{"name": "undo", "args": {"plies": 2}, "result": {}}])
+
+    assert [call["arguments"] for call in _wire_calls(app, body)] == [{}, {}]
 
 
 def test_the_trajectory_names_what_each_call_asked_for(capsys: Any) -> None:
@@ -825,21 +885,6 @@ def test_a_dead_step_short_circuits_and_is_returned_as_the_final(
         )
         is Outcome.INFRA
     )
-
-
-def test_a_composite_runner_is_filed_under_the_seam_it_drove() -> None:
-    """The report names each scenario's seam by identity, and a composite is
-    neither `_run` nor `_run_panel` — so without the seam it carries, every
-    multi-step probe would be recorded against the delegate wire it never
-    touched. The report is the baseline's evidence; it does not get to be
-    wrong about which seam produced a number."""
-    seam, _ = _scripted_seam()
-
-    assert _seam_name(_run_panel) == "panel"
-    assert _seam_name(_run) == "delegate"
-    assert _seam_name(_run_steps("first", record={})) == "panel"
-    assert _seam_name(_run_steps("first", record={}, seam=_run)) == "delegate"
-    assert _seam_name(_run_steps("first", record={}, seam=seam)) == "delegate"
 
 
 def test_the_record_is_cleared_before_every_sample() -> None:

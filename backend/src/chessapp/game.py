@@ -268,7 +268,7 @@ class GameSession:
         The board version says *which board*; this says *which game*, and the
         two answer different questions for a client acting on the board. A
         version is only comparable within one run of the app and is bumped by
-        every move, so a delegate that wants "act on the game I was playing,
+        every move, so a client that wants "act on the game I was playing,
         or not at all" — across a new game, a resume, or a restart that
         restored the board — holds this instead. Survives serialization, so a
         restored checkpoint is the same game it was before the restart.

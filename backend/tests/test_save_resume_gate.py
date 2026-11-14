@@ -28,9 +28,14 @@ from chessapp.tools import (
     _save_path,
     build_registry,
     confirm_pending,
-    delegate_origin,
 )
 from fakes import FakeEngine
+
+
+def _origin(n: int) -> str:
+    """Some other surface's origin: the gate treats any string it was not
+    asked under as foreign, whatever the surface is."""
+    return f"other:{n}"
 
 
 def _app(tmp_path, *moves: str):
@@ -151,10 +156,10 @@ def test_a_resume_spends_the_commands_destructive_budget(tmp_path):
     assert ctx.session.move_history() == ["e4", "e5"]
 
 
-def test_a_resume_asked_in_a_delegate_thread_is_not_the_panels_to_answer(tmp_path):
+def test_a_resume_asked_elsewhere_is_not_the_panels_to_answer(tmp_path):
     registry, ctx, _ = _app(tmp_path, "d4", "d5")
     _write_save(ctx, "scholars", "e4", "e5")
-    ctx.origin = delegate_origin(7)
+    ctx.origin = _origin(7)
 
     assert _refused_for_confirmation(
         registry.dispatch("resume_game", {"name": "scholars"})
@@ -162,7 +167,7 @@ def test_a_resume_asked_in_a_delegate_thread_is_not_the_panels_to_answer(tmp_pat
 
     assert confirm_pending(registry, ctx, PANEL_ORIGIN) is None
     assert ctx.session.move_history() == ["d4", "d5"]
-    assert confirm_pending(registry, ctx, delegate_origin(7)) is not None
+    assert confirm_pending(registry, ctx, _origin(7)) is not None
     assert ctx.session.move_history() == ["e4", "e5"]
 
 

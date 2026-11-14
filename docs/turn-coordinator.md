@@ -312,7 +312,7 @@ Two more frames share the socket (#458). `type: "reply"` carries the panel's
 latest reply — `{text, game_id, seq}` — once the turn has it, behind the board
 it is about, and again after the connect snapshot, so a reload or a second tab
 shows what Glitch last said rather than "Your move.". Only the panel's own
-turns (a command, a drag) set it, never a delegate thread; a client shows it
+turns (a command, a drag) set it; a client shows it
 only while `game_id` is the board's, and `seq` keeps a re-sent reply from
 replacing a newer one. `type: "settings"` carries the `GET /api/settings`
 document whenever a settings endpoint or a command turn changed it, so every
@@ -342,7 +342,7 @@ browser's own milestones by `interaction_id`: `docs/latency-measurement.md`.
   (`ENGINE_LOST_REPLY_OWED` — the app's words, never Glitch's, so the turn is
   remembered by the facts). The narrator is told too: his brief says the reply
   never came (#365). The loop's `stop_reason` is
-  untouched (it is the delegate wire's word for how the *run* ended); what the
+  untouched (it is the fleet's word for how the *run* ended); what the
   turn carries instead is `engine_failure`, class and message, on the outcome
   and in the trace. The trace itself is written from a `finally`-owned envelope
   now, so any exception escaping a turn still leaves exactly one record, with

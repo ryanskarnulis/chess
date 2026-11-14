@@ -3,8 +3,8 @@
 The page keeps a conductor handoff in the URL until its command has run, and
 retries it after a 30 s timeout or a reload. If the first request did reach
 the backend, the retry would run the same words again: a move attempted twice.
-So `/api/command` takes the delegate route's optional ``Idempotency-Key``
-header (`agent_api`, #291) and remembers what each key's command did:
+So `/api/command` takes an optional ``Idempotency-Key`` header and remembers
+what each key's command did:
 
 - **running**: a retry waits for the first run and answers with its result.
   Never a second run.
@@ -20,7 +20,7 @@ and origin it was first sent with; anything else under it is a caller bug.
 Bounded: at most `MAX_KEYS` keys, none older than `KEY_TTL_SECONDS`, oldest
 dropped first. Persisted beside the live game when there is a save dir, so a
 retry after a restart is still recognised; a run cut off by the restart reads
-back as incomplete. Best-effort both ways, like `conversations.json`.
+back as incomplete. Best-effort both ways, like the settings file.
 """
 
 from __future__ import annotations
@@ -40,6 +40,10 @@ from chessapp.tools import _write_json_atomic
 logger = logging.getLogger(__name__)
 
 COMMAND_KEYS_FILENAME = "command_keys.json"
+
+# An `Idempotency-Key` is the caller's name for one command; longer than this
+# is not a key but a payload.
+MAX_IDEMPOTENCY_KEY_LENGTH = 128
 _FORMAT = 1
 # One key per handoff intent: a handful a day, so this is weeks of them.
 MAX_KEYS = 64

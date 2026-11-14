@@ -241,7 +241,7 @@ def test_a_malformed_game_id_is_refused():
     raise AssertionError("a malformed game_id loaded")
 
 
-def test_the_delegate_can_bind_a_message_to_a_game(tmp_path):
+def test_a_command_can_bind_itself_to_a_game(tmp_path):
     ctx = ToolContext(session=GameSession(), save_dir=tmp_path)
     app, brain = scripted_app(
         ctx,
@@ -250,11 +250,8 @@ def test_the_delegate_can_bind_a_message_to_a_game(tmp_path):
         ),
     )
     client = TestClient(app)
-    thread = client.post("/api/agent/conversations", json={}).json()["id"]
-
     response = client.post(
-        f"/api/agent/conversations/{thread}/messages",
-        json={"content": "play d4", "game_id": "0" * 32},
+        "/api/command", json={"text": "play d4", "game_id": "0" * 32}
     )
 
     assert response.status_code == 409

@@ -42,10 +42,10 @@ Conventions:
   with the gate's question (`confirm: true`), and `/api/game/confirm` answers
   it. It is the *same* armed op the spoken road uses, so a question asked by a
   button can be answered by a typed "yes" and vice versa — they are one origin
-  (`tools.PANEL_ORIGIN`), the player at their own screen. A delegate
-  conversation is not: its question is answered in that conversation and
-  nowhere else (`tools.PendingOp.origin`, #281). Undo is not destructive and
-  keeps its direct endpoint.
+  (`tools.PANEL_ORIGIN`), the player at their own screen. Another origin's
+  question (the MCP server's) is answered there and nowhere else
+  (`tools.PendingOp.origin`, #281). Undo is not destructive and keeps its
+  direct endpoint.
 
 Always read `ctx.session` per request: `resume_game` swaps the session
 object on the context.
@@ -89,13 +89,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from chessapp import clarification, openings
-from chessapp.agent_api import (
-    CONVERSATIONS_FILENAME,
-    MAX_AGENT_MESSAGE_LENGTH,
-    MAX_IDEMPOTENCY_KEY_LENGTH,
-    ConversationStore,
-    build_agent_router,
-)
 from chessapp.analysis import review_game
 from chessapp.brain import (
     CALL_FAILED,
@@ -111,7 +104,11 @@ from chessapp.brain import (
     Narration,
 )
 from chessapp.brain_switch import BrainSwitch
-from chessapp.command_keys import COMMAND_KEYS_FILENAME, CommandKeys
+from chessapp.command_keys import (
+    COMMAND_KEYS_FILENAME,
+    MAX_IDEMPOTENCY_KEY_LENGTH,
+    CommandKeys,
+)
 from chessapp.conversation import Recall
 from chessapp.coordinator import (
     ReplySettlement,
@@ -136,7 +133,7 @@ from chessapp.facts import (
 from chessapp.fastparse import parse_confirmation, parse_move, parse_resign
 from chessapp.game import GameSession, MoveResult
 from chessapp.gather import Gathered, Searcher
-from chessapp.glance import build_glance
+from chessapp.glance import build_glance, build_glance_router
 from chessapp.ledger import render_record
 from chessapp.move_source import SourcedMove, reply_attribution
 from chessapp.profiles import BRAIN_CHOICES
@@ -248,11 +245,16 @@ def _header_id(value: str | None) -> str:
     return value if value is not None and re.fullmatch(_ID_PATTERN, value) else ""
 
 
+# Cap on one command: generous for typed input while bounding what a run feeds
+# the local model's context window (PCC's `MAX_AGENT_MESSAGE_LENGTH`).
+MAX_COMMAND_LENGTH = 8_000
+
+
 class CommandRequest(VersionedRequest):
-    # The delegate's cap, on the panel's route too (#288): one command is what
-    # the planner and the narrator both carry into their prompts, so an
-    # unbounded one is an unbounded prompt. Refused 422 before any turn opens.
-    text: str = Field(max_length=MAX_AGENT_MESSAGE_LENGTH)
+    # One command is what the planner and the narrator both carry into their
+    # prompts, so an unbounded one is an unbounded prompt (#288). Refused 422
+    # before any turn opens.
+    text: str = Field(max_length=MAX_COMMAND_LENGTH)
     # The browser's id for the interaction this command belongs to (#317): the
     # same id rides the transcription before it and the speech request after,
     # so the three records join. Optional — a typed client that sends none
@@ -1390,24 +1392,22 @@ class _ModelCost:
 
 @dataclass(frozen=True)
 class CommandOutcome:
-    """One command-pipeline run, shared by `/api/command` and the delegate
-    messages endpoint. `tool_results` is the `{"name", "result"}` list of
-    everything the agent ran, which `/api/command` returns verbatim;
-    `tool_args` holds each call's arguments in the same order — the delegate
-    endpoint needs them to build its wire `tool_calls`, but `/api/command`
-    never exposes them. `stop_reason` is the brain loop's, in the fleet's
-    vocabulary: `completed` when the agent finished with an answer,
-    `no_progress` when the loop ended a planner that had started repeating
-    itself (an answer too — the narrator still ran),
+    """One command-pipeline run. `tool_results` is the `{"name", "result"}`
+    list of everything the agent ran, which `/api/command` returns verbatim;
+    `tool_args` holds each call's arguments in the same order, for the turn's
+    trace record (`/api/command` never exposes them). `stop_reason` is the
+    brain loop's, in the fleet's vocabulary: `completed` when the agent
+    finished with an answer, `no_progress` when the loop ended a planner that
+    had started repeating itself (an answer too — the narrator still ran),
     `max_iterations` or `correction_limit` when it ran out of budget first,
     `provider_error` when the provider died mid-turn (the results of whatever
-    ran are still here, and the turn was still closed). The fast path is
-    always `completed` — it never reaches the model.
+    ran are still here, and the turn was still closed). The fast path is always
+    `completed` — it never reaches the model.
 
     `engine_failure` names what killed the engine's reply, empty on every turn
     it did not (`_failure_name`). It is a field of its own rather than a stop
-    reason because the *loop* stopped normally: the stop reason is the delegate
-    wire's word for how the run ended, and a run that ended with an answer did,
+    reason because the *loop* stopped normally: the stop reason is the fleet's
+    word for how the run ended, and a run that ended with an answer did,
     whatever Stockfish was doing. What the engine's death changes is the turn —
     the player's move stands, the reply is still owed, and the commentary says
     so in the app's own line.
@@ -1692,8 +1692,7 @@ def create_app(
     # The panel's latest reply (#458): what the commentary bubble last said,
     # stamped with the game it was said in and numbered so a client can tell a
     # newer one from a re-sent one. Only the panel's own turns set it — a drag,
-    # a typed or spoken command — never a delegate thread, whose words belong
-    # to its own conversation. In memory: a reload or a second tab gets it, a
+    # a typed or spoken command. In memory: a reload or a second tab gets it, a
     # restart does not (`docs/persistence-and-identity.md`).
     panel_reply: dict[str, Any] | None = None
 
@@ -1780,14 +1779,9 @@ def create_app(
     registry.on_mutation = _record_mutation
     # Every tool handler's time, charged to the request running it (#290).
     registry.on_tool_done = lambda _name, elapsed_ms: _add_span("tool", elapsed_ms)
-    # On disk beside the live game when there is a save dir (#291), so a
-    # restart keeps the delegate threads — and their idempotency keys — as it
-    # keeps the board.
-    store = ConversationStore(
-        ctx.save_dir / CONVERSATIONS_FILENAME if ctx.save_dir is not None else None
-    )
-    # The panel route's idempotency keys (#553), on disk beside them for the
-    # same reason: a handoff retried after a restart is still recognised.
+    # The panel route's idempotency keys (#553), on disk beside the live game
+    # when there is a save dir: a handoff retried after a restart is still
+    # recognised.
     command_keys = CommandKeys(
         ctx.save_dir / COMMAND_KEYS_FILENAME if ctx.save_dir is not None else None
     )
@@ -2500,7 +2494,7 @@ def create_app(
 
         A click that arrives after the board moved has nothing to confirm (409,
         like a click with nothing armed at all): the question was about a
-        position, and that position is gone. A click while a *delegate* thread's
+        position, and that position is gone. A click while another origin's
         question is standing is the same 409 (#281) — that question was put to
         someone else, and the button neither answers it nor disarms it, because
         a click with nothing of its own to confirm is not a new command.
@@ -2817,35 +2811,6 @@ def create_app(
                 coordinator.end_command()
                 command_boards = None
 
-    async def _run_command(
-        text: str,
-        conversation: Sequence[dict[str, str]],
-        version: int | None = None,
-        *,
-        origin: str,
-        game_id: str | None = None,
-    ) -> CommandOutcome:
-        """The command pipeline, under the mutation guard — the delegate route's
-        entry (the panel opens the guard itself; see `command`).
-
-        A command is a mutation path like any other — one utterance can move the
-        board — so it carries the same optional `version` precondition, and a
-        stale one is refused before the model is asked anything. The guard wraps
-        the *whole* run rather than the individual dispatches inside it: a turn
-        is one thing that happens to one board, and half of it landing on a
-        board someone else changed is exactly the race this closes.
-
-        `origin` says whose turn this is (`tools.delegate_origin(id)` from the
-        delegate router) and is keyword-only and required: a confirmation may be
-        armed or answered here, and both halves belong to one conversation.
-        """
-        async with _mutation(version, game_id):
-            outcome = await _command_turn(text, conversation, origin=origin)
-        # A delegate can change a setting too ("make it harder" over MCP); the
-        # panel's tabs hear about it. Its words stay in its own thread.
-        _publish_settings()
-        return outcome
-
     async def _command_turn(
         text: str,
         conversation: Sequence[dict[str, str]],
@@ -2854,9 +2819,8 @@ def create_app(
         interaction_id: str = "",
         trace_origin: str | None = None,
     ) -> CommandOutcome:
-        """The single pipeline: user string → brain's tool loop → new state.
-        Shared by `/api/command` and the delegate messages endpoint against the
-        one game session.
+        """The single pipeline: user string → brain's tool loop → new state,
+        against the one game session.
 
         One call into the brain does the whole turn. Inside it, the agent loop
         runs the utterance to a conclusion — calling tools, reading each result
@@ -2890,10 +2854,9 @@ def create_app(
         The brain sees the `transcript` the caller supplies (prior turns'
         commands plus the commentary that was shown, a bounded window, final
         answers only), so the agent can follow references to earlier turns —
-        but this is transcript-agnostic: it never reads or records either the
-        web panel's `ctx.transcript` or a delegate conversation, leaving that
-        to the caller. The board broadcast fires here on any board change, so
-        a conductor-played move shows up live on the web board too.
+        but this is transcript-agnostic: it never reads or records
+        `ctx.transcript`, leaving that to the caller. The board broadcast fires
+        here on any board change.
 
         The fast path (the seam BRIEF reserves): an utterance that is exactly
         one unambiguous legal move skips the brain entirely and goes straight
@@ -2905,16 +2868,15 @@ def create_app(
         engine's reply is not. Anything ambiguous or non-move reaches the brain
         unchanged.
 
-        **Whose turn this is.** `origin` is the caller's surface — `PANEL_ORIGIN`
-        for the web panel, `tools.delegate_origin(id)` for one delegate
-        conversation — and it is declared on the context on the way in, under the
-        mutation lock, so the gate stamps whatever it arms with the conversation
-        the player is being asked in. The same string is what the confirmation
-        branch below answers with, so a "yes" settles the question *this* thread
-        was asked and no other's (#281).
+        **Whose turn this is.** `origin` is the caller's surface
+        (`PANEL_ORIGIN` for the web panel), and it is declared on the context
+        on the way in, under the mutation lock, so the gate stamps whatever it
+        arms with the conversation the player is being asked in. The same
+        string is what the confirmation branch below answers with, so a "yes"
+        settles the question *this* thread was asked and no other's (#281).
         """
-        assert brain is not None  # both callers guard; documents the invariant
-        # Under `_mutation` in both callers, so this is the one interaction
+        assert brain is not None  # the caller guards; documents the invariant
+        # Under `_mutation` in the caller, so this is the one interaction
         # running: whoever the gate arms for below, it is this one's question.
         ctx.origin = origin
         # This origin's open question (#319), read the way `live_pending` is:
@@ -2944,7 +2906,7 @@ def create_app(
         # — same interaction, both ends closed in the same `finally`.
         with _command_window(correlation_id, turn_id):
             # `tool_results` is the {"name", "result"} list the UI sees; `tool_args`
-            # mirrors it with each call's arguments, for the delegate wire — kept
+            # mirrors it with each call's arguments, for the trace — kept
             # parallel so the UI-facing shape stays untouched.
             tool_results: list[dict[str, Any]] = []
             tool_args: list[dict[str, Any]] = []
@@ -3009,7 +2971,7 @@ def create_app(
             # and results it had reached, and the exception that ended it.
             traced: dict[str, Any] = {
                 "utterance": text,
-                # Which surface said it — the panel, or one delegate thread.
+                # Which surface said it.
                 # Cheap, and it is the field this whole class of bug is read
                 # off: a turn that answered a question asked somewhere else
                 # (#281) is invisible in a record that names no origin.
@@ -3529,9 +3491,7 @@ def create_app(
         (`docs/turn-memory.md`).
 
         **Read, run, record is one serialized section**, which is why this
-        opens `_mutation` itself rather than going through `_run_command` (the
-        delegate route's entry, which guards the run alone because `agent_api`
-        already serializes the three under its own per-conversation lock). Split
+        opens `_mutation` around all three rather than the run alone. Split
         them and the panel's conversational causality reorders: two overlapping
         commands — voice and text, or two tabs — would both snapshot memory
         before either ran, and the second would reason from a conversation
@@ -3703,13 +3663,7 @@ def create_app(
             retryable=outcome.retryable,
         )
 
-    app.include_router(
-        build_agent_router(
-            store=store,
-            run_command=_run_command if brain is not None else None,
-            glance=lambda: build_glance(ctx),
-        )
-    )
+    app.include_router(build_glance_router(lambda: build_glance(ctx)))
 
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:

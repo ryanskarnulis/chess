@@ -335,27 +335,6 @@ def test_a_stale_command_never_reaches_the_brain():
     assert ctx.session.move_history() == ["e4"]
 
 
-def test_the_delegate_wire_carries_the_precondition():
-    """A conductor driving chess over the delegate API shares the one session
-    with the web board, so it gets the same opt-in precondition at its own entry
-    point."""
-    ctx = ToolContext(session=GameSession())
-    app, brain = scripted_app(ctx, AgentResponse(text="sure"))
-    client = TestClient(app)
-    conversation = client.post("/api/agent/conversations", json={}).json()["id"]
-    stale = version_of(client)
-    ctx.session.submit_move("e4")
-
-    response = client.post(
-        f"/api/agent/conversations/{conversation}/messages",
-        json={"content": "how am I doing?", "version": stale},
-    )
-
-    assert response.status_code == 409
-    assert response.json()["stale"] is True
-    assert brain.calls == []
-
-
 # --- the concurrency acceptance test ----------------------------------------
 
 

@@ -10,8 +10,7 @@ this file owns the pipeline above it. What it pins: a 200 carrying the
 committed results and the app's own line about the reply that never came, a
 board holding exactly the one move, a turn the next command settles, and the
 same answers from every surface that can play a move — the spoken fast path,
-the brain's loop, a drag in agent mode, a drag with no brain at all, and the
-delegate endpoint.
+the brain's loop, a drag in agent mode, and a drag with no brain at all.
 
 The engine is the `DyingEngine` double and the brain is scripted: nothing here
 touches a live model or a real Stockfish. The app's line is imported rather
@@ -21,21 +20,11 @@ than typed out, so these tests pin the *substitution*, never a wording.
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.agent_api import reset_rate_limit
 from chessapp.api import ENGINE_LOST_REPLY_OWED, create_app
 from chessapp.brain import AgentResponse, ToolCall
 from chessapp.game import GameSession
 from chessapp.tools import ToolContext
 from fakes import DyingEngine, FakeEngine, ScriptedBrain, scripted_app
-
-
-@pytest.fixture(autouse=True)
-def _reset_rate_limit():
-    """The delegate limiter is module-global; one test's posts must not count
-    against another's."""
-    reset_rate_limit()
-    yield
-    reset_rate_limit()
 
 
 def make_client(*responses: AgentResponse, narrations=(), verbosity="normal"):
@@ -241,29 +230,6 @@ def test_the_next_drag_with_no_brain_settles_the_owed_reply_too():
     played = client.post("/api/game/move", json={"move": "d2d4"}).json()
 
     assert played["state"]["history"] == ["e4", "e5", "d4", "d6"]
-
-
-# --- the delegate endpoint --------------------------------------------------
-
-
-def test_the_delegate_endpoint_answers_with_the_turn():
-    """It catches `ProviderError` and nothing else, which is all it needs to:
-    an engine failure is no longer an exception by the time it gets here, so
-    the conductor is told what happened instead of being handed a 500 and
-    deciding for itself whether the move landed."""
-    client, ctx = make_client(move("e4"))
-    conversation = client.post("/api/agent/conversations", json={}).json()["id"]
-
-    response = client.post(
-        f"/api/agent/conversations/{conversation}/messages",
-        json={"content": "push the king pawn"},
-    )
-
-    assert response.status_code == 200
-    assistant = response.json()["assistant_message"]
-    assert ENGINE_LOST_REPLY_OWED in assistant["content"]
-    assert assistant["stop_reason"] == "completed", "the loop itself finished"
-    assert ctx.session.move_history() == ["e4"]
 
 
 # --- the engine dies inside a tool the planner called (#329) -----------------

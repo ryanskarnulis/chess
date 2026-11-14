@@ -1,7 +1,7 @@
 """Agent eval harness: golden command→tool-call tasks against the REAL model.
 
 Mirrors PCC's `tests/test_agent_evals.py` (agent-standard STANDARD.md §6): a
-small set of scripted scenarios driven through the *whole* delegate path — a
+small set of scripted scenarios driven through the *whole* command path — a
 real `LlamaBrain` (llama-server behind llama-swap, gemma-4-12b) over a real
 Stockfish engine — and asserts trajectory *shape* plus board end-state, never
 exact call sequences (the model is sampled at temp 1.0).
@@ -12,18 +12,24 @@ GPU:
     cd backend
     CHESSAPP_AGENT_EVALS=1 .venv/bin/pytest tests/test_agent_evals.py -v -s
 
-Each scenario gets a fresh app + game (function-scoped `eval_app`) and a fresh
-conversation, so scenarios are independent; the Stockfish process is
+Each scenario gets a fresh app + game (function-scoped `eval_app`), so its
+panel conversation starts empty unless the setup seeds one, and scenarios are
+independent; the Stockfish process is
 module-scoped (one engine for the suite) and the model stays warm on
 llama-swap across scenarios. The first call may cold-load the model (~100 s);
 everything after runs warm. `-s` shows the per-scenario `[eval] …` stats lines
 the baseline table in `docs/agent-evals.md` is built from.
 
-The scenarios drive the same seam the conductor's delegate calls use —
-`POST /api/agent/conversations/{id}/messages` — so the `MessageExchange` wire
-(`assistant_message.tool_calls`: tool/arguments/result/error, and
-`stop_reason`) is exactly what the goldens assert on. Board end-state is read
-back through `GET /api/state`, the same document the web board renders.
+The scenarios drive the seam players use — `POST /api/command`, the web
+panel's — so the conversation memory they measure is the one players get
+(`ctx.transcript`, read through `conversation.Recall`). Until #565 they drove a
+delegate conversation endpoint whose history was built differently, so the gate
+measured a memory no player had. The panel answers `{name, result}` per tool
+call; the harness rebuilds the shape the goldens assert on
+(`tool_calls`: tool/arguments/result/error, plus `stop_reason`) from that answer
+and the turn's own trace record (`_wire_calls`), with no production change.
+Board end-state is read back through `GET /api/state`, the same document the
+web board renders.
 
 Fast-path guard: chess short-circuits **two** kinds of utterance with zero
 planner calls — one that parses as exactly one legal move
@@ -147,7 +153,6 @@ import chess.pgn
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.agent_api import reset_rate_limit
 from chessapp.api import (
     STUCK_REPLY,
     create_app,
@@ -214,7 +219,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 # Same env names the app uses (agent-standard model profile); the defaults are
-# build_app's, so the eval hits the same runtime a delegate call would.
+# build_app's, so the eval hits the same runtime a player's command would.
 LLAMACPP_BASE_URL = os.environ.get("LLAMACPP_BASE_URL", "http://127.0.0.1:8200/v1")
 LLAMACPP_MODEL = os.environ.get("LLAMACPP_MODEL", DEFAULT_MODEL)
 STOCKFISH_PATH = os.environ.get("CHESSAPP_STOCKFISH", "/usr/bin/stockfish")
@@ -520,15 +525,6 @@ def _report_session() -> Generator[None, None, None]:
 # --- app / engine fixtures ----------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _reset_rate_limit() -> Generator[None, None, None]:
-    # The per-IP limiter is module-global; keep scenarios from bleeding hits
-    # into each other (each sends only a message or two, well under the cap).
-    reset_rate_limit()
-    yield
-    reset_rate_limit()
-
-
 @pytest.fixture(scope="module")
 def engine() -> Generator[EnginePlayer, None, None]:
     """One Stockfish process for the whole suite (only built when opted in)."""
@@ -741,12 +737,10 @@ def _attempted(assistant: dict[str, Any], tool: str) -> list[dict[str, Any]]:
 def _succeeded(assistant: dict[str, Any], tool: str) -> list[dict[str, Any]]:
     """Calls to `tool` whose *result* says it ran (``ok: true``).
 
-    `_successful` reads the delegate wire's `error` channel, and the panel seam
-    has none: `_run_panel` adapts `{name, result}` with `error` always null, so
-    a gate refusal (`ok:false`) reads as a success there. Every scenario that
-    asks "did this destructive op actually run" on the panel seam needs the
-    result read instead — which is also the honest reading on the delegate
-    wire, where a refusal arrives as an `error` and is excluded twice over.
+    `_successful` reads the `error` channel `_wire_calls` rebuilds; this reads
+    the result as well, so a refusal is excluded twice over. It dates from when
+    the panel seam carried no error channel at all and a gate refusal
+    (`ok:false`) read as a success there.
 
     Not for `make_move`: a rejected move is `ok:true, legal:false` on purpose
     (legality is the engine's answer, not a fault), so accepted moves are
@@ -944,31 +938,88 @@ class EvalRun(NamedTuple):
 _NO_TURN: dict[str, Any] = {"content": "", "tool_calls": [], "stop_reason": None}
 
 
+def _wire_calls(app: EvalApp, body: dict[str, Any]) -> list[dict[str, Any]]:
+    """The turn's tool calls as the checks read them: `tool`, `arguments`, and
+    exactly one of `result` (compact JSON) or `error`.
+
+    `/api/command` answers `{name, result}` per call, with no arguments and no
+    separate error channel. The arguments come off the turn's trace record
+    (`trace.turn_record`'s `tools`, the same lists zipped), and a dispatch or
+    domain error (`ok: false`) is moved onto `error` the way the retired
+    delegate wire did — a legitimate `legal: false` rejection stays a result.
+    When the record and the answer disagree on the count (a turn that died
+    between a dispatch and its arguments), the arguments are left empty rather
+    than misattributed.
+    """
+    results = body.get("tool_results") or []
+    traced = app.tracer.last.get("tools")
+    if traced is not None and len(traced) == len(results):
+        arguments = [entry["args"] for entry in traced]
+    else:
+        arguments = [{} for _ in results]
+    calls: list[dict[str, Any]] = []
+    for entry, args in zip(results, arguments, strict=True):
+        result = entry["result"]
+        if isinstance(result, dict) and result.get("ok") is False:
+            calls.append(
+                {
+                    "tool": entry["name"],
+                    "arguments": args,
+                    "result": None,
+                    "error": result.get("error"),
+                }
+            )
+        else:
+            calls.append(
+                {
+                    "tool": entry["name"],
+                    "arguments": args,
+                    "result": json.dumps(result, separators=(",", ":")),
+                    "error": None,
+                }
+            )
+    return calls
+
+
+def _assistant(app: EvalApp, response: Any) -> dict[str, Any]:
+    """One `/api/command` answer in the shape the checks read."""
+    if response.status_code != 200:
+        return dict(_NO_TURN)
+    body = response.json()
+    return {
+        "content": body["commentary"],
+        "tool_calls": _wire_calls(app, body),
+        # The panel does not return the stop reason; the trace does.
+        "stop_reason": app.tracer.last.get("stop_reason"),
+    }
+
+
 def _run(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
-    """One eval run against the live model: fresh conversation → one message →
-    the `[eval]` stats line the baseline table is built from.
+    """One eval turn against the live model, through `POST /api/command` → the
+    `[eval]` stats line the baseline table is built from.
+
+    The turn reads `ctx.transcript`, the panel conversation the player has
+    actually been having — since #372 as the player's requests and the last
+    exchange, whole (`conversation.Recall`, `docs/turn-memory.md`). A fresh app
+    starts it empty, so a scenario's first turn sees no history unless its
+    setup seeded one, and every later turn in the sample sees the ones before
+    it. That is why the `poisoned` conditions seed their poison at the *end*
+    of the thread: a stale assistant line only poisons what it is still quoted
+    in, and now that is the last exchange.
 
     Deliberately does **not** assert on the status: a pass-rate scenario has to
     be able to retry an infra death, and an assertion here would make that death
-    a behavioral miss. The assertion moved to `_run_once`, which the single-shot
+    a behavioral miss. The assertion is in `_run_once`, which the single-shot
     scenarios use.
     """
-    conversation_id = app.client.post("/api/agent/conversations", json={}).json()["id"]
     app.provider.reset()  # measure this utterance, not the fixture's history
     app.tracer.reset()
     started = time.monotonic()
     response = app.client.post(
-        f"/api/agent/conversations/{conversation_id}/messages",
-        json={"content": utterance},
-        timeout=_REQUEST_TIMEOUT,
+        "/api/command", json={"text": utterance}, timeout=_REQUEST_TIMEOUT
     )
     duration = time.monotonic() - started
-    assistant = (
-        response.json()["assistant_message"]
-        if response.status_code == 200
-        else dict(_NO_TURN)
-    )
-    return _measured(app, scenario, assistant, response, duration)
+    return _measured(app, scenario, _assistant(app, response), response, duration)
 
 
 def _measured(
@@ -1058,22 +1109,17 @@ def _measured(
     )
 
 
-def _answer_in_the_same_conversation(app: EvalApp, text: str) -> Any:
-    """Say something more in the delegate thread this sample is having.
+def _answer(app: EvalApp, text: str) -> tuple[Any, dict[str, Any]]:
+    """Say something more in this sample's conversation, unmetered.
 
     How a scenario answers a confirmation it armed: the question belongs to the
-    conversation it was asked in (#281), so the yes goes back to that thread
-    rather than to a fresh one or to the web panel — either of which the
-    pipeline reads as a new utterance and disarms on its way past, never as an
-    answer. Each sample runs on a fresh app and `_run` opens exactly one
-    conversation on it, so there is never a choice to make here.
+    surface it was asked on (#281), and that is the panel. Returns the HTTP
+    response and the answer in the checks' shape.
     """
-    [conversation] = app.client.get("/api/agent/conversations").json()
-    return app.client.post(
-        f"/api/agent/conversations/{conversation['id']}/messages",
-        json={"content": text},
-        timeout=_REQUEST_TIMEOUT,
+    response = app.client.post(
+        "/api/command", json={"text": text}, timeout=_REQUEST_TIMEOUT
     )
+    return response, _assistant(app, response)
 
 
 def _run_once(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
@@ -1599,7 +1645,7 @@ def test_eval_destructive_op_asks_before_acting(eval_app: EvalApp) -> None:
     # The other half of the gate: the answer. Deterministic — no model call
     # stands between the player's yes and the reset. In the conversation the
     # question was asked in, because that is where it can be answered (#281).
-    _answer_in_the_same_conversation(app, "yes")
+    _answer(app, "yes")
 
     assert app.ctx.session.move_history() == [], "confirmed: the game really resets"
     assert app.ctx.pending is None
@@ -1697,63 +1743,6 @@ def test_eval_resign_literal_is_settled_without_the_model(eval_app: EvalApp) -> 
 # GPU (chess's, with its `inconclusive` count, is `evalstats_app.RateResult`).
 
 
-def _run_panel(app: EvalApp, scenario: str, utterance: str) -> EvalRun:
-    """One turn through `POST /api/command` — the **web panel's** seam, not the
-    delegate's.
-
-    The difference is the transcript, and it is the whole point of the
-    long-transcript scenarios. The delegate endpoint carries its own
-    per-conversation history (`_run` above opens a fresh one every time, so the
-    model sees an empty thread); `/api/command` reads `ctx.transcript`, the
-    running conversation the player has actually been having — since #372 as
-    the player's requests and the last exchange, whole (`conversation.Recall`,
-    `docs/turn-memory.md`), which is why the `poisoned` conditions below seed
-    their poison at the *end* of the thread: a stale assistant line only
-    poisons what it is still quoted in, and now that is the last exchange.
-    Every failure
-    in the 2026-07-13 trace review happened on *this* seam, deep into a thread —
-    and none of them reproduce on a fresh delegate conversation.
-
-    The panel returns a thinner document than the delegate wire (`tool_results`
-    is `{name, result}` with no arguments and no separate error channel, and its
-    `result` is a decoded dict rather than the wire's JSON string), so it is
-    adapted into the same shape the trajectory helpers above read.
-
-    It no longer *invents* a stop reason. This adapter used to carry
-    `"stop_reason": "completed"` with the comment "not exposed on this seam",
-    which is true of the HTTP answer and was quietly asserting that every panel
-    turn completed — including the ones where the provider had died. The real
-    stop reason comes off the tracer now (`_measured`), and the key is simply
-    gone from the adapted document, because a value the seam does not carry
-    should not be readable from it at all."""
-    app.provider.reset()
-    app.tracer.reset()
-    started = time.monotonic()
-    response = app.client.post(
-        "/api/command", json={"text": utterance}, timeout=_REQUEST_TIMEOUT
-    )
-    duration = time.monotonic() - started
-    if response.status_code == 200:
-        body = response.json()
-        assistant = {
-            "content": body["commentary"],
-            # The panel has no error channel: a dispatch failure rides on
-            # `result`.
-            "tool_calls": [
-                {
-                    "tool": r["name"],
-                    "arguments": {},
-                    "result": json.dumps(r["result"]),
-                    "error": None,
-                }
-                for r in body["tool_results"]
-            ],
-        }
-    else:
-        assistant = {"content": "", "tool_calls": []}
-    return _measured(app, scenario, assistant, response, duration)
-
-
 def _step_record(app: EvalApp, utterance: str, run: EvalRun) -> dict[str, Any]:
     """One finished step of a multi-step probe, frozen for the scenario's check.
 
@@ -1804,7 +1793,7 @@ def _step(record: dict[str, Any], index: int) -> dict[str, Any]:
 def _run_steps(
     *earlier: str,
     record: dict[str, Any],
-    seam: Callable[[EvalApp, str, str], EvalRun] = _run_panel,
+    seam: Callable[[EvalApp, str, str], EvalRun] = _run,
 ) -> Callable[[EvalApp, str, str], EvalRun]:
     """A runner for a probe that takes more than one utterance.
 
@@ -1816,11 +1805,9 @@ def _run_steps(
     the printed line, the report's per-sample record and the route pin all
     describe the step the scenario is about.
 
-    Panel by default (`seam=`), because that is the only seam with memory: `_run`
-    opens a fresh delegate conversation per call, so "the one to f3" would
-    arrive with nothing to refer back to. `/api/command` reads
-    `ctx.transcript` and records each settled turn back onto it, which
-    is what makes a reference to an earlier turn resolvable at all.
+    `/api/command` reads `ctx.transcript` and records each settled turn back
+    onto it, which is what makes a reference to an earlier turn resolvable.
+    `seam` is that one turn, `_run` unless a unit test scripts its own.
 
     **It asserts nothing**, on purpose. `_sample` calls the runner *outside* the
     try/except that classifies a sample, so an `AssertionError` raised in here
@@ -1844,41 +1831,19 @@ def _run_steps(
         record.clear()
         record["steps"] = []
         for index, said in enumerate(earlier, start=1):
-            # Both seams reset the meters themselves; done here too so an
-            # injected seam cannot leave the previous step's calls standing and
-            # a per-step count read as a running total. Same for the limiter:
-            # `_sample` clears it once a sample, and a probe on the delegate
-            # seam spends one message per step.
+            # `_run` resets the meters itself; done here too so an injected
+            # seam cannot leave a per-step count reading as a running total.
             app.provider.reset()
             app.tracer.reset()
-            reset_rate_limit()
             run = seam(app, f"{scenario}/{index}", said)
             record["steps"].append(_step_record(app, said, run))
             if run.status_code != 200 or run.stop_reason == STOP_PROVIDER_ERROR:
                 return run
         app.provider.reset()
         app.tracer.reset()
-        reset_rate_limit()
         return seam(app, scenario, utterance)
 
-    # Which seam this composite actually drove, for the report's own honesty:
-    # `_pass_rate` files a sample under `panel` or `delegate` by identity, and
-    # without this every multi-step probe would be recorded against the delegate
-    # wire it never touched.
-    runner.seam = seam  # type: ignore[attr-defined]
     return runner
-
-
-def _seam_name(runner: Callable[[EvalApp, str, str], EvalRun]) -> str:
-    """Which HTTP seam a scenario's samples went through, as the report says it.
-
-    Reads the composite runner's `.seam` when there is one, and falls back to
-    the runner itself — so `_run`, `_run_panel` and anything built out of them
-    are all named correctly, and a runner nobody has taught it about is named
-    after the default rather than silently.
-    """
-    seam = getattr(runner, "seam", runner)
-    return "panel" if seam is _run_panel else "delegate"
 
 
 def _assert_reached_narrator(run: EvalRun) -> None:
@@ -1947,7 +1912,6 @@ def _sample(
     try:
         if setup is not None:
             setup(app)
-        reset_rate_limit()  # each sample is its own conversation
         run = runner(app, label, utterance)
         error: BaseException | None = None
         if run.status_code == 200 and run.stop_reason != STOP_PROVIDER_ERROR:
@@ -2013,10 +1977,9 @@ def _pass_rate(
     identical refusals are one finding and cost the suite's whole infra budget
     to reach.
 
-    `runner` picks the seam: `_run` (the delegate wire, fresh conversation each
-    time) or `_run_panel` (the web panel, reading whatever `setup` left on
-    `ctx.transcript`). `requires_narrator` adds the vacuity check for a scenario
-    whose verdict is only about commentary.
+    `runner` runs one sample: `_run` (one turn, reading whatever `setup` left
+    on `ctx.transcript`) or a `_run_steps` composite. `requires_narrator` adds
+    the vacuity check for a scenario whose verdict is only about commentary.
 
     `route` is what the scenario claims to be measuring, and it defaults to the
     planner because every pass-rate scenario in this file is a model eval. It is
@@ -2040,7 +2003,7 @@ def _pass_rate(
         return {
             "kind": "scenario",
             "seconds": round(time.monotonic() - started, 1),
-            "seam": _seam_name(runner),
+            "seam": "panel",
             "utterance": utterance,
             "samples": samples,
             "speech": _SPEECH.scenario.as_dict(),
@@ -3500,7 +3463,7 @@ def test_eval_constraint_survives_a_live_thread(engine: EnginePlayer) -> None:
         _constraint_respected(before),
         floor=floor,
         setup=setup,
-        runner=_run_panel,
+        runner=_run,
         requires_narrator=True,
     )
 
@@ -3579,7 +3542,7 @@ def test_eval_standing_ask_survives_the_thread(engine: EnginePlayer) -> None:
         check,
         floor=floor,
         setup=setup,
-        runner=_run_panel,
+        runner=_run,
     )
 
     _assert_floor(result, floor)
@@ -3741,9 +3704,7 @@ def test_eval_ambiguous_knight_then_selection(engine: EnginePlayer) -> None:
     guard half is gone with the guard (#368); the question's words are held to
     the turn's facts like every other reply's.
 
-    The panel seam, because the second utterance is a *reference*: `_run` opens
-    a fresh delegate conversation per call, so "the one to f3" would arrive with
-    no question in front of it. `/api/command` reads and records
+    The second utterance is a *reference*: `/api/command` reads and records
     `ctx.transcript`, which is the only place that thread exists.
 
     Step one's assertions live in `check` rather than in the runner because the
@@ -4022,9 +3983,8 @@ def test_eval_save_then_new_game(engine: EnginePlayer, tmp_path: Any) -> None:
         # conversation that was asked, since that is the only place it is an
         # answer rather than a fresh utterance (#281).
         app.provider.reset()
-        answered = _answer_in_the_same_conversation(app, "yes")
+        answered, reply = _answer(app, "yes")
         assert answered.status_code == 200, answered.text
-        reply = answered.json()["assistant_message"]
         ran = _succeeded(reply, "new_game")
         assert len(ran) == 1, f"expected exactly one reset: {_trajectory(reply)}"
         assert app.ctx.session.move_history() == [], "confirmed: the game resets"
@@ -4380,7 +4340,7 @@ def test_eval_resume_and_describe(engine: EnginePlayer, tmp_path: Any) -> None:
         check,
         floor=floor,
         setup=setup,
-        runner=_run_panel,
+        runner=_run,
         requires_narrator=True,
     )
 
@@ -4397,8 +4357,8 @@ def test_eval_resume_mid_game_asks(engine: EnginePlayer, tmp_path: Any) -> None:
     call the tool as soon as asked, relay the refusal's question, and stop. The
     yes is deterministic and costs the model nothing to get right.
 
-    Delegate seam, so the yes goes back to the thread that was asked — the
-    only place it is an answer (#281).
+    The yes goes back to the panel, the surface that was asked — the only
+    place it is an answer (#281).
     """
     utterance = "load up the game I saved as scholars"
     before: dict[str, Any] = {}
@@ -4441,9 +4401,8 @@ def test_eval_resume_mid_game_asks(engine: EnginePlayer, tmp_path: Any) -> None:
             f"{len(app.provider.calls)} model calls"
         )
 
-        answered = _answer_in_the_same_conversation(app, "yes")
+        answered, reply = _answer(app, "yes")
         assert answered.status_code == 200, answered.text
-        reply = answered.json()["assistant_message"]
         assert len(_succeeded(reply, "resume_game")) == 1, _trajectory(reply)
         assert _history(app.client) == ["e4", "e5", "Nf3", "Nc6"], (
             "confirmed: the saved game comes back"
@@ -4516,9 +4475,8 @@ def test_eval_save_over_existing_asks(engine: EnginePlayer, tmp_path: Any) -> No
             f"{len(app.provider.calls)} model calls"
         )
 
-        answered = _answer_in_the_same_conversation(app, "yes")
+        answered, reply = _answer(app, "yes")
         assert answered.status_code == 200, answered.text
-        reply = answered.json()["assistant_message"]
         assert len(_succeeded(reply, "save_game")) == 1, _trajectory(reply)
         assert _reloaded(path).move_history() == before["history"], (
             "confirmed: the save now holds the game on the board"
@@ -4584,7 +4542,7 @@ def test_eval_deep_undo_asks(
     because the player was never asked about those two. The yes is
     deterministic.
 
-    Delegate seam, so the yes goes back to the thread that was asked (#281).
+    The yes goes back to the panel, the surface that was asked (#281).
     """
     before: dict[str, Any] = {}
 
@@ -4614,9 +4572,8 @@ def test_eval_deep_undo_asks(
         _assert_speech_backed(app.tracer.last)
         _assert_completed(app.tracer.last)
 
-        answered = _answer_in_the_same_conversation(app, "yes")
+        answered, reply = _answer(app, "yes")
         assert answered.status_code == 200, answered.text
-        reply = answered.json()["assistant_message"]
         assert len(_succeeded(reply, armed)) == 1, _trajectory(reply)
         assert _history(app.client) == after, "confirmed: the takeback lands"
         assert app.ctx.pending is None
@@ -4857,7 +4814,7 @@ def test_eval_freeform_confirmation_answers(
         check,
         floor=floor,
         setup=setup,
-        runner=_run_panel,
+        runner=_run,
         route=route,
     )
 
@@ -4994,7 +4951,7 @@ def test_eval_late_game_tool_composition(
         check,
         floor=floor,
         setup=setup,
-        runner=_run_panel,
+        runner=_run,
         requires_narrator=True,
     )
 
@@ -5287,7 +5244,7 @@ def test_eval_long_transcript_resume_is_not_denied(
         check,
         floor=floor,
         setup=setup,
-        runner=_run_panel,
+        runner=_run,
     )
 
     _assert_floor(result, floor)
@@ -5352,7 +5309,7 @@ def test_eval_long_transcript_resign_never_pretends(
         check,
         floor=floor,
         setup=condition,
-        runner=_run_panel,
+        runner=_run,
     )
 
     _assert_floor(result, floor)
@@ -5390,7 +5347,7 @@ def test_eval_long_transcript_capture_still_lands(
         _expect_san("Bxe6"),
         floor=floor,
         setup=condition,
-        runner=_run_panel,
+        runner=_run,
     )
 
     # `blocking=True` for this one alone: the `long_capture` regression is

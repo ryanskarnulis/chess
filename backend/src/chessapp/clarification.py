@@ -7,7 +7,7 @@ to recover *which* moves were on offer from the narrator's wording in the
 transcript — paraphrased, dropped from the verbatim window four turns later
 (the condensed memory of the time kept the player's words, not Glitch's), and bound to
 no position and no conversation. An aside, a long chat, another client's move
-or a second delegate thread could each leave the planner without the question,
+or another surface could each leave the planner without the question,
 or holding one about a board that is gone.
 
 So the harness keeps the question, the way it keeps an armed destructive op

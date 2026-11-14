@@ -19,9 +19,8 @@ tags: [game, ai]
 # Deliberately NO `agent:` block. Chess is a board you play *in*: relaying
 # moves through the conductor's chat panel is a worse game than the app
 # itself, so conductor hands the user over (`open_chess`) instead of
-# delegating (`ask_chess`). The router under /api/agent hosts the glance
-# conductor reads (`look`); its conversation endpoints are the wire the eval,
-# frontier and trajectory harnesses drive. It is not advertised as a delegate.
+# delegating (`ask_chess`). /api/agent hosts only the glance conductor reads
+# (`look`); the conversation endpoints were retired in #565.
 open:
   description: "Opens the chess board in the browser and starts a session with the chess agent. Use this for anything to do with playing, watching, resetting, resigning or otherwise changing a chess game ('the game' always means this one) — you do not play chess yourself, you hand the user to the board."
   path: /

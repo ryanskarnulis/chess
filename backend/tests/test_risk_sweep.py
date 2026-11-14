@@ -8,7 +8,7 @@ and closes the residue the sweep found:
 - *a board drag passes through Glitch* — `test_board_controls.py`, whole file.
 - *Glitch observes the player move before the engine reply* —
   `test_command.py`'s "observe beat" block, `test_coordinator.py`'s phases;
-  **plus the delegate wire, below.**
+  **plus a spoken move, below.**
 - *a command cannot produce duplicate moves* — `test_closing_pass.py`,
   `test_trace.py`'s mutation counts, `test_coordinator.py`'s rejections.
 - *unbacked advice never reaches the player* (originally "hints-off never
@@ -21,7 +21,7 @@ and closes the residue the sweep found:
   `test_command.py`, `test_board_controls.py`; **plus staleness across
   surfaces, below.**
 - *provider failure leaves a resumable position* — `test_command.py`'s
-  "Recovery" block; **plus the delegate wire, below.**
+  "Recovery" block; **plus a turn that half-ran, below.**
 - *stale board versions are rejected* — `test_board_version.py`.
 - *concurrent clients cannot advance the same turn twice* —
   `test_board_version.py`, in direct mode; **plus agent mode, below.**
@@ -47,7 +47,8 @@ What the sweep found, and what is new here:
 3. **The delegate wire was never asserted to share the guards.** It runs the
    same pipeline as the panel, which is the design — but "one road in" is a
    claim about behavior, and nothing pinned it on the observe split, the advice
-   guard or provider recovery.
+   guard or provider recovery. (The delegate wire was retired in #565; its two
+   pins now run on `/api/command`.)
 """
 
 import threading
@@ -95,18 +96,6 @@ def destructive(name: str) -> AgentResponse:
 
 def version_of(client: TestClient) -> int:
     return client.get("/api/state").json()["version"]
-
-
-def conversation_on(client: TestClient) -> int:
-    return client.post("/api/agent/conversations", json={}).json()["id"]
-
-
-def say(client: TestClient, conversation: int, content: str, **extra) -> dict:
-    """One delegate-wire turn — the conductor's entry point into the pipeline."""
-    return client.post(
-        f"/api/agent/conversations/{conversation}/messages",
-        json={"content": content, **extra},
-    ).json()
 
 
 # --- 1. A question is about a board: an answer to it cannot outlive that board
@@ -330,32 +319,31 @@ def test_two_clicks_on_the_same_question_run_one_op():
     assert ctx.session.move_history() == [], "reset once"
 
 
-# --- 3. The delegate wire is the same road
+# --- 3. A spoken move is the same road
 
 
-def test_the_delegate_wire_narrates_after_the_reply():
-    """A conductor-driven move is a turn like any other: the engine answers
+def test_a_spoken_move_narrates_after_the_reply():
+    """A typed or spoken move is a turn like any other: the engine answers
     first, and Glitch is handed its reply to say (#365)."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
     brain = ScriptedBrain(narrations=("Bold.",))
     app, _ = scripted_app(ctx, brain=brain)
     client = TestClient(app)
 
-    exchange = say(client, conversation_on(client), "e4")
+    body = client.post("/api/command", json={"text": "e4"}).json()
 
     state, changes = brain.narrate_calls[0]
     assert state["reply_owed"] is False
     assert state["engine_reply"]["san"] == "e5"
     assert "engine_move" not in changes[0]["result"]
-    assert exchange["assistant_message"]["content"] == "Bold."
+    assert body["commentary"] == "Bold."
     assert ctx.session.move_history() == ["e4", "e5"]
 
 
-def test_a_provider_failure_on_the_delegate_wire_keeps_the_move_and_says_so():
-    """Recovery, at the conductor's entry point: a move that landed before the
-    provider died stands, the reply is collected, the turn closes, and the
-    stored assistant turn carries `provider_error` — so the caller can tell a
-    turn that half-ran from one that never started."""
+def test_a_provider_failure_mid_turn_keeps_the_move_and_says_so():
+    """Recovery: a move that landed before the provider died stands, the reply
+    is collected, the turn closes, and the answer is not marked retryable — so
+    the caller can tell a turn that half-ran from one that never started."""
     ctx = ToolContext(session=GameSession(), engine=FakeEngine("e7e5"))
     app, _ = scripted_app(
         ctx,
@@ -367,11 +355,10 @@ def test_a_provider_failure_on_the_delegate_wire_keeps_the_move_and_says_so():
     )
     client = TestClient(app)
 
-    exchange = say(client, conversation_on(client), "push the king pawn")
+    body = client.post("/api/command", json={"text": "push the king pawn"}).json()
 
-    assistant = exchange["assistant_message"]
-    assert assistant["stop_reason"] == "provider_error"
-    assert assistant["content"] == f"{PROVIDER_LOST_TURN_STANDS}\n\ne5."
+    assert body["retryable"] is False
+    assert body["commentary"] == f"{PROVIDER_LOST_TURN_STANDS}\n\ne5."
     assert ctx.session.move_history() == ["e4", "e5"], "kept, and the reply collected"
 
 
@@ -380,8 +367,8 @@ def test_the_hint_button_is_the_players_own_ask_not_the_agents_advice():
     what *Glitch's commentary* may name — moves an analysis tool reported.
     `/api/game/hint` is the player pressing Hint, on the trusted path with no
     model in it, and it answers unconditionally (the recorded decision when
-    hints gating shipped, and it survives the mode's retirement: MCP, the
-    delegate wire and this endpoint keep the full registry)."""
+    hints gating shipped, and it survives the mode's retirement: MCP and
+    this endpoint keep the full registry)."""
     best = CandidateMove(uci="g1f3", san="Nf3", score_cp=30, mate_in=None)
     ctx = ToolContext(session=GameSession(), engine=FakeEngine(best_moves=(best,)))
     client = TestClient(create_app(ctx))

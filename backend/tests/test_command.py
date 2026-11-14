@@ -15,9 +15,9 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from chessapp.agent_api import MAX_AGENT_MESSAGE_LENGTH
 from chessapp.api import (
     _DECLINED_REPLY,
+    MAX_COMMAND_LENGTH,
     PROVIDER_LOST_RETRY,
     PROVIDER_LOST_TURN_STANDS,
     STUCK_REPLY,
@@ -68,13 +68,11 @@ def test_command_text_is_bounded_like_the_delegates():
     # #288: the panel's route carries the delegate's cap. At the cap the turn
     # runs; one past it is refused before the brain or the board is touched.
     client, brain = make_client(AgentResponse(text="hi"))
-    over = client.post(
-        "/api/command", json={"text": "x" * (MAX_AGENT_MESSAGE_LENGTH + 1)}
-    )
+    over = client.post("/api/command", json={"text": "x" * (MAX_COMMAND_LENGTH + 1)})
     assert over.status_code == 422
     assert brain.calls == []
     assert client.get("/api/state").json()["fen"] == START_FEN
-    at_cap = client.post("/api/command", json={"text": "x" * MAX_AGENT_MESSAGE_LENGTH})
+    at_cap = client.post("/api/command", json={"text": "x" * MAX_COMMAND_LENGTH})
     assert at_cap.status_code == 200
     assert len(brain.calls) == 1
 
@@ -2264,9 +2262,8 @@ def test_a_narrator_failure_after_a_confirmed_resign_degrades_the_same_way():
 # not. Memory was snapshotted before the lock and the exchange recorded after
 # it, so a follow-up that queued behind a running turn was handed a transcript
 # missing the exchange that had finished before it started — a perfectly current
-# board and a conversation from before the question it was answering. The
-# delegate route never had this: `agent_api` serializes the three under its own
-# per-conversation lock. These tests sequence on events, never on sleeps.
+# board and a conversation from before the question it was answering. These
+# tests sequence on events, never on sleeps.
 
 
 class BlockingBrain(ScriptedBrain):

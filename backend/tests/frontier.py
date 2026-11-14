@@ -54,14 +54,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from chessapp.agent_api import reset_rate_limit
+import chess
+
 from chessapp.game import GameSession
 from chessapp.speech_accuracy import Tally, tally
 from chessapp.tools import GAME_SAVE_DIRNAME
 from chessapp.trace import ROUTE_BRAIN
 from evalstats import DETERMINISTIC_FAILURES, sample_seed, wilson_interval
 from evalstats_app import STOP_PROVIDER_ERROR, failure_signature
-from test_agent_evals import _REQUEST_TIMEOUT, EvalApp, _measured
+from test_agent_evals import _REQUEST_TIMEOUT, EvalApp, _assistant, _measured
 from trajectory import (
     INVARIANTS,
     PANEL,
@@ -71,6 +72,12 @@ from trajectory import (
     Step,
     next_pending,
 )
+
+# Another client acting on the board, not saying anything: a drag or the Undo
+# button (`Say.origin`). Until #565 this was a delegate conversation playing
+# the move; the panel's own board controls are the surfaces left that do it.
+BOARD = "board"
+_UNDO_WORDS = ("undo", "take")
 
 # Tools whose success is a Stockfish verdict on the position — what a
 # judgment question must be answered from (the gate's `_VERDICT_TOOLS`).
@@ -100,8 +107,10 @@ class Infra(Exception):
 
 @dataclass(frozen=True)
 class Say:
-    """One thing the player says. `origin` is the panel or a delegate thread
-    (`d0`, `d1`); `model` pins the step to the planner's route."""
+    """One thing the player says. `origin` is the panel (`/api/command`) or
+    `BOARD`: another client acting on the board directly, where `text` is a SAN
+    move (a drag, `/api/game/move`) or an undo ask (the Undo button). `model`
+    pins the step to the planner's route."""
 
     text: str
     origin: str = PANEL
@@ -175,7 +184,7 @@ class Turn:
     status: int
     route: str | None
     stop_reason: str | None
-    # `{"name", "args", "result"}` per tool call, in order, from either seam.
+    # `{"name", "args", "result"}` per tool call, in order.
     results: list[dict[str, Any]]
     commentary: str
     before: dict[str, Any]
@@ -408,75 +417,67 @@ def _state(app: EvalApp) -> dict[str, Any]:
     return app.client.get("/api/state").json()
 
 
-def _conversation(app: EvalApp, origin: str, opened: dict[str, int]) -> int:
-    if origin not in opened:
-        opened[origin] = app.client.post("/api/agent/conversations", json={}).json()[
-            "id"
-        ]
-    return opened[origin]
+def _board_action(state: dict[str, Any], text: str) -> tuple[str, dict[str, Any]]:
+    """The endpoint and body a `BOARD` step sends: the Undo button for a
+    takeback, otherwise a drag of the SAN move on the board as it stands."""
+    if text.split()[0].lower() in _UNDO_WORDS:
+        return "/api/game/undo", {}
+    move = chess.Board(state["fen"]).parse_san(text)
+    return "/api/game/move", {"move": move.uci()}
 
 
 def _say(
-    app: EvalApp, label: str, say: Say, opened: dict[str, int]
+    app: EvalApp, label: str, say: Say, before: dict[str, Any]
 ) -> tuple[Any, dict[str, Any], list[dict[str, Any]], str]:
-    """Send one utterance down its seam; the response, the `_measured` wire
+    """Send one step down its surface; the response, the `_measured` wire
     document, the calls in one shape, and the words."""
     app.provider.reset()
     app.tracer.reset()
-    reset_rate_limit()
     started = time.monotonic()
-    if say.origin == PANEL:
+    if say.origin == BOARD:
+        endpoint, body = _board_action(before, say.text)
+        response = app.client.post(endpoint, json=body, timeout=_REQUEST_TIMEOUT)
+        assistant: dict[str, Any] = {
+            "content": (
+                response.json().get("commentary") or ""
+                if response.status_code == 200
+                else ""
+            ),
+            "tool_calls": [],
+        }
+    else:
         response = app.client.post(
             "/api/command", json={"text": say.text}, timeout=_REQUEST_TIMEOUT
         )
-    else:
-        conversation = _conversation(app, say.origin, opened)
-        response = app.client.post(
-            f"/api/agent/conversations/{conversation}/messages",
-            json={"content": say.text},
-            timeout=_REQUEST_TIMEOUT,
-        )
+        assistant = _assistant(app, response)
     duration = time.monotonic() - started
-    results: list[dict[str, Any]] = []
-    commentary = ""
-    assistant: dict[str, Any] = {"content": "", "tool_calls": []}
-    if response.status_code == 200:
-        body = response.json()
-        if say.origin == PANEL:
-            commentary = body["commentary"]
-            results = [
-                {"name": r["name"], "args": {}, "result": r["result"]}
-                for r in body["tool_results"]
-            ]
-            assistant = {
-                "content": commentary,
-                "tool_calls": [
-                    {
-                        "tool": r["name"],
-                        "arguments": {},
-                        "result": json.dumps(r["result"]),
-                        "error": None,
-                    }
-                    for r in body["tool_results"]
-                ],
-            }
-        else:
-            assistant = body["assistant_message"]
-            commentary = assistant["content"] or ""
-            results = [
-                {
-                    "name": call["tool"],
-                    "args": call.get("arguments") or {},
-                    "result": (
-                        json.loads(call["result"])
-                        if call["result"] is not None
-                        else {"ok": False, "error": call["error"]}
-                    ),
-                }
-                for call in assistant.get("tool_calls") or []
-            ]
+    commentary = assistant["content"] or ""
+    results = [
+        {
+            "name": call["tool"],
+            "args": call["arguments"],
+            "result": (
+                json.loads(call["result"])
+                if call["result"] is not None
+                else {"ok": False, "error": call["error"]}
+            ),
+        }
+        for call in assistant["tool_calls"]
+    ]
     run = _measured(app, label, assistant, response, duration)
     return response, {"run": run, "duration": duration}, results, commentary
+
+
+def _observed_step(say: Say, before: dict[str, Any]) -> Step:
+    """The trajectory step a `Say` is, as the shared invariants read it."""
+    if say.origin == BOARD:
+        endpoint, body = _board_action(before, say.text)
+        return Step(kind="control", endpoint=endpoint, body=body)
+    return Step(
+        kind="literal" if say.text.strip().lower() in _LITERAL_ANSWERS else "command",
+        text=say.text.strip().lower(),
+        origin=say.origin,
+    )
 
 
 def play(
@@ -498,11 +499,10 @@ def play(
     )
     breaches: list[str] = []
     pending: Pending | None = None
-    opened: dict[str, int] = {}
     for index, say in enumerate(variant.says, start=1):
         label = f"{scenario.name}[{variant.name}]/{index}"
         before = _state(app)
-        response, measured, results, commentary = _say(app, label, say, opened)
+        response, measured, results, commentary = _say(app, label, say, before)
         episode.traces.extend(app.tracer.turns)
         run = measured["run"]
         if response.status_code != 200 or run.stop_reason == STOP_PROVIDER_ERROR:
@@ -533,15 +533,7 @@ def play(
         )
         episode.turns.append(turn)
         observed = Observed(
-            step=Step(
-                kind=(
-                    "literal"
-                    if say.text.strip().lower() in _LITERAL_ANSWERS
-                    else "command"
-                ),
-                text=say.text.strip().lower(),
-                origin=say.origin,
-            ),
+            step=_observed_step(say, before),
             before=before,
             after=after,
             status_code=response.status_code,

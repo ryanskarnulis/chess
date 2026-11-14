@@ -207,7 +207,7 @@ def build_app(
         """What the brain may call this command, resolved live off the shared
         context by `brain_tool_definitions` — the pure reads always, plus
         whatever the app already knows the answer to (no claimable draw).
-        Callers with no such injection (MCP, the delegate wire, /api/game/hint)
+        Callers with no such injection (MCP, /api/game/hint)
         keep the full registry.
         """
         return brain_tool_definitions(registry, ctx)

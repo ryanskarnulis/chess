@@ -277,8 +277,8 @@ def _mcp_tool(
         mcp: Context | None = kwargs.pop(_CONTEXT_KWARG, None)
         armed_before = ctx.pending
         with ctx.mutation_lock:
-            # This surface declaring itself, exactly as the panel and the
-            # delegate route do: an op the gate arms below is armed for MCP, and
+            # This surface declaring itself, exactly as the panel
+            # does: an op the gate arms below is armed for MCP, and
             # `_confirm` is the only thing that can answer it (#281).
             ctx.origin = MCP_ORIGIN
             result = registry.dispatch(name, kwargs)

@@ -200,9 +200,6 @@ green as they are):
 
 - Whether MCP should ever share the live app's game (option 4). Separate
   design; nothing here forecloses it.
-- Whether the delegate wire (`/api/agent/...`) wants the same elicitation-style
-  round trip for a client that is not the web panel. Today it inherits the
-  spoken-turn answer path, which is the right one for a conversation.
 
 ## Verified live (2026-09-05)
 

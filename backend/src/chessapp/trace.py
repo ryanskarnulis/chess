@@ -172,8 +172,8 @@ def turn_record(
     and then the exception's class and message (`api._failure_name`). The
     board says a move went unanswered; only this says why, and the turn is
     otherwise an ordinary `completed` one — the loop's stop reason stays the
-    loop's, because a delegate caller reads it as the run's outcome and the
-    engine is not the run.
+    loop's, because a caller reads it as the run's outcome and the engine is
+    not the run.
 
     `reaction_late` marks a turn whose narration was still being written when
     the turn went on without it (`deadline.NARRATION_BUDGET_S`, or
@@ -254,11 +254,10 @@ def turn_record(
     load) and `cached_tokens`, all `null` when the server did not say.
 
     `origin` is which surface the interaction came from — `tools.PANEL_ORIGIN`
-    for the panel and its buttons, `tools.delegate_origin(id)` for one delegate
-    conversation — empty only on a record built without one. It is the field a
-    confirmation bug is read off: a "yes" that ran a question asked in another
-    thread (#281) looks identical to a legitimate one until the two records name
-    their origins.
+    for the panel and its buttons — empty only on a record built without one.
+    It is the field a confirmation bug is read off: a "yes" that ran a question
+    asked somewhere else (#281) looks identical to a legitimate one until the
+    two records name their origins.
 
     The three fields that say *which* turn this was, and how much of the board
     it moved:
@@ -301,7 +300,7 @@ def turn_record(
     (#317) — minted when the player stopped speaking (or submitted), and sent
     with the transcription, the command and the speech request alike, so one
     voice interaction's `speech`, `turn` and `voice` records are one search
-    apart. Empty when the client sent none (the delegate wire, an older UI).
+    apart. Empty when the client sent none (an older UI, a test).
 
     `game_id` is the game the board held when the record was made (#291,
     `GameSession.game_id`): what ties a turn to one game across a new game, a
