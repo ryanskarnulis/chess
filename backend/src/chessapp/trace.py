@@ -20,7 +20,6 @@ Tracing is diagnostics and nothing more. It is off unless a path is configured
 losing a diagnostic record must never cost the player their turn.
 """
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+from chessapp.agentkit.trace import JsonlTracer as _FleetJsonlTracer
 from chessapp.brain import ModelCall
 
 # The record layout's version (#317). A reader keys off it rather than off
@@ -394,12 +394,16 @@ class JsonlTracer:
     JSONL because turns are appended forever and read back a few at a time: it
     survives a crash mid-write, `tail -f` works during a live game, and a run of
     turns loads with a one-line comprehension.
+
+    The append itself is the fleet's writer, vendored in `agentkit/trace.py`
+    (canonical in `../agent-standard/agentkit/`): one line per record under a
+    process-wide lock. This adds the timestamp and keeps `record`, the name
+    the pipeline calls.
     """
 
     path: Path
 
     def record(self, turn: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps({"ts": datetime.now(UTC).isoformat(), **turn})
-        with self.path.open("a") as handle:
-            handle.write(line + "\n")
+        _FleetJsonlTracer(self.path).write(
+            {"ts": datetime.now(UTC).isoformat(), **turn}
+        )
