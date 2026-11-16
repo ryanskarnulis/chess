@@ -66,8 +66,9 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   per-phase temperature and caps, and the 12B's crutches live in
   `backend/src/chessapp/data/profiles/<model>.toml`, never in code. The loader
   is vendored from `../agent-standard/agentkit/` (`chessapp/agentkit/`;
-  re-copy, never edit); `profiles.py` holds chess's phases, crutches and
-  files. Each phase can run on its own model (`CHESSAPP_PLANNER_MODEL` and
+  re-copy, never edit), along with the trace writer (`trace.py`) and the
+  provider's response half (`chat.py`); `profiles.py` holds chess's phases,
+  crutches and files. Each phase can run on its own model (`CHESSAPP_PLANNER_MODEL` and
   friends), and the crutches follow the planner's profile
   (`CHESSAPP_CRUTCHES=none` for an arm without them; the registry, and so
   MCP, keeps every word). The default config's request bytes are pinned by
