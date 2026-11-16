@@ -22,8 +22,17 @@ writing its profile, not editing code.
 | `crutches` | Guidance that exists only because this model needed it (below). |
 | `quirks` | Measured standing facts about the model, as text, for the manifest and the reader. |
 
-Loading is strict. An unknown key, phase or crutch fails to load, because a
-typo would mean running a model on settings nobody chose.
+Loading is strict. An unknown key, phase or crutch, or a value of the wrong
+type or out of range, fails to load, because a typo would mean running a
+model on settings nobody chose.
+
+The format and the loader are the fleet's (agent-standard#32), vendored
+verbatim in `backend/src/chessapp/agentkit/model_profile.py`. The canonical
+file is `../agent-standard/agentkit/model_profile.py`: fix drift by
+re-copying (`agent-standard/check-sync.sh`), never by editing the copy.
+`profiles.py` holds what is chess's: the phases, their default caps and the
+keys each takes (`SPEC`), the crutch names, `BRAIN_CHOICES`, and where the
+files are.
 
 ## A model per phase
 
