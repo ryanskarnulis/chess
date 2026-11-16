@@ -525,6 +525,41 @@ def test_a_mis_shaped_self_report_costs_the_field_never_the_turn():
     assert result.server.cached_tokens is None
 
 
+def test_the_response_types_are_the_vendored_agentkits():
+    """`chessapp.provider` re-exports the fleet's wire types rather than
+    keeping its own, and `ServerMeta` is chess's name for its `ServerStamp`:
+    a second definition here would be a second truth about the wire."""
+    from chessapp import provider
+    from chessapp.agentkit import chat
+
+    assert provider.ServerMeta is chat.ServerStamp
+    for name in provider.__all__:
+        if hasattr(chat, name):
+            assert getattr(provider, name) is getattr(chat, name), name
+
+
+def test_a_bad_tool_call_still_reports_what_the_call_cost():
+    """The server did answer, so the error carries its usage and its account
+    of the call (agentkit): the cost of a round trip is never lost with it."""
+    body = {
+        **_completion_body(
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "make_move", "arguments": "[1]"}}
+                ],
+            }
+        ),
+        "system_fingerprint": "b9935-f2d1c2f39",
+    }
+    with pytest.raises(ToolCallArgumentsError) as excinfo:
+        _provider_returning(body).chat(_USER, tools=[_MAKE_MOVE])
+
+    assert excinfo.value.usage is not None and excinfo.value.usage.total_tokens == 15
+    assert excinfo.value.server is not None
+    assert excinfo.value.server.fingerprint == "b9935-f2d1c2f39"
+
+
 def test_the_provider_publishes_the_sampling_it_sends():
     provider = _provider_returning(_completion_body({"content": "x"}))
     assert provider.sampling == {"temperature": 1.0, "top_p": 0.95, "top_k": 64}

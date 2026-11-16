@@ -69,6 +69,7 @@ extend-exclude = [
     "tests/evalstats.py",
     "tests/test_evalstats.py",
     "src/chessapp/agentkit/model_profile.py",
+    "src/chessapp/agentkit/chat.py",
     "src/chessapp/agentkit/trace.py",
 ]
 force-exclude = true

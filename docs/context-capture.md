@@ -105,6 +105,9 @@ Nothing is reformatted, trimmed or redacted.
 - **At the provider seam.** Every model call goes through
   `LlamaCppProvider._post`, so no phase can be missed. The request is built
   once and its `content` is both what is sent and what is recorded.
+  `provider.py` is the request half only: the response is validated, and its
+  typed errors raised, by the fleet's `agentkit/chat.py` (agent-standard#32),
+  vendored verbatim; re-copy (`agent-standard/check-sync.sh`), never edit.
 - **Ids and phase by `ContextVar`.** The provider does not know which turn or
   phase it is serving. The interaction's ids come from `progress` (the same
   variable progress events read, copied into worker threads). The phase comes
