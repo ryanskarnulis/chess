@@ -165,6 +165,15 @@ def test_a_phase_left_out_keeps_the_default_caps():
         'effort_kwarg = "reasoning_effort"\n[phases.mover]\neffort = ""\n',
         "extra = 1\n",
         "not toml = = 1\n",
+        # The vendored loader checks types and ranges too (agent-standard#32).
+        "[phases.planner]\nmax_tokens = 10.5\n",
+        "[phases.planner]\nmax_tokens = 0\n",
+        '[phases.planner]\ntemperature = "hot"\n',
+        "[sampling]\ntop_p = 1.5\n",
+        "[sampling]\ntop_k = 6.4\n",
+        "thinking_kwarg = true\n",
+        'crutches = "undo_call_again"\n',
+        "quirks = [1]\n",
     ],
 )
 def test_a_profile_that_says_something_unknown_does_not_load(text):
@@ -379,3 +388,18 @@ def test_mover_look_calls_default_to_none_and_are_described():
     assert profile.phase(MOVER).look_calls == 2
     assert profile.describe()["phases"]["mover"]["look_calls"] == 2
     assert "look_calls" not in profile.describe()["phases"]["planner"]
+
+
+def test_an_error_names_the_profile_and_its_file():
+    with pytest.raises(ProfileError, match=r"'bad' \(data/profiles/bad.toml\)"):
+        parse_profile("bad", "extra = 1\n", "data/profiles/bad.toml")
+
+
+def test_a_phase_can_be_changed_for_one_arm():
+    # The vendored loader's `with_phase`: an eval arm, or an env override.
+    base = load_profile("gemma-4-12b")
+    arm = base.with_phase(MOVER, board_facts=True, look_calls=2)
+    assert arm.phase(MOVER).board_facts is True
+    assert arm.describe()["phases"]["mover"]["look_calls"] == 2
+    assert base.phase(MOVER).board_facts is False
+    assert arm.phase(PLANNER) == base.phase(PLANNER)

@@ -65,7 +65,11 @@ src = ["src", "tests", "scripts"]
 # Vendored verbatim from agent-standard (formatted there at line-length 100):
 # re-formatting them here would be drift. `force-exclude` keeps an editor that
 # names the file explicitly from formatting it on save.
-extend-exclude = ["tests/evalstats.py", "tests/test_evalstats.py"]
+extend-exclude = [
+    "tests/evalstats.py",
+    "tests/test_evalstats.py",
+    "src/chessapp/agentkit/model_profile.py",
+]
 force-exclude = true
 
 [tool.ruff.lint]

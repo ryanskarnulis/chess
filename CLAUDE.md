@@ -64,12 +64,14 @@ Frontend: `npm run lint`, `npm test`, `npm run build` from `frontend/`.
   for language, and no speech guards. Glitch should feel alive, not canned.
 - **Model knowledge lives in profiles.** Sampling, the thinking toggle,
   per-phase temperature and caps, and the 12B's crutches live in
-  `backend/src/chessapp/data/profiles/<model>.toml`, never in code. Each phase
-  can run on its own model (`CHESSAPP_PLANNER_MODEL` and friends), and the
-  crutches follow the planner's profile (`CHESSAPP_CRUTCHES=none` for an arm
-  without them; the registry, and so MCP, keeps every word). The default
-  config's request bytes are pinned by `tests/test_profile_bytes.py`
-  (`docs/model-profiles.md`).
+  `backend/src/chessapp/data/profiles/<model>.toml`, never in code. The loader
+  is vendored from `../agent-standard/agentkit/` (`chessapp/agentkit/`;
+  re-copy, never edit); `profiles.py` holds chess's phases, crutches and
+  files. Each phase can run on its own model (`CHESSAPP_PLANNER_MODEL` and
+  friends), and the crutches follow the planner's profile
+  (`CHESSAPP_CRUTCHES=none` for an arm without them; the registry, and so
+  MCP, keeps every word). The default config's request bytes are pinned by
+  `tests/test_profile_bytes.py` (`docs/model-profiles.md`).
 - **Personality is tone only** — never move choice, difficulty, or settings.
   The global Glitch text is vendored from `../agent-standard/`; fix drift by
   re-copying, never by editing the copy.

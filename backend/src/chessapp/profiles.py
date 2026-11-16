@@ -1,37 +1,21 @@
-"""Model profiles: what the app knows about one model, kept out of the code (#375).
+"""Chess's model profiles: its phases, crutches and files (#375).
 
-A profile is one TOML file in `data/profiles/`, named for the llama-swap model
-id it describes. It holds what changes with the model and nothing else:
+The profile format and the strict loader are the fleet's, vendored verbatim
+in `agentkit/model_profile.py` (canonical in `../agent-standard/agentkit/`;
+re-copy, never edit). What is chess's lives here:
 
-- `sampling` — the request's `temperature`, `top_p` and `top_k`. A key left
-  out is a field the request leaves out, so the server's own default applies.
-- `thinking_kwarg` — the `chat_template_kwargs` key that turns the model's
-  thinking channel on and off, or absent for a model with no toggle (the
-  request then carries no `chat_template_kwargs` at all).
-- `effort_kwarg` — the `chat_template_kwargs` key a model's template reads for
-  how hard to think (Qwen3.8's `reasoning_effort`), or absent for a model
-  with no such levels (Gemma 4's thinking is only on or off).
-- `[phases.<phase>]` — per-phase `temperature` (a phase without one samples at
-  `sampling.temperature`) and `max_tokens`, for the phases in `PHASES`; and
-  for the planner alone, `thinking`: whether it reasons before every call,
-  not only once an analysis tool has answered (#298), and `effort`, the level
-  sent as `effort_kwarg` on its thinking calls (#490); for the narrator alone,
-  `analysis_thinking`: whether its words about an analysis tool's answer are
-  thought through first (on unless a profile turns it off, #440); for the
-  mover alone (#472), `thinking` too and `deadline_s`, the wall clock its
-  whole run (every retry included) may take, `thinking_budget`, the most
-  thinking tokens one call may spend (#476), `effort`, the level sent as
-  `effort_kwarg` on its thinking calls (#476), `board_facts` (#497) and
-  `look_calls`, how many `try_line` looks a run may make (#498).
-- `crutches` — the guidance that exists only because this model needed it
-  (`KNOWN_CRUTCHES`; docs/model-profiles.md says what each one is and what it
-  was measured to fix). A better model runs without them.
-- `quirks` — standing measured facts about the model, as text. Nothing reads
-  them but the serving manifest and the person changing the model.
-
-A model with no file runs on `DEFAULT_PROFILE`: no sampling opinion, today's
-token caps, the common thinking toggle, no crutches — and a warning, because
-it is a model nobody has measured here yet.
+- the phases (`PHASES`), their default caps, and the keys each one takes
+  (`SPEC`). The planner alone takes `thinking`: whether it reasons before
+  every call, not only once an analysis tool has answered (#298), and
+  `effort` (#490). The narrator alone takes `analysis_thinking` (#440). The
+  mover alone (#472) takes `thinking`, `effort`, `deadline_s`,
+  `thinking_budget` (#476), `board_facts` (#497) and `look_calls` (#498).
+- the crutch names (`KNOWN_CRUTCHES`; docs/model-profiles.md says what each
+  one is and what it was measured to fix).
+- the brains a player may pick (`BRAIN_CHOICES`).
+- where the files are (`data/profiles/`, one per llama-swap model id), the
+  cache, and the warning for a model with no file: it runs on
+  `DEFAULT_PROFILE`, because it is a model nobody has measured here yet.
 
 The gemma-4-12b file is today's behaviour. Its sampling is the fleet's
 (`../agent-standard/model-profile.md`, copied, never edited here), and
@@ -42,12 +26,40 @@ bytes it sent before profiles existed.
 from __future__ import annotations
 
 import logging
-import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cache
 from importlib import resources
-from types import MappingProxyType
-from typing import Any
+
+from chessapp.agentkit import model_profile as _kit
+from chessapp.agentkit.model_profile import (
+    DEFAULT_NAME,
+    ModelProfile,
+    ProfileError,
+    ProfileSpec,
+)
+
+__all__ = [
+    "ANSWER",
+    "ASK_PLAYER_EXAMPLES",
+    "BRAIN_CHOICES",
+    "DEFAULT_NAME",
+    "DEFAULT_PROFILE",
+    "DIFFICULTY_CONSTRAINT_RULE",
+    "KNOWN_CRUTCHES",
+    "MOVER",
+    "MOVE_SOURCE_REQUIRED",
+    "NARRATOR",
+    "PHASES",
+    "PICK_RESUBMIT_SCRIPT",
+    "PLANNER",
+    "SPEC",
+    "UNDO_CALL_AGAIN",
+    "ModelProfile",
+    "PhaseSettings",
+    "ProfileError",
+    "load_profile",
+    "parse_profile",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -84,265 +96,68 @@ KNOWN_CRUTCHES = frozenset(
 # option without a gate run (#436).
 BRAIN_CHOICES = ("gemma-4-12b", "gemma-4-26b-a4b", "qwen38-27b")
 
-# What a profile is named when no file described the model.
-DEFAULT_NAME = "default"
-
-_SAMPLING_KEYS = ("temperature", "top_p", "top_k")
-_TOP_LEVEL_KEYS = {
-    "sampling",
-    "thinking_kwarg",
-    "effort_kwarg",
-    "phases",
-    "crutches",
-    "quirks",
-}
-
-
-class ProfileError(ValueError):
-    """A profile file that does not say what a profile must."""
-
 
 @dataclass(frozen=True)
-class PhaseSettings:
-    """One phase's knobs. `temperature=None` samples at the profile's own.
-    `thinking` is the planner's and the mover's, and `analysis_thinking` the
-    narrator's: the brain's rule turns the narrator's thinking on once an
-    analysis tool has answered, and a profile can switch that off.
-    `effort` is the planner's and the mover's too (#490): the thinking level
-    their thinking calls ask the template for, under the profile's
-    `effort_kwarg` (`None` sends none, and the template's default applies).
-    `deadline_s` is the mover's alone: how long its whole run may take, and so
-    is `thinking_budget`: the most thinking tokens one of its calls may spend
-    before the server closes the thought and the model must answer (`None`
-    leaves thinking bounded only by `max_tokens`). `board_facts` is the
-    mover's too (#497): whether its request carries the board facts
-    (`board_facts.py`, docs/glitch-sight.md) between the board and the legal
-    moves, and so is `look_calls` (#498): how many `try_line` calls one run
-    may make, `0` leaving the tool out of the request."""
+class PhaseSettings(_kit.PhaseSettings):
+    """A phase's knobs, with chess's own beside the fleet's.
+    `analysis_thinking` is the narrator's: the brain's rule turns its thinking
+    on once an analysis tool has answered, and a profile can switch that off.
+    `board_facts` is the mover's (#497): whether its request carries the board
+    facts (`board_facts.py`, docs/glitch-sight.md) between the board and the
+    legal moves, and so is `look_calls` (#498): how many `try_line` calls one
+    run may make, `0` leaving the tool out of the request."""
 
-    max_tokens: int
-    temperature: float | None = None
-    thinking: bool = False
     analysis_thinking: bool = True
-    deadline_s: float | None = None
-    thinking_budget: int | None = None
-    effort: str | None = None
     board_facts: bool = False
     look_calls: int = 0
 
 
-@dataclass(frozen=True)
-class ModelProfile:
-    name: str
-    # Where the numbers came from, for the reader (a file path, or "built in").
-    source: str
-    # Only the keys the request sends; an absent key is the server's default.
-    sampling: MappingProxyType[str, float | int] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
-    thinking_kwarg: str | None = "enable_thinking"
-    effort_kwarg: str | None = None
-    phases: MappingProxyType[str, PhaseSettings] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
-    crutches: frozenset[str] = frozenset()
-    quirks: tuple[str, ...] = ()
-
-    def phase(self, name: str) -> PhaseSettings:
-        return self.phases[name]
-
-    def temperature_for(self, phase: str) -> float | None:
-        """What `phase` samples at: its own temperature, else the profile's,
-        else `None` — the server's."""
-        own = self.phases[phase].temperature
-        return own if own is not None else self.sampling.get("temperature")
-
-    def describe(self) -> dict[str, Any]:
-        """The profile as the serving manifest records it."""
-        return {
-            "name": self.name,
-            "source": self.source,
-            "sampling": dict(self.sampling),
-            "thinking_kwarg": self.thinking_kwarg,
-            "effort_kwarg": self.effort_kwarg,
-            "phases": {
-                name: {
-                    "max_tokens": settings.max_tokens,
-                    "temperature": settings.temperature,
-                    "thinking": settings.thinking,
-                    **(
-                        {"analysis_thinking": settings.analysis_thinking}
-                        if name == NARRATOR
-                        else {}
-                    ),
-                    **({"effort": settings.effort} if name in (PLANNER, MOVER) else {}),
-                    **(
-                        {
-                            "deadline_s": settings.deadline_s,
-                            "thinking_budget": settings.thinking_budget,
-                            "board_facts": settings.board_facts,
-                            "look_calls": settings.look_calls,
-                        }
-                        if name == MOVER
-                        else {}
-                    ),
-                }
-                for name, settings in self.phases.items()
-            },
-            "crutches": sorted(self.crutches),
-            "quirks": list(self.quirks),
-        }
-
-
-# The caps every phase needs whatever the model: without one llama-server
-# runs n_predict -1 and a thought loop generates until the read timeout. The
-# sizing is gemma-4-12b's (see its profile); a new model starts there.
-_DEFAULT_PHASES = MappingProxyType(
-    {
+SPEC = ProfileSpec(
+    # The caps every phase needs whatever the model: without one llama-server
+    # runs n_predict -1 and a thought loop generates until the read timeout.
+    # The sizing is gemma-4-12b's (see its profile); a new model starts there.
+    phases={
         PLANNER: PhaseSettings(max_tokens=2048),
         NARRATOR: PhaseSettings(max_tokens=4096),
         ANSWER: PhaseSettings(max_tokens=16),
         # A thinking move choice: about 70 s at the 12B's and the 26B's
         # ~60 tok/s, inside the deadline. Starting values, not measured (#472).
         MOVER: PhaseSettings(max_tokens=4096, thinking=True, deadline_s=90.0),
-    }
+    },
+    # Beyond `max_tokens`. The order is the order `describe()` lists them in,
+    # which the serving manifest and the trend scripts key on.
+    phase_keys={
+        PLANNER: ("temperature", "thinking", "effort"),
+        NARRATOR: ("temperature", "analysis_thinking"),
+        ANSWER: ("temperature",),
+        MOVER: (
+            "temperature",
+            "thinking",
+            "effort",
+            "deadline_s",
+            "thinking_budget",
+            "board_facts",
+            "look_calls",
+        ),
+    },
+    known_crutches=KNOWN_CRUTCHES,
 )
 
-DEFAULT_PROFILE = ModelProfile(
-    name=DEFAULT_NAME,
-    source="built in",
-    phases=_DEFAULT_PHASES,
-)
+DEFAULT_PROFILE = SPEC.default_profile()
 
 
 def parse_profile(name: str, text: str, source: str) -> ModelProfile:
-    """A profile from its TOML text. Strict: an unknown key, phase or crutch
-    is an error, because a typo in a profile is a model quietly run on
-    settings nobody chose."""
-    try:
-        data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise ProfileError(f"profile {name!r}: {exc}") from exc
-    _only(name, "profile", data, _TOP_LEVEL_KEYS)
-    sampling = data.get("sampling", {})
-    _only(name, "sampling", sampling, set(_SAMPLING_KEYS))
-    phases_data = data.get("phases", {})
-    _only(name, "phases", phases_data, set(PHASES))
-    phases = dict(_DEFAULT_PHASES)
-    for phase, settings in phases_data.items():
-        allowed = {"max_tokens", "temperature"}
-        if phase in (PLANNER, MOVER):
-            allowed.add("thinking")
-            allowed.add("effort")
-        if phase == NARRATOR:
-            allowed.add("analysis_thinking")
-        if phase == MOVER:
-            allowed.add("deadline_s")
-            allowed.add("thinking_budget")
-            allowed.add("board_facts")
-            allowed.add("look_calls")
-        _only(name, f"phases.{phase}", settings, allowed)
-        thinking = settings.get("thinking", phases[phase].thinking)
-        analysis_thinking = settings.get("analysis_thinking", True)
-        board_facts = settings.get("board_facts", phases[phase].board_facts)
-        for key, value in (
-            ("thinking", thinking),
-            ("analysis_thinking", analysis_thinking),
-            ("board_facts", board_facts),
-        ):
-            if not isinstance(value, bool):
-                raise ProfileError(
-                    f"profile {name!r}: phases.{phase}.{key} must be a bool"
-                )
-        deadline_s = settings.get("deadline_s", phases[phase].deadline_s)
-        if deadline_s is not None and (
-            isinstance(deadline_s, bool)
-            or not isinstance(deadline_s, int | float)
-            or deadline_s <= 0
-        ):
-            raise ProfileError(
-                f"profile {name!r}: phases.{phase}.deadline_s must be a positive number"
-            )
-        look_calls = settings.get("look_calls", phases[phase].look_calls)
-        if (
-            isinstance(look_calls, bool)
-            or not isinstance(look_calls, int)
-            or (look_calls < 0)
-        ):
-            raise ProfileError(
-                f"profile {name!r}: phases.{phase}.look_calls must be a whole "
-                "number, 0 or more"
-            )
-        max_tokens = int(settings.get("max_tokens", phases[phase].max_tokens))
-        thinking_budget = settings.get("thinking_budget")
-        if thinking_budget is not None and (
-            isinstance(thinking_budget, bool)
-            or not isinstance(thinking_budget, int)
-            or not 0 < thinking_budget < max_tokens
-        ):
-            # A budget at or past the cap is no budget: the cap cuts the
-            # thought off first, and the reply ends without a move.
-            raise ProfileError(
-                f"profile {name!r}: phases.{phase}.thinking_budget must be a "
-                f"positive whole number below max_tokens ({max_tokens})"
-            )
-        effort = settings.get("effort")
-        if effort is not None:
-            if not isinstance(effort, str) or not effort:
-                raise ProfileError(
-                    f"profile {name!r}: phases.{phase}.effort must be a level name"
-                )
-            if not data.get("effort_kwarg"):
-                # A level with no key to send it under would be silently dropped.
-                raise ProfileError(
-                    f"profile {name!r}: phases.{phase}.effort needs effort_kwarg"
-                )
-        phases[phase] = PhaseSettings(
-            max_tokens=max_tokens,
-            temperature=settings.get("temperature"),
-            thinking=thinking,
-            analysis_thinking=analysis_thinking,
-            deadline_s=None if deadline_s is None else float(deadline_s),
-            thinking_budget=thinking_budget,
-            effort=effort,
-            board_facts=board_facts,
-            look_calls=look_calls,
-        )
-    crutches = frozenset(data.get("crutches", ()))
-    unknown = crutches - KNOWN_CRUTCHES
-    if unknown:
-        raise ProfileError(f"profile {name!r}: unknown crutches {sorted(unknown)}")
-    thinking = data.get("thinking_kwarg")
-    return ModelProfile(
-        name=name,
-        source=source,
-        sampling=MappingProxyType(
-            {key: sampling[key] for key in _SAMPLING_KEYS if key in sampling}
-        ),
-        thinking_kwarg=thinking if thinking else None,
-        effort_kwarg=data.get("effort_kwarg") or None,
-        phases=MappingProxyType(phases),
-        crutches=crutches,
-        quirks=tuple(data.get("quirks", ())),
-    )
-
-
-def _only(name: str, where: str, table: Any, allowed: set[str]) -> None:
-    if not isinstance(table, dict):
-        raise ProfileError(f"profile {name!r}: {where} must be a table")
-    extra = set(table) - allowed
-    if extra:
-        raise ProfileError(f"profile {name!r}: unknown {where} keys {sorted(extra)}")
+    """A profile from its TOML text, strict (`ProfileSpec.parse`)."""
+    return SPEC.parse(name, text, source)
 
 
 @cache
 def load_profile(model: str) -> ModelProfile:
     """The profile for `model`, or `DEFAULT_PROFILE` with a warning when no
     file describes it. Cached: a profile is read once per process."""
-    path = resources.files("chessapp") / "data" / "profiles" / f"{model}.toml"
-    if not path.is_file():
+    directory = resources.files("chessapp") / "data" / "profiles"
+    profile = SPEC.load(directory, model, "data/profiles")
+    if profile is None:
         logger.warning("no_model_profile model=%s using=%s", model, DEFAULT_NAME)
         return DEFAULT_PROFILE
-    return parse_profile(
-        model, path.read_text(encoding="utf-8"), f"data/profiles/{model}.toml"
-    )
+    return profile
