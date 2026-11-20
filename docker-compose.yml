@@ -39,8 +39,13 @@ services:
     # Host-only bind: LAN traffic comes in through the workspace gateway
     # (chess.$HOMELAB_DOMAIN → 127.0.0.1:8000). Port block 8000-8099 belongs to
     # chess — see ../gateway/README.md for the registry.
+    # The docker0 bridge bind is for conductor: it is containerised and reads
+    # this app's glance via host.docker.internal, which a loopback-only bind
+    # refuses (live 2026-11-20: "chess couldn't be reached"). Same convention
+    # as music and ../llama-swap; still closed to the LAN.
     ports:
       - "127.0.0.1:8000:8000"
+      - "${DOCKER_BRIDGE_IP:-172.17.0.1}:8000:8000"
     environment:
       # Brain seam → the shared workspace llama-swap proxy on the host
       # (port block 8200, see ../gateway/README.md). The model name must match
